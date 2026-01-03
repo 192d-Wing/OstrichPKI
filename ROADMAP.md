@@ -1583,6 +1583,402 @@ Comprehensive testing, security hardening, and production readiness preparation.
 
 ---
 
+### Phase 15: NIAP Protection Profile Compliance
+
+**Priority**: HIGH
+**Completion**: 0%
+**Estimated Effort**: 3-4 weeks
+**Dependencies**: Analysis of NIAP PP-CA v2.1 requirements complete
+**Blocks**: Authority to Operate (ATO) certification
+
+#### Scope
+
+Establish comprehensive NIAP Protection Profile for Certification Authorities v2.1 compliance through documentation, annotation, and implementation of missing critical security functional requirements (SFRs). This phase focuses on three parallel tracks:
+
+1. **Documentation Track**: Annotate existing compliant code with NIAP SFR references
+2. **Implementation Track**: Create stubs and foundational implementations for missing mandatory SFRs
+3. **Tracking Track**: Develop comprehensive compliance tracking and evidence collection
+
+#### Current Compliance Status
+
+Based on comprehensive codebase analysis against NIAP PP-CA v2.1:
+- **Overall Compliance**: 40-50% (Partial)
+- **Strong Areas**: Audit logging architecture, crypto abstraction, certificate profiles
+- **Critical Gaps**: RBAC, PKCS#11 completion, input validation, DRBG, approval workflows
+
+#### Key Tasks
+
+##### Track 1: Code Annotation (Week 1-2)
+
+**Goal**: Mark all existing NIAP-compliant code with SFR references for audit trail and evidence collection
+
+1. **Audit System Annotations** ([ostrich-audit/src/](crates/ostrich-audit/src/))
+   - Mark `AuditEvent` structure with FAU_GEN.1, FAU_GEN.2, AU-2, AU-3
+   - Mark hash chain fields with FAU_GEN.1(d), AU-9(3)
+   - Mark `DatabaseAuditSink` with FAU_STG.1
+   - Document audit event types coverage per PP Tables 4-6
+   - Estimated: 200 lines of annotations
+
+2. **Cryptographic Provider Annotations** ([ostrich-crypto/src/](crates/ostrich-crypto/src/))
+   - Mark `CryptoProvider` trait with FCS_COP.1(2), SC-12, SC-13
+   - Mark `Zeroizing` usage with FCS_CKM_EXT.4, FDP_RIP.1
+   - Mark algorithm enums with FIPS 186-5, FIPS 203/204/205 references
+   - Mark key handle abstraction with FPT_KST_EXT.1 design notes
+   - Estimated: 150 lines of annotations
+
+3. **Certificate Profile Annotations** ([ostrich-x509/src/profile.rs](crates/ostrich-x509/src/profile.rs))
+   - Mark profile validation with FDP_CER_EXT.1.1, FDP_CER_EXT.1.2
+   - Mark RFC 5280 compliance checks with FDP_CER_EXT.1.2
+   - Mark key usage enforcement with RFC 5280 §4.2.1.3
+   - Estimated: 100 lines of annotations
+
+4. **Time Services Annotations** ([ostrich-common/src/util/time.rs](crates/ostrich-common/src/util/time.rs))
+   - Mark timestamp functions with FPT_STM.1
+   - Document reliance on system clock (NTP requirement for deployment)
+   - Estimated: 50 lines of annotations
+
+5. **OCSP/CRL Annotations** ([ostrich-ocsp/src/](crates/ostrich-ocsp/src/), [ostrich-x509/src/crl.rs](crates/ostrich-x509/src/crl.rs))
+   - Mark OCSP responder with FDP_CSI_EXT.1, FDP_OCSPG_EXT.1
+   - Mark CRL builder with FDP_CRL_EXT.1, RFC 5280 §5
+   - Estimated: 100 lines of annotations
+
+**Annotation Format**:
+```rust
+// NIAP PP-CA v2.1: FAU_GEN.1 - Audit data generation
+// NIAP PP-CA v2.1: FAU_GEN.2 - User identity association
+// NIST 800-53 Rev 5: AU-2 - Auditable events
+// NIST 800-53 Rev 5: AU-3 - Content of audit records
+// RFC 5280 §4.2.1.3 - Key usage extension
+pub struct AuditEvent {
+    // ...
+}
+```
+
+##### Track 2: Implementation Stubs & Foundations (Week 2-4)
+
+**Goal**: Implement foundational structures for missing mandatory SFRs to unblock future phases
+
+1. **Role-Based Access Control Foundation** (NEW: [ostrich-common/src/rbac.rs](crates/ostrich-common/src/rbac.rs))
+   - Define `Role` enum: Administrator, Auditor, CAOperationsStaff, RAStaff, AOR
+   - Define `User` struct with UUID, username, roles
+   - Define `Permission` enum for granular access control
+   - Implement separation of duties validation (FMT_SMR.2.3)
+   - Create `RbacPolicy` trait for authorization checks
+   - **STUB**: Authentication mechanism (FIA_UAU_EXT.1) - defer to Phase 16
+   - **STUB**: Session management (FTA_SSL.3, FTA_SSL_EXT.1) - defer to Phase 16
+   - Estimated: 300 lines
+
+2. **Random Bit Generation** (NEW: [ostrich-crypto/src/drbg.rs](crates/ostrich-crypto/src/drbg.rs))
+   - Implement NIST SP 800-90A compliant DRBG interface
+   - Use `ring::rand::SystemRandom` as entropy source (≥256 bits)
+   - Provide methods: `generate_random(num_bytes)`, `generate_serial_number()`
+   - Add to `CryptoProvider` trait
+   - Mark with FCS_RBG_EXT.1, NIST SP 800-90A
+   - Estimated: 200 lines
+
+3. **Input Validation Framework** (NEW: [ostrich-x509/src/validation.rs](crates/ostrich-x509/src/validation.rs))
+   - Implement `validate_certificate_request()` for CSR validation
+   - Implement `validate_certificate_chain()` for RFC 5280 path validation
+   - Implement `verify_csr_signature()` to replace stub
+   - Add proof-of-possession verification (FCO_NRO_EXT.2.4)
+   - Add subject DN format validation
+   - Mark with FIA_X509_EXT.1, FCO_NRO_EXT.2, SI-10
+   - **DEFER**: Full revocation checking to Phase 16 (requires OCSP/CRL integration)
+   - Estimated: 400 lines
+
+4. **Certificate Issuance Approval Workflow** (NEW: [ostrich-ca/src/approval.rs](crates/ostrich-ca/src/approval.rs))
+   - Define `ApprovalStatus` enum: Pending, ApprovedByRA, ApprovedByCAOps, ApprovedByRules, Rejected
+   - Define `IssuanceApproval` struct with request ID, approver, timestamp
+   - Implement rules-based approval engine (configurable policies)
+   - Add approval tracking to database models
+   - Mark with FDP_CER_EXT.3
+   - **STUB**: RA/AOR approval interfaces - defer to Phase 16
+   - Estimated: 250 lines
+
+5. **Certificate Request Linkage** ([ostrich-db/src/models/certificate.rs](crates/ostrich-db/src/models/certificate.rs))
+   - Add `request_id` field to `Certificate` model
+   - Add `request_type` enum: ACME, EST, SCMS, Manual
+   - Update CA issuance to track CSR → Certificate mapping
+   - Mark with FDP_CER_EXT.2, AU-10 (non-repudiation)
+   - Estimated: 100 lines + migration
+
+6. **Audit Storage Protection** ([ostrich-audit/src/sink.rs](crates/ostrich-audit/src/sink.rs))
+   - Add storage capacity monitoring (FAU_STG.4)
+   - Implement audit-full behavior: block operations or alert administrator
+   - Add database constraints to prevent deletion (FAU_STG.1)
+   - Add external audit transmission stub (FAU_STG_EXT.1)
+   - Estimated: 150 lines
+
+7. **Integrity Verification Stubs** (NEW: [ostrich-common/src/integrity.rs](crates/ostrich-common/src/integrity.rs))
+   - Define `IntegrityVerifier` trait
+   - **STUB**: `verify_software_integrity()` - FPT_TST_EXT.1
+   - **STUB**: `verify_trust_anchor_integrity()` - FPT_TST_EXT.2
+   - **STUB**: `verify_ca_key_integrity()` - FPT_TST_EXT.2
+   - Document requirement for signed releases and HSM key verification
+   - Estimated: 100 lines (mostly stubs)
+
+8. **Access Banner Module** (NEW: [ostrich-common/src/banner.rs](crates/ostrich-common/src/banner.rs))
+   - Implement configurable access warning banner (FTA_TAB.1)
+   - Add to all authenticated endpoints
+   - Configuration: banner text, display requirements
+   - Estimated: 75 lines
+
+##### Track 3: Compliance Tracking Document (Week 3-4)
+
+**Goal**: Create comprehensive compliance matrix for audit and certification evidence
+
+1. **NIAP Compliance Matrix** (NEW: [docs/compliance/NIAP_COMPLIANCE.md](docs/compliance/NIAP_COMPLIANCE.md))
+   - Table format: SFR ID | Name | Status | Implementation | Evidence | Notes
+   - All 50+ SFRs from PP-CA v2.1 mapped
+   - Links to code files and line numbers
+   - Status: Compliant, Partial, Not Implemented, Not Applicable
+   - Evidence: Unit tests, integration tests, code annotations
+   - Section for each SFR family (FAU, FCS, FDP, FIA, FMT, FPT, FTA, FTP)
+   - Estimated: 800-1000 lines
+
+2. **NIST 800-53 Control Mapping** (NEW: [docs/compliance/NIST_800-53_MAPPING.md](docs/compliance/NIST_800-53_MAPPING.md))
+   - Map NIAP SFRs to NIST 800-53 Rev 5 controls
+   - Document control implementation status
+   - Link to code and configuration
+   - Estimated: 500 lines
+
+3. **RFC Compliance Matrix** (NEW: [docs/compliance/RFC_COMPLIANCE.md](docs/compliance/RFC_COMPLIANCE.md))
+   - Track RFC 5280, 6960, 7030, 8555, 5652, etc. compliance
+   - Map requirements to code implementation
+   - Document test coverage for RFC requirements
+   - Estimated: 400 lines
+
+4. **FIPS Cryptographic Standards Matrix** (NEW: [docs/compliance/FIPS_COMPLIANCE.md](docs/compliance/FIPS_COMPLIANCE.md))
+   - FIPS 186-5, 197, 180-4, 202, 203, 204, 205 compliance tracking
+   - Algorithm implementation status (Classical + PQC)
+   - FIPS-validated module usage (ring, HSM)
+   - Estimated: 300 lines
+
+5. **Gap Analysis & Remediation Plan** (NEW: [docs/compliance/NIAP_GAP_ANALYSIS.md](docs/compliance/NIAP_GAP_ANALYSIS.md))
+   - Detailed list of missing SFRs
+   - Prioritization (Critical, High, Medium, Low)
+   - Implementation plan with phase assignments
+   - Effort estimates
+   - Dependencies
+   - Estimated: 600 lines
+
+6. **ATO Evidence Collection Guide** (NEW: [docs/compliance/ATO_EVIDENCE.md](docs/compliance/ATO_EVIDENCE.md))
+   - How to generate Security Target (ST) evidence
+   - Code annotation extraction tools
+   - Test result aggregation
+   - Audit log analysis
+   - Estimated: 300 lines
+
+#### Database Schema Changes
+
+**New Migration**: `migrations/XXX_niap_compliance.sql`
+
+```sql
+-- Certificate request linkage (FDP_CER_EXT.2)
+ALTER TABLE certificates ADD COLUMN request_id UUID;
+ALTER TABLE certificates ADD COLUMN request_type TEXT; -- 'ACME', 'EST', 'SCMS', 'MANUAL'
+CREATE INDEX idx_certificates_request_id ON certificates(request_id);
+
+-- Approval tracking (FDP_CER_EXT.3)
+CREATE TABLE certificate_approvals (
+    id UUID PRIMARY KEY,
+    request_id UUID NOT NULL,
+    status TEXT NOT NULL, -- 'pending', 'approved_ra', 'approved_ca_ops', 'approved_rules', 'rejected'
+    approved_by UUID, -- References users table (to be created in Phase 16)
+    approved_at TIMESTAMPTZ,
+    reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- User and role management (FMT_SMR.2, FIA_UAU_EXT.1) - Phase 16
+-- Stubbed for reference
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE roles (
+    id UUID PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL -- 'administrator', 'auditor', 'ca_ops', 'ra_staff', 'aor'
+);
+
+CREATE TABLE user_roles (
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
+    assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, role_id)
+);
+
+-- Audit storage protection (FAU_STG.4)
+CREATE TABLE audit_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1), -- Single row
+    max_storage_bytes BIGINT NOT NULL DEFAULT 10737418240, -- 10GB
+    full_action TEXT NOT NULL DEFAULT 'alert', -- 'alert' or 'block'
+    warning_threshold_percent INTEGER NOT NULL DEFAULT 90
+);
+
+INSERT INTO audit_config (id) VALUES (1);
+```
+
+#### Technical Approach
+
+**Code Annotation Strategy**:
+- Add multi-line comments above structs, functions, modules
+- Include NIAP SFR ID, name, and NIST 800-53 control references
+- Reference specific RFC sections where applicable
+- Keep annotations concise but informative
+
+**Stub Implementation Strategy**:
+- Clearly mark stubs with `// STUB:` and deferred phase
+- Return `Err(Error::NotImplemented)` or placeholder values
+- Define complete interfaces even if implementation incomplete
+- Write comprehensive documentation for implementers
+
+**Documentation Strategy**:
+- Use Markdown tables for easy reading and updating
+- Include clickable links to code files (GitHub-style)
+- Color-code compliance status (🟢🟡🔴 or equivalent)
+- Version control all compliance documents
+- Generate evidence artifacts automatically where possible
+
+#### Deliverables
+
+**Code Changes**:
+1. ✅ Annotations in 10+ existing files (~600 lines of comments)
+2. ✅ 8 new implementation modules (~1,575 lines of code)
+3. ✅ 1 database migration
+4. ✅ Updated existing files with linkage tracking
+
+**Documentation**:
+1. ✅ NIAP Compliance Matrix (docs/compliance/NIAP_COMPLIANCE.md)
+2. ✅ NIST 800-53 Mapping (docs/compliance/NIST_800-53_MAPPING.md)
+3. ✅ RFC Compliance Matrix (docs/compliance/RFC_COMPLIANCE.md)
+4. ✅ FIPS Compliance Matrix (docs/compliance/FIPS_COMPLIANCE.md)
+5. ✅ Gap Analysis & Remediation Plan (docs/compliance/NIAP_GAP_ANALYSIS.md)
+6. ✅ ATO Evidence Collection Guide (docs/compliance/ATO_EVIDENCE.md)
+
+**Compliance Improvement**:
+- Pre-Phase 15: 40-50% compliant
+- Post-Phase 15: 60-65% compliant
+- Remaining work: Authentication (Phase 16), PKCS#11 (Phase 10), Testing (Phase 14)
+
+#### Success Criteria
+
+**Annotation Success**:
+- ✅ All existing compliant code marked with NIAP/NIST references
+- ✅ Annotations reference specific SFR subsections (e.g., FAU_GEN.1.1(d))
+- ✅ No duplicate or conflicting annotations
+- ✅ Code remains compilable and formatted (cargo fmt)
+
+**Implementation Success**:
+- ✅ RBAC module compiles and has basic unit tests
+- ✅ DRBG generates cryptographically secure random numbers
+- ✅ Validation framework has working CSR signature verification
+- ✅ Approval workflow has state machine tests
+- ✅ All stubs clearly documented with deferred phases
+- ✅ Database migration applies cleanly
+
+**Documentation Success**:
+- ✅ Compliance matrix covers all mandatory SFRs
+- ✅ Each SFR links to code implementation or gap
+- ✅ Gap analysis identifies all missing SFRs with priorities
+- ✅ Evidence collection guide provides actionable steps
+- ✅ Documents reviewed for accuracy by security team
+
+**Compliance Success**:
+- ✅ Move from 40-50% to 60-65% compliance
+- ✅ All critical gaps documented with remediation plan
+- ✅ Audit trail established for Common Criteria evaluation
+- ✅ Foundation for Phase 16 (Authentication & Authorization)
+
+#### Dependencies & Integration
+
+**Depends On**:
+- Phase 8 completion (crypto operations for DRBG, validation)
+- NIAP PP-CA v2.1 requirements analysis (completed)
+- Access to niap/pp_ca_requirements.xml (available)
+
+**Enables**:
+- Phase 16: Authentication & Authorization (builds on RBAC foundation)
+- Phase 14: Testing & Hardening (compliance tests against documented SFRs)
+- Common Criteria evaluation preparation
+- ATO security package preparation
+
+**Blocks**:
+- ATO certification (cannot proceed without compliance documentation)
+- Security Target development
+- External security audit (requires compliance evidence)
+
+#### Risks & Mitigations
+
+**Risk 1: Annotation Overhead**
+- **Risk**: Adding 600+ lines of comments slows development velocity
+- **Mitigation**: Annotations provide long-term value for audits, required for ATO
+- **Mitigation**: Automate annotation verification with linting rules
+
+**Risk 2: Incomplete NIAP Requirements Understanding**
+- **Risk**: PP XML file may not contain full requirements (references Tables 4-6 not in file)
+- **Mitigation**: Download full PP PDF from NIAP website
+- **Mitigation**: Cross-reference with NIAP Protection Profile for Certification Authorities v2.1
+
+**Risk 3: Stub Implementations Not Production-Ready**
+- **Risk**: Stubs give false sense of completion
+- **Mitigation**: Clearly mark all stubs, track in compliance matrix
+- **Mitigation**: Assign stub completion to specific future phases
+- **Mitigation**: Stubs return errors, not silently fail
+
+**Risk 4: Documentation Maintenance Burden**
+- **Risk**: Compliance docs become stale as code evolves
+- **Mitigation**: Include compliance doc review in PR checklist
+- **Mitigation**: Automated tools to verify code links still valid
+- **Mitigation**: Quarterly compliance doc review meetings
+
+#### Files to Create/Modify
+
+**New Files** (8 modules + 6 docs):
+- `crates/ostrich-common/src/rbac.rs`
+- `crates/ostrich-common/src/integrity.rs`
+- `crates/ostrich-common/src/banner.rs`
+- `crates/ostrich-crypto/src/drbg.rs`
+- `crates/ostrich-x509/src/validation.rs`
+- `crates/ostrich-ca/src/approval.rs`
+- `migrations/XXX_niap_compliance.sql`
+- `docs/compliance/NIAP_COMPLIANCE.md`
+- `docs/compliance/NIST_800-53_MAPPING.md`
+- `docs/compliance/RFC_COMPLIANCE.md`
+- `docs/compliance/FIPS_COMPLIANCE.md`
+- `docs/compliance/NIAP_GAP_ANALYSIS.md`
+- `docs/compliance/ATO_EVIDENCE.md`
+
+**Modified Files** (annotations):
+- `crates/ostrich-audit/src/event.rs`
+- `crates/ostrich-audit/src/sink.rs`
+- `crates/ostrich-crypto/src/provider.rs`
+- `crates/ostrich-crypto/src/algorithm.rs`
+- `crates/ostrich-crypto/src/key.rs`
+- `crates/ostrich-x509/src/profile.rs`
+- `crates/ostrich-x509/src/parser.rs`
+- `crates/ostrich-x509/src/crl.rs`
+- `crates/ostrich-ocsp/src/responder.rs`
+- `crates/ostrich-common/src/util/time.rs`
+- `crates/ostrich-db/src/models/certificate.rs`
+- `crates/ostrich-ca/src/issuance.rs`
+
+#### Phase 16 Preview: Authentication & Authorization
+
+Phase 15 establishes the RBAC foundation, enabling Phase 16 to implement:
+- Password-based authentication (FIA_UAU_EXT.1)
+- Certificate-based authentication (FIA_X509_EXT.2, mTLS)
+- Session management (FTA_SSL.3, FTA_SSL_EXT.1)
+- Authorization middleware for REST/gRPC APIs
+- Password complexity requirements (FIA_PMG_EXT.1)
+- Authentication failure handling (FIA_AFL.1)
+- User lifecycle management
+
+---
+
 ## Conclusion
 
 OstrichPKI has successfully completed foundational work (Phases 1-7), establishing a solid architecture and comprehensive API surface. The remaining work (Phases 8-14) focuses on **implementation depth** rather than **breadth**, with emphasis on:
@@ -1592,16 +1988,18 @@ OstrichPKI has successfully completed foundational work (Phases 1-7), establishi
 3. **Production-grade security** (Phases 10, 11)
 4. **Service orchestration** (Phase 12)
 5. **Operational readiness** (Phase 14)
+6. **NIAP compliance & ATO readiness** (Phase 15) - **NEW**
 
-**Estimated timeline to production**: **14-20 weeks**
+**Estimated timeline to production**: **18-24 weeks** (updated to include NIAP compliance)
 
-**Critical path**: Phases 8 → 9 → 12 → 14 (7-11 weeks minimum)
+**Critical path**: Phases 8 → 9 → 15 → 12 → 14 (10-15 weeks minimum)
 
 **Recommended next steps**:
 1. Begin Phase 8 (Cryptographic Operations) immediately - highest priority blocker
 2. Start Phase 11 (Protocol Validation) in parallel - can run independently
-3. Secure HSM hardware or set up SoftHSM for Phase 10 testing
-4. Schedule external security audit for Week 20-22
-5. Allocate resources for comprehensive testing in Phase 14
+3. Execute Phase 15 (NIAP Compliance) after Phase 8 completes
+4. Secure HSM hardware or set up SoftHSM for Phase 10 testing
+5. Schedule external security audit for Week 24-26 (after Phase 15)
+6. Allocate resources for comprehensive testing in Phase 14
 
-With focused effort on the critical path and parallel execution of independent phases, OstrichPKI can achieve production readiness in approximately **4-5 months**.
+With focused effort on the critical path and parallel execution of independent phases, OstrichPKI can achieve production readiness and NIAP compliance in approximately **5-6 months**.

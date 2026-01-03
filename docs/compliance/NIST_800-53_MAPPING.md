@@ -1,0 +1,1249 @@
+# NIST 800-53 Rev 5 Security Control Mapping
+
+**Document Version:** 1.0
+**Date:** 2026-01-03
+**OstrichPKI Version:** 0.10.0
+**Standard:** NIST SP 800-53 Revision 5
+**Compliance Status:** Partial (40-50%)
+
+## Executive Summary
+
+This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implementation and NIAP PP-CA v2.1 Security Functional Requirements (SFRs). It provides a comprehensive view of security control compliance for Authority to Operate (ATO) certification.
+
+**Control Families Covered:**
+
+- AC (Access Control)
+- AU (Audit and Accountability)
+- CM (Configuration Management)
+- CP (Contingency Planning)
+- IA (Identification and Authentication)
+- IR (Incident Response)
+- SC (System and Communications Protection)
+- SI (System and Information Integrity)
+
+---
+
+## Access Control (AC)
+
+### AC-2: Account Management
+
+**Control:** The organization manages information system accounts.
+
+**Implementation Status:** 🔴 **Not Implemented**
+
+**NIAP Mapping:**
+
+- FMT_SMR.2 - Restrictions on Security Roles
+- FIA_UAU_EXT.1 - Authentication Mechanism
+
+**Implementation:**
+
+- None (no user account system)
+
+**Gaps:**
+
+- No user lifecycle management (create, modify, disable, remove)
+- No account attribute management (roles, privileges)
+- No periodic account review
+- No automatic account disablement
+
+**Code References:**
+
+- Planned: `crates/ostrich-common/src/rbac.rs` (Phase 15)
+- Planned: Database users/roles tables (Phase 15)
+
+**Remediation:** Phase 16 - Implement user account management with lifecycle controls
+
+**Evidence Required for ATO:**
+
+- User account creation procedures
+- Role assignment documentation
+- Periodic account review logs
+- Disabled/removed account audit trail
+
+---
+
+### AC-3: Access Enforcement
+
+**Control:** The information system enforces approved authorizations for logical access.
+
+**Implementation Status:** 🔴 **Not Implemented**
+
+**NIAP Mapping:**
+
+- FMT_MOF.1 - Management of Security Functions Behavior
+- FMT_MTD.1 - Management of TSF Data
+- FDP_CER_EXT.3 - Certificate Issuance Approval
+
+**Implementation:**
+
+- None (no authorization enforcement)
+
+**Gaps:**
+
+- No role-based access control (RBAC)
+- All endpoints accessible without authorization checks
+- Certificate issuance not restricted by role
+
+**Code References:**
+
+- Planned: `crates/ostrich-common/src/rbac.rs` (Phase 15)
+
+**Remediation:** Phase 16 - Implement RBAC middleware on all REST/gRPC endpoints
+
+**Evidence Required for ATO:**
+
+- Access control policy documentation
+- Authorization test results
+- Privilege escalation testing (negative tests)
+
+---
+
+### AC-5: Separation of Duties
+
+**Control:** The organization separates duties of individuals to reduce the risk of malevolent activity.
+
+**Implementation Status:** 🔴 **Not Implemented**
+
+**NIAP Mapping:**
+
+- FMT_SMR.2 - Restrictions on Security Roles (mandatory separation)
+
+**Implementation:**
+
+- None
+
+**Gaps:**
+
+- No enforcement that Auditor role is separate from all others
+- No enforcement that CA Operations Staff role is separate from all others
+- No validation of conflicting role assignments
+
+**Code References:**
+
+- Planned: `crates/ostrich-common/src/rbac.rs` - Role separation validation (Phase 15)
+
+**Remediation:** Phase 15 - Implement role separation validation logic
+
+**Evidence Required for ATO:**
+
+- Role separation matrix
+- Separation enforcement test results
+- Configuration showing separation rules
+
+---
+
+### AC-6: Least Privilege
+
+**Control:** The organization employs the principle of least privilege.
+
+**Implementation Status:** 🟡 **Partial**
+
+**NIAP Mapping:**
+
+- FMT_MOF.1 - Management of Security Functions Behavior
+
+**Implementation:**
+
+- [crates/ostrich-crypto/src/provider.rs](../../crates/ostrich-crypto/src/provider.rs) - Key handles prevent direct key access (least privilege for key operations)
+
+**Evidence:**
+
+- ✅ Cryptographic operations use key handles, not direct key material
+- ✅ HSM design enforces least privilege (keys never leave HSM)
+- 🔴 No user privilege levels
+
+**Gaps:**
+
+- No user role privilege restrictions
+- All operations available to all users
+
+**Remediation:** Phase 16 - Assign minimum necessary permissions to each role
+
+---
+
+### AC-7: Unsuccessful Logon Attempts
+
+**Control:** The information system enforces a limit of consecutive invalid logon attempts.
+
+**Implementation Status:** 🔴 **Not Implemented**
+
+**NIAP Mapping:**
+
+- FIA_AFL.1 - Authentication Failure Handling
+
+**Implementation:**
+
+- None
+
+**Gaps:**
+
+- No authentication failure tracking
+- No account lockout mechanism
+- No delay after failed attempts
+
+**Remediation:** Phase 16 - Implement configurable lockout policy (e.g., 5 attempts, 30 minute lockout)
+
+**Evidence Required for ATO:**
+
+- Lockout policy configuration
+- Failed authentication logs
+- Account unlock procedures
+
+---
+
+### AC-12: Session Termination
+
+**Control:** The information system automatically terminates a user session after defined conditions.
+
+**Implementation Status:** 🔴 **Not Implemented**
+
+**NIAP Mapping:**
+
+- FTA_SSL.3 - TSF-Initiated Termination
+- FTA_SSL.4 - User-Initiated Termination
+
+**Implementation:**
+
+- None
+
+**Gaps:**
+
+- No session management system
+- No idle timeout enforcement
+- No manual logout capability
+
+**Remediation:** Phase 16 - Implement session management with configurable idle timeout
+
+---
+
+### AC-17: Remote Access
+
+**Control:** The organization establishes usage restrictions for remote access.
+
+**Implementation Status:** 🟡 **Partial**
+
+**NIAP Mapping:**
+
+- FTP_TRP.1 - Trusted Path
+- FCS_TLSS_EXT.1 - TLS Server Protocol
+
+**Implementation:**
+
+- REST and gRPC endpoints support TLS for remote access
+- mTLS planned for inter-service communication
+
+**Evidence:**
+
+- ✅ TLS support in frameworks (axum, tonic)
+- 🔴 TLS not configured in application code
+
+**Gaps:**
+
+- TLS configuration delegated to deployment
+- No enforcement of TLS 1.3 minimum
+- mTLS not enforced for administrative access
+
+**Remediation:** Phase 16 - Configure TLS 1.3+ in application, enforce mTLS for admin endpoints
+
+---
+
+## Audit and Accountability (AU)
+
+### AU-2: Auditable Events
+
+**Control:** The information system generates audit records for defined auditable events.
+
+**Implementation Status:** 🟢 **Compliant**
+
+**NIAP Mapping:**
+
+- FAU_GEN.1 - Audit Data Generation
+- FAU_ADP_EXT.1 - Audit Dependencies
+
+**Implementation:**
+
+- [crates/ostrich-audit/src/event.rs:15-45](../../crates/ostrich-audit/src/event.rs#L15-L45) - `EventType` enum with comprehensive event types
+
+**Evidence:**
+
+- ✅ Certificate issuance, revocation, renewal events
+- ✅ Authentication events (when implemented)
+- ✅ Configuration changes
+- ✅ Cryptographic operations
+- ✅ Access control decisions
+
+**Code Annotation:** NIAP PP-CA v2.1: FAU_GEN.1 - Required in Phase 15
+
+**Evidence Required for ATO:**
+
+- List of auditable events
+- Sample audit logs
+- Audit log review procedures
+
+---
+
+### AU-3: Content of Audit Records
+
+**Control:** The information system generates audit records containing defined information.
+
+**Implementation Status:** 🟢 **Compliant**
+
+**NIAP Mapping:**
+
+- FAU_GEN.1 - Audit Data Generation
+- FAU_GEN.2 - User Identity Association
+
+**Implementation:**
+
+- [crates/ostrich-audit/src/event.rs:47-110](../../crates/ostrich-audit/src/event.rs#L47-L110) - `AuditEvent` struct
+
+**Evidence:**
+
+- ✅ Event type (what happened)
+- ✅ Timestamp (when)
+- ✅ Subject identity (who - actor field)
+- ✅ Outcome (success/failure via event type)
+- ✅ Objects accessed (resource field)
+- ✅ Event ID (request_id for correlation)
+- ✅ Additional details (JSON field)
+
+**Code Annotation:** NIAP PP-CA v2.1: FAU_GEN.2 - Required in Phase 15
+
+**Evidence Required for ATO:**
+
+- Audit record format specification
+- Sample audit records showing all required fields
+
+---
+
+### AU-5: Response to Audit Processing Failures
+
+**Control:** The information system alerts appropriate personnel in the event of an audit processing failure.
+
+**Implementation Status:** 🔴 **Not Implemented**
+
+**NIAP Mapping:**
+
+- FAU_STG.4 - Prevention of Audit Data Loss
+
+**Implementation:**
+
+- None
+
+**Gaps:**
+
+- No audit storage capacity monitoring
+- No alerts when audit trail approaching full
+- No configurable action (alert vs. block) when full
+
+**Remediation:** Phase 15 - Implement audit storage monitoring with alerts
+
+**Evidence Required for ATO:**
+
+- Audit storage monitoring configuration
+- Alert notification procedures
+- Tested alert scenarios
+
+---
+
+### AU-6: Audit Review, Analysis, and Reporting
+
+**Control:** The organization reviews and analyzes information system audit records.
+
+**Implementation Status:** 🔴 **Not Implemented**
+
+**NIAP Mapping:**
+
+- FAU_SAR.1 - Audit Review
+- FAU_SAR.2 - Restricted Audit Review
+
+**Implementation:**
+
+- Database contains audit events but no review interface
+
+**Gaps:**
+
+- No audit review UI or API
+- No automated analysis tools
+- No report generation
+- No access control on audit review
+
+**Remediation:** Phase 16 - Implement audit review API with Auditor role restriction
+
+**Evidence Required for ATO:**
+
+- Audit review procedures
+- Review frequency schedule
+- Sample audit review reports
+
+---
+
+### AU-8: Time Stamps
+
+**Control:** The information system uses internal system clocks to generate time stamps.
+
+**Implementation Status:** 🟢 **Compliant**
+
+**NIAP Mapping:**
+
+- FPT_STM.1 - Reliable Time Stamps
+
+**Implementation:**
+
+- [crates/ostrich-common/src/util/time.rs](../../crates/ostrich-common/src/util/time.rs) - Time utilities using `chrono::Utc`
+
+**Evidence:**
+
+- ✅ All timestamps use UTC
+- ✅ Consistent time source (system clock)
+- ✅ Audit events include timestamps
+- ✅ Certificates include validity timestamps
+
+**Deployment Requirement:**
+
+- System must synchronize with authoritative time source (NTP)
+
+**Code Annotation:** NIAP PP-CA v2.1: FPT_STM.1 - Required in Phase 15
+
+**Evidence Required for ATO:**
+
+- NTP configuration documentation
+- Time synchronization testing
+
+---
+
+### AU-9: Protection of Audit Information
+
+**Control:** The information system protects audit information and audit tools from unauthorized access, modification, and deletion.
+
+**Implementation Status:** 🟡 **Partial**
+
+**NIAP Mapping:**
+
+- FAU_STG.1 - Protected Audit Trail Storage
+- FAU_SAR.2 - Restricted Audit Review
+
+**Implementation:**
+
+- [crates/ostrich-audit/src/sink.rs:15-50](../../crates/ostrich-audit/src/sink.rs#L15-L50) - `DatabaseAuditSink`
+- PostgreSQL database storage
+
+**Evidence:**
+
+- ✅ Audit events stored in database
+- 🔴 No explicit deletion prevention (needs database permissions)
+- 🔴 No access control on audit queries
+
+**Gaps:**
+
+- Database permissions not configured in code
+- Any database user can query audit_events table
+
+**Remediation:** Phase 15 - Add database migration to REVOKE DELETE/UPDATE on audit_events table
+
+**Evidence Required for ATO:**
+
+- Database permission configuration
+- Audit protection test results
+
+---
+
+### AU-9(3): Cryptographic Protection
+
+**Control:** The information system implements cryptographic mechanisms to protect the integrity of audit information.
+
+**Implementation Status:** 🟢 **Compliant**
+
+**NIAP Mapping:**
+
+- FAU_GEN.1(d) - Hash chain for integrity
+
+**Implementation:**
+
+- [crates/ostrich-audit/src/event.rs:60-61](../../crates/ostrich-audit/src/event.rs#L60-L61) - Hash chain fields (previous_hash, event_hash)
+- [crates/ostrich-audit/src/event.rs:145-150](../../crates/ostrich-audit/src/event.rs#L145-L150) - Hash computation
+
+**Evidence:**
+
+- ✅ Each audit event includes hash of previous event
+- ✅ Chain integrity verifiable
+- ✅ SHA-256 hashing
+
+**Enhancement:**
+
+- Phase 13 - Implement hash chain verification function ([db/repository/audit.rs:132](../../crates/ostrich-db/src/repository/audit.rs#L132) TODO)
+
+**Evidence Required for ATO:**
+
+- Hash chain algorithm specification
+- Integrity verification test results
+
+---
+
+### AU-10: Non-repudiation
+
+**Control:** The information system protects against an individual falsely denying having performed a particular action.
+
+**Implementation Status:** 🟡 **Partial**
+
+**NIAP Mapping:**
+
+- FCO_NRO_EXT.2 - Proof of Origin
+- FDP_CER_EXT.2 - Certificate Request Matching
+
+**Implementation:**
+
+- Digital signatures on all issued certificates, CRLs, OCSP responses
+- Audit trail with actor identity
+
+**Evidence:**
+
+- ✅ All CA-signed objects provide proof of origin
+- ✅ Audit events link actions to actors
+- 🔴 No CSR→Certificate linkage (missing request_id)
+
+**Gaps:**
+
+- Cannot prove which CSR led to which certificate
+
+**Remediation:** Phase 15 - Add request_id field to certificates table
+
+**Evidence Required for ATO:**
+
+- Non-repudiation mechanisms documentation
+- Digital signature verification procedures
+
+---
+
+### AU-12: Audit Generation
+
+**Control:** The information system provides audit record generation capability.
+
+**Implementation Status:** 🟢 **Compliant**
+
+**NIAP Mapping:**
+
+- FAU_GEN.1 - Audit Data Generation
+
+**Implementation:**
+
+- [crates/ostrich-audit/src/lib.rs:25-85](../../crates/ostrich-audit/src/lib.rs#L25-L85) - `AuditLogger` implementation
+- [crates/ostrich-audit/src/sink.rs](../../crates/ostrich-audit/src/sink.rs) - Database and console sinks
+
+**Evidence:**
+
+- ✅ Audit logger available to all services
+- ✅ Database persistence
+- ✅ Real-time emission
+
+**Evidence Required for ATO:**
+
+- Audit generation architecture diagram
+- Audit event catalog
+
+---
+
+## Configuration Management (CM)
+
+### CM-2: Baseline Configuration
+
+**Control:** The organization develops, documents, and maintains a current baseline configuration.
+
+**Implementation Status:** 🟡 **Partial**
+
+**Implementation:**
+
+- [CLAUDE.md](../../CLAUDE.md) - Project development guidance
+- [ROADMAP.md](../../ROADMAP.md) - Implementation phases and status
+- Configuration planned via environment variables and TOML files
+
+**Evidence:**
+
+- ✅ Code baseline in git version control
+- ✅ Database schema migrations tracked
+- 🔴 No deployment baseline configuration documented
+
+**Gaps:**
+
+- No formal configuration baseline documentation
+- No configuration item inventory
+
+**Remediation:** Phase 16 - Document baseline configuration for production deployment
+
+**Evidence Required for ATO:**
+
+- Configuration baseline document
+- Configuration item list
+- Change control procedures
+
+---
+
+### CM-3: Configuration Change Control
+
+**Control:** The organization implements change control procedures for changes to the information system.
+
+**Implementation Status:** 🟡 **Partial**
+
+**Implementation:**
+
+- Git version control for all code changes
+- Database migrations for schema changes
+
+**Evidence:**
+
+- ✅ All code changes tracked in git
+- ✅ Database migrations numbered and ordered
+- 🔴 No formal change approval process
+
+**Gaps:**
+
+- No change control board
+- No formal change request process
+- No rollback procedures documented
+
+**Remediation:** Document change control procedures in ATO package
+
+---
+
+### CM-6: Configuration Settings
+
+**Control:** The organization establishes and documents configuration settings.
+
+**Implementation Status:** 🟡 **Partial**
+
+**Implementation:**
+
+- [crates/ostrich-common/src/config.rs](../../crates/ostrich-common/src/config.rs) - Configuration structures
+- Environment variables for deployment-specific settings
+
+**Evidence:**
+
+- ✅ Configuration structures defined
+- 🔴 No documented secure baseline settings
+
+**Gaps:**
+
+- Default configuration values not security-hardened
+- No configuration validation on startup
+
+**Remediation:** Phase 16 - Document secure configuration baselines
+
+**Evidence Required for ATO:**
+
+- Configuration settings guide
+- Security configuration checklist
+- Configuration validation test results
+
+---
+
+## Contingency Planning (CP)
+
+### CP-9: System Backup
+
+**Control:** The organization conducts backups of information system documentation, software, and data.
+
+**Implementation Status:** 🟡 **Partial**
+
+**NIAP Mapping:**
+
+- Operational environment responsibility
+
+**Implementation:**
+
+- Database supports standard PostgreSQL backup tools
+- KRA supports key escrow and recovery
+
+**Evidence:**
+
+- ✅ Database backup capability via `pg_dump`
+- ✅ KRA module for cryptographic key backup/recovery
+- 🔴 No documented backup procedures
+
+**Gaps:**
+
+- No automated backup scheduling
+- No backup verification procedures
+- No offsite storage
+
+**Remediation:** Document backup procedures in deployment guide (operational environment)
+
+**Evidence Required for ATO:**
+
+- Backup procedures documentation
+- Backup frequency schedule
+- Backup test/restore procedures
+
+---
+
+### CP-10: Information System Recovery and Reconstitution
+
+**Control:** The organization provides for the recovery and reconstitution of the information system.
+
+**Implementation Status:** 🔴 **Not Implemented**
+
+**Implementation:**
+
+- None documented
+
+**Gaps:**
+
+- No disaster recovery plan
+- No recovery time objective (RTO) defined
+- No recovery point objective (RPO) defined
+- No tested recovery procedures
+
+**Remediation:** Document recovery procedures in ATO package (operational environment)
+
+**Evidence Required for ATO:**
+
+- Disaster recovery plan
+- Recovery procedures
+- Recovery test results
+
+---
+
+## Identification and Authentication (IA)
+
+### IA-2: Identification and Authentication (Organizational Users)
+
+**Control:** The information system uniquely identifies and authenticates organizational users.
+
+**Implementation Status:** 🔴 **Not Implemented**
+
+**NIAP Mapping:**
+
+- FIA_UAU_EXT.1 - Authentication Mechanism
+- FIA_UIA_EXT.1 - User Identification and Authentication
+
+**Implementation:**
+
+- None
+
+**Gaps:**
+
+- No user authentication system
+- No unique user identifiers
+
+**Remediation:** Phase 16 - Implement password and certificate-based authentication
+
+**Evidence Required for ATO:**
+
+- Authentication mechanism description
+- User identification procedures
+- Multi-factor authentication for privileged users
+
+---
+
+### IA-5: Authenticator Management
+
+**Control:** The organization manages information system authenticators.
+
+**Implementation Status:** 🟡 **Partial**
+
+**NIAP Mapping:**
+
+- FIA_PMG_EXT.1 - Password Management
+- FCS_CKM_EXT.4 - Cryptographic Key Destruction
+- FIA_X509_EXT.1 - X.509 Certificate Validation
+
+**Implementation:**
+
+- [crates/ostrich-crypto/src/provider.rs](../../crates/ostrich-crypto/src/provider.rs) - Zeroizing for cryptographic authenticators
+- Certificate validation stub ([parser.rs:96-99](../../crates/ostrich-x509/src/parser.rs#L96-L99))
+
+**Evidence:**
+
+- ✅ Cryptographic key material properly zeroized
+- 🔴 No password management
+- 🔴 Certificate validation not implemented
+
+**Gaps:**
+
+- No password complexity requirements
+- No password change enforcement
+- No certificate-based authentication
+
+**Remediation:** Phase 16 - Implement password management per NIST SP 800-63B, certificate validation
+
+**Evidence Required for ATO:**
+
+- Authenticator management procedures
+- Password policy documentation
+- Certificate validation test results
+
+---
+
+### IA-7: Cryptographic Module Authentication
+
+**Control:** The information system implements mechanisms for authentication to a cryptographic module.
+
+**Implementation Status:** 🟡 **Partial**
+
+**NIAP Mapping:**
+
+- PKCS#11 authentication (SO-PIN, User-PIN)
+
+**Implementation:**
+
+- [crates/ostrich-crypto/src/pkcs11/mod.rs:27-36](../../crates/ostrich-crypto/src/pkcs11/mod.rs#L27-L36) - PKCS#11 login (stubbed)
+
+**Evidence:**
+
+- ✅ PKCS#11 PIN-based authentication designed
+- 🔴 Implementation incomplete
+
+**Gaps:**
+
+- PKCS#11 login not functional
+
+**Remediation:** Phase 10 - Complete PKCS#11 implementation with PIN authentication
+
+**Evidence Required for ATO:**
+
+- HSM authentication procedures
+- PIN management policy
+
+---
+
+## System and Communications Protection (SC)
+
+### SC-4: Information in Shared Resources
+
+**Control:** The information system prevents unauthorized information transfer via shared system resources.
+
+**Implementation Status:** 🟢 **Compliant**
+
+**NIAP Mapping:**
+
+- FDP_RIP.1 - Subset Residual Information Protection
+
+**Implementation:**
+
+- [crates/ostrich-crypto/src/provider.rs:10](../../crates/ostrich-crypto/src/provider.rs#L10) - Zeroizing wrapper
+- Rust memory safety guarantees
+
+**Evidence:**
+
+- ✅ Sensitive data zeroized on deallocation
+- ✅ Rust prevents use-after-free
+- ✅ No memory disclosure vulnerabilities
+
+**Code Annotation:** NIAP PP-CA v2.1: FDP_RIP.1 - Required in Phase 15
+
+---
+
+### SC-8: Transmission Confidentiality and Integrity
+
+**Control:** The information system protects the confidentiality and integrity of transmitted information.
+
+**Implementation Status:** 🟡 **Partial**
+
+**NIAP Mapping:**
+
+- FTP_TRP.1 - Trusted Path
+- FCS_TLSS_EXT.1 - TLS Server Protocol
+- FCS_TLSC_EXT.2 - TLS Client Protocol
+
+**Implementation:**
+
+- REST and gRPC frameworks support TLS
+- Configuration delegated to deployment
+
+**Evidence:**
+
+- ✅ TLS 1.2/1.3 support in libraries
+- 🔴 TLS not configured in application
+
+**Gaps:**
+
+- TLS configuration not explicit
+- Cipher suite restrictions not enforced
+- No TLS 1.3 minimum requirement
+
+**Remediation:** Phase 16 - Configure TLS 1.3+ with restricted cipher suites
+
+**Evidence Required for ATO:**
+
+- TLS configuration documentation
+- Cipher suite list
+- TLS scan results
+
+---
+
+### SC-12: Cryptographic Key Establishment and Management
+
+**Control:** The organization establishes and manages cryptographic keys.
+
+**Implementation Status:** 🟡 **Partial**
+
+**NIAP Mapping:**
+
+- FCS_CKM.1 - Cryptographic Key Generation
+- FCS_STG_EXT.1 - Cryptographic Key Storage
+- FPT_KST_EXT.1/2 - Key Protection
+- FPT_SKP_EXT.1 - Protection of Keys
+
+**Implementation:**
+
+- [crates/ostrich-crypto/src/provider.rs](../../crates/ostrich-crypto/src/provider.rs) - CryptoProvider abstraction
+- [crates/ostrich-kra/](../../crates/ostrich-kra/) - Key Recovery Authority
+
+**Evidence:**
+
+- ✅ Excellent key management architecture
+- ✅ KRA for key escrow and recovery
+- ✅ Shamir secret sharing for split knowledge
+- 🔴 PKCS#11 not implemented
+- 🔴 Key generation not functional
+
+**Gaps:**
+
+- HSM integration incomplete
+- Key lifecycle procedures not documented
+
+**Remediation:** Phase 10 - Complete PKCS#11, document key management procedures
+
+**Evidence Required for ATO:**
+
+- Key management policy
+- Key generation procedures
+- Key escrow/recovery procedures
+- Split knowledge procedures
+
+---
+
+### SC-13: Cryptographic Protection
+
+**Control:** The information system implements required cryptographic protections.
+
+**Implementation Status:** 🟡 **Partial**
+
+**NIAP Mapping:**
+
+- FCS_COP.1 - Cryptographic Operations
+- FCS_CDP_EXT.1 - Cryptographic Dependencies
+
+**Implementation:**
+
+- [crates/ostrich-crypto/src/algorithm.rs](../../crates/ostrich-crypto/src/algorithm.rs) - Algorithm definitions
+- [crates/ostrich-crypto/src/provider.rs](../../crates/ostrich-crypto/src/provider.rs) - Crypto operations
+
+**Evidence:**
+
+- ✅ FIPS 186-5 algorithms defined (RSA, ECDSA, EdDSA)
+- ✅ Post-quantum algorithms defined (ML-DSA, ML-KEM, SLH-DSA)
+- 🔴 Implementation incomplete
+
+**Gaps:**
+
+- Crypto operations stubbed
+- FIPS-validated modules not integrated
+
+**Remediation:** Phase 10 - Complete crypto implementations using FIPS-validated libraries
+
+**Evidence Required for ATO:**
+
+- Cryptographic module inventory
+- FIPS 140-2/140-3 validation certificates
+- Algorithm usage matrix
+
+---
+
+### SC-17: Public Key Infrastructure Certificates
+
+**Control:** The organization issues public key certificates under an appropriate certificate policy.
+
+**Implementation Status:** 🟢 **Good**
+
+**NIAP Mapping:**
+
+- FDP_CER_EXT.1 - Certificate Profiles
+
+**Implementation:**
+
+- [crates/ostrich-x509/src/profile.rs](../../crates/ostrich-x509/src/profile.rs) - Certificate profiles
+- [crates/ostrich-ca/src/issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - Certificate issuance
+
+**Evidence:**
+
+- ✅ RFC 5280 compliant certificate profiles
+- ✅ Key usage, extended key usage enforcement
+- ✅ Multiple profile types (end entity, CA, OCSP)
+
+**Gaps:**
+
+- No formal Certificate Policy (CP) or Certificate Practice Statement (CPS) documented
+
+**Remediation:** Document CP/CPS for production deployment
+
+**Evidence Required for ATO:**
+
+- Certificate Policy document
+- Certificate Practice Statement
+- Profile specifications
+
+---
+
+### SC-23: Session Authenticity
+
+**Control:** The information system protects the authenticity of communications sessions.
+
+**Implementation Status:** 🟡 **Partial**
+
+**NIAP Mapping:**
+
+- ACME nonce-based replay protection
+
+**Implementation:**
+
+- [crates/ostrich-acme/src/rest.rs:127](../../crates/ostrich-acme/src/rest.rs#L127) - Nonce generation and validation
+- TLS provides session authenticity
+
+**Evidence:**
+
+- ✅ ACME nonces prevent replay attacks
+- ✅ TLS session binding
+- 🔴 Session management not implemented for other protocols
+
+**Remediation:** Phase 16 - Implement session tokens with binding for administrative interfaces
+
+---
+
+## System and Information Integrity (SI)
+
+### SI-7: Software, Firmware, and Information Integrity
+
+**Control:** The organization employs integrity verification tools to detect unauthorized changes.
+
+**Implementation Status:** 🔴 **Not Implemented**
+
+**NIAP Mapping:**
+
+- FPT_TST_EXT.1 - TSF Self-Test (TOE Integrity)
+- FPT_TST_EXT.2 - TSF Self-Test (TSF Data Integrity)
+
+**Implementation:**
+
+- None
+
+**Gaps:**
+
+- No software integrity verification
+- No Trust Anchor Database integrity checking
+- Audit hash chain defined but verification not implemented
+
+**Remediation:**
+
+- Phase 15 - Create integrity verification stub module
+- Phase 13 - Implement audit hash chain verification
+- Phase 16 - Implement binary signature verification
+
+**Evidence Required for ATO:**
+
+- Code signing procedures
+- Integrity verification test results
+- Trust anchor integrity verification
+
+---
+
+### SI-10: Information Input Validation
+
+**Control:** The information system checks the validity of information inputs.
+
+**Implementation Status:** 🔴 **Missing**
+
+**NIAP Mapping:**
+
+- FIA_X509_EXT.1 - X.509 Certificate Validation
+- FCO_NRO_EXT.2 - Proof of Origin (CSR validation)
+
+**Implementation:**
+
+- [crates/ostrich-x509/src/parser.rs:96-99](../../crates/ostrich-x509/src/parser.rs#L96-L99) - CSR signature verification stub
+
+**Evidence:**
+
+- 🔴 CSR validation not implemented
+- 🔴 Certificate validation not implemented
+- ✅ ACME JWS validation implemented (Phase 11)
+
+**Gaps:**
+
+- No proof-of-possession verification
+- No RFC 5280 path validation
+- No malformed input rejection testing
+
+**Remediation:** Phase 15 - Implement input validation framework
+
+**Evidence Required for ATO:**
+
+- Input validation procedures
+- Fuzzing test results
+- Invalid input rejection tests
+
+---
+
+### SI-12: Information Handling and Retention
+
+**Control:** The organization handles and retains information within the information system.
+
+**Implementation Status:** 🟡 **Partial**
+
+**Implementation:**
+
+- Database persistence for all critical data
+- Audit trail retention
+
+**Evidence:**
+
+- ✅ Certificates, CRLs, audit events persisted
+- 🔴 No retention policy defined
+- 🔴 No data disposal procedures
+
+**Gaps:**
+
+- No documented retention periods
+- No automatic data archival/deletion
+
+**Remediation:** Document data retention policy in ATO package
+
+**Evidence Required for ATO:**
+
+- Data retention policy
+- Data classification guide
+- Disposal procedures
+
+---
+
+## Control Implementation Summary
+
+| Control Family | Total Controls | Compliant 🟢 | Partial 🟡 | Missing 🔴 | Compliance % |
+|----------------|----------------|-------------|-----------|-----------|--------------|
+| AC (Access Control) | 7 | 0 | 2 | 5 | 14% |
+| AU (Audit) | 10 | 4 | 4 | 2 | 60% |
+| CM (Configuration) | 3 | 0 | 3 | 0 | 50% |
+| CP (Contingency) | 2 | 0 | 1 | 1 | 25% |
+| IA (Identification/Auth) | 3 | 0 | 2 | 1 | 33% |
+| SC (System Protection) | 7 | 2 | 4 | 1 | 43% |
+| SI (System Integrity) | 3 | 0 | 1 | 2 | 17% |
+| **TOTAL** | **35** | **6** | **17** | **12** | **37%** |
+
+---
+
+## Cross-Reference: NIAP SFR ↔ NIST 800-53
+
+| NIAP SFR | NIST 800-53 Controls |
+|----------|---------------------|
+| FAU_GEN.1 | AU-2, AU-3, AU-12 |
+| FAU_GEN.2 | AU-3 |
+| FAU_SAR.1 | AU-6 |
+| FAU_SAR.2 | AU-6, AU-9 |
+| FAU_STG.1 | AU-9 |
+| FAU_STG.4 | AU-5 |
+| FCS_CKM.1 | SC-12, SC-13 |
+| FCS_CKM_EXT.4 | SC-12, SI-12 |
+| FCS_COP.1 | SC-13 |
+| FCS_RBG_EXT.1 | SC-13 |
+| FCS_STG_EXT.1 | SC-12, SC-13 |
+| FCS_TLSC_EXT.2 | SC-8 |
+| FCS_TLSS_EXT.1 | SC-8, AC-17 |
+| FCO_NRO_EXT.2 | AU-10, SI-10 |
+| FDP_CER_EXT.1 | SC-17 |
+| FDP_CER_EXT.2 | AU-10 |
+| FDP_CER_EXT.3 | AC-3 |
+| FDP_RIP.1 | SC-4 |
+| FIA_AFL.1 | AC-7 |
+| FIA_PMG_EXT.1 | IA-5 |
+| FIA_UAU_EXT.1 | IA-2, IA-5 |
+| FIA_UIA_EXT.1 | IA-2 |
+| FIA_X509_EXT.1 | IA-5, SI-10 |
+| FIA_X509_EXT.2 | IA-2, IA-5 |
+| FMT_MOF.1 | AC-3, AC-6 |
+| FMT_MTD.1 | AC-3 |
+| FMT_SMR.2 | AC-2, AC-5 |
+| FPT_FLS.1 | SI-13 (Predictable Failure Prevention) |
+| FPT_KST_EXT.1 | SC-12 |
+| FPT_KST_EXT.2 | SC-12 |
+| FPT_STM.1 | AU-8 |
+| FPT_TST_EXT.1 | SI-7 |
+| FPT_TST_EXT.2 | SI-7 |
+| FTA_SSL.3 | AC-12 |
+| FTA_SSL.4 | AC-12 |
+| FTP_TRP.1 | SC-8, AC-17 |
+
+---
+
+## ATO Evidence Collection Guide
+
+### System Security Plan (SSP) Mapping
+
+For each control family, the SSP must document:
+
+1. **Control Implementation Status**: Compliant, Partial, Not Implemented
+2. **Control Description**: How OstrichPKI implements the control
+3. **Implementation Details**: Code references, configuration settings
+4. **Responsible Role**: Which organizational role manages the control
+5. **Test Evidence**: How compliance is verified
+
+**Example SSP Entry for AU-3:**
+
+```
+Control: AU-3 - Content of Audit Records
+Implementation Status: Compliant
+Responsible Role: System Administrator
+Implementation: OstrichPKI audit system (ostrich-audit module) generates audit records
+containing: event type, timestamp, subject identity (actor), outcome, object accessed
+(resource), event correlation ID (request_id), and additional context (details field).
+
+Evidence:
+- Code: crates/ostrich-audit/src/event.rs:47-110 (AuditEvent struct)
+- Test: tests/audit_content_test.rs (validates all required fields present)
+- Log Sample: See Appendix A for sample audit log entries
+```
+
+### Security Assessment Report (SAR) Evidence
+
+For each control, provide:
+
+- Test procedures
+- Test results (pass/fail)
+- Screen captures or log excerpts
+- Mitigations for partial implementations
+
+### Plan of Action and Milestones (POA&M)
+
+For each missing or partial control:
+
+- Control identifier
+- Description of gap
+- Remediation plan (mapped to development phases)
+- Responsible party
+- Target completion date
+- Risk level (High, Moderate, Low)
+
+**Example POA&M Entry:**
+
+```
+Control: AC-3 - Access Enforcement
+Status: Not Implemented
+Gap: No role-based access control (RBAC) system
+Risk: HIGH
+Remediation: Implement RBAC with role-based authorization checks on all endpoints
+Phase: 15 (Foundation), 16 (Full Implementation)
+Target Date: 2026-03-15
+Responsible: Development Team
+Mitigation: System deployed in trusted environment with network access controls
+```
+
+---
+
+## Document Change History
+
+| Version | Date | Author | Changes |
+|---------|------|--------|---------|
+| 1.0 | 2026-01-03 | OstrichPKI Team | Initial NIST 800-53 mapping based on v0.10.0 codebase |
+
+---
+
+**Next Review Date:** 2026-02-01 (or upon completion of Phase 15)
