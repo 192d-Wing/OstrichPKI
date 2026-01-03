@@ -117,9 +117,8 @@ pub struct RecoverySession {
 
 /// Key recovery service
 pub struct KeyRecovery {
-    #[allow(dead_code)] // TODO: Use for database operations
     db: DatabasePool,
-    #[allow(dead_code)] // TODO: Use for key unwrapping
+    #[allow(dead_code)] // TODO: Use for key unwrapping (Phase 10)
     crypto: Arc<dyn CryptoProvider>,
     audit: Arc<dyn AuditSink>,
 }
@@ -153,18 +152,40 @@ impl KeyRecovery {
 
         self.audit.record(&mut event).await.ok();
 
-        // TODO: Look up escrow record from database
-        // For now, create placeholder session
+        // Look up escrow record from database to verify it exists
+        let repo = ostrich_db::repository::KraRepository::new(self.db.clone());
+        let _escrowed_key = repo
+            .find_escrowed_key(request.escrow_id)
+            .await?
+            .ok_or_else(|| Error::KeyNotFound(format!("Escrow ID: {}", request.escrow_id)))?;
+
+        // TODO: Get threshold and num_agents from escrow metadata (Phase 12 - Escrow Metadata)
+        // For now, use default M-of-N threshold (3-of-5)
+        let threshold = 3;
+        let total_agents = 5;
+
+        // Create recovery request in database
+        let db_recovery_request = repo
+            .create_recovery_request(
+                request.escrow_id,
+                &request.requestor,
+                &request.justification,
+                threshold,
+                total_agents,
+            )
+            .await?;
+
+        // Create recovery session
         let session = RecoverySession {
-            id: Uuid::new_v4(),
+            id: db_recovery_request.id,
             escrow_id: request.escrow_id,
             status: RecoveryStatus::Pending,
-            threshold: 3, // Placeholder
+            threshold: threshold as usize,
             shares_collected: 0,
             requestor: request.requestor,
             justification: request.justification,
             approved_by: request.approved_by,
-            created_at: Utc::now(),
+            created_at: db_recovery_request.created_at,
             completed_at: None,
         };
 
@@ -195,21 +216,45 @@ impl KeyRecovery {
 
         self.audit.record(&mut event).await.ok();
 
-        // TODO: Store share in database
-        // TODO: Check if we have enough shares
-        // TODO: If enough shares, reconstruct key and complete recovery
+        // Store share in database
+        let repo = ostrich_db::repository::KraRepository::new(self.db.clone());
 
-        // Placeholder session update
+        // First, load the recovery request to get escrow_id and threshold
+        let recovery_request = repo
+            .find_recovery_request(session_id)
+            .await?
+            .ok_or_else(|| {
+                Error::RecoveryError(format!("Recovery session not found: {}", session_id))
+            })?;
+
+        // TODO: Validate agent is authorized for this recovery (Phase 12 - Agent Management)
+
+        // Store the share (note: share.index is not stored separately, just the encrypted share data)
+        repo.create_recovery_share(session_id, agent_id, share.value.clone())
+            .await?;
+
+        // Count submitted shares
+        let shares_collected = repo.count_submitted_shares(session_id).await?;
+
+        // Check if we have enough shares to reconstruct
+        let status = if shares_collected >= recovery_request.required_shares as i64 {
+            // TODO: Automatically reconstruct key when threshold is met (Phase 10)
+            RecoveryStatus::CollectingShares // Keep as collecting for now
+        } else {
+            RecoveryStatus::CollectingShares
+        };
+
+        // Build session response
         let session = RecoverySession {
             id: session_id,
-            escrow_id: Uuid::new_v4(), // Placeholder
-            status: RecoveryStatus::CollectingShares,
-            threshold: 3,
-            shares_collected: 1, // Placeholder
-            requestor: "admin".to_string(),
-            justification: "Recovery in progress".to_string(),
-            approved_by: None,
-            created_at: Utc::now(),
+            escrow_id: recovery_request.escrowed_key_id,
+            status,
+            threshold: recovery_request.required_shares as usize,
+            shares_collected: shares_collected as usize,
+            requestor: recovery_request.requestor,
+            justification: recovery_request.justification,
+            approved_by: None, // TODO: Load from request approval table (Phase 12)
+            created_at: recovery_request.created_at,
             completed_at: None,
         };
 
@@ -258,24 +303,22 @@ impl KeyRecovery {
 
     /// List recovery agents
     pub async fn list_agents(&self) -> Result<Vec<RecoveryAgent>> {
-        // TODO: Query from database
-        // For now, return placeholder agents
-        Ok(vec![
-            RecoveryAgent {
-                id: Uuid::new_v4(),
-                name: "Agent 1".to_string(),
-                role: "Primary Recovery Agent".to_string(),
-                contact: "agent1@example.com".to_string(),
-                active: true,
-            },
-            RecoveryAgent {
-                id: Uuid::new_v4(),
-                name: "Agent 2".to_string(),
-                role: "Backup Recovery Agent".to_string(),
-                contact: "agent2@example.com".to_string(),
-                active: true,
-            },
-        ])
+        let repo = ostrich_db::repository::KraRepository::new(self.db.clone());
+        let db_agents = repo.list_active_recovery_agents().await?;
+
+        // Map database agents to RecoveryAgent struct
+        let agents = db_agents
+            .into_iter()
+            .map(|agent| RecoveryAgent {
+                id: agent.id,
+                name: agent.name,
+                role: "Recovery Agent".to_string(), // TODO: Add role field to database model (Phase 12)
+                contact: agent.email,
+                active: agent.active,
+            })
+            .collect();
+
+        Ok(agents)
     }
 }
 

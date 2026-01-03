@@ -75,9 +75,8 @@ pub struct EscrowedKey {
 
 /// Key escrow service
 pub struct KeyEscrow {
-    #[allow(dead_code)] // TODO: Use for database operations
     db: DatabasePool,
-    #[allow(dead_code)] // TODO: Use for key wrapping
+    #[allow(dead_code)] // TODO: Use for key wrapping (Phase 10)
     crypto: Arc<dyn CryptoProvider>,
     audit: Arc<dyn AuditSink>,
 }
@@ -139,24 +138,36 @@ impl KeyEscrow {
         let shares =
             ShamirSecretSharing::split(wrapping_key, request.threshold, request.num_agents)?;
 
-        // Create escrowed key record
+        // Store escrowed key in database
+        let repo = ostrich_db::repository::KraRepository::new(self.db.clone());
+        let wrapping_key_id = Uuid::new_v4(); // TODO: Use actual wrapping key ID from crypto provider (Phase 10)
+
+        let db_escrowed_key = repo
+            .create_escrowed_key(
+                request.certificate_id,
+                encrypted_key.clone(),
+                wrapping_key_id,
+                &request.key_type,
+                &request.key_type, // TODO: Use actual algorithm from crypto provider (Phase 10)
+            )
+            .await?;
+
+        // Create escrowed key record for response
         let escrowed_key = EscrowedKey {
-            id: Uuid::new_v4(),
+            id: db_escrowed_key.id,
             certificate_id: request.certificate_id,
             subject_dn: request.subject_dn,
             key_type: request.key_type,
             encrypted_key,
             num_shares: request.num_agents,
             threshold: request.threshold,
-            escrowed_at: Utc::now(),
+            escrowed_at: db_escrowed_key.created_at,
             escrowed_by: request.requestor.clone(),
             justification: request.justification,
         };
 
-        // TODO: Store in database
-        // - Store encrypted key in escrowed_keys table
-        // - Distribute shares to recovery agents
-        // - Record audit event
+        // TODO: Create recovery agents and distribute shares (Phase 12 - Agent Management)
+        // For now, shares are generated but not persisted to specific agents
 
         self.audit.record(&mut event).await.ok();
 
