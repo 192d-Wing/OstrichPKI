@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-01-02
+
+### Added
+
+#### EST Server Service (Phase 6)
+
+##### ostrich-est
+
+- RFC 7030 compliant EST (Enrollment over Secure Transport) server
+- Simple enrollment endpoint for certificate requests
+- Simple re-enrollment for certificate renewal
+- CA certificates distribution endpoint
+- CSR attributes endpoint for client guidance
+- Server-side key generation endpoint (placeholder)
+- Enrollment status tracking (Pending, Approved, Rejected, Expired)
+- PKCS#7 and PKCS#10 support for certificate exchange
+- mTLS client authentication support
+- REST API endpoints:
+  - GET /.well-known/est/cacerts - CA certificate chain
+  - POST /.well-known/est/simpleenroll - Initial enrollment
+  - POST /.well-known/est/simplereenroll - Certificate renewal
+  - GET /.well-known/est/csrattrs - CSR attribute requirements
+  - POST /.well-known/est/serverkeygen - Server-side key generation
+
+### Technical Details
+
+- All code passes cargo check, fmt, and clippy with -D warnings
+- RFC 7030: Enrollment over Secure Transport
+- NIST 800-53: SC-12 - Certificate enrollment and renewal
+- Comprehensive test coverage
+
 ## [0.5.0] - 2026-01-02
 
 ### Added
@@ -241,7 +272,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project architecture documentation
 - Workspace structure with all crate stubs
 
-[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/yourusername/ostrich-pki/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/yourusername/ostrich-pki/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yourusername/ostrich-pki/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yourusername/ostrich-pki/compare/v0.2.0...v0.3.0

@@ -10,11 +10,11 @@ use crate::{
     order::{Identifier, Order, OrderStatus},
 };
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -189,7 +189,9 @@ async fn new_order(
     // TODO: Validate identifiers
 
     if request.identifiers.is_empty() {
-        return Err(Error::Malformed("Identifiers list cannot be empty".to_string()));
+        return Err(Error::Malformed(
+            "Identifiers list cannot be empty".to_string(),
+        ));
     }
 
     let order_id = Uuid::new_v4();
