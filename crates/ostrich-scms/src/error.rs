@@ -45,6 +45,18 @@ pub enum Error {
     #[error("Key not found on token: {0}")]
     KeyNotFound(String),
 
+    /// Token model not found
+    #[error("Token model not found: {0}")]
+    TokenModelNotFound(String),
+
+    /// Serial number already exists
+    #[error("Serial number already exists: {0}")]
+    SerialNumberExists(String),
+
+    /// Database error (custom message)
+    #[error("Database error: {0}")]
+    DatabaseError(String),
+
     /// Invalid request
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
@@ -79,12 +91,15 @@ impl Error {
     /// Get HTTP status code for this error
     pub fn status_code(&self) -> StatusCode {
         match self {
-            Self::TokenNotFound(_) | Self::KeyNotFound(_) => StatusCode::NOT_FOUND,
-            Self::TokenAlreadyExists(_) => StatusCode::CONFLICT,
+            Self::TokenNotFound(_) | Self::KeyNotFound(_) | Self::TokenModelNotFound(_) => {
+                StatusCode::NOT_FOUND
+            }
+            Self::TokenAlreadyExists(_) | Self::SerialNumberExists(_) => StatusCode::CONFLICT,
             Self::TokenLocked | Self::InvalidPin | Self::PinBlocked => StatusCode::UNAUTHORIZED,
             Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             Self::TokenOperationFailed(_)
             | Self::Pkcs11Error(_)
+            | Self::DatabaseError(_)
             | Self::Database(_)
             | Self::Common(_)
             | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -104,6 +119,8 @@ impl Error {
         match self {
             Self::TokenNotFound(_) => "token_not_found",
             Self::TokenAlreadyExists(_) => "token_already_exists",
+            Self::TokenModelNotFound(_) => "token_model_not_found",
+            Self::SerialNumberExists(_) => "serial_number_exists",
             Self::TokenLocked => "token_locked",
             Self::InvalidPin => "invalid_pin",
             Self::PinBlocked => "pin_blocked",
@@ -111,7 +128,7 @@ impl Error {
             Self::Pkcs11Error(_) => "pkcs11_error",
             Self::KeyNotFound(_) => "key_not_found",
             Self::InvalidRequest(_) => "invalid_request",
-            Self::Database(_) => "database_error",
+            Self::DatabaseError(_) | Self::Database(_) => "database_error",
             Self::Common(_) => "common_error",
             Self::Internal(_) => "internal_error",
         }

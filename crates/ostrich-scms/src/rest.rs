@@ -139,35 +139,70 @@ pub struct GenerateKeyRequest {
 }
 
 /// List tokens
-async fn list_tokens(State(_state): State<ScmsState>) -> Result<Response> {
-    // TODO: Query from database with filters
-    // TODO: Implement pagination
+async fn list_tokens(State(state): State<ScmsState>) -> Result<Response> {
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
 
-    let tokens: Vec<Token> = vec![]; // Placeholder
+    // TODO: Add query parameters for filtering (status, assigned_to) and pagination
+    let db_tokens = repo
+        .list_tokens(None, None, Some(100), Some(0))
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to list tokens: {}", e)))?;
+
+    let tokens: Vec<Token> = db_tokens.into_iter().map(map_db_token_to_service).collect();
 
     Ok(Json(tokens).into_response())
 }
 
 /// Create new token
 async fn create_token(
-    State(_state): State<ScmsState>,
+    State(state): State<ScmsState>,
     Json(request): Json<CreateTokenRequest>,
 ) -> Result<Response> {
-    // TODO: Validate serial number uniqueness
-    // TODO: Verify model exists
-    // TODO: Store in database
-    // TODO: Audit log
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
 
-    let token = Token::new(request.serial_number, request.model_id, request.label);
+    // Verify model exists
+    repo.find_token_model(request.model_id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to verify model: {}", e)))?
+        .ok_or_else(|| Error::TokenModelNotFound(request.model_id.to_string()))?;
+
+    // Check if serial number already exists
+    if repo
+        .find_token_by_serial(&request.serial_number)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to check serial: {}", e)))?
+        .is_some()
+    {
+        return Err(Error::SerialNumberExists(request.serial_number));
+    }
+
+    // Create token in database
+    let db_token = repo
+        .create_token(&request.serial_number, request.model_id, "uninitialized")
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to create token: {}", e)))?;
+
+    // TODO: Audit log (Phase 11)
+
+    let mut token = map_db_token_to_service(db_token);
+    token.label = request.label; // Set label from request (not in DB yet)
 
     Ok((StatusCode::CREATED, Json(token)).into_response())
 }
 
 /// Get token by ID
-async fn get_token(State(_state): State<ScmsState>, Path(_id): Path<Uuid>) -> Result<Response> {
-    // TODO: Load from database
+async fn get_token(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> Result<Response> {
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
 
-    Err(Error::TokenNotFound(_id.to_string()))
+    let db_token = repo
+        .find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    let token = map_db_token_to_service(db_token);
+
+    Ok(Json(token).into_response())
 }
 
 /// Update token
@@ -364,6 +399,109 @@ async fn get_token_events(
     let events: Vec<TokenEvent> = vec![]; // Placeholder
 
     Ok(Json(events).into_response())
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Map database Token to service Token
+///
+/// Note: This mapping handles schema mismatches between database and service models.
+/// Missing fields in the database are set to reasonable defaults.
+fn map_db_token_to_service(db: ostrich_db::models::Token) -> Token {
+    Token {
+        id: db.id,
+        serial_number: db.serial_number,
+        model_id: db.token_model_id, // DB uses token_model_id
+        label: String::new(),        // TODO: Add label field to database schema
+        status: parse_token_status(&db.status),
+        assigned_to: db.assigned_to,
+        pin_retry_count: db.pin_attempts_remaining as u8, // DB uses i32, service uses u8
+        max_pin_retries: 3,                               // TODO: Get from token model
+        so_pin_retry_count: 3,                            // TODO: Add to database schema
+        max_so_pin_retries: 3,                            // TODO: Get from token model
+        manufactured_at: db.created_at,                   // Use created_at as manufactured_at
+        initialized_at: None,                             // TODO: Add to database schema
+        personalized_at: db.assigned_at,                  // Use assigned_at as personalized_at
+        expires_at: None,                                 // TODO: Add to database schema
+        revoked_at: db.retired_at,                        // Use retired_at as revoked_at
+        created_at: db.created_at,
+        updated_at: db.updated_at,
+    }
+}
+
+/// Parse token status from database string
+fn parse_token_status(status: &str) -> TokenStatus {
+    match status {
+        "uninitialized" => TokenStatus::Uninitialized,
+        "initialized" => TokenStatus::Initialized,
+        "active" => TokenStatus::Active,
+        "suspended" => TokenStatus::Suspended,
+        "blocked" => TokenStatus::Blocked,
+        "expired" => TokenStatus::Expired,
+        "revoked" => TokenStatus::Revoked,
+        _ => TokenStatus::Uninitialized,
+    }
+}
+
+/// Convert service TokenStatus to database string
+#[allow(dead_code)] // TODO: Use in lifecycle handlers
+fn token_status_to_string(status: TokenStatus) -> &'static str {
+    match status {
+        TokenStatus::Uninitialized => "uninitialized",
+        TokenStatus::Initialized => "initialized",
+        TokenStatus::Active => "active",
+        TokenStatus::Suspended => "suspended",
+        TokenStatus::Blocked => "blocked",
+        TokenStatus::Expired => "expired",
+        TokenStatus::Revoked => "revoked",
+    }
+}
+
+/// Map database TokenModel to service TokenModel
+#[allow(dead_code)] // TODO: Use in list_models handler
+fn map_db_token_model_to_service(db: ostrich_db::models::TokenModel) -> TokenModel {
+    TokenModel {
+        id: db.id,
+        manufacturer: db.manufacturer,
+        model_name: db.model,
+        firmware_version: String::from("1.0.0"), // TODO: Add to database schema
+        supported_algorithms: db.supported_key_types,
+        key_capacity: 10,     // TODO: Add to database schema
+        cert_capacity: 10,    // TODO: Add to database schema
+        pkcs11_support: true, // TODO: Add to database schema
+        created_at: db.created_at,
+    }
+}
+
+/// Map database TokenKey to service TokenKey
+#[allow(dead_code)] // TODO: Use in key handlers
+fn map_db_token_key_to_service(db: ostrich_db::models::TokenKey) -> TokenKey {
+    TokenKey {
+        id: db.id,
+        token_id: db.token_id,
+        label: db.label,
+        key_type: db.key_type.clone(),
+        key_size: 2048, // TODO: Add to database schema or parse from algorithm
+        algorithm: db.algorithm,
+        usage: vec![], // TODO: Add to database schema
+        certificate_id: db.certificate_id,
+        created_at: db.created_at,
+    }
+}
+
+/// Map database TokenEvent to service TokenEvent
+#[allow(dead_code)] // TODO: Use in event handlers
+fn map_db_token_event_to_service(db: ostrich_db::models::TokenEvent) -> TokenEvent {
+    TokenEvent {
+        id: db.id,
+        token_id: db.token_id,
+        event_type: db.event_type,
+        actor: db.actor,
+        details: db.details,
+        occurred_at: db.timestamp,
+    }
 }
 
 #[cfg(test)]
