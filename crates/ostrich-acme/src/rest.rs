@@ -56,12 +56,15 @@ impl AcmeState {
 struct ValidatedJwsRequest<T> {
     /// Decoded payload
     payload: T,
-    /// Protected header
+    /// Protected header (may be used for audit logging in the future)
+    #[allow(dead_code)]
     header: ProtectedHeader,
     /// JWK from header (for new-account) or retrieved from database (for other requests)
     jwk: Jwk,
     /// JWK thumbprint for account identification
     jwk_thumbprint: String,
+    /// Account ID (UUID) - only set for validate_jws_with_account
+    account_id: Uuid,
 }
 
 /// Validate JWS request for new-account endpoint
@@ -122,6 +125,7 @@ async fn validate_jws_new_account<T: serde::de::DeserializeOwned>(
         header,
         jwk,
         jwk_thumbprint,
+        account_id: Uuid::nil(), // Not applicable for new-account
     })
 }
 
@@ -162,12 +166,12 @@ async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
 
     // 6. Lookup account by kid to get JWK
     // Extract account_id from kid (format: "/acme/account/{id}")
-    let account_id = kid
+    let account_id_str = kid
         .strip_prefix("/acme/account/")
         .ok_or_else(|| Error::Malformed(format!("Invalid kid format: {}", kid)))?;
 
     let account = repo
-        .find_account_by_id(account_id)
+        .find_account_by_id(account_id_str)
         .await?
         .ok_or_else(|| Error::AccountDoesNotExist)?;
 
@@ -186,7 +190,11 @@ async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
     // 8. Compute JWK thumbprint
     let jwk_thumbprint = jws::compute_jwk_thumbprint(&jwk)?;
 
-    // 9. Decode payload
+    // 9. Parse account_id as UUID
+    let account_id = Uuid::parse_str(&account.account_id)
+        .map_err(|e| Error::ServerInternal(format!("Invalid UUID in database: {}", e)))?;
+
+    // 10. Decode payload
     let payload_bytes = decode_base64url(&jws_envelope.payload)?;
     let payload: T = serde_json::from_slice(&payload_bytes)
         .map_err(|e| Error::Malformed(format!("Invalid payload JSON: {}", e)))?;
@@ -196,6 +204,7 @@ async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
         header,
         jwk,
         jwk_thumbprint,
+        account_id,
     })
 }
 
@@ -255,6 +264,18 @@ pub struct NewOrderRequest {
     pub not_before: Option<String>,
     pub not_after: Option<String>,
 }
+
+/// Update account request
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAccountRequest {
+    pub contact: Option<Vec<String>>,
+    pub status: Option<String>, // "deactivated" to deactivate account
+}
+
+/// Challenge response (empty object for ACME)
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChallengeResponse {}
 
 /// Finalize order request
 #[derive(Debug, Serialize, Deserialize)]
@@ -383,14 +404,17 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
 }
 
 /// Create new order (RFC 8555 §7.4)
-async fn new_order(
-    State(state): State<AcmeState>,
-    Json(request): Json<NewOrderRequest>,
-) -> Result<Response> {
-    // TODO: Validate JWS signature (Phase 11)
-    // TODO: Verify account exists (Phase 11)
-    // For now, use placeholder account ID
-    let account_id = Uuid::new_v4();
+async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Response> {
+    // Validate JWS and extract payload
+    let validated = validate_jws_with_account::<NewOrderRequest>(
+        &body,
+        "https://example.com/acme/new-order", // TODO: Get actual URL from request
+        &state,
+    )
+    .await?;
+
+    let request = validated.payload;
+    let account_id = validated.account_id;
 
     if request.identifiers.is_empty() {
         return Err(Error::Malformed(
@@ -474,21 +498,31 @@ async fn new_order(
 async fn update_account(
     State(state): State<AcmeState>,
     Path(id): Path<String>,
+    body: Bytes,
 ) -> Result<Response> {
-    // TODO: Validate JWS signature (Phase 11)
-    // TODO: Extract updated contact info from request body (Phase 11)
-    // For now, just load and return existing account
+    // Validate JWS and extract payload
+    let validated = validate_jws_with_account::<UpdateAccountRequest>(
+        &body,
+        &format!("https://example.com/acme/account/{}", id), // TODO: Get actual URL from request
+        &state,
+    )
+    .await?;
+
+    let request = validated.payload;
+
+    // Verify the account ID from path matches the authenticated account
+    if id != validated.account_id.to_string() {
+        return Err(Error::Unauthorized(
+            "Cannot update another account".to_string(),
+        ));
+    }
 
     let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
-    // Load account from database
+    // Update account with new contact information or status
     let db_account = repo
-        .find_account_by_id(&id)
-        .await?
-        .ok_or(Error::AccountDoesNotExist)?;
-
-    // TODO: Update contact information when request parsing is implemented
-    // let updated_account = repo.update_account(&id, Some(new_contact), None).await?;
+        .update_account(&id, request.contact, request.status.as_deref())
+        .await?;
 
     let account = map_db_account_to_service(db_account);
 
@@ -533,8 +567,16 @@ async fn get_authorization(
 async fn respond_to_challenge(
     State(state): State<AcmeState>,
     Path(id): Path<String>,
+    body: Bytes,
 ) -> Result<Response> {
-    // TODO: Validate JWS signature (Phase 11)
+    // Validate JWS (payload is typically empty object {})
+    let _validated = validate_jws_with_account::<ChallengeResponse>(
+        &body,
+        &format!("https://example.com/acme/challenge/{}", id), // TODO: Get actual URL from request
+        &state,
+    )
+    .await?;
+
     // TODO: Validate key authorization (Phase 11)
     // TODO: Trigger actual validation (HTTP-01, DNS-01, or TLS-ALPN-01) (Phase 11)
 
@@ -591,15 +633,37 @@ async fn get_order(State(state): State<AcmeState>, Path(id): Path<String>) -> Re
 async fn finalize_order(
     State(state): State<AcmeState>,
     Path(id): Path<String>,
-    Json(request): Json<FinalizeRequest>,
+    body: Bytes,
 ) -> Result<Response> {
-    // TODO: Validate JWS signature (Phase 11)
-    // TODO: Parse and validate CSR (Phase 11)
-    // TODO: Verify SANs match order identifiers (Phase 11)
-    // TODO: Issue certificate via CA service (Phase 12)
+    // Validate JWS and extract payload
+    let validated = validate_jws_with_account::<FinalizeRequest>(
+        &body,
+        &format!("https://example.com/acme/order/{}/finalize", id), // TODO: Get actual URL from request
+        &state,
+    )
+    .await?;
+
+    let request = validated.payload;
 
     if request.csr.is_empty() {
         return Err(Error::BadCsr("CSR cannot be empty".to_string()));
+    }
+
+    // Parse and validate CSR
+    let csr_der = decode_base64url(&request.csr)
+        .map_err(|_| Error::BadCsr("Invalid base64url encoding".to_string()))?;
+
+    let parsed_csr = ostrich_x509::parser::parse_csr(&csr_der)
+        .map_err(|e| Error::BadCsr(format!("Failed to parse CSR: {}", e)))?;
+
+    // Verify CSR signature (proof of possession)
+    let signature_valid =
+        ostrich_x509::parser::verify_csr_signature(&parsed_csr, &state.crypto_provider)
+            .await
+            .map_err(|e| Error::BadCsr(format!("CSR signature verification failed: {}", e)))?;
+
+    if !signature_valid {
+        return Err(Error::BadCsr("Invalid CSR signature".to_string()));
     }
 
     let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
@@ -609,6 +673,28 @@ async fn finalize_order(
         .find_order_by_id(&id)
         .await?
         .ok_or(Error::Malformed(format!("Order not found: {}", id)))?;
+
+    // Verify the account owns this order
+    if db_order.account_id != validated.account_id {
+        return Err(Error::Unauthorized(
+            "Order belongs to different account".to_string(),
+        ));
+    }
+
+    // Parse order identifiers from JSON
+    let _order_identifiers: Vec<Identifier> = serde_json::from_value(db_order.identifiers.clone())
+        .map_err(|e| Error::ServerInternal(format!("Failed to parse order identifiers: {}", e)))?;
+
+    // Verify CSR SANs match order identifiers
+    // TODO: When SAN extraction is implemented in parser.rs, uncomment this validation
+    // for identifier in &_order_identifiers {
+    //     if !parsed_csr.subject_alternative_names.contains(&identifier.value) {
+    //         return Err(Error::BadCsr(format!(
+    //             "CSR missing required identifier: {}",
+    //             identifier.value
+    //         )));
+    //     }
+    // }
 
     // Verify all authorizations are valid
     let db_authzs = repo.list_authorizations_by_order(db_order.id).await?;
