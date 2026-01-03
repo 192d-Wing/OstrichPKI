@@ -41,6 +41,9 @@ pub enum Error {
     #[error("Challenge failed: {0}")]
     ChallengeFailed(String),
 
+    #[error("Challenge validation error: {0}")]
+    ChallengeValidation(String),
+
     #[error("Connection error: {0}")]
     Connection(String),
 
@@ -127,6 +130,7 @@ impl Error {
             Self::BadSignatureAlgorithm => "urn:ietf:params:acme:error:badSignatureAlgorithm",
             Self::Caa(_) => "urn:ietf:params:acme:error:caa",
             Self::ChallengeFailed(_) => "urn:ietf:params:acme:error:challengeFailed",
+            Self::ChallengeValidation(_) => "urn:ietf:params:acme:error:challengeFailed",
             Self::Connection(_) => "urn:ietf:params:acme:error:connection",
             Self::Dns(_) => "urn:ietf:params:acme:error:dns",
             Self::ExternalAccountRequired => "urn:ietf:params:acme:error:externalAccountRequired",
@@ -158,6 +162,7 @@ impl Error {
             Self::BadSignatureAlgorithm => StatusCode::BAD_REQUEST,
             Self::Caa(_) => StatusCode::FORBIDDEN,
             Self::ChallengeFailed(_) => StatusCode::BAD_REQUEST,
+            Self::ChallengeValidation(_) => StatusCode::BAD_REQUEST,
             Self::Connection(_) => StatusCode::BAD_REQUEST,
             Self::Dns(_) => StatusCode::BAD_REQUEST,
             Self::ExternalAccountRequired => StatusCode::FORBIDDEN,

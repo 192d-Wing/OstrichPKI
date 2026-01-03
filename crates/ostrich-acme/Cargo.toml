@@ -33,5 +33,8 @@ sha2 = { workspace = true }
 der = { workspace = true }
 spki = { workspace = true }
 
+# HTTP client (for challenge validation)
+reqwest = { workspace = true }
+
 # Utilities
 thiserror = { workspace = true }

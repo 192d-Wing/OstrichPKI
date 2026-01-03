@@ -749,7 +749,7 @@ softhsm2-util --init-token --slot 0 --label "OstrichPKI" --so-pin 1234 --pin 567
 ### Phase 11: Protocol Validation & Security
 
 **Priority**: HIGH
-**Completion**: ~65%
+**Completion**: ~75%
 **Estimated Effort**: 2 weeks
 **Dependencies**: None (can run in parallel with Phase 8-9)
 **Blocks**: Production deployment
@@ -766,11 +766,14 @@ Implement comprehensive protocol validation for ACME and EST, including JWS sign
 - ✅ ACME CSR parsing and signature verification
 - ✅ EST CSR parsing and signature verification
 - ✅ EST mTLS module implementation (certificate parsing, validation structure)
+- ✅ ACME challenge validation module (HTTP-01, DNS-01, TLS-ALPN-01 infrastructure)
 
 **Remaining**:
 
-- Challenge validation (HTTP-01, DNS-01, TLS-ALPN-01)
+- ACME challenge integration into handlers (connect validators to challenge endpoints)
 - EST mTLS TLS server integration (requires rustls/tokio-rustls setup)
+- DNS-01 full implementation (requires DNS resolver library)
+- TLS-ALPN-01 full implementation (requires TLS client library)
 - SAN extraction from CSR extensionRequest
 
 #### Key Tasks
@@ -812,26 +815,37 @@ Implement comprehensive protocol validation for ACME and EST, including JWS sign
 
 ##### ACME Challenge Validation (3 TODOs)
 
-1. **HTTP-01 Challenge** ([acme/rest.rs:471](crates/ostrich-acme/src/rest.rs#L471))
-   - Fetch `http://<domain>/.well-known/acme-challenge/<token>`
-   - Verify response = `<token>.<account_key_thumbprint>`
-   - Follow HTTP redirects (max 10)
-   - Timeout: 10 seconds
-   - Validate from multiple network perspectives (if possible)
+**Status**: ✅ **Infrastructure Complete** (crates/ostrich-acme/src/validation.rs)
 
-2. **DNS-01 Challenge** ([acme/rest.rs:477](crates/ostrich-acme/src/rest.rs#L477))
-   - Query `_acme-challenge.<domain>` TXT record
-   - Verify value = Base64URL(SHA256(`<token>.<account_key_thumbprint>`))
-   - Use recursive DNS resolver
-   - Check all authoritative nameservers
-   - Timeout: 30 seconds
+1. **HTTP-01 Challenge** ✅ **IMPLEMENTED**
+   - ✅ Http01Validator structure with reqwest HTTP client
+   - ✅ Fetch `http://<domain>/.well-known/acme-challenge/<token>`
+   - ✅ Verify response = `<token>.<account_key_thumbprint>`
+   - ✅ Follow HTTP redirects (max 10)
+   - ✅ Timeout: 10 seconds
+   - ✅ SSRF prevention (block private IP domains)
+   - ⏳ TODO: DNS resolution to detect private IPs
+   - ⏳ TODO: Integration into challenge response handler
 
-3. **TLS-ALPN-01 Challenge** ([acme/rest.rs:483](crates/ostrich-acme/src/rest.rs#L483))
-   - Establish TLS connection with ALPN extension "acme-tls/1"
-   - Extract certificate from handshake
-   - Verify certificate has acmeIdentifier extension with SHA256 hash
-   - Validate domain matches certificate SAN
-   - Timeout: 10 seconds
+2. **DNS-01 Challenge** ⏳ **PARTIAL** (infrastructure ready)
+   - ✅ Dns01Validator structure
+   - ✅ Compute expected TXT value: Base64URL(SHA256(`<token>.<thumbprint>`))
+   - ✅ Construct TXT record name: `_acme-challenge.<domain>`
+   - ⏳ TODO: DNS resolver implementation (requires trust-dns-resolver)
+   - ⏳ TODO: Query TXT records
+   - ⏳ TODO: Timeout: 30 seconds
+   - ⏳ TODO: Integration into challenge response handler
+
+3. **TLS-ALPN-01 Challenge** ⏳ **PARTIAL** (infrastructure ready)
+   - ✅ TlsAlpn01Validator structure
+   - ✅ Compute expected acmeIdentifier hash: SHA256(`<token>.<thumbprint>`)
+   - ⏳ TODO: TLS client implementation (requires tokio-rustls)
+   - ⏳ TODO: Establish TLS connection with ALPN extension "acme-tls/1"
+   - ⏳ TODO: Extract certificate from handshake
+   - ⏳ TODO: Verify certificate has acmeIdentifier extension with SHA256 hash
+   - ⏳ TODO: Validate domain matches certificate SAN
+   - ⏳ TODO: Timeout: 10 seconds
+   - ⏳ TODO: Integration into challenge response handler
 
 ##### EST mTLS Validation (4 TODOs)
 

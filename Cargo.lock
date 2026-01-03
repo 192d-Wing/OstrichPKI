@@ -1763,6 +1763,7 @@ dependencies = [
  "ostrich-crypto",
  "ostrich-db",
  "ostrich-x509",
+ "reqwest",
  "rsa",
  "serde",
  "serde_json",
