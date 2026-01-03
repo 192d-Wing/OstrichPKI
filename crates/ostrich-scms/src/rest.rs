@@ -207,196 +207,508 @@ async fn get_token(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> Resu
 
 /// Update token
 async fn update_token(
-    State(_state): State<ScmsState>,
-    Path(_id): Path<Uuid>,
+    State(state): State<ScmsState>,
+    Path(id): Path<Uuid>,
     Json(_request): Json<serde_json::Value>,
 ) -> Result<Response> {
-    // TODO: Load from database
-    // TODO: Update fields
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
+
+    // Load existing token
+    let db_token = repo
+        .find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    // Update label if provided
+    // TODO: Add support for updating other fields (assigned_to, etc.)
+    // TODO: Add database method to update token fields
+    // For now, just return the existing token
     // TODO: Audit log
 
-    Err(Error::TokenNotFound(_id.to_string()))
+    let token = map_db_token_to_service(db_token);
+    Ok(Json(token).into_response())
 }
 
 /// Revoke token
-async fn revoke_token(State(_state): State<ScmsState>, Path(_id): Path<Uuid>) -> Result<Response> {
-    // TODO: Load from database
-    // TODO: Revoke all certificates on token
-    // TODO: Mark token as revoked
+async fn revoke_token(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> Result<Response> {
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
+
+    // Load token to verify it exists
+    let db_token = repo
+        .find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    // Update token status to revoked
+    repo.update_token(id, Some("revoked"), None, None, None)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to revoke token: {}", e)))?;
+
+    // TODO: Revoke all certificates on token (Phase 12 - CA integration)
     // TODO: Audit log
 
-    Err(Error::TokenNotFound(_id.to_string()))
+    let mut token = map_db_token_to_service(db_token);
+    token.status = TokenStatus::Revoked;
+    token.revoked_at = Some(chrono::Utc::now());
+
+    Ok(Json(token).into_response())
 }
 
 /// Initialize token
 async fn initialize_token(
-    State(_state): State<ScmsState>,
-    Path(_id): Path<Uuid>,
+    State(state): State<ScmsState>,
+    Path(id): Path<Uuid>,
 ) -> Result<Response> {
-    // TODO: Load from database
-    // TODO: Initialize via PKCS#11
-    // TODO: Update status
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
+
+    // Load token to verify it exists
+    let db_token = repo
+        .find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    // Verify token is in uninitialized state
+    if db_token.status != "uninitialized" {
+        return Err(Error::InvalidRequest(format!(
+            "Token must be in uninitialized state, current state: {}",
+            db_token.status
+        )));
+    }
+
+    // TODO: Initialize via PKCS#11 (Phase 10)
+
+    // Update token status to initialized
+    repo.update_token(id, Some("initialized"), None, None, None)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to initialize token: {}", e)))?;
+
     // TODO: Audit log
 
-    Err(Error::TokenNotFound(_id.to_string()))
+    let mut token = map_db_token_to_service(db_token);
+    token.status = TokenStatus::Initialized;
+    token.initialized_at = Some(chrono::Utc::now());
+
+    Ok(Json(token).into_response())
 }
 
 /// Personalize token
 async fn personalize_token(
-    State(_state): State<ScmsState>,
-    Path(_id): Path<Uuid>,
+    State(state): State<ScmsState>,
+    Path(id): Path<Uuid>,
     Json(request): Json<PersonalizeTokenRequest>,
 ) -> Result<Response> {
-    // TODO: Load from database
-    // TODO: Set PIN via PKCS#11
-    // TODO: Generate keys
-    // TODO: Issue certificates
-    // TODO: Update status
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
+
+    // Load token to verify it exists
+    let db_token = repo
+        .find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    // Verify token is in initialized state
+    if db_token.status != "initialized" {
+        return Err(Error::InvalidRequest(format!(
+            "Token must be in initialized state, current state: {}",
+            db_token.status
+        )));
+    }
+
+    // TODO: Set PIN via PKCS#11 (Phase 10)
+    // TODO: Generate keys (Phase 10)
+    // TODO: Issue certificates (Phase 12)
+
+    // Update token assignment and status
+    repo.update_token(id, Some("active"), Some(&request.assigned_to), None, None)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to personalize token: {}", e)))?;
+
     // TODO: Audit log
 
-    let mut token = Token::new("SN12345".to_string(), Uuid::new_v4(), "Token".to_string());
-    token.personalize(request.assigned_to);
+    let mut token = map_db_token_to_service(db_token);
+    token.status = TokenStatus::Active;
+    token.assigned_to = Some(request.assigned_to);
+    token.personalized_at = Some(chrono::Utc::now());
 
     Ok(Json(token).into_response())
 }
 
 /// Suspend token
-async fn suspend_token(State(_state): State<ScmsState>, Path(_id): Path<Uuid>) -> Result<Response> {
-    // TODO: Load from database
-    // TODO: Update status
+async fn suspend_token(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> Result<Response> {
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
+
+    // Load token to verify it exists
+    let db_token = repo
+        .find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    // Verify token is in active state
+    if db_token.status != "active" {
+        return Err(Error::InvalidRequest(format!(
+            "Token must be in active state to suspend, current state: {}",
+            db_token.status
+        )));
+    }
+
+    // Update token status to suspended
+    repo.update_token(id, Some("suspended"), None, None, None)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to suspend token: {}", e)))?;
+
     // TODO: Audit log
 
-    Err(Error::TokenNotFound(_id.to_string()))
+    let mut token = map_db_token_to_service(db_token);
+    token.status = TokenStatus::Suspended;
+
+    Ok(Json(token).into_response())
 }
 
 /// Resume token
-async fn resume_token(State(_state): State<ScmsState>, Path(_id): Path<Uuid>) -> Result<Response> {
-    // TODO: Load from database
-    // TODO: Update status
+async fn resume_token(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> Result<Response> {
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
+
+    // Load token to verify it exists
+    let db_token = repo
+        .find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    // Verify token is in suspended state
+    if db_token.status != "suspended" {
+        return Err(Error::InvalidRequest(format!(
+            "Token must be in suspended state to resume, current state: {}",
+            db_token.status
+        )));
+    }
+
+    // Update token status to active
+    repo.update_token(id, Some("active"), None, None, None)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to resume token: {}", e)))?;
+
     // TODO: Audit log
 
-    Err(Error::TokenNotFound(_id.to_string()))
+    let mut token = map_db_token_to_service(db_token);
+    token.status = TokenStatus::Active;
+
+    Ok(Json(token).into_response())
 }
 
 /// Unblock token (SO-PIN recovery)
-async fn unblock_token(State(_state): State<ScmsState>, Path(_id): Path<Uuid>) -> Result<Response> {
-    // TODO: Load from database
-    // TODO: Verify SO-PIN
-    // TODO: Reset PIN retry counter
-    // TODO: Update status
+async fn unblock_token(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> Result<Response> {
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
+
+    // Load token to verify it exists
+    let db_token = repo
+        .find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    // Verify token is locked
+    if db_token.pin_attempts_remaining > 0 {
+        return Err(Error::InvalidRequest(
+            "Token is not locked, unblock not required".to_string(),
+        ));
+    }
+
+    // TODO: Verify SO-PIN via PKCS#11 (Phase 10)
+
+    // Reset PIN retry counter (set to max attempts, e.g., 3)
+    repo.update_token(id, None, None, Some(3), None)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to unblock token: {}", e)))?;
+
     // TODO: Audit log
 
-    Err(Error::TokenNotFound(_id.to_string()))
+    let mut token = map_db_token_to_service(db_token);
+    token.pin_retry_count = token.max_pin_retries;
+
+    Ok(Json(token).into_response())
 }
 
 /// Verify PIN
 async fn verify_pin(
-    State(_state): State<ScmsState>,
-    Path(_id): Path<Uuid>,
+    State(state): State<ScmsState>,
+    Path(id): Path<Uuid>,
     Json(request): Json<VerifyPinRequest>,
 ) -> Result<Response> {
-    // TODO: Load from database
-    // TODO: Verify PIN via PKCS#11
-    // TODO: Update retry counter
-    // TODO: Audit log
-
     if request.pin.is_empty() {
         return Err(Error::InvalidRequest("PIN cannot be empty".to_string()));
     }
 
-    Ok((StatusCode::OK, Json(serde_json::json!({"verified": false}))).into_response())
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
+
+    // Load token to verify it exists
+    let db_token = repo
+        .find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    // Check if token is locked
+    if db_token.pin_attempts_remaining <= 0 {
+        return Err(Error::PinBlocked);
+    }
+
+    // TODO: Verify PIN via PKCS#11 (Phase 10)
+    // For now, this is a placeholder that always fails
+    let verified = false;
+
+    if !verified {
+        // Decrement retry counter
+        let new_attempts = db_token.pin_attempts_remaining - 1;
+        repo.update_token(id, None, None, Some(new_attempts), None)
+            .await
+            .map_err(|e| Error::DatabaseError(format!("Failed to update PIN attempts: {}", e)))?;
+
+        // TODO: Audit log failed attempt
+
+        if new_attempts <= 0 {
+            return Err(Error::PinBlocked);
+        }
+
+        return Err(Error::InvalidPin);
+    }
+
+    // TODO: Audit log successful verification
+
+    Ok((StatusCode::OK, Json(serde_json::json!({"verified": true}))).into_response())
 }
 
 /// Change PIN
 async fn change_pin(
-    State(_state): State<ScmsState>,
-    Path(_id): Path<Uuid>,
+    State(state): State<ScmsState>,
+    Path(id): Path<Uuid>,
     Json(request): Json<ChangePinRequest>,
 ) -> Result<Response> {
-    // TODO: Load from database
-    // TODO: Verify current PIN
-    // TODO: Set new PIN via PKCS#11
-    // TODO: Audit log
-
     if request.current_pin.is_empty() || request.new_pin.is_empty() {
         return Err(Error::InvalidRequest("PINs cannot be empty".to_string()));
     }
+
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
+
+    // Load token to verify it exists
+    let db_token = repo
+        .find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    // Check if token is locked
+    if db_token.pin_attempts_remaining <= 0 {
+        return Err(Error::PinBlocked);
+    }
+
+    // TODO: Verify current PIN via PKCS#11 (Phase 10)
+    // TODO: Set new PIN via PKCS#11 (Phase 10)
+
+    // Reset PIN retry counter after successful change (set to max attempts, e.g., 3)
+    repo.update_token(id, None, None, Some(3), None)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to reset PIN attempts: {}", e)))?;
+
+    // TODO: Audit log
 
     Ok(StatusCode::OK.into_response())
 }
 
 /// List keys on token
-async fn list_token_keys(
-    State(_state): State<ScmsState>,
-    Path(_id): Path<Uuid>,
-) -> Result<Response> {
-    // TODO: Load from database
-    // TODO: Query PKCS#11 for keys
+async fn list_token_keys(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> Result<Response> {
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
 
-    let keys: Vec<TokenKey> = vec![]; // Placeholder
+    // Verify token exists
+    repo.find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    // List keys from database
+    let db_keys = repo
+        .list_token_keys(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to list keys: {}", e)))?;
+
+    // TODO: Query PKCS#11 for keys (Phase 10)
+
+    let keys: Vec<TokenKey> = db_keys
+        .into_iter()
+        .map(map_db_token_key_to_service)
+        .collect();
 
     Ok(Json(keys).into_response())
 }
 
 /// Generate key pair on token
 async fn generate_key(
-    State(_state): State<ScmsState>,
-    Path(_id): Path<Uuid>,
+    State(state): State<ScmsState>,
+    Path(id): Path<Uuid>,
     Json(request): Json<GenerateKeyRequest>,
 ) -> Result<Response> {
-    // TODO: Load token from database
-    // TODO: Generate key via PKCS#11
-    // TODO: Store key metadata
-    // TODO: Audit log
-
     if request.label.is_empty() {
         return Err(Error::InvalidRequest(
             "Key label cannot be empty".to_string(),
         ));
     }
 
-    Ok(StatusCode::CREATED.into_response())
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
+
+    // Verify token exists and is active
+    let db_token = repo
+        .find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    if db_token.status != "active" {
+        return Err(Error::InvalidRequest(format!(
+            "Token must be in active state to generate keys, current state: {}",
+            db_token.status
+        )));
+    }
+
+    // TODO: Generate key via PKCS#11 (Phase 10)
+    // For now, create a placeholder key metadata record
+
+    // Create algorithm string from key_type and key_size
+    let algorithm = format!("{}-{}", request.key_type, request.key_size);
+
+    // Store key metadata in database
+    let key = repo
+        .create_token_key(id, &request.label, &request.key_type, &algorithm, None)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to create key: {}", e)))?;
+
+    // TODO: Audit log
+
+    let service_key = map_db_token_key_to_service(key);
+
+    Ok((StatusCode::CREATED, Json(service_key)).into_response())
 }
 
 /// Delete key from token
 async fn delete_key(
-    State(_state): State<ScmsState>,
-    Path((_token_id, key_id)): Path<(Uuid, Uuid)>,
+    State(state): State<ScmsState>,
+    Path((token_id, key_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Response> {
-    // TODO: Load from database
-    // TODO: Delete key via PKCS#11
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
+
+    // Verify token exists
+    repo.find_token(token_id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(token_id.to_string()))?;
+
+    // Verify key exists
+    let key_exists = repo
+        .list_token_keys(token_id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to list keys: {}", e)))?
+        .iter()
+        .any(|k| k.id == key_id);
+
+    if !key_exists {
+        return Err(Error::KeyNotFound(key_id.to_string()));
+    }
+
+    // TODO: Delete key via PKCS#11 (Phase 10)
+
+    // Delete key metadata from database
+    repo.delete_token_key(key_id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to delete key: {}", e)))?;
+
     // TODO: Audit log
 
-    Err(Error::KeyNotFound(key_id.to_string()))
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// List token models
-async fn list_models(State(_state): State<ScmsState>) -> Result<Response> {
-    // TODO: Query from database
+async fn list_models(State(state): State<ScmsState>) -> Result<Response> {
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
 
-    let models: Vec<TokenModel> = vec![]; // Placeholder
+    // Query all token models from database
+    let db_models = repo
+        .list_token_models()
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to list models: {}", e)))?;
+
+    let models: Vec<TokenModel> = db_models
+        .into_iter()
+        .map(map_db_token_model_to_service)
+        .collect();
 
     Ok(Json(models).into_response())
 }
 
+/// Create token model request
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateTokenModelRequest {
+    /// Manufacturer name
+    pub manufacturer: String,
+    /// Model name
+    pub model_name: String,
+}
+
 /// Create token model
 async fn create_model(
-    State(_state): State<ScmsState>,
-    Json(_request): Json<serde_json::Value>,
+    State(state): State<ScmsState>,
+    Json(request): Json<CreateTokenModelRequest>,
 ) -> Result<Response> {
-    // TODO: Create model in database
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
 
-    Ok(StatusCode::CREATED.into_response())
+    // Create model in database with default values
+    // TODO: Accept additional parameters in request (ATR, supported key types, PIN limits)
+    let db_model = repo
+        .create_token_model(
+            &request.manufacturer,
+            &request.model_name,
+            None,   // atr
+            vec![], // supported_key_types (empty for now)
+            12,     // max_pin_length (default)
+            4,      // min_pin_length (default)
+            false,  // supports_puk (default)
+        )
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to create model: {}", e)))?;
+
+    // TODO: Audit log
+
+    let model = map_db_token_model_to_service(db_model);
+
+    Ok((StatusCode::CREATED, Json(model)).into_response())
 }
 
 /// Get token events
 async fn get_token_events(
-    State(_state): State<ScmsState>,
-    Path(_id): Path<Uuid>,
+    State(state): State<ScmsState>,
+    Path(id): Path<Uuid>,
 ) -> Result<Response> {
-    // TODO: Query events from database
+    let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
 
-    let events: Vec<TokenEvent> = vec![]; // Placeholder
+    // Verify token exists
+    repo.find_token(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to find token: {}", e)))?
+        .ok_or_else(|| Error::TokenNotFound(id.to_string()))?;
+
+    // Query events from database
+    let db_events = repo
+        .list_token_events(id)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Failed to list events: {}", e)))?;
+
+    let events: Vec<TokenEvent> = db_events
+        .into_iter()
+        .map(map_db_token_event_to_service)
+        .collect();
 
     Ok(Json(events).into_response())
 }
