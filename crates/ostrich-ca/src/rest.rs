@@ -1,0 +1,352 @@
+//! REST API implementation for Certificate Authority
+//!
+//! RFC 5280: X.509 Public Key Infrastructure
+//! NIST 800-53: SC-12 - Cryptographic key establishment and management
+
+use crate::{CertificateAuthority, Error, IssuanceRequest, Result, RevocationRequest};
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use base64::{Engine, prelude::BASE64_STANDARD};
+use ostrich_common::types::DistinguishedName;
+use ostrich_x509::{extensions::SubjectAltName, parser::RevocationReason};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+/// REST API state
+pub struct ApiState {
+    ca: Arc<CertificateAuthority>,
+}
+
+impl ApiState {
+    /// Create new API state
+    pub fn new(ca: Arc<CertificateAuthority>) -> Self {
+        Self { ca }
+    }
+}
+
+/// Create REST API router
+pub fn create_router(ca: Arc<CertificateAuthority>) -> Router {
+    let state = Arc::new(ApiState::new(ca));
+
+    Router::new()
+        .route("/health", get(health_check))
+        .route("/api/v1/ca/info", get(get_ca_info))
+        .route("/api/v1/certificates", post(issue_certificate))
+        .route("/api/v1/certificates/:id/revoke", post(revoke_certificate))
+        .route(
+            "/api/v1/certificates/:id/status",
+            get(check_revocation_status),
+        )
+        .route("/api/v1/crl", post(generate_crl))
+        .route("/api/v1/profiles", get(list_profiles))
+        .with_state(state)
+}
+
+/// Health check endpoint
+async fn health_check() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "healthy",
+        "service": "ostrich-ca"
+    }))
+}
+
+/// Get CA information
+async fn get_ca_info(State(state): State<Arc<ApiState>>) -> Result<Json<CaInfoResponse>> {
+    let info = state.ca.info();
+
+    Ok(Json(CaInfoResponse {
+        ca_id: info.ca_id.to_string(),
+        ca_dn: info.ca_dn,
+    }))
+}
+
+/// Issue a new certificate
+async fn issue_certificate(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<IssueCertificateRequest>,
+) -> Result<Json<IssueCertificateResponse>> {
+    // Convert REST request to internal request
+    let issuance_req = IssuanceRequest {
+        profile_name: req.profile_name,
+        subject: req.subject,
+        subject_alt_names: req.subject_alt_names,
+        public_key: req.public_key,
+        requestor: req.requestor,
+        metadata: req.metadata,
+    };
+
+    // Issue certificate
+    let issued = state.ca.issuer().issue(issuance_req).await?;
+
+    Ok(Json(IssueCertificateResponse {
+        certificate_id: issued.certificate_id.to_string(),
+        serial_number: hex::encode(&issued.serial_number),
+        der_encoded: BASE64_STANDARD.encode(&issued.der_encoded),
+        pem_encoded: issued.pem_encoded,
+        not_before: issued.not_before.to_rfc3339(),
+        not_after: issued.not_after.to_rfc3339(),
+    }))
+}
+
+/// Revoke a certificate
+async fn revoke_certificate(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+    Json(req): Json<RevokeCertificateRequest>,
+) -> Result<Json<RevokeCertificateResponse>> {
+    // Parse certificate ID
+    let certificate_id = uuid::Uuid::parse_str(&id)
+        .map_err(|_| Error::InvalidRequest("Invalid certificate ID".to_string()))?;
+
+    // Create revocation request
+    let revocation_req = RevocationRequest {
+        certificate_id,
+        reason: req.reason,
+        requestor: req.requestor,
+        justification: req.justification,
+    };
+
+    // Revoke certificate
+    state.ca.revocation_manager().revoke(revocation_req).await?;
+
+    Ok(Json(RevokeCertificateResponse {
+        success: true,
+        revocation_time: chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+/// Check revocation status
+async fn check_revocation_status(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> Result<Json<RevocationStatusResponse>> {
+    // Parse certificate ID
+    let certificate_id = uuid::Uuid::parse_str(&id)
+        .map_err(|_| Error::InvalidRequest("Invalid certificate ID".to_string()))?;
+
+    // Check revocation status
+    let is_revoked = state
+        .ca
+        .revocation_manager()
+        .is_revoked(&certificate_id)
+        .await?;
+
+    Ok(Json(RevocationStatusResponse {
+        revoked: is_revoked,
+        revocation_time: None, // TODO: Get from database
+        reason: None,          // TODO: Get from database
+    }))
+}
+
+/// Generate a new CRL
+async fn generate_crl(State(state): State<Arc<ApiState>>) -> Result<Json<GenerateCrlResponse>> {
+    // Generate CRL
+    let crl = state
+        .ca
+        .revocation_manager()
+        .generate_crl(state.ca.ca_dn.clone())
+        .await?;
+
+    Ok(Json(GenerateCrlResponse {
+        crl_number: crl.crl_number,
+        this_update: crl.this_update.to_rfc3339(),
+        next_update: crl.next_update.to_rfc3339(),
+        revoked_count: crl.revoked_count,
+        der_encoded: BASE64_STANDARD.encode(&crl.der_encoded),
+        pem_encoded: crl.pem_encoded,
+    }))
+}
+
+/// List certificate profiles
+async fn list_profiles(State(_state): State<Arc<ApiState>>) -> Result<Json<ListProfilesResponse>> {
+    // TODO: Get profiles from CA
+    // For now, return example profiles
+    use ostrich_x509::profile::CertificateProfile;
+
+    let profiles = vec![
+        ProfileInfo::from_profile(&CertificateProfile::root_ca(3650)),
+        ProfileInfo::from_profile(&CertificateProfile::intermediate_ca(1825, 0)),
+        ProfileInfo::from_profile(&CertificateProfile::tls_server(365)),
+        ProfileInfo::from_profile(&CertificateProfile::tls_client(365)),
+        ProfileInfo::from_profile(&CertificateProfile::code_signing(365)),
+        ProfileInfo::from_profile(&CertificateProfile::ocsp_signing(90)),
+    ];
+
+    Ok(Json(ListProfilesResponse { profiles }))
+}
+
+// REST API Request/Response types
+
+/// CA information response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CaInfoResponse {
+    pub ca_id: String,
+    pub ca_dn: String,
+}
+
+/// Certificate issuance request
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IssueCertificateRequest {
+    pub profile_name: String,
+    pub subject: DistinguishedName,
+    #[serde(default)]
+    pub subject_alt_names: Vec<SubjectAltName>,
+    #[serde(with = "base64_serde")]
+    pub public_key: Vec<u8>,
+    pub requestor: String,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Certificate issuance response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IssueCertificateResponse {
+    pub certificate_id: String,
+    pub serial_number: String,
+    pub der_encoded: String,
+    pub pem_encoded: String,
+    pub not_before: String,
+    pub not_after: String,
+}
+
+/// Certificate revocation request
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RevokeCertificateRequest {
+    pub reason: RevocationReason,
+    pub requestor: String,
+    pub justification: Option<String>,
+}
+
+/// Certificate revocation response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RevokeCertificateResponse {
+    pub success: bool,
+    pub revocation_time: String,
+}
+
+/// Revocation status response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RevocationStatusResponse {
+    pub revoked: bool,
+    pub revocation_time: Option<String>,
+    pub reason: Option<RevocationReason>,
+}
+
+/// CRL generation response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GenerateCrlResponse {
+    pub crl_number: u64,
+    pub this_update: String,
+    pub next_update: String,
+    pub revoked_count: usize,
+    pub der_encoded: String,
+    pub pem_encoded: String,
+}
+
+/// List profiles response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListProfilesResponse {
+    pub profiles: Vec<ProfileInfo>,
+}
+
+/// Profile information
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProfileInfo {
+    pub name: String,
+    pub profile_type: String,
+    pub description: String,
+    pub validity_days: u32,
+    pub key_type: String,
+    pub algorithm: String,
+    pub basic_constraints_ca: bool,
+    pub basic_constraints_path_len: Option<u8>,
+    pub subject_alt_name_required: bool,
+}
+
+impl ProfileInfo {
+    fn from_profile(profile: &ostrich_x509::profile::CertificateProfile) -> Self {
+        Self {
+            name: profile.name.clone(),
+            profile_type: profile.profile_type.as_str().to_string(),
+            description: profile.description.clone().unwrap_or_default(),
+            validity_days: profile.validity_days,
+            key_type: profile.key_type.clone(),
+            algorithm: profile.algorithm.clone(),
+            basic_constraints_ca: profile.basic_constraints_ca,
+            basic_constraints_path_len: profile.basic_constraints_path_len,
+            subject_alt_name_required: profile.subject_alt_name_required,
+        }
+    }
+}
+
+// Custom serde module for base64 encoding
+mod base64_serde {
+    use base64::prelude::*;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&BASE64_STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        BASE64_STANDARD.decode(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+// Error conversion for Axum responses
+impl IntoResponse for Error {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            Error::InvalidRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            Error::Issuance(msg) => (StatusCode::BAD_REQUEST, msg),
+            Error::Revocation(msg) => (StatusCode::BAD_REQUEST, msg),
+            Error::Database(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.to_string()),
+            Error::Crypto(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.to_string()),
+            Error::X509(msg) => (StatusCode::BAD_REQUEST, msg.to_string()),
+            Error::Audit(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.to_string()),
+            Error::Common(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.to_string()),
+            Error::ProfileNotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            Error::CrlGeneration(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            Error::NotInitialized => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "CA not initialized".to_string(),
+            ),
+            Error::KeyNotFound(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        };
+
+        let body = Json(serde_json::json!({
+            "error": message
+        }));
+
+        (status, body).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_profile_info_conversion() {
+        use ostrich_x509::profile::CertificateProfile;
+
+        let profile = CertificateProfile::tls_server(365);
+        let info = ProfileInfo::from_profile(&profile);
+
+        assert_eq!(info.name, "TLS Server");
+        assert_eq!(info.validity_days, 365);
+        assert!(info.subject_alt_name_required);
+    }
+}

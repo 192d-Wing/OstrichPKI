@@ -24,11 +24,15 @@ tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
 
+# REST API
+axum = { workspace = true }
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+base64 = { workspace = true }
 
 # Cryptography
 sha2 = { workspace = true }
