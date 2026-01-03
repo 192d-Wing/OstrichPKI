@@ -749,7 +749,7 @@ softhsm2-util --init-token --slot 0 --label "OstrichPKI" --so-pin 1234 --pin 567
 ### Phase 11: Protocol Validation & Security
 
 **Priority**: HIGH
-**Completion**: ~50%
+**Completion**: ~60%
 **Estimated Effort**: 2 weeks
 **Dependencies**: None (can run in parallel with Phase 8-9)
 **Blocks**: Production deployment
@@ -757,6 +757,20 @@ softhsm2-util --init-token --slot 0 --label "OstrichPKI" --so-pin 1234 --pin 567
 #### Scope
 
 Implement comprehensive protocol validation for ACME and EST, including JWS signature validation, mTLS client certificate validation, CSR parsing, and challenge validation.
+
+**Completed**:
+
+- ✅ ACME JWS signature validation (all POST endpoints)
+- ✅ ACME nonce replay protection
+- ✅ ACME URL binding validation
+- ✅ ACME CSR parsing and signature verification
+- ✅ EST CSR parsing and signature verification
+
+**Remaining**:
+
+- Challenge validation (HTTP-01, DNS-01, TLS-ALPN-01)
+- EST mTLS client certificate extraction (requires TLS server)
+- SAN extraction from CSR extensionRequest
 
 #### Key Tasks
 
@@ -820,18 +834,18 @@ Implement comprehensive protocol validation for ACME and EST, including JWS sign
 
 ##### EST mTLS Validation (4 TODOs)
 
-1. **Client Certificate Validation**
-   - Extract client certificate from TLS layer ([est/rest.rs:81, 118](crates/ostrich-est/src/rest.rs#L81))
+1. **Client Certificate Validation** ⏳ **PENDING** (requires TLS server setup)
+   - Extract client certificate from TLS layer
    - Verify certificate chain up to trusted CA
    - Check certificate is not revoked (CRL or OCSP)
    - Verify certificate is within validity period
    - Extract subject DN for authorization
 
-2. **CSR Parsing** ([est/rest.rs:89](crates/ostrich-est/src/rest.rs#L89))
-   - Parse PKCS#10 from base64-encoded body
-   - Validate CSR signature ([est/rest.rs:90](crates/ostrich-est/src/rest.rs#L90))
-   - Extract subject DN and public key
-   - For re-enrollment: verify subject matches client certificate
+2. **CSR Parsing** ✅ **COMPLETE**
+   - ✅ Parse PKCS#10 from base64-encoded body
+   - ✅ Validate CSR signature (proof of possession)
+   - ✅ Extract subject DN and public key
+   - ⏳ TODO: For re-enrollment, verify subject matches client certificate (when mTLS available)
 
 #### Technical Approach
 
