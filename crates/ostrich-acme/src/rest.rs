@@ -5,7 +5,7 @@
 use crate::{
     account::{Account, AccountStatus},
     authorization::{Authorization, AuthorizationStatus},
-    challenge::{Challenge, ChallengeType},
+    challenge::{Challenge, ChallengeStatus, ChallengeType},
     error::{Error, Result},
     order::{Identifier, Order, OrderStatus},
 };
@@ -17,25 +17,33 @@ use axum::{
     routing::{get, post},
 };
 use chrono::Utc;
+use ostrich_audit::AuditSink;
+use ostrich_crypto::CryptoProvider;
+use ostrich_db::DatabasePool;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// ACME service state
 #[derive(Clone)]
 pub struct AcmeState {
-    // TODO: Add database pool, crypto provider, audit sink
+    pub db_pool: DatabasePool,
+    pub crypto_provider: Arc<dyn CryptoProvider>,
+    pub audit_sink: Arc<dyn AuditSink>,
 }
 
 impl AcmeState {
     /// Create new ACME service state
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Default for AcmeState {
-    fn default() -> Self {
-        Self::new()
+    pub fn new(
+        db_pool: DatabasePool,
+        crypto_provider: Arc<dyn CryptoProvider>,
+        audit_sink: Arc<dyn AuditSink>,
+    ) -> Self {
+        Self {
+            db_pool,
+            crypto_provider,
+            audit_sink,
+        }
     }
 }
 
@@ -123,9 +131,17 @@ async fn get_directory() -> Response {
 }
 
 /// Get new nonce for replay protection (RFC 8555 §7.2)
-async fn get_new_nonce() -> Response {
-    // TODO: Generate cryptographically secure nonce
+async fn get_new_nonce(State(state): State<AcmeState>) -> Response {
+    // Generate cryptographically secure nonce
     let nonce = Uuid::new_v4().to_string();
+    let expires_at = Utc::now() + chrono::Duration::minutes(5);
+
+    // Store nonce in database
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
+    if let Err(e) = repo.create_nonce(&nonce, expires_at).await {
+        // Log error but still return nonce (fallback to stateless validation)
+        eprintln!("Failed to store nonce: {}", e);
+    }
 
     (
         StatusCode::NO_CONTENT,
@@ -139,13 +155,18 @@ async fn get_new_nonce() -> Response {
 
 /// Create new account (RFC 8555 §7.3)
 async fn new_account(
-    State(_state): State<AcmeState>,
+    State(state): State<AcmeState>,
     Json(request): Json<NewAccountRequest>,
 ) -> Result<Response> {
-    // TODO: Validate JWS signature
-    // TODO: Extract JWK from protected header
-    // TODO: Check if account exists
-    // TODO: Verify terms of service agreed
+    // TODO: Validate JWS signature (Phase 11)
+    // TODO: Extract JWK from protected header (Phase 11)
+    // For now, use placeholder JWK thumbprint
+    let jwk_thumbprint = format!("jwk-{}", Uuid::new_v4());
+    let public_key_jwk = serde_json::json!({
+        "kty": "RSA",
+        "e": "AQAB",
+        "n": "placeholder"
+    });
 
     if !request.terms_of_service_agreed {
         return Err(Error::UserActionRequired(
@@ -153,25 +174,53 @@ async fn new_account(
         ));
     }
 
-    // Create new account
-    let account = Account {
-        id: Uuid::new_v4(),
-        status: AccountStatus::Valid,
-        contact: request.contact,
-        terms_of_service_agreed: Some(true),
-        external_account_binding: None,
-        orders: "/acme/account/orders".to_string(),
-        key: Default::default(), // TODO: Extract from JWS
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-    };
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
-    let nonce = Uuid::new_v4().to_string();
+    // Check if account already exists (onlyReturnExisting)
+    if let Some(true) = request.only_return_existing {
+        if let Some(existing) = repo.find_account_by_jwk(&jwk_thumbprint).await? {
+            let account_id = existing.account_id.clone();
+            let nonce = generate_nonce(&state).await;
+
+            let account = map_db_account_to_service(existing);
+
+            return Ok((
+                StatusCode::OK,
+                [
+                    ("Location", format!("/acme/account/{}", account_id)),
+                    ("Replay-Nonce", nonce),
+                ],
+                Json(account),
+            )
+                .into_response());
+        } else {
+            return Err(Error::AccountDoesNotExist);
+        }
+    }
+
+    // Create new account
+    let account_id = format!("acct-{}", Uuid::new_v4());
+    let db_account = repo
+        .create_account(
+            &account_id,
+            &jwk_thumbprint,
+            public_key_jwk,
+            request.contact.clone(),
+            "valid",
+            true,
+        )
+        .await?;
+
+    // Audit log
+    // TODO: Add audit logging (Phase 11)
+
+    let nonce = generate_nonce(&state).await;
+    let account = map_db_account_to_service(db_account);
 
     Ok((
         StatusCode::CREATED,
         [
-            ("Location", format!("/acme/account/{}", account.id)),
+            ("Location", format!("/acme/account/{}", account_id)),
             ("Replay-Nonce", nonce),
         ],
         Json(account),
@@ -181,12 +230,13 @@ async fn new_account(
 
 /// Create new order (RFC 8555 §7.4)
 async fn new_order(
-    State(_state): State<AcmeState>,
+    State(state): State<AcmeState>,
     Json(request): Json<NewOrderRequest>,
 ) -> Result<Response> {
-    // TODO: Validate JWS signature
-    // TODO: Verify account exists
-    // TODO: Validate identifiers
+    // TODO: Validate JWS signature (Phase 11)
+    // TODO: Verify account exists (Phase 11)
+    // For now, use placeholder account ID
+    let account_id = Uuid::new_v4();
 
     if request.identifiers.is_empty() {
         return Err(Error::Malformed(
@@ -194,37 +244,71 @@ async fn new_order(
         ));
     }
 
-    let order_id = Uuid::new_v4();
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
+
+    // Create order
+    let order_id_str = format!("order-{}", Uuid::new_v4());
+    let expires = Utc::now() + chrono::Duration::days(7);
+    let identifiers_json = serde_json::to_value(&request.identifiers)
+        .map_err(|e| Error::ServerInternal(format!("Failed to serialize identifiers: {}", e)))?;
+
+    let db_order = repo
+        .create_order(
+            &order_id_str,
+            account_id,
+            "pending",
+            identifiers_json,
+            request.not_before.and_then(|s| s.parse().ok()),
+            request.not_after.and_then(|s| s.parse().ok()),
+            expires,
+        )
+        .await?;
 
     // Create authorizations for each identifier
-    let authorizations: Vec<String> = request
-        .identifiers
-        .iter()
-        .map(|_| format!("/acme/authz/{}", Uuid::new_v4()))
-        .collect();
+    let mut authorization_urls = Vec::new();
+    for identifier in &request.identifiers {
+        let authz_id = format!("authz-{}", Uuid::new_v4());
+        let authz_expires = Utc::now() + chrono::Duration::days(7);
 
-    let order = Order {
-        id: order_id,
-        account_id: Uuid::new_v4(), // TODO: Extract from JWS
-        status: OrderStatus::Pending,
-        identifiers: request.identifiers,
-        authorizations: authorizations.clone(),
-        finalize: format!("/acme/order/{}/finalize", order_id),
-        certificate: None,
-        not_before: None,
-        not_after: None,
-        error: None,
-        expires: Some(Utc::now() + chrono::Duration::days(7)),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-    };
+        let _db_authz = repo
+            .create_authorization(
+                &authz_id,
+                db_order.id,
+                &identifier.id_type,
+                &identifier.value,
+                "pending",
+                authz_expires,
+                false, // wildcard
+            )
+            .await?;
 
-    let nonce = Uuid::new_v4().to_string();
+        // Create challenges for this authorization
+        for challenge_type in &["http-01", "dns-01", "tls-alpn-01"] {
+            let challenge_id = format!("chall-{}", Uuid::new_v4());
+            let token = Uuid::new_v4().to_string();
+
+            repo.create_challenge(
+                &challenge_id,
+                _db_authz.id,
+                challenge_type,
+                &token,
+                "pending",
+            )
+            .await?;
+        }
+
+        authorization_urls.push(format!("/acme/authz/{}", authz_id));
+    }
+
+    // Map to service order
+    let order = map_db_order_to_service(db_order, authorization_urls);
+
+    let nonce = generate_nonce(&state).await;
 
     Ok((
         StatusCode::CREATED,
         [
-            ("Location", format!("/acme/order/{}", order_id)),
+            ("Location", format!("/acme/order/{}", order_id_str)),
             ("Replay-Nonce", nonce),
         ],
         Json(order),
@@ -233,61 +317,55 @@ async fn new_order(
 }
 
 /// Update account (RFC 8555 §7.3.2)
-async fn update_account(State(_state): State<AcmeState>, Path(id): Path<Uuid>) -> Result<Response> {
-    // TODO: Validate JWS signature
-    // TODO: Load account from database
-    // TODO: Update contact information
+async fn update_account(
+    State(state): State<AcmeState>,
+    Path(id): Path<String>,
+) -> Result<Response> {
+    // TODO: Validate JWS signature (Phase 11)
+    // TODO: Extract updated contact info from request body (Phase 11)
+    // For now, just load and return existing account
 
-    let account = Account {
-        id,
-        status: AccountStatus::Valid,
-        contact: vec!["mailto:updated@example.com".to_string()],
-        terms_of_service_agreed: Some(true),
-        external_account_binding: None,
-        orders: "/acme/account/orders".to_string(),
-        key: Default::default(),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-    };
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
-    let nonce = Uuid::new_v4().to_string();
+    // Load account from database
+    let db_account = repo
+        .find_account_by_id(&id)
+        .await?
+        .ok_or(Error::AccountDoesNotExist)?;
+
+    // TODO: Update contact information when request parsing is implemented
+    // let updated_account = repo.update_account(&id, Some(new_contact), None).await?;
+
+    let account = map_db_account_to_service(db_account);
+
+    let nonce = generate_nonce(&state).await;
 
     Ok((StatusCode::OK, [("Replay-Nonce", nonce)], Json(account)).into_response())
 }
 
 /// Get authorization (RFC 8555 §7.1.4)
 async fn get_authorization(
-    State(_state): State<AcmeState>,
-    Path(id): Path<Uuid>,
+    State(state): State<AcmeState>,
+    Path(id): Path<String>,
 ) -> Result<Response> {
-    // TODO: Load from database
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
-    let challenges = vec![
-        Challenge::new(id, ChallengeType::Http01, "token-http-01".to_string()),
-        Challenge::new(id, ChallengeType::Dns01, "token-dns-01".to_string()),
-        Challenge::new(
-            id,
-            ChallengeType::TlsAlpn01,
-            "token-tls-alpn-01".to_string(),
-        ),
-    ];
+    // Load authorization from database
+    let db_authz = repo
+        .find_authorization_by_id(&id)
+        .await?
+        .ok_or(Error::Malformed(format!("Authorization not found: {}", id)))?;
 
-    let authorization = Authorization {
-        id,
-        order_id: Uuid::new_v4(),
-        identifier: Identifier {
-            id_type: "dns".to_string(),
-            value: "example.com".to_string(),
-        },
-        status: AuthorizationStatus::Pending,
-        expires: Some(Utc::now() + chrono::Duration::days(7)),
-        challenges,
-        wildcard: Some(false),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-    };
+    // Load challenges for this authorization
+    let db_challenges = repo.list_challenges_by_authorization(db_authz.id).await?;
+    let challenges: Vec<Challenge> = db_challenges
+        .into_iter()
+        .map(map_db_challenge_to_service)
+        .collect();
 
-    let nonce = Uuid::new_v4().to_string();
+    let authorization = map_db_authorization_to_service(db_authz, challenges);
+
+    let nonce = generate_nonce(&state).await;
 
     Ok((
         StatusCode::OK,
@@ -299,109 +377,124 @@ async fn get_authorization(
 
 /// Respond to challenge (RFC 8555 §7.5.1)
 async fn respond_to_challenge(
-    State(_state): State<AcmeState>,
-    Path(id): Path<Uuid>,
+    State(state): State<AcmeState>,
+    Path(id): Path<String>,
 ) -> Result<Response> {
-    // TODO: Validate JWS signature
-    // TODO: Load challenge from database
-    // TODO: Validate key authorization
-    // TODO: Mark challenge as processing
-    // TODO: Trigger validation (HTTP-01, DNS-01, or TLS-ALPN-01)
+    // TODO: Validate JWS signature (Phase 11)
+    // TODO: Validate key authorization (Phase 11)
+    // TODO: Trigger actual validation (HTTP-01, DNS-01, or TLS-ALPN-01) (Phase 11)
 
-    let mut challenge = Challenge::new(
-        Uuid::new_v4(),
-        ChallengeType::Http01,
-        "token123".to_string(),
-    );
-    challenge.id = id;
-    challenge.mark_processing();
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
-    let nonce = Uuid::new_v4().to_string();
+    // Load challenge from database to verify it exists
+    let _db_challenge = repo
+        .find_challenge_by_id(&id)
+        .await?
+        .ok_or(Error::Malformed(format!("Challenge not found: {}", id)))?;
+
+    // Mark challenge as processing
+    let updated_challenge = repo
+        .update_challenge_status(
+            &id,
+            "processing",
+            None, // validated_at
+            None, // error_detail
+        )
+        .await?;
+
+    let challenge = map_db_challenge_to_service(updated_challenge);
+
+    let nonce = generate_nonce(&state).await;
 
     Ok((StatusCode::OK, [("Replay-Nonce", nonce)], Json(challenge)).into_response())
 }
 
 /// Get order status (RFC 8555 §7.4)
-async fn get_order(State(_state): State<AcmeState>, Path(id): Path<Uuid>) -> Result<Response> {
-    // TODO: Load from database
+async fn get_order(State(state): State<AcmeState>, Path(id): Path<String>) -> Result<Response> {
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
-    let order = Order {
-        id,
-        account_id: Uuid::new_v4(),
-        status: OrderStatus::Pending,
-        identifiers: vec![Identifier {
-            id_type: "dns".to_string(),
-            value: "example.com".to_string(),
-        }],
-        authorizations: vec![format!("/acme/authz/{}", Uuid::new_v4())],
-        finalize: format!("/acme/order/{}/finalize", id),
-        certificate: None,
-        not_before: None,
-        not_after: None,
-        error: None,
-        expires: Some(Utc::now() + chrono::Duration::days(7)),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-    };
+    // Load order from database
+    let db_order = repo
+        .find_order_by_id(&id)
+        .await?
+        .ok_or(Error::Malformed(format!("Order not found: {}", id)))?;
 
-    let nonce = Uuid::new_v4().to_string();
+    // Load authorizations for this order
+    let db_authzs = repo.list_authorizations_by_order(db_order.id).await?;
+    let authorization_urls: Vec<String> = db_authzs
+        .iter()
+        .map(|authz| format!("/acme/authz/{}", authz.authorization_id))
+        .collect();
+
+    let order = map_db_order_to_service(db_order, authorization_urls);
+
+    let nonce = generate_nonce(&state).await;
 
     Ok((StatusCode::OK, [("Replay-Nonce", nonce)], Json(order)).into_response())
 }
 
 /// Finalize order with CSR (RFC 8555 §7.4)
 async fn finalize_order(
-    State(_state): State<AcmeState>,
-    Path(id): Path<Uuid>,
+    State(state): State<AcmeState>,
+    Path(id): Path<String>,
     Json(request): Json<FinalizeRequest>,
 ) -> Result<Response> {
-    // TODO: Validate JWS signature
-    // TODO: Load order from database
-    // TODO: Verify all authorizations are valid
-    // TODO: Parse and validate CSR
-    // TODO: Issue certificate via CA service
-    // TODO: Update order status to Processing -> Valid
+    // TODO: Validate JWS signature (Phase 11)
+    // TODO: Parse and validate CSR (Phase 11)
+    // TODO: Verify SANs match order identifiers (Phase 11)
+    // TODO: Issue certificate via CA service (Phase 12)
 
     if request.csr.is_empty() {
-        return Err(Error::Malformed("CSR cannot be empty".to_string()));
+        return Err(Error::BadCsr("CSR cannot be empty".to_string()));
     }
 
-    let mut order = Order {
-        id,
-        account_id: Uuid::new_v4(),
-        status: OrderStatus::Processing,
-        identifiers: vec![Identifier {
-            id_type: "dns".to_string(),
-            value: "example.com".to_string(),
-        }],
-        authorizations: vec![format!("/acme/authz/{}", Uuid::new_v4())],
-        finalize: format!("/acme/order/{}/finalize", id),
-        certificate: None,
-        not_before: None,
-        not_after: None,
-        error: None,
-        expires: Some(Utc::now() + chrono::Duration::days(7)),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-    };
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
-    // Simulate certificate issuance
-    order.status = OrderStatus::Valid;
-    order.certificate = Some(format!("/acme/cert/{}", Uuid::new_v4()));
+    // Load order from database
+    let db_order = repo
+        .find_order_by_id(&id)
+        .await?
+        .ok_or(Error::Malformed(format!("Order not found: {}", id)))?;
 
-    let nonce = Uuid::new_v4().to_string();
+    // Verify all authorizations are valid
+    let db_authzs = repo.list_authorizations_by_order(db_order.id).await?;
+    let all_valid = db_authzs.iter().all(|authz| authz.status == "valid");
+
+    if !all_valid {
+        return Err(Error::OrderNotReady);
+    }
+
+    // Update order status to processing, then to valid
+    let _processing_order = repo.update_order_status(&id, "processing", None).await?;
+
+    // TODO: Actually issue certificate via CA (Phase 12)
+    // For now, simulate certificate issuance
+    let cert_id = Uuid::new_v4();
+    let valid_order = repo
+        .update_order_status(&id, "valid", Some(cert_id))
+        .await?;
+
+    let authorization_urls: Vec<String> = db_authzs
+        .iter()
+        .map(|authz| format!("/acme/authz/{}", authz.authorization_id))
+        .collect();
+
+    let order = map_db_order_to_service(valid_order, authorization_urls);
+
+    let nonce = generate_nonce(&state).await;
 
     Ok((StatusCode::OK, [("Replay-Nonce", nonce)], Json(order)).into_response())
 }
 
 /// Download certificate (RFC 8555 §7.4.2)
 async fn get_certificate(
-    State(_state): State<AcmeState>,
-    Path(id): Path<Uuid>,
+    State(state): State<AcmeState>,
+    Path(id): Path<String>,
 ) -> Result<Response> {
-    // TODO: Load certificate from database
-    // TODO: Return PEM-encoded certificate chain
+    // TODO: Load certificate from database (Phase 12 - CA integration)
+    // TODO: Return actual PEM-encoded certificate chain (Phase 12)
 
+    // For now, return placeholder certificate
     let cert_pem = format!(
         "-----BEGIN CERTIFICATE-----\n\
          MIICertificatePlaceholder{}\n\
@@ -409,7 +502,7 @@ async fn get_certificate(
         id
     );
 
-    let nonce = Uuid::new_v4().to_string();
+    let nonce = generate_nonce(&state).await;
 
     Ok((
         StatusCode::OK,
@@ -423,6 +516,138 @@ async fn get_certificate(
         cert_pem,
     )
         .into_response())
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Generate a new nonce and store in database
+async fn generate_nonce(state: &AcmeState) -> String {
+    let nonce = Uuid::new_v4().to_string();
+    let expires_at = Utc::now() + chrono::Duration::minutes(5);
+
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
+    if let Err(e) = repo.create_nonce(&nonce, expires_at).await {
+        eprintln!("Failed to store nonce: {}", e);
+    }
+
+    nonce
+}
+
+/// Map database AcmeAccount to service Account
+fn map_db_account_to_service(db: ostrich_db::models::AcmeAccount) -> Account {
+    use crate::account::AccountKey;
+
+    let key = serde_json::from_value::<AccountKey>(db.public_key_jwk.clone()).unwrap_or_default();
+
+    Account {
+        id: db.id,
+        status: match db.status.as_str() {
+            "valid" => AccountStatus::Valid,
+            "deactivated" => AccountStatus::Deactivated,
+            "revoked" => AccountStatus::Revoked,
+            _ => AccountStatus::Valid,
+        },
+        contact: db.contact,
+        terms_of_service_agreed: Some(db.terms_of_service_agreed),
+        external_account_binding: None,
+        orders: format!("/acme/account/{}/orders", db.account_id),
+        key,
+        created_at: db.created_at,
+        updated_at: db.updated_at,
+    }
+}
+
+/// Map database AcmeOrder to service Order
+fn map_db_order_to_service(
+    db: ostrich_db::models::AcmeOrder,
+    authorizations: Vec<String>,
+) -> Order {
+    // Parse identifiers from JSON
+    let identifiers =
+        serde_json::from_value::<Vec<Identifier>>(db.identifiers.clone()).unwrap_or_default();
+
+    Order {
+        id: db.id,
+        account_id: db.account_id,
+        status: match db.status.as_str() {
+            "pending" => OrderStatus::Pending,
+            "ready" => OrderStatus::Ready,
+            "processing" => OrderStatus::Processing,
+            "valid" => OrderStatus::Valid,
+            "invalid" => OrderStatus::Invalid,
+            _ => OrderStatus::Pending,
+        },
+        identifiers,
+        authorizations,
+        finalize: format!("/acme/order/{}/finalize", db.order_id),
+        certificate: db
+            .certificate_id
+            .map(|cert_id| format!("/acme/cert/{}", cert_id)),
+        not_before: db.not_before,
+        not_after: db.not_after,
+        error: None,
+        expires: Some(db.expires),
+        created_at: db.created_at,
+        updated_at: db.updated_at,
+    }
+}
+
+/// Map database AcmeAuthorization to service Authorization
+fn map_db_authorization_to_service(
+    db: ostrich_db::models::AcmeAuthorization,
+    challenges: Vec<Challenge>,
+) -> Authorization {
+    Authorization {
+        id: db.id,
+        order_id: db.order_id,
+        status: match db.status.as_str() {
+            "pending" => AuthorizationStatus::Pending,
+            "valid" => AuthorizationStatus::Valid,
+            "invalid" => AuthorizationStatus::Invalid,
+            "deactivated" => AuthorizationStatus::Deactivated,
+            "expired" => AuthorizationStatus::Expired,
+            "revoked" => AuthorizationStatus::Revoked,
+            _ => AuthorizationStatus::Pending,
+        },
+        identifier: Identifier {
+            id_type: db.identifier_type,
+            value: db.identifier_value,
+        },
+        expires: Some(db.expires),
+        challenges,
+        wildcard: Some(db.wildcard),
+        created_at: db.created_at,
+        updated_at: db.updated_at,
+    }
+}
+
+/// Map database AcmeChallenge to service Challenge
+fn map_db_challenge_to_service(db: ostrich_db::models::AcmeChallenge) -> Challenge {
+    Challenge {
+        id: db.id,
+        authorization_id: db.authorization_id,
+        challenge_type: match db.challenge_type.as_str() {
+            "http-01" => ChallengeType::Http01,
+            "dns-01" => ChallengeType::Dns01,
+            "tls-alpn-01" => ChallengeType::TlsAlpn01,
+            _ => ChallengeType::Http01,
+        },
+        status: match db.status.as_str() {
+            "pending" => ChallengeStatus::Pending,
+            "processing" => ChallengeStatus::Processing,
+            "valid" => ChallengeStatus::Valid,
+            "invalid" => ChallengeStatus::Invalid,
+            _ => ChallengeStatus::Pending,
+        },
+        url: format!("/acme/challenge/{}", db.challenge_id),
+        token: db.token,
+        error: db.error_detail,
+        validated: db.validated_at,
+        created_at: db.created_at,
+        updated_at: db.updated_at,
+    }
 }
 
 #[cfg(test)]
