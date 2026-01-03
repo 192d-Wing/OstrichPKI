@@ -36,6 +36,9 @@ base64 = { workspace = true }
 
 # Cryptography
 sha2 = { workspace = true }
+der = { workspace = true }
+x509-cert = { workspace = true }
+pem-rfc7468 = { workspace = true }
 
 # Utilities
 thiserror = { workspace = true }

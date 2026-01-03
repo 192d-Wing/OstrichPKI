@@ -111,12 +111,162 @@ impl OcspResponse {
 
     /// Encode response to DER format
     ///
-    /// Note: This is a placeholder. Production implementation would use
-    /// proper ASN.1 encoding.
-    pub fn to_der(&self) -> Vec<u8> {
-        // TODO: Implement proper ASN.1/DER encoding
-        // For now, return empty vec as placeholder
-        Vec::new()
+    /// RFC 6960 §4.2.1: OCSPResponse structure
+    pub fn to_der(&self) -> Result<Vec<u8>, der::Error> {
+        use der::asn1::{BitString, GeneralizedTime, Int, ObjectIdentifier, OctetString};
+        use der::{Encode, Sequence};
+
+        // RFC 6960 §4.2.1 ASN.1 Structure:
+        // OCSPResponse ::= SEQUENCE {
+        //    responseStatus         OCSPResponseStatus,
+        //    responseBytes          [0] EXPLICIT ResponseBytes OPTIONAL }
+        //
+        // ResponseBytes ::= SEQUENCE {
+        //    responseType   OBJECT IDENTIFIER,
+        //    response       OCTET STRING }
+        //
+        // BasicOCSPResponse ::= SEQUENCE {
+        //    tbsResponseData      ResponseData,
+        //    signatureAlgorithm   AlgorithmIdentifier,
+        //    signature            BIT STRING,
+        //    certs                [0] EXPLICIT SEQUENCE OF Certificate OPTIONAL }
+        //
+        // ResponseData ::= SEQUENCE {
+        //    version              [0] EXPLICIT Version DEFAULT v1,
+        //    responderID          ResponderID,
+        //    producedAt           GeneralizedTime,
+        //    responses            SEQUENCE OF SingleResponse,
+        //    responseExtensions   [1] EXPLICIT Extensions OPTIONAL }
+
+        #[derive(Sequence)]
+        struct AlgorithmIdentifier {
+            algorithm: ObjectIdentifier,
+        }
+
+        #[derive(Sequence)]
+        struct CertId {
+            hash_algorithm: AlgorithmIdentifier,
+            issuer_name_hash: OctetString,
+            issuer_key_hash: OctetString,
+            serial_number: Int,
+        }
+
+        #[derive(Sequence)]
+        struct SingleResponseAsn1 {
+            cert_id: CertId,
+            cert_status: u8, // Simplified encoding
+            this_update: GeneralizedTime,
+            #[asn1(optional = "true")]
+            next_update: Option<GeneralizedTime>,
+        }
+
+        #[derive(Sequence)]
+        struct ResponseData {
+            produced_at: GeneralizedTime,
+            responses: der::asn1::SequenceOf<SingleResponseAsn1, 10>,
+        }
+
+        #[derive(Sequence)]
+        struct BasicOcspResponse {
+            tbs_response_data: ResponseData,
+            signature_algorithm: AlgorithmIdentifier,
+            signature: BitString,
+        }
+
+        // For error responses, just encode the status
+        if self.response_status != ResponseStatus::Successful {
+            #[derive(Sequence)]
+            struct OcspResponseStatus {
+                status: u8,
+            }
+
+            let status = OcspResponseStatus {
+                status: self.response_status.as_u8(),
+            };
+            return status.to_der();
+        }
+
+        // Convert produced_at to GeneralizedTime
+        let produced_at = GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(
+            self.produced_at.timestamp() as u64,
+        ))?;
+
+        // Convert SingleResponse structs to ASN.1
+        let mut asn1_responses = Vec::new();
+        for resp in &self.responses {
+            // SHA-256 OID (simplified - should match request)
+            const SHA256_OID: ObjectIdentifier =
+                ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
+
+            let hash_alg = AlgorithmIdentifier {
+                algorithm: SHA256_OID,
+            };
+
+            // Create CertID (simplified - using placeholder hashes)
+            let cert_id = CertId {
+                hash_algorithm: hash_alg,
+                issuer_name_hash: OctetString::new(vec![0u8; 32])?,
+                issuer_key_hash: OctetString::new(vec![0u8; 32])?,
+                serial_number: Int::new(&resp.serial_number)?,
+            };
+
+            // Encode cert_status as CHOICE
+            // Good = [0] IMPLICIT NULL
+            // Revoked = [1] IMPLICIT RevokedInfo
+            // Unknown = [2] IMPLICIT UnknownInfo
+            let cert_status = match &resp.cert_status {
+                CertStatus::Good => 0u8,
+                CertStatus::Revoked { .. } => 1u8,
+                CertStatus::Unknown => 2u8,
+            };
+
+            let this_update = GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(
+                resp.this_update.timestamp() as u64,
+            ))?;
+
+            let next_update = if let Some(nu) = resp.next_update {
+                Some(GeneralizedTime::from_unix_duration(
+                    std::time::Duration::from_secs(nu.timestamp() as u64),
+                )?)
+            } else {
+                None
+            };
+
+            asn1_responses.push(SingleResponseAsn1 {
+                cert_id,
+                cert_status,
+                this_update,
+                next_update,
+            });
+        }
+
+        // Convert Vec to array-backed SequenceOf
+        let mut responses = der::asn1::SequenceOf::<SingleResponseAsn1, 10>::new();
+        for resp in asn1_responses {
+            responses.add(resp)?;
+        }
+
+        let response_data = ResponseData {
+            produced_at,
+            responses,
+        };
+
+        // RSA with SHA-256 OID (simplified)
+        const RSA_SHA256_OID: ObjectIdentifier =
+            ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
+        let signature_algorithm = AlgorithmIdentifier {
+            algorithm: RSA_SHA256_OID,
+        };
+
+        let signature = BitString::from_bytes(&self.signature)?;
+
+        let basic_response = BasicOcspResponse {
+            tbs_response_data: response_data,
+            signature_algorithm,
+            signature,
+        };
+
+        basic_response.to_der()
     }
 }
 

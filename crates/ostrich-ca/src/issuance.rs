@@ -169,16 +169,22 @@ impl CertificateIssuer {
         // Build TBS certificate
         let tbs_cert = builder.build_tbs()?;
 
-        // TODO: Encode TBS certificate to DER and sign with CA key
-        // For now, use placeholder
-        let der_encoded = Vec::new(); // tbs_cert.to_der()?
-        let _signature = self
+        // Encode TBS certificate to DER for signing
+        let tbs_der = tbs_cert.to_der()?;
+
+        // Sign the TBS certificate with CA key
+        // TODO: Determine signature algorithm from CA key type
+        // For now, use RSA-PSS with SHA-256
+        let signature = self
             .crypto_provider
-            .sign(&self.ca_key, Algorithm::RsaPssSha256, &der_encoded)
+            .sign(&self.ca_key, Algorithm::RsaPssSha256, &tbs_der)
             .await?;
 
-        // TODO: Construct final certificate with signature
-        let pem_encoded = String::new(); // Convert DER to PEM
+        // Construct final signed certificate
+        let der_encoded = self.build_signed_certificate(&tbs_der, &signature)?;
+
+        // Convert DER to PEM
+        let pem_encoded = self.der_to_pem(&der_encoded)?;
 
         // Store certificate in database
         let cert_id = Uuid::new_v4();
@@ -222,6 +228,49 @@ impl CertificateIssuer {
             not_before: tbs_cert.not_before,
             not_after: tbs_cert.not_after,
         })
+    }
+
+    /// Build a signed X.509 certificate from TBS and signature
+    ///
+    /// RFC 5280 §4.1 - Certificate structure
+    fn build_signed_certificate(&self, tbs_der: &[u8], signature: &[u8]) -> Result<Vec<u8>> {
+        use der::{Decode, Encode, asn1::BitString};
+        use x509_cert::{Certificate as X509Certificate, TbsCertificate};
+
+        // Parse TBS certificate from DER
+        let tbs = TbsCertificate::from_der(tbs_der)
+            .map_err(|e| Error::Issuance(format!("Failed to parse TBS certificate: {}", e)))?;
+
+        // Get signature algorithm (same as in TBS)
+        let signature_algorithm = tbs.signature.clone();
+
+        // Convert signature bytes to BitString
+        let signature_value = BitString::from_bytes(signature)
+            .map_err(|e| Error::Issuance(format!("Failed to create signature BitString: {}", e)))?;
+
+        // Build complete certificate
+        let certificate = X509Certificate {
+            tbs_certificate: tbs,
+            signature_algorithm,
+            signature: signature_value,
+        };
+
+        // Encode to DER
+        certificate
+            .to_der()
+            .map_err(|e| Error::Issuance(format!("Failed to encode certificate: {}", e)))
+    }
+
+    /// Convert DER-encoded certificate to PEM format
+    ///
+    /// RFC 7468 - PEM encoding
+    fn der_to_pem(&self, der: &[u8]) -> Result<String> {
+        use pem_rfc7468::{LineEnding, encode_string};
+
+        const CERTIFICATE_LABEL: &str = "CERTIFICATE";
+
+        encode_string(CERTIFICATE_LABEL, LineEnding::LF, der)
+            .map_err(|e| Error::Issuance(format!("Failed to encode PEM: {}", e)))
     }
 
     /// Generate a cryptographically random serial number

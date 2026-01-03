@@ -57,7 +57,9 @@ async fn ocsp_post(State(state): State<Arc<OcspApiState>>, body: Bytes) -> Resul
     let response = state.responder.process_request(request).await?;
 
     // Encode response to DER
-    let response_der = response.to_der();
+    let response_der = response
+        .to_der()
+        .map_err(|e| Error::InternalError(format!("Failed to encode response: {}", e)))?;
 
     // Return with OCSP response content type
     Ok((
@@ -93,7 +95,9 @@ async fn ocsp_get(
     let response = state.responder.process_request(request).await?;
 
     // Encode response to DER
-    let response_der = response.to_der();
+    let response_der = response
+        .to_der()
+        .map_err(|e| Error::InternalError(format!("Failed to encode response: {}", e)))?;
 
     // Return with OCSP response content type
     Ok((
@@ -133,7 +137,7 @@ impl IntoResponse for Error {
 
         // Create error response
         let error_response = crate::OcspResponse::error(ocsp_status);
-        let response_der = error_response.to_der();
+        let response_der = error_response.to_der().unwrap_or_default();
 
         (
             status,

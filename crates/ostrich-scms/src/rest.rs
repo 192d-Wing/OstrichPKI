@@ -7,11 +7,11 @@ use crate::{
     token::{Token, TokenEvent, TokenKey, TokenModel, TokenStatus},
 };
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

@@ -37,12 +37,103 @@ pub enum HashAlgorithm {
 impl OcspRequest {
     /// Parse OCSP request from DER-encoded bytes
     ///
-    /// Note: This is a simplified parser. Production use would require
-    /// full ASN.1 parsing of OCSPRequest structure.
-    pub fn from_der(_der: &[u8]) -> Result<Self> {
-        // TODO: Implement full ASN.1 parsing using der crate
-        // For now, return a placeholder error
-        Err(Error::MalformedRequest)
+    /// RFC 6960 §4.1.1: OCSPRequest structure
+    pub fn from_der(der: &[u8]) -> Result<Self> {
+        use der::asn1::{ObjectIdentifier, OctetString};
+        use der::{Decode, Sequence};
+
+        // RFC 6960 §4.1.1 ASN.1 Structure:
+        // OCSPRequest ::= SEQUENCE {
+        //     tbsRequest      TBSRequest,
+        //     optionalSignature   [0] EXPLICIT Signature OPTIONAL }
+        //
+        // TBSRequest ::= SEQUENCE {
+        //     version             [0] EXPLICIT Version DEFAULT v1,
+        //     requestorName       [1] EXPLICIT GeneralName OPTIONAL,
+        //     requestList         SEQUENCE OF Request,
+        //     requestExtensions   [2] EXPLICIT Extensions OPTIONAL }
+        //
+        // Request ::= SEQUENCE {
+        //     reqCert                     CertID,
+        //     singleRequestExtensions     [0] EXPLICIT Extensions OPTIONAL }
+        //
+        // CertID ::= SEQUENCE {
+        //     hashAlgorithm       AlgorithmIdentifier,
+        //     issuerNameHash      OCTET STRING,
+        //     issuerKeyHash       OCTET STRING,
+        //     serialNumber        CertificateSerialNumber }
+
+        #[derive(Sequence)]
+        struct AlgorithmIdentifier {
+            algorithm: ObjectIdentifier,
+        }
+
+        #[derive(Sequence)]
+        struct CertId {
+            hash_algorithm: AlgorithmIdentifier,
+            issuer_name_hash: OctetString,
+            issuer_key_hash: OctetString,
+            serial_number: der::asn1::Int,
+        }
+
+        #[derive(Sequence)]
+        struct Request {
+            req_cert: CertId,
+        }
+
+        #[derive(Sequence)]
+        struct TbsRequest {
+            request_list: der::asn1::SequenceOf<Request, 10>,
+        }
+
+        #[derive(Sequence)]
+        struct OcspRequestAsn1 {
+            tbs_request: TbsRequest,
+        }
+
+        // Parse the DER
+        let ocsp_req = OcspRequestAsn1::from_der(der).map_err(|_| Error::MalformedRequest)?;
+
+        // Extract first request (simplified - only handle single cert queries)
+        let first_request = ocsp_req
+            .tbs_request
+            .request_list
+            .iter()
+            .next()
+            .ok_or(Error::MalformedRequest)?;
+
+        let cert_id = &first_request.req_cert;
+
+        // Convert hash algorithm OID to enum
+        let hash_algorithm = Self::oid_to_hash_algorithm(&cert_id.hash_algorithm.algorithm)?;
+
+        // Convert serial number from ASN.1 Int to bytes
+        let serial_number = cert_id.serial_number.as_bytes().to_vec();
+
+        Ok(Self {
+            serial_number,
+            issuer_name_hash: cert_id.issuer_name_hash.as_bytes().to_vec(),
+            issuer_key_hash: cert_id.issuer_key_hash.as_bytes().to_vec(),
+            hash_algorithm,
+            nonce: None, // TODO: Extract nonce from extensions
+        })
+    }
+
+    /// Convert OID to HashAlgorithm
+    fn oid_to_hash_algorithm(oid: &der::asn1::ObjectIdentifier) -> Result<HashAlgorithm> {
+        const SHA256_OID: &str = "2.16.840.1.101.3.4.2.1";
+        const SHA384_OID: &str = "2.16.840.1.101.3.4.2.2";
+        const SHA512_OID: &str = "2.16.840.1.101.3.4.2.3";
+
+        match oid.to_string().as_str() {
+            SHA256_OID => Ok(HashAlgorithm::Sha256),
+            SHA384_OID => Ok(HashAlgorithm::Sha384),
+            SHA512_OID => Ok(HashAlgorithm::Sha512),
+            _ => Err(Error::InvalidRequest(format!(
+                "Unsupported hash algorithm OID: {}",
+                oid
+            ))),
+        }
     }
 
     /// Create a simple OCSP request for testing

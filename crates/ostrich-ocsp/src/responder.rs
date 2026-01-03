@@ -7,12 +7,18 @@ use crate::{
     request::OcspRequest,
     response::{CertStatus, OcspResponse, SingleResponse},
 };
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
-use ostrich_crypto::CryptoProvider;
+use ostrich_crypto::{Algorithm, CryptoProvider, KeyType, key::ProviderId};
 use ostrich_db::{DatabasePool, repository::CertificateRepository};
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// Response data structure for signing
+struct ResponseData {
+    produced_at: DateTime<Utc>,
+    responses: Vec<SingleResponse>,
+}
 
 /// OCSP Responder configuration
 #[derive(Debug, Clone)]
@@ -162,13 +168,39 @@ impl OcspResponder {
     }
 
     /// Sign an OCSP response
+    ///
+    /// RFC 6960 §4.2.1: BasicOCSPResponse signing
     async fn sign_response(
         &self,
         responses: Vec<SingleResponse>,
         nonce: Option<Vec<u8>>,
     ) -> Result<OcspResponse> {
-        // TODO: Implement actual response signing
-        // For now, create a placeholder response with empty signature
+        // Build response data structure for signing
+        let response_data = ResponseData {
+            produced_at: chrono::Utc::now(),
+            responses: responses.clone(),
+        };
+
+        // Encode response data to DER for signing
+        let tbs_der = self.encode_response_data(&response_data)?;
+
+        // Sign the response data
+        // TODO: Load actual key handle from database or configuration
+        // For now, create a placeholder key handle
+        let key_handle = ostrich_crypto::KeyHandle::new(
+            ProviderId::Software,
+            self.config.signing_key_id.as_bytes().to_vec(),
+            KeyType::Rsa2048,
+            Algorithm::RsaPssSha256,
+            "ocsp-signing".to_string(),
+        );
+        let signature = self
+            .crypto
+            .sign(&key_handle, Algorithm::RsaPssSha256, &tbs_der)
+            .await
+            .map_err(|e| {
+                crate::Error::SigningError(format!("Failed to sign OCSP response: {}", e))
+            })?;
 
         let nonce = if self.config.include_nonce {
             nonce
@@ -176,12 +208,111 @@ impl OcspResponder {
             None
         };
 
+        // For now, use empty signing cert (should load from database)
+        let signing_cert = Vec::new();
+
         Ok(OcspResponse::successful(
             responses,
-            Vec::new(), // Placeholder signature
-            Vec::new(), // Placeholder signing cert
+            signature,
+            signing_cert,
             nonce,
         ))
+    }
+
+    /// Encode ResponseData to DER for signing
+    ///
+    /// RFC 6960 §4.2.1: ResponseData structure
+    fn encode_response_data(&self, data: &ResponseData) -> Result<Vec<u8>> {
+        use der::asn1::{GeneralizedTime, Int, ObjectIdentifier, OctetString};
+        use der::{Encode, Sequence};
+
+        #[derive(Sequence)]
+        struct AlgorithmIdentifier {
+            algorithm: ObjectIdentifier,
+        }
+
+        #[derive(Sequence)]
+        struct CertId {
+            hash_algorithm: AlgorithmIdentifier,
+            issuer_name_hash: OctetString,
+            issuer_key_hash: OctetString,
+            serial_number: Int,
+        }
+
+        #[derive(Sequence)]
+        struct SingleResponseAsn1 {
+            cert_id: CertId,
+            cert_status: u8, // Simplified - just encode status as integer
+            this_update: GeneralizedTime,
+        }
+
+        #[derive(Sequence)]
+        struct ResponseDataAsn1 {
+            produced_at: GeneralizedTime,
+            responses: der::asn1::SequenceOf<SingleResponseAsn1, 10>,
+        }
+
+        let produced_at = GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(
+            data.produced_at.timestamp() as u64,
+        ))
+        .map_err(|e| crate::Error::InternalError(format!("Invalid timestamp: {}", e)))?;
+
+        let mut asn1_responses = Vec::new();
+        for resp in &data.responses {
+            const SHA256_OID: ObjectIdentifier =
+                ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
+
+            let hash_alg = AlgorithmIdentifier {
+                algorithm: SHA256_OID,
+            };
+
+            let cert_id = CertId {
+                hash_algorithm: hash_alg,
+                issuer_name_hash: OctetString::new(vec![0u8; 32]).map_err(|e| {
+                    crate::Error::InternalError(format!("Failed to encode hash: {}", e))
+                })?,
+                issuer_key_hash: OctetString::new(vec![0u8; 32]).map_err(|e| {
+                    crate::Error::InternalError(format!("Failed to encode hash: {}", e))
+                })?,
+                serial_number: Int::new(&resp.serial_number).map_err(|e| {
+                    crate::Error::InternalError(format!("Failed to encode serial: {}", e))
+                })?,
+            };
+
+            let cert_status = match &resp.cert_status {
+                crate::response::CertStatus::Good => 0u8,
+                crate::response::CertStatus::Revoked { .. } => 1u8,
+                crate::response::CertStatus::Unknown => 2u8,
+            };
+
+            let this_update = GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(
+                resp.this_update.timestamp() as u64,
+            ))
+            .map_err(|e| crate::Error::InternalError(format!("Invalid timestamp: {}", e)))?;
+
+            asn1_responses.push(SingleResponseAsn1 {
+                cert_id,
+                cert_status,
+                this_update,
+            });
+        }
+
+        // Convert Vec to array-backed SequenceOf
+        let mut responses = der::asn1::SequenceOf::<SingleResponseAsn1, 10>::new();
+        for resp in asn1_responses {
+            responses
+                .add(resp)
+                .map_err(|e| crate::Error::InternalError(format!("Too many responses: {}", e)))?;
+        }
+
+        let response_data_asn1 = ResponseDataAsn1 {
+            produced_at,
+            responses,
+        };
+
+        response_data_asn1.to_der().map_err(|e| {
+            crate::Error::InternalError(format!("Failed to encode response data: {}", e))
+        })
     }
 
     /// Get OCSP responder configuration

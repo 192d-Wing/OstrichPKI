@@ -194,15 +194,20 @@ impl RevocationManager {
 
         let tbs_crl = crl_builder.build_tbs()?;
 
-        // TODO: Sign CRL with CA key
-        let der_encoded = Vec::new(); // tbs_crl.to_der()?
-        let _signature = self
+        // Encode TBS CRL to DER for signing
+        let tbs_der = tbs_crl.to_der()?;
+
+        // Sign the TBS CRL with CA key
+        let signature = self
             .crypto_provider
-            .sign(&self.ca_key, Algorithm::RsaPssSha256, &der_encoded)
+            .sign(&self.ca_key, Algorithm::RsaPssSha256, &tbs_der)
             .await?;
 
-        // TODO: Construct final CRL with signature
-        let pem_encoded = String::new();
+        // Construct final signed CRL
+        let der_encoded = self.build_signed_crl(&tbs_der, &signature)?;
+
+        // Convert DER to PEM
+        let pem_encoded = self.crl_der_to_pem(&der_encoded)?;
 
         // Record audit event
         audit_event.details = Some(serde_json::json!({
@@ -229,6 +234,49 @@ impl RevocationManager {
             der_encoded,
             pem_encoded,
         })
+    }
+
+    /// Build a signed CRL from TBS and signature
+    ///
+    /// RFC 5280 §5.1 - CRL structure
+    fn build_signed_crl(&self, tbs_der: &[u8], signature: &[u8]) -> Result<Vec<u8>> {
+        use der::{Decode, Encode, asn1::BitString};
+        use x509_cert::crl::{CertificateList, TbsCertList};
+
+        // Parse TBS CRL from DER
+        let tbs = TbsCertList::from_der(tbs_der)
+            .map_err(|e| Error::CrlGeneration(format!("Failed to parse TBS CRL: {}", e)))?;
+
+        // Get signature algorithm (same as in TBS)
+        let signature_algorithm = tbs.signature.clone();
+
+        // Convert signature bytes to BitString
+        let signature_value = BitString::from_bytes(signature).map_err(|e| {
+            Error::CrlGeneration(format!("Failed to create signature BitString: {}", e))
+        })?;
+
+        // Build complete CRL
+        let crl = CertificateList {
+            tbs_cert_list: tbs,
+            signature_algorithm,
+            signature: signature_value,
+        };
+
+        // Encode to DER
+        crl.to_der()
+            .map_err(|e| Error::CrlGeneration(format!("Failed to encode CRL: {}", e)))
+    }
+
+    /// Convert DER-encoded CRL to PEM format
+    ///
+    /// RFC 7468 - PEM encoding
+    fn crl_der_to_pem(&self, der: &[u8]) -> Result<String> {
+        use pem_rfc7468::{LineEnding, encode_string};
+
+        const CRL_LABEL: &str = "X509 CRL";
+
+        encode_string(CRL_LABEL, LineEnding::LF, der)
+            .map_err(|e| Error::CrlGeneration(format!("Failed to encode CRL PEM: {}", e)))
     }
 
     /// Check if a certificate is revoked

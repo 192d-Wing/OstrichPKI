@@ -58,20 +58,78 @@ pub fn create_router(state: EstState) -> Router {
 /// Returns a PKCS#7 certs-only structure containing CA certificate chain
 async fn get_ca_certs(State(_state): State<EstState>) -> Result<Response> {
     // TODO: Fetch CA certificate chain from database
-    // TODO: Encode as PKCS#7 certs-only
+    // For now, create empty PKCS#7 certs-only structure
 
-    // Placeholder PKCS#7 structure
-    let pkcs7_placeholder = vec![
-        0x30, 0x82, // SEQUENCE
-        0x01, 0x00, // length placeholder
-    ];
+    let pkcs7_der = encode_certs_only_pkcs7(&[])?;
 
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/pkcs7-mime")],
-        pkcs7_placeholder,
+        pkcs7_der,
     )
         .into_response())
+}
+
+/// Encode certificates as PKCS#7 certs-only structure
+///
+/// RFC 7030 §4.1: Responses use degenerate PKCS#7 (CMS) SignedData
+/// with no signed content, only certificates in the certificates field
+fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
+    use cms::{content_info::ContentInfo, signed_data::SignedData};
+    use der::{
+        Decode, Encode,
+        asn1::{ObjectIdentifier, SetOfVec},
+    };
+    use x509_cert::Certificate;
+
+    // RFC 5652 §5: SignedData content type OID
+    const SIGNED_DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2");
+
+    // Parse certificates from DER
+    let mut cert_choices = SetOfVec::new();
+    for cert_der in certs {
+        let cert = Certificate::from_der(cert_der)
+            .map_err(|e| Error::Internal(format!("Invalid certificate DER: {}", e)))?;
+        let choice = cms::cert::CertificateChoices::Certificate(cert);
+        cert_choices
+            .insert(choice)
+            .map_err(|e| Error::Internal(format!("Too many certificates: {}", e)))?;
+    }
+
+    // Create degenerate SignedData with no content and empty SignerInfos
+    let digest_algorithms = SetOfVec::new();
+
+    // RFC 5652 §3: data content type OID
+    const DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
+
+    let encap_content_info = cms::signed_data::EncapsulatedContentInfo {
+        econtent_type: DATA_OID,
+        econtent: None,
+    };
+
+    let signed_data = SignedData {
+        version: cms::content_info::CmsVersion::V1,
+        digest_algorithms,
+        encap_content_info,
+        certificates: if cert_choices.is_empty() {
+            None
+        } else {
+            Some(cert_choices.into())
+        },
+        crls: None,
+        signer_infos: SetOfVec::new().into(),
+    };
+
+    // Wrap in ContentInfo
+    let content_info = ContentInfo {
+        content_type: SIGNED_DATA_OID,
+        content: der::Any::encode_from(&signed_data)
+            .map_err(|e| Error::Internal(format!("Failed to encode SignedData: {}", e)))?,
+    };
+
+    content_info
+        .to_der()
+        .map_err(|e| Error::Internal(format!("Failed to encode PKCS#7: {}", e)))
 }
 
 /// Simple enrollment (RFC 7030 §4.2.1)
@@ -97,11 +155,9 @@ async fn simple_enroll(State(_state): State<EstState>, body: Bytes) -> Result<Re
     // Create enrollment record
     let _enrollment = Enrollment::new("client-unknown".to_string(), csr_der.clone());
 
-    // Placeholder: Return PKCS#7 with certificate
-    let pkcs7_response = vec![
-        0x30, 0x82, // SEQUENCE
-        0x02, 0x00, // length placeholder
-    ];
+    // TODO: Issue certificate via CA service
+    // For now, return empty PKCS#7 structure
+    let pkcs7_response = encode_certs_only_pkcs7(&[])?;
 
     Ok((
         StatusCode::OK,
@@ -130,11 +186,9 @@ async fn simple_reenroll(State(_state): State<EstState>, body: Bytes) -> Result<
         return Err(Error::InvalidCsr("CSR too short".to_string()));
     }
 
-    // Placeholder: Return PKCS#7 with renewed certificate
-    let pkcs7_response = vec![
-        0x30, 0x82, // SEQUENCE
-        0x03, 0x00, // length placeholder
-    ];
+    // TODO: Issue new certificate via CA service
+    // For now, return empty PKCS#7 structure
+    let pkcs7_response = encode_certs_only_pkcs7(&[])?;
 
     Ok((
         StatusCode::OK,

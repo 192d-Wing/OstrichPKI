@@ -21,6 +21,10 @@ pub enum Error {
     #[error("DER encoding error: {0}")]
     Der(String),
 
+    /// Encoding error (general)
+    #[error("Encoding error: {0}")]
+    Encoding(String),
+
     /// PEM encoding/decoding error
     #[error("PEM encoding error: {0}")]
     Pem(String),

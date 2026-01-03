@@ -272,9 +272,213 @@ impl TbsCertificate {
     ///
     /// RFC 5280 §4.1.1.2 - signatureAlgorithm
     pub fn to_der(&self) -> Result<Vec<u8>> {
-        // TODO: Implement DER encoding using x509-cert crate
-        // For now, return empty vec as stub
-        Ok(Vec::new())
+        use der::Encode;
+        use spki::SubjectPublicKeyInfoOwned;
+        use x509_cert::serial_number::SerialNumber as X509SerialNumber;
+
+        // Convert our types to x509-cert types
+
+        // Parse serial number - RFC 5280 requires positive integer
+        let serial = X509SerialNumber::new(self.serial_number.as_bytes())
+            .map_err(|e| Error::Encoding(format!("Invalid serial number: {}", e)))?;
+
+        // Convert issuer DN to X.509 Name
+        let issuer = self.dn_to_name(&self.issuer)?;
+
+        // Convert subject DN to X.509 Name
+        let subject = self.dn_to_name(&self.subject)?;
+
+        // Convert validity period to X.509 Time
+        let not_before = self.datetime_to_time(self.not_before)?;
+        let not_after = self.datetime_to_time(self.not_after)?;
+        let validity = x509_cert::time::Validity {
+            not_before,
+            not_after,
+        };
+
+        // Parse SubjectPublicKeyInfo from DER
+        let subject_public_key_info =
+            SubjectPublicKeyInfoOwned::try_from(self.public_key.as_slice())
+                .map_err(|e| Error::Encoding(format!("Invalid public key: {}", e)))?;
+
+        // Build TBS certificate structure
+        let tbs = x509_cert::TbsCertificate {
+            version: x509_cert::Version::V3,
+            serial_number: serial,
+            signature: self.get_signature_algorithm()?,
+            issuer,
+            validity,
+            subject,
+            subject_public_key_info,
+            issuer_unique_id: None,
+            subject_unique_id: None,
+            extensions: self.build_extensions()?,
+        };
+
+        // Encode to DER
+        tbs.to_der()
+            .map_err(|e| Error::Encoding(format!("Failed to encode TBS certificate: {}", e)))
+    }
+
+    /// Convert DistinguishedName to X.509 Name
+    fn dn_to_name(&self, dn: &DistinguishedName) -> Result<x509_cert::name::Name> {
+        use const_oid::db::rfc4519::{C, CN, L, O, OU, SERIAL_NUMBER, ST};
+        use der::Any;
+        use der::asn1::{PrintableStringRef, SetOfVec, Utf8StringRef};
+        use x509_cert::attr::AttributeTypeAndValue;
+        use x509_cert::name::{Name, RelativeDistinguishedName};
+
+        let mut rdns = Vec::new();
+
+        // Build RDNs in reverse order (root to leaf)
+        if let Some(c) = &dn.country {
+            let value = PrintableStringRef::new(c.as_bytes())
+                .map_err(|e| Error::Encoding(format!("Invalid country: {}", e)))?;
+            let atv = AttributeTypeAndValue {
+                oid: C,
+                value: Any::encode_from(&value)
+                    .map_err(|e| Error::Encoding(format!("Failed to encode country: {}", e)))?,
+            };
+            let set = SetOfVec::try_from(vec![atv])
+                .map_err(|e| Error::Encoding(format!("Failed to create SET: {}", e)))?;
+            rdns.push(RelativeDistinguishedName::from(set));
+        }
+
+        if let Some(st) = &dn.state_or_province {
+            let value = Utf8StringRef::new(st)
+                .map_err(|e| Error::Encoding(format!("Invalid state: {}", e)))?;
+            let atv = AttributeTypeAndValue {
+                oid: ST,
+                value: Any::encode_from(&value)
+                    .map_err(|e| Error::Encoding(format!("Failed to encode state: {}", e)))?,
+            };
+            let set = SetOfVec::try_from(vec![atv])
+                .map_err(|e| Error::Encoding(format!("Failed to create SET: {}", e)))?;
+            rdns.push(RelativeDistinguishedName::from(set));
+        }
+
+        if let Some(l) = &dn.locality {
+            let value = Utf8StringRef::new(l)
+                .map_err(|e| Error::Encoding(format!("Invalid locality: {}", e)))?;
+            let atv = AttributeTypeAndValue {
+                oid: L,
+                value: Any::encode_from(&value)
+                    .map_err(|e| Error::Encoding(format!("Failed to encode locality: {}", e)))?,
+            };
+            let set = SetOfVec::try_from(vec![atv])
+                .map_err(|e| Error::Encoding(format!("Failed to create SET: {}", e)))?;
+            rdns.push(RelativeDistinguishedName::from(set));
+        }
+
+        if let Some(o) = &dn.organization {
+            let value = Utf8StringRef::new(o)
+                .map_err(|e| Error::Encoding(format!("Invalid organization: {}", e)))?;
+            let atv = AttributeTypeAndValue {
+                oid: O,
+                value: Any::encode_from(&value).map_err(|e| {
+                    Error::Encoding(format!("Failed to encode organization: {}", e))
+                })?,
+            };
+            let set = SetOfVec::try_from(vec![atv])
+                .map_err(|e| Error::Encoding(format!("Failed to create SET: {}", e)))?;
+            rdns.push(RelativeDistinguishedName::from(set));
+        }
+
+        if let Some(ou) = &dn.organizational_unit {
+            let value = Utf8StringRef::new(ou)
+                .map_err(|e| Error::Encoding(format!("Invalid OU: {}", e)))?;
+            let atv = AttributeTypeAndValue {
+                oid: OU,
+                value: Any::encode_from(&value)
+                    .map_err(|e| Error::Encoding(format!("Failed to encode OU: {}", e)))?,
+            };
+            let set = SetOfVec::try_from(vec![atv])
+                .map_err(|e| Error::Encoding(format!("Failed to create SET: {}", e)))?;
+            rdns.push(RelativeDistinguishedName::from(set));
+        }
+
+        if let Some(cn) = &dn.common_name {
+            let value = Utf8StringRef::new(cn)
+                .map_err(|e| Error::Encoding(format!("Invalid CN: {}", e)))?;
+            let atv = AttributeTypeAndValue {
+                oid: CN,
+                value: Any::encode_from(&value)
+                    .map_err(|e| Error::Encoding(format!("Failed to encode CN: {}", e)))?,
+            };
+            let set = SetOfVec::try_from(vec![atv])
+                .map_err(|e| Error::Encoding(format!("Failed to create SET: {}", e)))?;
+            rdns.push(RelativeDistinguishedName::from(set));
+        }
+
+        if let Some(sn) = &dn.serial_number {
+            let value = PrintableStringRef::new(sn.as_bytes())
+                .map_err(|e| Error::Encoding(format!("Invalid serial number: {}", e)))?;
+            let atv = AttributeTypeAndValue {
+                oid: SERIAL_NUMBER,
+                value: Any::encode_from(&value)
+                    .map_err(|e| Error::Encoding(format!("Failed to encode serial: {}", e)))?,
+            };
+            let set = SetOfVec::try_from(vec![atv])
+                .map_err(|e| Error::Encoding(format!("Failed to create SET: {}", e)))?;
+            rdns.push(RelativeDistinguishedName::from(set));
+        }
+
+        Ok(Name::from(rdns))
+    }
+
+    /// Convert DateTime to X.509 Time (UtcTime or GeneralizedTime)
+    fn datetime_to_time(&self, dt: DateTime<Utc>) -> Result<x509_cert::time::Time> {
+        use chrono::Datelike;
+        use der::asn1::{GeneralizedTime, UtcTime};
+        use x509_cert::time::Time;
+
+        // RFC 5280: dates through 2049 use UTCTime, dates thereafter use GeneralizedTime
+        if dt.year() <= 2049 {
+            let utc_time =
+                UtcTime::from_unix_duration(std::time::Duration::from_secs(dt.timestamp() as u64))
+                    .map_err(|e| Error::Encoding(format!("Invalid UTC time: {}", e)))?;
+            Ok(Time::UtcTime(utc_time))
+        } else {
+            let gen_time = GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(
+                dt.timestamp() as u64,
+            ))
+            .map_err(|e| Error::Encoding(format!("Invalid generalized time: {}", e)))?;
+            Ok(Time::GeneralTime(gen_time))
+        }
+    }
+
+    /// Get signature algorithm identifier
+    fn get_signature_algorithm(&self) -> Result<x509_cert::spki::AlgorithmIdentifierOwned> {
+        // TODO: Determine algorithm from CA key type
+        // For now, default to RSA-PSS with SHA-256
+        use const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION;
+
+        Ok(x509_cert::spki::AlgorithmIdentifierOwned {
+            oid: SHA_256_WITH_RSA_ENCRYPTION,
+            parameters: None,
+        })
+    }
+
+    /// Build X.509 extensions
+    fn build_extensions(&self) -> Result<Option<x509_cert::ext::Extensions>> {
+        let extensions = Vec::new();
+
+        // TODO: Implement extension building
+        // - Key Usage
+        // - Extended Key Usage
+        // - Basic Constraints
+        // - Subject Alternative Name
+        // - Authority Key Identifier
+        // - Subject Key Identifier
+        // - CRL Distribution Points
+        // - Authority Information Access
+        // - Certificate Policies
+
+        if extensions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(extensions))
+        }
     }
 }
 
