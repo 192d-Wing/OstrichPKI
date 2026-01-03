@@ -285,3 +285,238 @@ Mark RFC compliance in code:
 // RFC 6960 §4.2.1 - OCSP response must include producedAt
 // RFC 8555 §7.1.3 - Order object state machine
 ```
+
+---
+
+## Compliance Documentation & ATO Artifact Generation
+
+**CRITICAL REQUIREMENT**: All development work must actively maintain compliance documentation to enable seamless ATO artifact generation.
+
+### Mandatory Actions for Every Code Change
+
+When implementing ANY feature, bug fix, or modification, you MUST:
+
+1. **Identify Applicable Controls**: Determine which compliance frameworks apply
+2. **Add Code Annotations**: Mark code with control mappings
+3. **Update Compliance Documentation**: Modify relevant files in `docs/compliance/`
+4. **Cross-Reference**: Ensure mappings are consistent across all documentation
+
+### Step-by-Step Compliance Process
+
+#### 1. Identify Applicable Controls
+
+For each code change, ask:
+
+- Which **NIST 800-53 Rev 5 controls** does this implement or affect?
+- Which **NIAP PP-CA v2.1 SFRs** (Security Functional Requirements) does this satisfy?
+- Which **RFCs** must this comply with?
+- Which **FIPS standards** apply to cryptographic operations?
+
+#### 2. Annotate Code with Control Mappings
+
+Use multi-line comments to mark control implementations:
+
+```rust
+// COMPLIANCE MAPPING:
+// - NIST 800-53: AU-3 (Audit Content), AU-10 (Non-repudiation)
+// - NIAP PP-CA: FAU_GEN.1 (Audit Data Generation)
+// - RFC 6960 §4.2.1 - OCSP response producedAt field
+pub struct AuditRecord {
+    timestamp: DateTime<Utc>,     // AU-3(a) - Timestamp of event
+    actor: ActorId,                // AU-3(b) - Subject identity
+    event_type: AuditEventType,    // AU-3(c) - Type of event
+    outcome: EventOutcome,         // AU-3(d) - Success/failure
+    resource: ResourceId,          // AU-3(e) - Object identity
+    signature: DigitalSignature,   // AU-10 - Non-repudiation
+}
+
+// COMPLIANCE MAPPING:
+// - NIST 800-53: SC-13 (Cryptographic Protection), SC-12 (Key Management)
+// - NIAP PP-CA: FCS_CKM.1 (Cryptographic Key Generation)
+// - FIPS 204: ML-DSA-65 digital signature algorithm
+pub fn generate_ca_keypair(algorithm: SignatureAlgorithm) -> Result<KeyPair> {
+    // Implementation must use FIPS-validated RNG and algorithms
+}
+```
+
+#### 3. Update Compliance Documentation Files
+
+After making code changes, update the relevant files in `docs/compliance/`:
+
+**File: `NIST_800-53_MAPPING.md`**
+
+- Add implementation status updates
+- Reference specific source files and line numbers
+- Document how the code satisfies control requirements
+- Update implementation percentage
+
+**File: `NIAP_COMPLIANCE.md`**
+
+- Map code to specific SFRs (Security Functional Requirements)
+- Update SFR implementation status (Not Started → In Progress → Implemented → Tested)
+- Document how the implementation satisfies each SFR element
+
+**File: `NIAP_GAP_ANALYSIS.md`**
+
+- Close gaps when implementations are completed
+- Update mitigation status and evidence references
+- Move items from "Gaps" to "Completed" sections
+
+**File: `FIPS_COMPLIANCE.md`**
+
+- Document which FIPS standards are implemented
+- Reference specific cryptographic algorithms and their usage
+- Note FIPS 140-3 module dependencies (HSM interfaces, etc.)
+
+**File: `RFC_COMPLIANCE.md`**
+
+- Add RFC requirement implementation notes
+- Mark which RFC sections are implemented
+- Document any deviations or extensions
+
+**File: `ATO_EVIDENCE.md`**
+
+- Add evidence artifacts (test results, code references, audit logs)
+- Update control evidence mapping
+- Document configuration settings and secure defaults
+
+#### 4. Documentation Update Examples
+
+##### Example 1: Implementing Audit Logging
+
+Code change in `src/audit/logger.rs`:
+
+```rust
+// COMPLIANCE MAPPING:
+// - NIST 800-53: AU-2, AU-3, AU-9, AU-10, AU-12
+// - NIAP PP-CA: FAU_GEN.1, FAU_STG.1, FAU_STG.4
+impl AuditLogger {
+    pub async fn log_event(&self, event: AuditEvent) -> Result<()> {
+        // Implementation
+    }
+}
+```
+
+Update `docs/compliance/NIST_800-53_MAPPING.md`:
+
+```markdown
+### AU-2: Auditable Events (Priority: P1)
+**Implementation Status**: ✅ Implemented (90%)
+**Evidence**:
+- `src/audit/logger.rs:45-67` - AuditLogger implementation
+- `src/audit/events.rs:12-89` - Comprehensive event type definitions
+- All CA operations emit audit events per AU-2a requirements
+```
+
+Update `docs/compliance/NIAP_COMPLIANCE.md`:
+
+```markdown
+#### FAU_GEN.1 - Audit Data Generation
+**Status**: ✅ Implemented
+**Evidence**: `src/audit/logger.rs`, `src/audit/events.rs`
+**Test Coverage**: `tests/audit/test_event_generation.rs`
+
+The system generates audit records for all FAU_GEN.1.1 events:
+- Start-up and shutdown of audit functions
+- Certificate issuance, revocation, renewal (per PP-CA specific events)
+- All administrative actions
+```
+
+##### Example 2: Implementing Cryptographic Key Generation
+
+Code change in `src/crypto/keygen.rs`:
+
+```rust
+// COMPLIANCE MAPPING:
+// - NIST 800-53: SC-12, SC-13
+// - NIAP PP-CA: FCS_CKM.1, FCS_CKM.2
+// - FIPS 204: ML-DSA key generation
+pub fn generate_signing_key(algorithm: SignatureAlgorithm) -> Result<SigningKey> {
+    match algorithm {
+        SignatureAlgorithm::MlDsa65 => {
+            // FIPS 204 compliant key generation
+        }
+    }
+}
+```
+
+Update `docs/compliance/FIPS_COMPLIANCE.md`:
+
+```markdown
+### FIPS 204: ML-DSA Implementation Status
+**Status**: ✅ Implemented
+**Implementation**: `src/crypto/keygen.rs:78-134`
+**Security Level**: ML-DSA-65 (NIST Level 3)
+**Usage**: CA signing keys, certificate signing, CRL signing
+**Testing**: `tests/crypto/test_mldsa_keygen.rs`
+```
+
+#### 5. Cross-Reference Validation
+
+Ensure consistency across documentation:
+
+- NIST control → NIAP SFR mappings are bidirectional
+- Code file references are accurate and up-to-date
+- Implementation percentages reflect actual code state
+- Gap analysis reflects current implementation status
+
+### Compliance Documentation Maintenance Checklist
+
+Before completing ANY task, verify:
+
+- [ ] Code annotations include all applicable control mappings
+- [ ] `NIST_800-53_MAPPING.md` updated with implementation status
+- [ ] `NIAP_COMPLIANCE.md` updated with SFR evidence
+- [ ] `NIAP_GAP_ANALYSIS.md` gaps closed or updated
+- [ ] `FIPS_COMPLIANCE.md` updated for crypto implementations
+- [ ] `RFC_COMPLIANCE.md` updated for protocol implementations
+- [ ] `ATO_EVIDENCE.md` updated with test results and artifacts
+- [ ] All file references and line numbers are accurate
+- [ ] Implementation percentages recalculated
+
+### NIAP Protection Profile Specific Requirements
+
+When implementing features related to Certificate Authority functions, always check:
+
+**PP-CA v2.1 SFRs** (docs/compliance/NIAP_COMPLIANCE.md):
+
+- **FAU_GEN.1**: Audit generation for CA-specific events
+- **FCS_CKM.1**: Cryptographic key generation per FIPS standards
+- **FCS_COP.1**: Cryptographic operations (signing, verification)
+- **FDP_ACC.1/FDP_ACF.1**: Access control for CA functions
+- **FIA_AFL.1**: Authentication failure handling
+- **FMT_SMF.1**: Security management functions
+- **FPT_STM.1**: Reliable time stamps for certificates and audit
+
+Map code implementations to specific SFR elements (e.g., FCS_CKM.1.1(1), FCS_CKM.1.1(2)).
+
+### ATO Artifact Generation Support
+
+The compliance documentation structure supports automatic generation of:
+
+1. **System Security Plan (SSP)**:
+   - Control implementation statements from `NIST_800-53_MAPPING.md`
+   - Evidence from code annotations and `ATO_EVIDENCE.md`
+
+2. **Security Assessment Report (SAR)**:
+   - Test evidence from test files referenced in compliance docs
+   - Vulnerability scan results, penetration test results
+
+3. **Plan of Action & Milestones (POA&M)**:
+   - Open gaps from `NIAP_GAP_ANALYSIS.md`
+   - TODO/POAM comments in code
+
+4. **Continuous Monitoring**:
+   - Audit log evidence from running system
+   - Metrics from monitoring infrastructure
+
+### When in Doubt
+
+If unsure which controls apply to your code change:
+
+1. Check similar existing implementations in the codebase
+2. Review `docs/compliance/NIAP_GAP_ANALYSIS.md` for related requirements
+3. Consult the control families in this document
+4. Ask the user for clarification on compliance requirements
+
+**Remember**: Maintaining compliance documentation is NOT optional. It is a mandatory part of every code change to ensure ATO success.
