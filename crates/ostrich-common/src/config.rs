@@ -73,6 +73,7 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
+    #[allow(dead_code)]
     #[derive(Debug, Deserialize)]
     struct TestConfig {
         database_url: String,

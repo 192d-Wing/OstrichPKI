@@ -14,7 +14,7 @@ pub type KeyId = Uuid;
 /// Distinguished Name representation
 ///
 /// RFC 5280 §4.1.2.4 - Issuer and Subject
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct DistinguishedName {
     pub common_name: Option<String>,
     pub organization: Option<String>,
@@ -26,6 +26,11 @@ pub struct DistinguishedName {
 }
 
 impl DistinguishedName {
+    /// Create an empty DN
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Create a new DN with just a common name
     pub fn new_cn(cn: impl Into<String>) -> Self {
         Self {
@@ -62,20 +67,6 @@ impl DistinguishedName {
         }
 
         parts.join(",")
-    }
-}
-
-impl Default for DistinguishedName {
-    fn default() -> Self {
-        Self {
-            common_name: None,
-            organization: None,
-            organizational_unit: None,
-            locality: None,
-            state_or_province: None,
-            country: None,
-            serial_number: None,
-        }
     }
 }
 

@@ -7,7 +7,6 @@ use const_oid::ObjectIdentifier;
 /// Common Object Identifiers (OIDs) used in PKI operations
 ///
 /// RFC 5280 §4.1.1.2 - Algorithm identifiers
-
 // RSA Encryption and Signature Algorithms
 pub const RSA_ENCRYPTION: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
 pub const SHA256_WITH_RSA_ENCRYPTION: ObjectIdentifier =

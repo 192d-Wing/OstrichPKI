@@ -67,13 +67,13 @@ pub fn pem_to_der(pem: &str, expected_label: Option<&str>) -> Result<Vec<u8>> {
     let label = &pem[label_start..label_end];
 
     // Validate label if expected
-    if let Some(expected) = expected_label {
-        if label != expected {
-            return Err(Error::InvalidPem(format!(
-                "Expected label '{}', got '{}'",
-                expected, label
-            )));
-        }
+    if let Some(expected) = expected_label
+        && label != expected
+    {
+        return Err(Error::InvalidPem(format!(
+            "Expected label '{}', got '{}'",
+            expected, label
+        )));
     }
 
     // Extract base64 content
