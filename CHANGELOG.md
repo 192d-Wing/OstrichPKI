@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [Unreleased]
+
+## [0.4.0] - 2026-01-02
+
+### Added
+
+#### Key Recovery Authority Service (Phase 4)
+
+##### ostrich-kra
+
+- Shamir's Secret Sharing implementation for M-of-N threshold key recovery
+- Key escrow functionality with encrypted private key storage
+- Key recovery workflow with multi-agent authorization
+- Recovery agent management
+- Recovery session tracking with status (Pending, CollectingShares, Completed, Denied, Cancelled)
+- GF(256) finite field arithmetic for secret sharing
+- Polynomial interpolation for secret reconstruction
+- Audit logging for all escrow and recovery operations
+- Support for configurable threshold (M) and total shares (N)
+- Comprehensive test coverage for Shamir's algorithm
+
+### Technical Details
+
+- All code passes cargo check, fmt, and clippy with -D warnings
+- NIST 800-53: SC-12 (Cryptographic key establishment and management)
+- NIST 800-57: Key management best practices
+- Cryptographically secure secret splitting and reconstruction
+
 
 ## [0.3.0] - 2026-01-02
 
@@ -180,7 +208,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project architecture documentation
 - Workspace structure with all crate stubs
 
-[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/yourusername/ostrich-pki/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yourusername/ostrich-pki/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yourusername/ostrich-pki/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yourusername/ostrich-pki/releases/tag/v0.1.0
