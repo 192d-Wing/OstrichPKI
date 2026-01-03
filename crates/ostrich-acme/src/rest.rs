@@ -7,10 +7,12 @@ use crate::{
     authorization::{Authorization, AuthorizationStatus},
     challenge::{Challenge, ChallengeStatus, ChallengeType},
     error::{Error, Result},
+    jws::{self, Jwk, ProtectedHeader},
     order::{Identifier, Order, OrderStatus},
 };
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -18,6 +20,7 @@ use axum::{
 };
 use chrono::Utc;
 use ostrich_audit::AuditSink;
+use ostrich_common::util::encoding::decode_base64url;
 use ostrich_crypto::CryptoProvider;
 use ostrich_db::DatabasePool;
 use serde::{Deserialize, Serialize};
@@ -45,6 +48,155 @@ impl AcmeState {
             audit_sink,
         }
     }
+}
+
+/// Validated JWS request with decoded payload
+///
+/// This structure holds the result of successful JWS validation
+struct ValidatedJwsRequest<T> {
+    /// Decoded payload
+    payload: T,
+    /// Protected header
+    header: ProtectedHeader,
+    /// JWK from header (for new-account) or retrieved from database (for other requests)
+    jwk: Jwk,
+    /// JWK thumbprint for account identification
+    jwk_thumbprint: String,
+}
+
+/// Validate JWS request for new-account endpoint
+///
+/// RFC 8555 §6.2: All ACME requests with a non-empty body MUST encapsulate
+/// the request in a JWS object, signed using the account's key pair.
+///
+/// For new-account, the JWK must be in the protected header.
+async fn validate_jws_new_account<T: serde::de::DeserializeOwned>(
+    body: &[u8],
+    expected_url: &str,
+    state: &AcmeState,
+) -> Result<ValidatedJwsRequest<T>> {
+    // 1. Parse JWS envelope
+    let jws_envelope = jws::parse_jws(body)?;
+
+    // 2. Decode protected header
+    let header = jws::decode_protected_header(&jws_envelope.protected)?;
+
+    // 3. Verify URL matches (RFC 8555 §6.4.1)
+    if header.url != expected_url {
+        return Err(Error::Malformed(format!(
+            "JWS URL mismatch: expected '{}', got '{}'",
+            expected_url, header.url
+        )));
+    }
+
+    // 4. Verify nonce and consume it (replay protection - RFC 8555 §6.5)
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
+    repo.consume_nonce(&header.nonce)
+        .await
+        .map_err(|_| Error::BadNonce)?;
+
+    // 5. Extract JWK (required for new-account)
+    let jwk = header
+        .jwk
+        .clone()
+        .ok_or_else(|| Error::Malformed("JWK required for new-account".to_string()))?;
+
+    // 6. Verify JWS signature
+    let signature_valid =
+        jws::verify_jws_with_jwk(&jws_envelope, &header, &jwk, &state.crypto_provider).await?;
+
+    if !signature_valid {
+        return Err(Error::Unauthorized("Invalid JWS signature".to_string()));
+    }
+
+    // 7. Compute JWK thumbprint for account identification
+    let jwk_thumbprint = jws::compute_jwk_thumbprint(&jwk)?;
+
+    // 8. Decode payload
+    let payload_bytes = decode_base64url(&jws_envelope.payload)?;
+    let payload: T = serde_json::from_slice(&payload_bytes)
+        .map_err(|e| Error::Malformed(format!("Invalid payload JSON: {}", e)))?;
+
+    Ok(ValidatedJwsRequest {
+        payload,
+        header,
+        jwk,
+        jwk_thumbprint,
+    })
+}
+
+/// Validate JWS request for existing account endpoints
+///
+/// RFC 8555 §6.2: For requests from an existing account, the JWS MUST be
+/// signed with the account's key pair, and the "kid" field MUST be present.
+async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
+    body: &[u8],
+    expected_url: &str,
+    state: &AcmeState,
+) -> Result<ValidatedJwsRequest<T>> {
+    // 1. Parse JWS envelope
+    let jws_envelope = jws::parse_jws(body)?;
+
+    // 2. Decode protected header
+    let header = jws::decode_protected_header(&jws_envelope.protected)?;
+
+    // 3. Verify URL matches
+    if header.url != expected_url {
+        return Err(Error::Malformed(format!(
+            "JWS URL mismatch: expected '{}', got '{}'",
+            expected_url, header.url
+        )));
+    }
+
+    // 4. Verify nonce and consume it
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
+    repo.consume_nonce(&header.nonce)
+        .await
+        .map_err(|_| Error::BadNonce)?;
+
+    // 5. Extract kid (required for existing account requests)
+    let kid = header
+        .kid
+        .as_ref()
+        .ok_or_else(|| Error::Malformed("kid required for this request".to_string()))?;
+
+    // 6. Lookup account by kid to get JWK
+    // Extract account_id from kid (format: "/acme/account/{id}")
+    let account_id = kid
+        .strip_prefix("/acme/account/")
+        .ok_or_else(|| Error::Malformed(format!("Invalid kid format: {}", kid)))?;
+
+    let account = repo
+        .find_account_by_id(account_id)
+        .await?
+        .ok_or_else(|| Error::AccountDoesNotExist)?;
+
+    // Parse stored JWK
+    let jwk: Jwk = serde_json::from_value(account.public_key_jwk.clone())
+        .map_err(|e| Error::ServerInternal(format!("Failed to parse stored JWK: {}", e)))?;
+
+    // 7. Verify JWS signature using account's JWK
+    let signature_valid =
+        jws::verify_jws_with_jwk(&jws_envelope, &header, &jwk, &state.crypto_provider).await?;
+
+    if !signature_valid {
+        return Err(Error::Unauthorized("Invalid JWS signature".to_string()));
+    }
+
+    // 8. Compute JWK thumbprint
+    let jwk_thumbprint = jws::compute_jwk_thumbprint(&jwk)?;
+
+    // 9. Decode payload
+    let payload_bytes = decode_base64url(&jws_envelope.payload)?;
+    let payload: T = serde_json::from_slice(&payload_bytes)
+        .map_err(|e| Error::Malformed(format!("Invalid payload JSON: {}", e)))?;
+
+    Ok(ValidatedJwsRequest {
+        payload,
+        header,
+        jwk,
+        jwk_thumbprint,
+    })
 }
 
 /// Create ACME REST API router
@@ -154,19 +306,21 @@ async fn get_new_nonce(State(state): State<AcmeState>) -> Response {
 }
 
 /// Create new account (RFC 8555 §7.3)
-async fn new_account(
-    State(state): State<AcmeState>,
-    Json(request): Json<NewAccountRequest>,
-) -> Result<Response> {
-    // TODO: Validate JWS signature (Phase 11)
-    // TODO: Extract JWK from protected header (Phase 11)
-    // For now, use placeholder JWK thumbprint
-    let jwk_thumbprint = format!("jwk-{}", Uuid::new_v4());
-    let public_key_jwk = serde_json::json!({
-        "kty": "RSA",
-        "e": "AQAB",
-        "n": "placeholder"
-    });
+///
+/// NIST 800-53: IA-2 - Identification and Authentication
+async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Response> {
+    // Validate JWS and extract payload
+    let validated = validate_jws_new_account::<NewAccountRequest>(
+        &body,
+        "https://example.com/acme/new-account", // TODO: Get actual URL from request
+        &state,
+    )
+    .await?;
+
+    let request = validated.payload;
+    let jwk_thumbprint = validated.jwk_thumbprint;
+    let public_key_jwk = serde_json::to_value(&validated.jwk)
+        .map_err(|e| Error::ServerInternal(format!("Failed to serialize JWK: {}", e)))?;
 
     if !request.terms_of_service_agreed {
         return Err(Error::UserActionRequired(
