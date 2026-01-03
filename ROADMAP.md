@@ -269,14 +269,14 @@ Implement all cryptographic operations required for certificate lifecycle manage
 ### Phase 9: Database Integration & Persistence
 
 **Priority**: HIGH
-**Completion**: ~60% (Repository layer + EST + KRA integration complete)
-**Estimated Effort**: 2-3 weeks
+**Completion**: ✅ 100% COMPLETE (v0.10.0)
+**Actual Effort**: 2 weeks
 **Dependencies**: Phase 8 (need signing before storing certificates)
 **Blocks**: Phase 12 (service integration)
 
-#### Progress Update (v0.9.0)
+#### Final Status (v0.10.0)
 
-**Completed**:
+**Phase 9 Part 1 - Repository Layer** (v0.9.0):
 
 - ✅ ACME repository layer with full CRUD operations (553 lines, 28 methods)
 - ✅ SCMS repository layer for token lifecycle management (383 lines)
@@ -286,33 +286,67 @@ Implement all cryptographic operations required for certificate lifecycle manage
 - ✅ Type-safe parameterized queries using sqlx
 - ✅ Repository exports and module organization
 
-**Phase 9 Part 2a - REST Handler Integration (Partial)**:
+**Phase 9 Part 2 - REST Handler Integration** (v0.10.0):
 
-- ✅ **EST Service** (commit 7c1d080): Database integration complete
+- ✅ **EST Service** (commit 7c1d080): 5 endpoints
   - EstState struct with database pool, crypto provider, audit sink
-  - 5 REST endpoints integrated with EstRepository
   - Enrollment tracking with pending status workflow
   - Deferred: CA integration (Phase 12), mTLS validation (Phase 11)
 
-- ✅ **KRA Service** (commit d2c571c): Database integration complete
+- ✅ **KRA Service** (commit d2c571c): Library integration
   - KeyEscrow and KeyRecovery services integrated with KraRepository
   - Escrowed key storage with M-of-N threshold tracking (3-of-5 default)
   - Recovery request and share submission tracking
   - Recovery agent management
   - Deferred: Crypto provider key wrapping (Phase 10), agent authorization (Phase 12)
 
-**Remaining**:
+- ✅ **ACME Service** (commit 107906a): 9 endpoints
+  - Complete RFC 8555 state machine with database persistence
+  - Account management (create, lookup by JWK, update)
+  - Order lifecycle (pending → ready → processing → valid)
+  - Authorization and challenge tracking (3 challenge types per authz)
+  - Nonce generation and storage for replay protection
+  - Deferred: JWS validation (Phase 11), CA integration (Phase 12)
 
-- ⏳ REST handler integration for ACME (28 TODOs) - Complex RFC 8555 state machine
-- ⏳ REST handler integration for SCMS (45 TODOs)
+- ✅ **SCMS Service** (commit f123c5e): 18 endpoints
+  - Token lifecycle (initialize, personalize, suspend, resume, revoke, unblock)
+  - PIN operations (verify with retry tracking, change)
+  - Key management (generate, list, delete)
+  - Model registry (create, list)
+  - Event audit queries
+  - State machine enforcement with proper error handling
+  - Deferred: PKCS#11 operations (Phase 10), CA integration (Phase 12)
 
-#### Scope
+**Summary**: All 32 REST endpoints across 4 services fully integrated with database persistence
 
-Implement complete database persistence for all services, enabling state management, crash recovery, and multi-instance deployments.
+#### Achievements
 
-#### Key Tasks
+**Architecture**:
 
-##### ACME Service (28 TODOs)
+- Established repository pattern for database abstraction across all services
+- Type-safe database operations using sqlx with compile-time query validation
+- Consistent error handling and mapping to HTTP status codes
+- State machine enforcement for lifecycle operations (ACME orders, SCMS tokens)
+
+**Scale & Quality**:
+
+- 1,487 lines of repository code across 4 services
+- 32 REST endpoints with full database integration
+- All code passes clippy -D warnings, cargo fmt, cargo check
+- Comprehensive TODOs documenting deferred work for future phases
+
+**Deferred Work** (documented in code):
+
+- Phase 8: Certificate signing, CSR validation, key wrapping
+- Phase 10: PKCS#11 operations for real smartcard/HSM integration
+- Phase 11: JWS/JWT validation, mTLS client auth, ACME challenge validation
+- Phase 12: Service integration (CA ↔ ACME/EST/SCMS, CA ↔ KRA)
+
+---
+
+#### Historical Task Details (Completed)
+
+##### ACME Service
 
 1. **Account Management**
    - Create account records ([acme/rest.rs:145-155](crates/ostrich-acme/src/rest.rs#L145-L155))
