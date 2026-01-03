@@ -1,0 +1,11 @@
+[package]
+name = "ostrich-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ostrich-common = { workspace = true }

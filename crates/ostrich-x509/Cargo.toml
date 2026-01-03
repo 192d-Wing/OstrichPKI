@@ -1,0 +1,11 @@
+[package]
+name = "ostrich-x509"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ostrich-common = { workspace = true }
