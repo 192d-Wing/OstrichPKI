@@ -5,10 +5,16 @@
 pub mod acme;
 pub mod audit;
 pub mod certificate;
+pub mod est;
+pub mod kra;
+pub mod scms;
 
 pub use acme::AcmeRepository;
 pub use audit::AuditRepository;
 pub use certificate::CertificateRepository;
+pub use est::EstRepository;
+pub use kra::KraRepository;
+pub use scms::ScmsRepository;
 
 use crate::Result;
 use async_trait::async_trait;
