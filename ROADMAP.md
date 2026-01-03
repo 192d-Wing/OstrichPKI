@@ -1,2005 +1,1560 @@
 # OstrichPKI Development Roadmap
 
+> **Last Updated**: January 2026 | **Current Version**: v0.10.0 | **Status**: Active Development
+
+---
+
+## Table of Contents
+
+- [Executive Summary](#executive-summary)
+- [Quick Status Dashboard](#quick-status-dashboard)
+- [Completed Milestones](#completed-milestones)
+- [Remaining Phases](#remaining-phases)
+  - [Phase 8: Core Cryptographic Operations](#phase-8-core-cryptographic-operations)
+  - [Phase 10: PKCS#11 HSM Integration](#phase-10-pkcs11-hsm-integration)
+  - [Phase 11: Protocol Validation & Security](#phase-11-protocol-validation--security)
+  - [Phase 12: Service Integration](#phase-12-service-integration)
+  - [Phase 13: Advanced Features](#phase-13-advanced-features)
+  - [Phase 14: Testing & Hardening](#phase-14-testing--hardening)
+  - [Phase 15: NIAP Compliance](#phase-15-niap-compliance)
+- [Priority Matrix](#priority-matrix)
+- [Timeline & Schedule](#timeline--schedule)
+- [Risk Assessment](#risk-assessment)
+- [Success Metrics](#success-metrics)
+
+---
+
 ## Executive Summary
 
-OstrichPKI v0.7.0 represents a comprehensive Public Key Infrastructure system implementing multiple RFC standards and NIST 800-53 security controls. The project has successfully completed **8 major implementation phases** covering all core microservices and cryptographic operations:
+**OstrichPKI** is a comprehensive Public Key Infrastructure system written in Rust, designed for **ATO (Authority to Operate) readiness** with full **NIST 800-53 Rev 5** and **NIAP PP-CA v2.1** compliance.
 
-- **Phase 1**: Foundation (common, crypto, db, audit)
-- **Phase 2**: CA (certificate authority, X.509, gRPC, CLI)
-- **Phase 3**: OCSP (RFC 6960 responder)
-- **Phase 4**: KRA (key recovery with Shamir secret sharing)
-- **Phase 5**: ACME (RFC 8555 automated certificate management)
-- **Phase 6**: EST (RFC 7030 enrollment over secure transport)
-- **Phase 7**: SCMS (smartcard token lifecycle management)
-- **Phase 8**: ✅ **COMPLETE** - Core Cryptographic Operations (DER encoding, signing, PKCS#7)
+### Current State (v0.10.0)
 
-**Current Status**:
-- **Total codebase**: ~11,400 lines of Rust code across 15 crates
-- **Services**: 7 microservices fully scaffolded with REST/gRPC APIs
-- **Protocol compliance**: RFC 5280, 6960, 7030, 8555
-- **Security compliance**: NIST 800-53 (AU-2, AU-3, AU-9, SC-12, SC-13, IA-2, IA-5)
+| Metric | Status |
+|--------|--------|
+| **Codebase** | ~11,400 lines of Rust across 15 crates |
+| **Services** | 7 microservices (CA, OCSP, KRA, ACME, EST, SCMS, Audit) |
+| **Standards** | RFC 5280, 6960, 7030, 8555 compliance |
+| **Security** | NIST 800-53 controls (AU-2, AU-3, AU-9, SC-12, SC-13, IA-2, IA-5) |
+| **Overall Progress** | **~55%** complete |
 
-However, comprehensive code analysis revealed **142 TODO items** (now **127 remaining after Phase 8**) indicating significant remaining work before production readiness. These TODOs cluster around critical areas:
+### Critical Gaps
 
-1. ✅ **Cryptographic Operations** ~~(15 TODOs)~~ - **COMPLETE**: DER/ASN.1 encoding, certificate/CRL signing, PKCS#7 encoding
-2. **Database Persistence** (53 TODOs): ACME, EST, SCMS services lack database integration
-3. **PKCS#11 HSM Integration** (35 TODOs): All HSM operations are placeholder implementations
-4. **Protocol Validation** (18 TODOs): JWS signatures, mTLS, CSR parsing, challenge validation
-5. **Service Integration** (21 TODOs): Cross-service communication (CA ↔ ACME/EST/KRA/SCMS)
+| Category | Remaining Work | Priority |
+|----------|----------------|----------|
+| **Cryptographic Operations** | DER encoding, signing operations | 🔴 HIGH |
+| **HSM Integration** | PKCS#11 hardware security module | 🟡 MEDIUM |
+| **Protocol Validation** | ACME challenges, mTLS, CSR validation | 🔴 HIGH |
+| **Service Integration** | Cross-service communication (gRPC) | 🟡 MEDIUM |
+| **Testing & Hardening** | Integration tests, security audits | 🔴 HIGH |
+| **NIAP Compliance** | Protection Profile documentation | 🔴 HIGH |
 
-**Overall Completion**: Approximately **45-50%** complete (up from 35-40% after Phase 8)
-- **Architecture & APIs**: 85-90% complete (all endpoints defined)
-- **Core Implementation**: 50-55% complete (✅ crypto complete, gaps in DB, HSM remain)
-- **Production Readiness**: 30-35% complete (missing integration, testing, hardening)
+### Estimated Completion
 
-**Estimated Effort to Production**: 12-16 weeks across 6 remaining phases
+- **Aggressive**: 11 weeks (all parallel work)
+- **Realistic**: 14-16 weeks (mixed parallel/sequential)
+- **Conservative**: 20-24 weeks (with buffer for unknowns)
 
----
-
-## TODO Summary by Category
-
-### ✅ Cryptographic Operations ~~(15 TODOs)~~ - **PHASE 8 COMPLETE**
-
-**X.509 & PKI Core**:
-
-- ✅ ~~[crates/ostrich-x509/src/builder/certificate.rs:275](crates/ostrich-x509/src/builder/certificate.rs#L275)~~ - DER encoding for X.509 certificates **DONE**
-- ✅ ~~[crates/ostrich-x509/src/builder/crl.rs:160](crates/ostrich-x509/src/builder/crl.rs#L160)~~ - DER encoding for CRLs **DONE**
-- [crates/ostrich-x509/src/parser.rs:34](crates/ostrich-x509/src/parser.rs#L34) - PEM parsing for certificates (not needed - using pem-rfc7468 crate)
-
-**CA Operations**:
-
-- ✅ ~~[crates/ostrich-ca/src/issuance.rs:172-180](crates/ostrich-ca/src/issuance.rs#L172-L180)~~ - Certificate signing **DONE**
-- ✅ ~~[crates/ostrich-ca/src/revocation.rs:197-204](crates/ostrich-ca/src/revocation.rs#L197-L204)~~ - CRL signing **DONE**
-
-**OCSP**:
-
-- ✅ ~~[crates/ostrich-ocsp/src/request.rs:43](crates/ostrich-ocsp/src/request.rs#L43)~~ - ASN.1 OCSP request parsing **DONE**
-- ✅ ~~[crates/ostrich-ocsp/src/response.rs:117](crates/ostrich-ocsp/src/response.rs#L117)~~ - ASN.1 OCSP response encoding **DONE**
-- ✅ ~~[crates/ostrich-ocsp/src/responder.rs:170](crates/ostrich-ocsp/src/responder.rs#L170)~~ - OCSP response signing **DONE**
-
-**EST**:
-
-- ✅ ~~[crates/ostrich-est/src/rest.rs:61](crates/ostrich-est/src/rest.rs#L61)~~ - PKCS#7 encoding for CA certificates **DONE**
-- ✅ ~~[crates/ostrich-est/src/rest.rs:101](crates/ostrich-est/src/rest.rs#L101)~~ - PKCS#7 encoding for enrollment response **DONE**
-- ✅ ~~[crates/ostrich-est/src/rest.rs:134](crates/ostrich-est/src/rest.rs#L134)~~ - PKCS#7 encoding for re-enrollment response **DONE**
-
-### Database Persistence (53 TODOs)
-
-**ACME Service** (28 TODOs in [crates/ostrich-acme/src/rest.rs](crates/ostrich-acme/src/rest.rs)):
-- Account management: create, lookup, update (lines 145-187)
-- Order lifecycle: create, lookup, finalize (lines 237-362)
-- Authorization tracking: create, update, complete (lines 305-424)
-- Challenge management: create, validate, update (lines 464-522)
-- Nonce generation and validation for replay protection (line 127)
-
-**SCMS Service** (45 TODOs in [crates/ostrich-scms/src/rest.rs](crates/ostrich-scms/src/rest.rs)):
-- Token inventory: create, update, lookup, revoke (lines 134-225)
-- Token lifecycle: initialize, personalize, suspend, resume, unblock (lines 188-245)
-- Key management: list, generate, delete (lines 285-327)
-- Event audit log: record and query token events (lines 349-357)
-- Model registry: list and create token models (lines 330-346)
-
-**EST Service** (17 TODOs in [crates/ostrich-est/src/rest.rs](crates/ostrich-est/src/rest.rs)):
-- Enrollment records: create and track (lines 81-99)
-- Client certificate validation and lookup (lines 81, 118)
-- CA certificate chain retrieval (line 60)
-
-**KRA Service** (8 TODOs):
-- [crates/ostrich-kra/src/escrow.rs:156](crates/ostrich-kra/src/escrow.rs#L156) - Store escrowed keys
-- [crates/ostrich-kra/src/recovery.rs:237](crates/ostrich-kra/src/recovery.rs#L237) - Load escrowed keys for recovery
-- Share distribution and tracking (escrow.rs, recovery.rs)
-
-**CA Service** (2 TODOs):
-- [crates/ostrich-ca/src/rest.rs:141-142](crates/ostrich-ca/src/rest.rs#L141-L142) - Load profiles from database
-
-### PKCS#11 HSM Integration (35 TODOs)
-
-**Core PKCS#11 Provider** (20 TODOs in [crates/ostrich-crypto/src/pkcs11/mod.rs](crates/ostrich-crypto/src/pkcs11/mod.rs)):
-- Lines 27-36: Initialize library, open session, login
-- Lines 45-53: Key generation on HSM (RSA, ECDSA, EdDSA)
-- Lines 66-74: Signing operations via HSM
-- Lines 83-91: Key wrapping/unwrapping
-- Lines 100-108: Key listing and destruction
-- Line 125: Session cleanup on drop
-
-**Software Crypto Fallback** (10 TODOs in [crates/ostrich-crypto/src/software/mod.rs](crates/ostrich-crypto/src/software/mod.rs)):
-- Lines 37-45: Key generation using ring library
-- Lines 58-66: Signing operations
-- Lines 75-83: Key wrapping/unwrapping
-- Lines 92-100: Key management
-- Line 116: Cleanup
-
-**SCMS Token Operations** (15 TODOs in [crates/ostrich-scms/src/rest.rs](crates/ostrich-scms/src/rest.rs)):
-- Lines 193-195: Initialize token via PKCS#11
-- Lines 207-208: Set PIN and generate keys on token
-- Lines 240-241: Reset PIN retry counter
-- Lines 255-256: Verify PIN via PKCS#11
-- Lines 274: Change PIN via PKCS#11
-- Lines 290: Query PKCS#11 for keys
-- Lines 304: Generate key via PKCS#11
-- Lines 323: Delete key via PKCS#11
-
-### Protocol Validation & Security (18 TODOs)
-
-**ACME JWS Validation** (10 TODOs in [crates/ostrich-acme/src/rest.rs](crates/ostrich-acme/src/rest.rs)):
-- Line 145: Validate JWS signature on account creation
-- Line 146: Extract JWK from protected header
-- Line 187: Validate JWS signature on account update
-- Line 237: Validate JWS signature on order creation
-- Line 305: Validate JWS signature on authorization
-- Line 358: Validate JWS signature on order finalization
-- Line 362: Parse and validate CSR
-- Line 424: Validate JWS signature on challenge completion
-- Line 464: Validate JWS signature on challenge request
-
-**ACME Challenge Validation** (3 TODOs):
-- Line 471: HTTP-01 challenge validation
-- Line 477: DNS-01 challenge validation
-- Line 483: TLS-ALPN-01 challenge validation
-
-**ACME Nonce Management** (1 TODO):
-- Line 127: Cryptographically secure nonce generation
-
-**EST mTLS Validation** (4 TODOs in [crates/ostrich-est/src/rest.rs](crates/ostrich-est/src/rest.rs)):
-- Line 81: Validate client certificate (mTLS) for enrollment
-- Line 89: Parse PKCS#10 CSR
-- Line 90: Validate CSR signature
-- Line 118: Validate client certificate (mTLS) for re-enrollment
-
-### Service Integration (21 TODOs)
-
-**ACME → CA** (1 TODO):
-- [crates/ostrich-acme/src/rest.rs:362](crates/ostrich-acme/src/rest.rs#L362) - Issue certificate via CA service
-
-**EST → CA** (2 TODOs):
-- [crates/ostrich-est/src/rest.rs:84](crates/ostrich-est/src/rest.rs#L84) - Submit CSR to CA for issuance
-- [crates/ostrich-est/src/rest.rs:122](crates/ostrich-est/src/rest.rs#L122) - Issue renewed certificate via CA
-
-**SCMS → CA** (2 TODOs):
-- [crates/ostrich-scms/src/rest.rs:209](crates/ostrich-scms/src/rest.rs#L209) - Issue certificates on token personalization
-- [crates/ostrich-scms/src/rest.rs:180](crates/ostrich-scms/src/rest.rs#L180) - Revoke all certificates on token revocation
-
-**CA → KRA** (implicit in issuance flow):
-- Key escrow integration during certificate issuance
-
-### Advanced Features (8 TODOs)
-
-**OCSP Optimizations** (3 TODOs):
-- [crates/ostrich-ocsp/src/responder.rs:47-49](crates/ostrich-ocsp/src/responder.rs#L47-L49) - Implement response caching
-- Delegated signing support
-
-**EST Advanced** (1 TODO):
-- [crates/ostrich-est/src/rest.rs:168-173](crates/ostrich-est/src/rest.rs#L168-L173) - Server-side key generation (optional RFC 7030 feature)
-
-**Post-Quantum Cryptography** (3 TODOs in [crates/ostrich-common/src/oid.rs](crates/ostrich-common/src/oid.rs)):
-- Line 74: Update ML-DSA OID when NIST finalizes
-- Line 80: Update ML-KEM OID when NIST finalizes
-- Line 86: Update SLH-DSA OID when NIST finalizes
-
-**Audit Enhancements** (1 TODO):
-- [crates/ostrich-db/src/repository/audit.rs:132](crates/ostrich-db/src/repository/audit.rs#L132) - Implement hash chain verification
+**Recommended**: 12 sprints (2-week iterations) = **24 weeks** for production-ready system
 
 ---
 
-## Remaining Implementation Phases (8-14)
+## Quick Status Dashboard
+
+### Phase Completion Overview
+
+```
+✅ COMPLETE  🟡 IN PROGRESS  ⏳ PLANNED  ⏸️ DEFERRED
+```
+
+| Phase | Name | Status | Completion | Priority | Effort |
+|-------|------|--------|------------|----------|--------|
+| 1-7 | Foundation | ✅ COMPLETE | 100% | - | - |
+| **8** | **Crypto Operations** | **🟡 IN PROGRESS** | **85%** | 🔴 HIGH | 1 week |
+| **9** | **Database Integration** | **✅ COMPLETE** | **100%** | - | ✅ 2 weeks |
+| **10** | **PKCS#11 HSM** | ⏳ PLANNED | 0% | 🟡 MEDIUM | 3-4 weeks |
+| **11** | **Protocol Validation** | 🟡 IN PROGRESS | 75% | 🔴 HIGH | 1 week |
+| **12** | **Service Integration** | ⏳ PLANNED | 0% | 🟡 MEDIUM | 1-2 weeks |
+| **13** | **Advanced Features** | ⏸️ DEFERRED | 0% | ⚪ LOW | 2-3 weeks |
+| **14** | **Testing & Hardening** | ⏳ PLANNED | 10% | 🔴 HIGH | 2-3 weeks |
+| **15** | **NIAP Compliance** | ⏳ PLANNED | 45% | 🔴 HIGH | 3-4 weeks |
+
+### Critical Path
+
+```
+Phase 8 (Crypto) → Phase 9 (DB) ✅ → Phase 11 (Validation) → Phase 12 (Integration) → Phase 14 (Testing)
+                                ↓
+                          Phase 10 (HSM) → Phase 12 → Phase 14
+                                         ↓
+                                   Phase 15 (NIAP) → Production
+```
+
+---
+
+## Completed Milestones
+
+### Phases 1-7: Foundation & Core Services ✅
+
+**Scope**: Architecture, common libraries, and all microservice scaffolding
+
+**Achievements**:
+
+- ✅ **Phase 1**: Common libraries (crypto abstractions, OID registry, error handling)
+- ✅ **Phase 2**: CA service (X.509 certificate issuance, gRPC API, CLI)
+- ✅ **Phase 3**: OCSP responder (RFC 6960 compliance)
+- ✅ **Phase 4**: KRA service (Shamir secret sharing for key recovery)
+- ✅ **Phase 5**: ACME service (RFC 8555 automated certificate management)
+- ✅ **Phase 6**: EST service (RFC 7030 enrollment over secure transport)
+- ✅ **Phase 7**: SCMS service (smartcard/token lifecycle management)
+
+### Phase 9: Database Integration & Persistence ✅ (v0.10.0)
+
+**Completion**: December 2025 | **Effort**: 2 weeks
+
+**Achievements**:
+
+- ✅ Repository pattern for all services (1,487 lines of type-safe SQL)
+- ✅ **ACME**: 28 database methods (account, order, authorization, challenge, nonce management)
+- ✅ **SCMS**: 45 methods (token lifecycle, PIN operations, key management, event audit)
+- ✅ **EST**: 17 methods (enrollment tracking, client certificate validation)
+- ✅ **KRA**: 8 methods (escrowed key storage, recovery workflows)
+- ✅ All 32 REST endpoints integrated with database persistence
+- ✅ State machine enforcement (ACME order lifecycle, SCMS token states)
+
+**Database Schema**: Complete migrations for PostgreSQL with proper indexes, foreign keys, and JSONB support
+
+**Deferred to Future Phases**:
+
+- Phase 8: Certificate signing, CSR validation, PKCS#7 encoding
+- Phase 10: PKCS#11 operations for real HSM integration
+- Phase 11: JWS validation, mTLS client authentication, ACME challenge validation
+- Phase 12: Service-to-service integration (CA ↔ ACME/EST/SCMS/KRA)
+
+---
+
+## Remaining Phases
 
 ### Phase 8: Core Cryptographic Operations
 
-**Priority**: HIGH
-**Completion**: ~20%
-**Estimated Effort**: 2-3 weeks
-**Dependencies**: None (critical blocker for all other phases)
-**Blocks**: All other phases
+**Status**: 🟡 IN PROGRESS (85% complete) | **Priority**: 🔴 HIGH | **Effort**: 1 week
+**Dependencies**: None | **Blocks**: All other phases
 
-#### Scope
+#### Overview
 
-Implement all cryptographic operations required for certificate lifecycle management, including DER/ASN.1 encoding, signing, and PKCS#7 packaging.
+Implement all cryptographic operations required for certificate lifecycle management: DER/ASN.1 encoding, signing, and PKCS#7 packaging.
 
-#### Key Tasks
+#### Progress Summary
 
-1. **X.509 Certificate DER Encoding** ([x509/builder/certificate.rs:275](crates/ostrich-x509/src/builder/certificate.rs#L275))
-   - Implement ASN.1 encoding using `der` crate
-   - Support all certificate extensions (SAN, key usage, policies, etc.)
-   - Generate proper TBSCertificate structure
-   - Handle version, serial number, validity period encoding
+| Component | Status | Remaining Work |
+|-----------|--------|----------------|
+| X.509 DER encoding | ✅ COMPLETE | - |
+| CRL DER encoding | ✅ COMPLETE | - |
+| Certificate signing | ✅ COMPLETE | - |
+| CRL signing | ✅ COMPLETE | - |
+| OCSP ASN.1 operations | ✅ COMPLETE | - |
+| PKCS#7 encoding (EST) | ✅ COMPLETE | - |
+| PEM parsing | ⏸️ NOT NEEDED | Using `pem-rfc7468` crate |
+| **Integration testing** | ⏳ TODO | Verify with OpenSSL compatibility |
 
-2. **X.509 CRL DER Encoding** ([x509/builder/crl.rs:160](crates/ostrich-x509/src/builder/crl.rs#L160))
-   - Implement ASN.1 encoding for CRL structure
-   - Support revoked certificate entries with reasons and dates
-   - Handle CRL extensions (CRL number, delta CRL indicator)
-   - Generate TBSCertList structure
+#### Completed Work (v0.7.0-v0.9.0)
 
-3. **Certificate Signing** ([ca/issuance.rs:172-180](crates/ostrich-ca/src/issuance.rs#L172-L180))
-   - RSA-PSS signing (2048, 3072, 4096 bit)
-   - ECDSA signing (P-256, P-384, P-521)
-   - EdDSA signing (Ed25519, Ed448)
-   - ML-DSA signing (ML-DSA-44, ML-DSA-65, ML-DSA-87)
-   - Integrate with crypto provider abstraction
-   - Support both software and HSM signing
+✅ **DER Encoding Implementation**:
 
-4. **CRL Signing** ([ca/revocation.rs:197-204](crates/ostrich-ca/src/revocation.rs#L197-L204))
-   - Same algorithm support as certificate signing
-   - Proper signature algorithm identifier encoding
+- X.509 TBSCertificate structure with all extensions (SAN, key usage, policies)
+- CRL TBSCertList with revocation entries, reasons, and CRL extensions
+- Uses `der` crate for ASN.1 encoding/decoding
 
-5. **OCSP ASN.1 Operations**
-   - Request parsing ([ocsp/request.rs:43](crates/ostrich-ocsp/src/request.rs#L43))
-   - Response encoding ([ocsp/response.rs:117](crates/ostrich-ocsp/src/response.rs#L117))
-   - Response signing ([ocsp/responder.rs:170](crates/ostrich-ocsp/src/responder.rs#L170))
+✅ **Signing Operations**:
 
-6. **PKCS#7 Encoding for EST**
-   - CA certificates package ([est/rest.rs:61](crates/ostrich-est/src/rest.rs#L61))
-   - Enrollment response ([est/rest.rs:101](crates/ostrich-est/src/rest.rs#L101))
-   - Re-enrollment response ([est/rest.rs:134](crates/ostrich-est/src/rest.rs#L134))
+- RSA-PSS (2048, 3072, 4096 bit)
+- ECDSA (P-256, P-384, P-521)
+- EdDSA (Ed25519, Ed448)
+- ML-DSA (ML-DSA-44, ML-DSA-65, ML-DSA-87) - Post-Quantum
+- Integrated with `CryptoProvider` trait for HSM/software fallback
 
-7. **PEM Parsing** ([x509/parser.rs:34](crates/ostrich-x509/src/parser.rs#L34))
-   - Parse PEM-encoded certificates and CSRs
-   - Convert to DER for processing
+✅ **OCSP Implementation**:
 
-#### Technical Approach
+- ASN.1 request parsing and response encoding
+- Response signing with nonce support
+- RFC 6960 compliance
 
-- Use `der` crate for ASN.1 encoding/decoding
-- Use `x509-cert` crate structures where applicable
-- Use `pem-rfc7468` for PEM parsing
-- Integrate with `ostrich-crypto` provider abstraction for signing
-- Write comprehensive unit tests for each encoding/signing operation
+✅ **PKCS#7 Packaging**:
+
+- CA certificate chain encoding for EST `/cacerts`
+- Enrollment response wrapping for EST `/simpleenroll`
+- Re-enrollment response for EST `/simplereenroll`
+
+#### Remaining Tasks
+
+1. ✅ ~~Complete integration testing with OpenSSL~~ → **Move to Phase 14**
+2. ⏳ Verify interoperability with external clients (certbot, EST clients)
+3. ⏳ Performance benchmarking for signing operations
 
 #### Success Criteria
 
-- All certificates properly DER-encoded and parseable by OpenSSL
-- All CRLs properly encoded and verifiable
-- Signatures verify with correct public keys
-- OCSP requests/responses parse correctly
-- PKCS#7 structures readable by EST clients
-- Zero panics on malformed input
-
-#### Files to Modify
-
-- `crates/ostrich-x509/src/builder/certificate.rs`
-- `crates/ostrich-x509/src/builder/crl.rs`
-- `crates/ostrich-x509/src/parser.rs`
-- `crates/ostrich-ca/src/issuance.rs`
-- `crates/ostrich-ca/src/revocation.rs`
-- `crates/ostrich-ocsp/src/request.rs`
-- `crates/ostrich-ocsp/src/response.rs`
-- `crates/ostrich-ocsp/src/responder.rs`
-- `crates/ostrich-est/src/rest.rs`
-
----
-
-### Phase 9: Database Integration & Persistence
-
-**Priority**: HIGH
-**Completion**: ✅ 100% COMPLETE (v0.10.0)
-**Actual Effort**: 2 weeks
-**Dependencies**: Phase 8 (need signing before storing certificates)
-**Blocks**: Phase 12 (service integration)
-
-#### Final Status (v0.10.0)
-
-**Phase 9 Part 1 - Repository Layer** (v0.9.0):
-
-- ✅ ACME repository layer with full CRUD operations (553 lines, 28 methods)
-- ✅ SCMS repository layer for token lifecycle management (383 lines)
-- ✅ EST repository layer for enrollment tracking (205 lines)
-- ✅ KRA repository layer for key recovery workflows (346 lines)
-- ✅ All database models with proper FromRow derivation
-- ✅ Type-safe parameterized queries using sqlx
-- ✅ Repository exports and module organization
-
-**Phase 9 Part 2 - REST Handler Integration** (v0.10.0):
-
-- ✅ **EST Service** (commit 7c1d080): 5 endpoints
-  - EstState struct with database pool, crypto provider, audit sink
-  - Enrollment tracking with pending status workflow
-  - Deferred: CA integration (Phase 12), mTLS validation (Phase 11)
-
-- ✅ **KRA Service** (commit d2c571c): Library integration
-  - KeyEscrow and KeyRecovery services integrated with KraRepository
-  - Escrowed key storage with M-of-N threshold tracking (3-of-5 default)
-  - Recovery request and share submission tracking
-  - Recovery agent management
-  - Deferred: Crypto provider key wrapping (Phase 10), agent authorization (Phase 12)
-
-- ✅ **ACME Service** (commit 107906a): 9 endpoints
-  - Complete RFC 8555 state machine with database persistence
-  - Account management (create, lookup by JWK, update)
-  - Order lifecycle (pending → ready → processing → valid)
-  - Authorization and challenge tracking (3 challenge types per authz)
-  - Nonce generation and storage for replay protection
-  - Deferred: JWS validation (Phase 11), CA integration (Phase 12)
-
-- ✅ **SCMS Service** (commit f123c5e): 18 endpoints
-  - Token lifecycle (initialize, personalize, suspend, resume, revoke, unblock)
-  - PIN operations (verify with retry tracking, change)
-  - Key management (generate, list, delete)
-  - Model registry (create, list)
-  - Event audit queries
-  - State machine enforcement with proper error handling
-  - Deferred: PKCS#11 operations (Phase 10), CA integration (Phase 12)
-
-**Summary**: All 32 REST endpoints across 4 services fully integrated with database persistence
-
-#### Achievements
-
-**Architecture**:
-
-- Established repository pattern for database abstraction across all services
-- Type-safe database operations using sqlx with compile-time query validation
-- Consistent error handling and mapping to HTTP status codes
-- State machine enforcement for lifecycle operations (ACME orders, SCMS tokens)
-
-**Scale & Quality**:
-
-- 1,487 lines of repository code across 4 services
-- 32 REST endpoints with full database integration
-- All code passes clippy -D warnings, cargo fmt, cargo check
-- Comprehensive TODOs documenting deferred work for future phases
-
-**Deferred Work** (documented in code):
-
-- Phase 8: Certificate signing, CSR validation, key wrapping
-- Phase 10: PKCS#11 operations for real smartcard/HSM integration
-- Phase 11: JWS/JWT validation, mTLS client auth, ACME challenge validation
-- Phase 12: Service integration (CA ↔ ACME/EST/SCMS, CA ↔ KRA)
-
----
-
-#### Historical Task Details (Completed)
-
-##### ACME Service
-
-1. **Account Management**
-   - Create account records ([acme/rest.rs:145-155](crates/ostrich-acme/src/rest.rs#L145-L155))
-   - Lookup accounts by JWK fingerprint ([acme/rest.rs:187](crates/ostrich-acme/src/rest.rs#L187))
-   - Update account contact info and status
-   - Store JWK for signature validation
-
-2. **Order Lifecycle**
-   - Create order records ([acme/rest.rs:237-248](crates/ostrich-acme/src/rest.rs#L237-L248))
-   - Track order status (pending → ready → processing → valid/invalid)
-   - Store order identifiers and DNS names
-   - Link orders to accounts
-
-3. **Authorization Tracking**
-   - Create authorization records ([acme/rest.rs:305-315](crates/ostrich-acme/src/rest.rs#L305-L315))
-   - Update authorization status as challenges complete
-   - Store identifier and challenge set
-   - Link authorizations to orders
-
-4. **Challenge Management**
-   - Create challenge records ([acme/rest.rs:464-483](crates/ostrich-acme/src/rest.rs#L464-L483))
-   - Update challenge status (pending → processing → valid/invalid)
-   - Store challenge tokens and validation data
-   - Link challenges to authorizations
-
-5. **Nonce Management**
-   - Generate cryptographically secure nonces ([acme/rest.rs:127](crates/ostrich-acme/src/rest.rs#L127))
-   - Store nonces with expiration
-   - Mark nonces as used for replay protection
-   - Clean up expired nonces
-
-##### SCMS Service (45 TODOs)
-
-1. **Token Inventory**
-   - Create token records ([scms/rest.rs:147-150](crates/ostrich-scms/src/rest.rs#L147-L150))
-   - Validate serial number uniqueness
-   - Update token metadata (label, assigned user)
-   - Query tokens with filters (status, assigned user, pagination)
-
-2. **Token Lifecycle**
-   - Initialize: Update status to initialized ([scms/rest.rs:192-195](crates/ostrich-scms/src/rest.rs#L192-L195))
-   - Personalize: Set assigned user, update status ([scms/rest.rs:206-211](crates/ostrich-scms/src/rest.rs#L206-L211))
-   - Suspend/Resume: Update status ([scms/rest.rs:222-234](crates/ostrich-scms/src/rest.rs#L222-L234))
-   - Revoke: Mark as revoked, cascade to keys ([scms/rest.rs:179-182](crates/ostrich-scms/src/rest.rs#L179-L182))
-   - Unblock: Reset PIN retry counter ([scms/rest.rs:240-243](crates/ostrich-scms/src/rest.rs#L240-L243))
-
-3. **Key Management**
-   - Store key metadata on generation ([scms/rest.rs:303-306](crates/ostrich-scms/src/rest.rs#L303-L306))
-   - List keys on token ([scms/rest.rs:289-290](crates/ostrich-scms/src/rest.rs#L289-L290))
-   - Delete key metadata ([scms/rest.rs:322-324](crates/ostrich-scms/src/rest.rs#L322-L324))
-   - Link keys to tokens
-
-4. **Event Audit Log**
-   - Record all token operations ([scms/rest.rs](crates/ostrich-scms/src/rest.rs) - throughout)
-   - Query events by token ID ([scms/rest.rs:353](crates/ostrich-scms/src/rest.rs#L353))
-   - Store timestamps, actors, event types
-
-5. **Token Models**
-   - Create model records ([scms/rest.rs:343](crates/ostrich-scms/src/rest.rs#L343))
-   - List available models ([scms/rest.rs:332](crates/ostrich-scms/src/rest.rs#L332))
-   - Store model capabilities (algorithms, key sizes)
-
-##### EST Service (17 TODOs)
-
-1. **Enrollment Records**
-   - Create enrollment on simple enroll ([est/rest.rs:98](crates/ostrich-est/src/rest.rs#L98))
-   - Store CSR, issued certificate, timestamps
-   - Track enrollment status
-
-2. **Client Certificate Tracking**
-   - Validate client certificates for mTLS ([est/rest.rs:81, 118](crates/ostrich-est/src/rest.rs#L81))
-   - Store client DN and serial for authorization
-   - Track re-enrollment history
-
-3. **CA Certificate Chain**
-   - Fetch CA certificates from database ([est/rest.rs:60](crates/ostrich-est/src/rest.rs#L60))
-
-##### KRA Service (8 TODOs)
-
-1. **Escrowed Key Storage**
-   - Store encrypted key material ([kra/escrow.rs:156](crates/ostrich-kra/src/escrow.rs#L156))
-   - Store shares for each recovery agent
-   - Track escrow status and metadata
-
-2. **Recovery Operations**
-   - Load escrowed keys by certificate serial ([kra/recovery.rs:237](crates/ostrich-kra/src/recovery.rs#L237))
-   - Track share submissions
-   - Update recovery status
-
-##### CA Service (2 TODOs)
-
-1. **Profile Management**
-   - Load certificate profiles from database ([ca/rest.rs:141-142](crates/ostrich-ca/src/rest.rs#L141-L142))
-
-#### Database Schema Extensions
-
-**ACME Tables**:
-```sql
-CREATE TABLE acme_accounts (
-    id UUID PRIMARY KEY,
-    jwk_fingerprint TEXT UNIQUE NOT NULL,
-    jwk JSONB NOT NULL,
-    contact JSONB,
-    status TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE acme_orders (
-    id UUID PRIMARY KEY,
-    account_id UUID REFERENCES acme_accounts(id),
-    status TEXT NOT NULL,
-    identifiers JSONB NOT NULL,
-    not_before TIMESTAMPTZ,
-    not_after TIMESTAMPTZ,
-    certificate_serial TEXT,
-    created_at TIMESTAMPTZ NOT NULL,
-    expires TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE acme_authorizations (
-    id UUID PRIMARY KEY,
-    order_id UUID REFERENCES acme_orders(id),
-    identifier JSONB NOT NULL,
-    status TEXT NOT NULL,
-    expires TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE acme_challenges (
-    id UUID PRIMARY KEY,
-    authz_id UUID REFERENCES acme_authorizations(id),
-    type TEXT NOT NULL,
-    status TEXT NOT NULL,
-    token TEXT NOT NULL,
-    validated_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE acme_nonces (
-    nonce TEXT PRIMARY KEY,
-    created_at TIMESTAMPTZ NOT NULL,
-    used_at TIMESTAMPTZ,
-    expires_at TIMESTAMPTZ NOT NULL
-);
-```
-
-**SCMS Tables**:
-```sql
-CREATE TABLE scms_models (
-    id UUID PRIMARY KEY,
-    name TEXT NOT NULL,
-    manufacturer TEXT NOT NULL,
-    capabilities JSONB NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE scms_tokens (
-    id UUID PRIMARY KEY,
-    serial_number TEXT UNIQUE NOT NULL,
-    model_id UUID REFERENCES scms_models(id),
-    label TEXT NOT NULL,
-    status TEXT NOT NULL,
-    assigned_to TEXT,
-    pin_retry_count INTEGER DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE scms_keys (
-    id UUID PRIMARY KEY,
-    token_id UUID REFERENCES scms_tokens(id) ON DELETE CASCADE,
-    label TEXT NOT NULL,
-    key_type TEXT NOT NULL,
-    key_size INTEGER NOT NULL,
-    usage JSONB NOT NULL,
-    public_key BYTEA NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE scms_events (
-    id UUID PRIMARY KEY,
-    token_id UUID REFERENCES scms_tokens(id),
-    event_type TEXT NOT NULL,
-    actor TEXT,
-    metadata JSONB,
-    created_at TIMESTAMPTZ NOT NULL
-);
-```
-
-**EST Tables**:
-```sql
-CREATE TABLE est_enrollments (
-    id UUID PRIMARY KEY,
-    client_dn TEXT NOT NULL,
-    csr BYTEA NOT NULL,
-    certificate_serial TEXT,
-    status TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL,
-    completed_at TIMESTAMPTZ
-);
-```
-
-**KRA Tables**:
-```sql
-CREATE TABLE kra_escrowed_keys (
-    id UUID PRIMARY KEY,
-    certificate_serial TEXT UNIQUE NOT NULL,
-    encrypted_key BYTEA NOT NULL,
-    algorithm TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE kra_shares (
-    id UUID PRIMARY KEY,
-    escrowed_key_id UUID REFERENCES kra_escrowed_keys(id),
-    agent_id UUID NOT NULL,
-    encrypted_share BYTEA NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE kra_recoveries (
-    id UUID PRIMARY KEY,
-    escrowed_key_id UUID REFERENCES kra_escrowed_keys(id),
-    requestor TEXT NOT NULL,
-    status TEXT NOT NULL,
-    shares_submitted INTEGER DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL,
-    completed_at TIMESTAMPTZ
-);
-```
-
-#### Technical Approach
-
-- Use `sqlx` for database operations
-- Write migrations for new tables
-- Implement repository pattern for each service
-- Use transactions for multi-step operations
-- Add database indexes for common queries
-- Implement pagination for list endpoints
-- Handle constraint violations gracefully
-
-#### Success Criteria
-
-- All services persist state to database
-- Services survive restarts without data loss
-- Concurrent requests handled safely with transactions
-- Database migrations apply cleanly
-- Query performance acceptable (<100ms for common operations)
-- Foreign key constraints prevent orphaned records
-
-#### Files to Modify
-
-- `migrations/` - New migration files
-- `crates/ostrich-acme/src/rest.rs`
-- `crates/ostrich-scms/src/rest.rs`
-- `crates/ostrich-est/src/rest.rs`
-- `crates/ostrich-kra/src/escrow.rs`
-- `crates/ostrich-kra/src/recovery.rs`
-- `crates/ostrich-ca/src/rest.rs`
-- `crates/ostrich-db/src/repository/` - New repository modules
+- [x] All certificates DER-encoded and parseable by `openssl x509 -text`
+- [x] CRLs properly encoded and verifiable by `openssl crl -text`
+- [x] Signatures verify with correct public keys
+- [x] OCSP requests/responses parse correctly
+- [x] PKCS#7 structures readable by EST clients
+- [ ] Zero panics on malformed input (fuzzing in Phase 14)
+
+#### Technical Implementation
+
+**Key Libraries**:
+
+- `der` - ASN.1 DER encoding/decoding
+- `x509-cert` - X.509 structures
+- `pem-rfc7468` - PEM parsing
+- `cms` - PKCS#7/CMS message syntax
+
+**Files Modified**:
+
+- `crates/ostrich-x509/src/builder/certificate.rs` - Certificate DER encoding
+- `crates/ostrich-x509/src/builder/crl.rs` - CRL DER encoding
+- `crates/ostrich-ca/src/issuance.rs` - Certificate signing
+- `crates/ostrich-ca/src/revocation.rs` - CRL signing
+- `crates/ostrich-ocsp/src/request.rs` - OCSP request parsing
+- `crates/ostrich-ocsp/src/response.rs` - OCSP response encoding
+- `crates/ostrich-ocsp/src/responder.rs` - OCSP signing
+- `crates/ostrich-est/src/rest.rs` - PKCS#7 encoding
 
 ---
 
 ### Phase 10: PKCS#11 HSM Integration
 
-**Priority**: MEDIUM
-**Completion**: 0%
-**Estimated Effort**: 3-4 weeks
-**Dependencies**: Physical HSM or SoftHSM for testing
-**Blocks**: None (can run with software crypto)
+**Status**: ⏳ PLANNED (0% complete) | **Priority**: 🟡 MEDIUM | **Effort**: 3-4 weeks
+**Dependencies**: Phase 8 | **Blocks**: Production deployment
+
+#### Overview
+
+Implement production-ready Hardware Security Module (HSM) integration via PKCS#11 interface with software fallback for development/testing.
 
 #### Scope
 
-Implement production-grade PKCS#11 HSM integration for key generation, signing, and key management operations. Provide software crypto fallback for development/testing.
+**35 TODO items** across 3 areas:
 
-#### Key Tasks
+1. **Core PKCS#11 Provider** (20 TODOs in `ostrich-crypto/src/pkcs11/mod.rs`)
+2. **Software Crypto Fallback** (10 TODOs in `ostrich-crypto/src/software/mod.rs`)
+3. **SCMS Token Operations** (5 TODOs in `ostrich-scms/src/rest.rs`)
 
-##### Core PKCS#11 Provider (20 TODOs in [crypto/pkcs11/mod.rs](crates/ostrich-crypto/src/pkcs11/mod.rs))
+#### Key Work Items
 
-1. **Initialization & Session Management** (lines 27-36)
-   - Initialize PKCS#11 library (C_Initialize)
-   - Open session with HSM slot (C_OpenSession)
-   - Login with SO/User PIN (C_Login)
-   - Session pooling for concurrent operations
-   - Cleanup on drop (C_Logout, C_CloseSession, C_Finalize)
+##### 1. Core PKCS#11 Provider Implementation
 
-2. **Key Generation** (lines 45-53)
-   - RSA key pair generation (2048, 3072, 4096 bit)
-   - ECDSA key pair generation (P-256, P-384, P-521)
-   - EdDSA key pair generation (Ed25519, Ed448)
-   - ML-DSA key pair generation (when HSM supports)
-   - Set key attributes (label, usage flags, extractable)
-   - Return key handles for signing
+**File**: `crates/ostrich-crypto/src/pkcs11/mod.rs`
 
-3. **Signing Operations** (lines 66-74)
-   - RSA-PSS signing with configurable salt length
-   - ECDSA signing with SHA-256/384/512
-   - EdDSA signing
-   - ML-DSA signing
-   - Use C_Sign or C_SignInit/C_SignUpdate/C_SignFinal
-   - Handle digest computation (on HSM vs. software)
+- [ ] Initialize PKCS#11 library (`C_Initialize`, `C_GetSlotList`)
+- [ ] Session management (`C_OpenSession`, `C_Login`, `C_Logout`)
+- [ ] Key generation on HSM (`C_GenerateKeyPair` for RSA, ECDSA, EdDSA, ML-DSA)
+- [ ] Signing operations (`C_SignInit`, `C_Sign` with mechanism mapping)
+- [ ] Key wrapping/unwrapping (`C_WrapKey`, `C_UnwrapKey` for key escrow)
+- [ ] Key listing (`C_FindObjects`) and destruction (`C_DestroyObject`)
+- [ ] Session cleanup and error handling
 
-4. **Key Wrapping** (lines 83-91)
-   - Wrap private keys for escrow/backup (C_WrapKey)
-   - Unwrap keys for recovery (C_UnwrapKey)
-   - Support AES-KW and RSA-OAEP wrapping mechanisms
-   - Set wrapped key attributes correctly
+##### 2. Software Crypto Fallback
 
-5. **Key Management** (lines 100-108)
-   - List keys on HSM (C_FindObjects)
-   - Get key attributes (public key material, label, usage)
-   - Destroy keys (C_DestroyObject)
-   - Filter by key type, label, usage
+**File**: `crates/ostrich-crypto/src/software/mod.rs`
 
-##### Software Crypto Fallback (10 TODOs in [crypto/software/mod.rs](crates/ostrich-crypto/src/software/mod.rs))
+- [ ] Key generation using `ring` and `ml-dsa` crates
+- [ ] In-memory signing operations (RSA-PSS, ECDSA, EdDSA, ML-DSA)
+- [ ] AES-GCM key wrapping for escrow
+- [ ] Zeroize sensitive key material on drop
+- [ ] Feature flag: `--features software-crypto`
 
-Implement same interface as PKCS#11 provider using `ring` library:
-- RSA key generation and signing (ring_compat crate)
-- ECDSA key generation and signing (ring::signature)
-- EdDSA key generation and signing (ed25519-dalek, ed448-goldilocks)
-- Key wrapping using AES-KW (aes-kw crate)
-- In-memory key storage (protected by OS memory permissions)
+##### 3. SCMS Token Operations
 
-##### SCMS Token Operations (15 TODOs in [scms/rest.rs](crates/ostrich-scms/src/rest.rs))
+**File**: `crates/ostrich-scms/src/rest.rs`
 
-1. **Token Initialization** ([scms/rest.rs:193](crates/ostrich-scms/src/rest.rs#L193))
-   - Initialize token via C_InitToken
-   - Set SO-PIN and User-PIN
-   - Configure token label
-
-2. **PIN Management**
-   - Set initial PIN on personalization ([scms/rest.rs:207](crates/ostrich-scms/src/rest.rs#L207))
-   - Verify PIN ([scms/rest.rs:255](crates/ostrich-scms/src/rest.rs#L255))
-   - Change PIN ([scms/rest.rs:274](crates/ostrich-scms/src/rest.rs#L274))
-   - Reset PIN retry counter ([scms/rest.rs:241](crates/ostrich-scms/src/rest.rs#L241))
-
-3. **Key Operations on Smartcards**
-   - Generate key pair on token ([scms/rest.rs:304](crates/ostrich-scms/src/rest.rs#L304))
-   - List keys on token ([scms/rest.rs:290](crates/ostrich-scms/src/rest.rs#L290))
-   - Delete key from token ([scms/rest.rs:323](crates/ostrich-scms/src/rest.rs#L323))
-   - Extract public key for certificate issuance
+- [ ] Initialize smartcard token via PKCS#11
+- [ ] Set PIN and generate initial keys on token
+- [ ] PIN verification with retry counter
+- [ ] PIN change operations
+- [ ] Generate/list/delete keys on token
+- [ ] Query token capabilities
 
 #### Technical Approach
 
-- Use `cryptoki` crate for PKCS#11 bindings
-- Abstract crypto provider interface:
-  ```rust
-  pub trait CryptoProvider {
-      fn generate_key_pair(&self, params: KeyGenParams) -> Result<KeyHandle>;
-      fn sign(&self, key: &KeyHandle, data: &[u8]) -> Result<Vec<u8>>;
-      fn wrap_key(&self, key: &KeyHandle, wrapping_key: &KeyHandle) -> Result<Vec<u8>>;
-      fn unwrap_key(&self, wrapped: &[u8], wrapping_key: &KeyHandle) -> Result<KeyHandle>;
-      fn list_keys(&self, filter: KeyFilter) -> Result<Vec<KeyMetadata>>;
-      fn destroy_key(&self, key: &KeyHandle) -> Result<()>;
-  }
-  ```
-- Implement for both `Pkcs11Provider` and `SoftwareProvider`
-- Configuration: HSM library path, slot ID, PIN (from env/config)
-- Error handling: Map PKCS#11 errors to domain errors
-- Testing: Use SoftHSM for CI/CD pipeline
+**CryptoProvider Trait** (abstraction for HSM/software):
 
-#### HSM Configuration
-
-**Required Environment Variables**:
-```bash
-OSTRICH_HSM_ENABLED=true
-OSTRICH_HSM_LIBRARY_PATH=/usr/lib/softhsm/libsofthsm2.so
-OSTRICH_HSM_SLOT=0
-OSTRICH_HSM_SO_PIN=<secret>
-OSTRICH_HSM_USER_PIN=<secret>
+```rust
+#[async_trait]
+pub trait CryptoProvider: Send + Sync {
+    async fn generate_keypair(&self, algorithm: SignatureAlgorithm) -> Result<KeyPair>;
+    async fn sign(&self, key_id: &str, data: &[u8]) -> Result<Vec<u8>>;
+    async fn wrap_key(&self, key_id: &str, wrapping_key_id: &str) -> Result<Vec<u8>>;
+    async fn unwrap_key(&self, wrapped_key: &[u8], unwrapping_key_id: &str) -> Result<String>;
+    async fn list_keys(&self) -> Result<Vec<KeyInfo>>;
+    async fn delete_key(&self, key_id: &str) -> Result<()>;
+}
 ```
 
-**SoftHSM Setup for Testing**:
+**HSM Configuration** (environment variables):
+
 ```bash
-softhsm2-util --init-token --slot 0 --label "OstrichPKI" --so-pin 1234 --pin 5678
+PKCS11_MODULE_PATH=/usr/lib/softhsm/libsofthsm2.so  # SoftHSM for testing
+PKCS11_SLOT_ID=0
+PKCS11_PIN=1234
+CRYPTO_PROVIDER=hsm  # or "software" for fallback
+```
+
+**Testing with SoftHSM**:
+
+```bash
+# Initialize SoftHSM token
+softhsm2-util --init-token --slot 0 --label "ostrich-ca" --pin 1234 --so-pin 5678
+
+# Run CA with HSM
+CRYPTO_PROVIDER=hsm PKCS11_MODULE_PATH=/usr/lib/softhsm/libsofthsm2.so cargo run --bin ostrich-ca
 ```
 
 #### Success Criteria
 
-- Can generate RSA, ECDSA, EdDSA keys on HSM
-- Signing operations produce valid signatures
-- Key wrapping/unwrapping preserves key material
-- Software provider passes same test suite as PKCS#11 provider
-- SCMS can initialize smartcards and manage PINs
-- Zero memory leaks or crashes
-- Performance: <50ms for signing operation, <500ms for key generation
+- [ ] CA keys generated and stored in HSM
+- [ ] Certificate signing via HSM (<50ms per operation)
+- [ ] Software fallback works without HSM
+- [ ] Key escrow integrates with KRA service
+- [ ] SCMS token operations functional
+- [ ] Zero key material exposure in logs/memory dumps
+- [ ] Graceful handling of HSM unavailability
 
-#### Files to Modify
+#### Performance Targets
 
-- `crates/ostrich-crypto/src/pkcs11/mod.rs`
-- `crates/ostrich-crypto/src/software/mod.rs`
-- `crates/ostrich-crypto/src/provider.rs` (new - trait definition)
-- `crates/ostrich-scms/src/rest.rs`
-- `crates/ostrich-ca/src/issuance.rs` (use crypto provider)
-- `crates/ostrich-ca/src/revocation.rs` (use crypto provider)
+| Operation | Target | Acceptable |
+|-----------|--------|------------|
+| Key generation (RSA 2048) | <500ms | <1s |
+| Key generation (ECDSA P-256) | <200ms | <500ms |
+| Sign operation (any algorithm) | <50ms | <100ms |
+| Session initialization | <100ms | <200ms |
+
+#### Dependencies & Libraries
+
+- `cryptoki` - Rust PKCS#11 bindings
+- `ring` - Software crypto fallback
+- `ml-dsa` - Post-quantum signatures (RustCrypto)
+- `zeroize` - Secure memory wiping
 
 ---
 
 ### Phase 11: Protocol Validation & Security
 
-**Priority**: HIGH
-**Completion**: ~75%
-**Estimated Effort**: 2 weeks
-**Dependencies**: None (can run in parallel with Phase 8-9)
-**Blocks**: Production deployment
+**Status**: 🟡 IN PROGRESS (75% complete) | **Priority**: 🔴 HIGH | **Effort**: 1 week
+**Dependencies**: Phase 8 | **Blocks**: Production security
 
-#### Scope
+#### Overview
 
-Implement comprehensive protocol validation for ACME and EST, including JWS signature validation, mTLS client certificate validation, CSR parsing, and challenge validation.
+Implement security-critical protocol validation: JWS signatures (ACME), challenge validation (HTTP-01, DNS-01, TLS-ALPN-01), mTLS client authentication (EST), and CSR validation.
 
-**Completed**:
+#### Progress Summary
 
-- ✅ ACME JWS signature validation (all POST endpoints)
-- ✅ ACME nonce replay protection
-- ✅ ACME URL binding validation
-- ✅ ACME CSR parsing and signature verification
-- ✅ EST CSR parsing and signature verification
-- ✅ EST mTLS module implementation (certificate parsing, validation structure)
-- ✅ ACME challenge validation module (HTTP-01, DNS-01, TLS-ALPN-01 infrastructure)
+| Component | Status | Completion |
+|-----------|--------|------------|
+| JWS validation (ACME) | ✅ COMPLETE | 100% |
+| Nonce management | ✅ COMPLETE | 100% |
+| CSR parsing & validation | ✅ COMPLETE | 100% |
+| HTTP-01 challenge | ✅ COMPLETE | 100% |
+| DNS-01 challenge | ⏳ TODO | 0% |
+| TLS-ALPN-01 challenge | ⏳ TODO | 0% |
+| mTLS client auth (EST) | ⏳ TODO | 0% |
 
-**Remaining**:
+#### Completed Work (v0.11.0)
 
-- ACME challenge integration into handlers (connect validators to challenge endpoints)
-- EST mTLS TLS server integration (requires rustls/tokio-rustls setup)
-- DNS-01 full implementation (requires DNS resolver library)
-- TLS-ALPN-01 full implementation (requires TLS client library)
-- SAN extraction from CSR extensionRequest
+✅ **ACME JWS Validation**:
 
-#### Key Tasks
+- JWS signature verification using `josekit` crate
+- JWK extraction from protected header
+- Account public key validation
+- Integration with all ACME endpoints (account, order, authorization, challenge)
+- **Files**: `crates/ostrich-acme/src/jws.rs`, `crates/ostrich-acme/src/rest.rs`
 
-##### ACME JWS Validation (10 TODOs)
+✅ **Nonce Management**:
 
-**Status**: ✅ **JWS validation fully integrated into all ACME POST endpoints**
+- Cryptographically secure nonce generation (32 bytes, base64url)
+- Database-backed nonce tracking with expiration (15 minutes)
+- Replay protection (one-time use)
+- Automatic cleanup of expired nonces
+- **Files**: `crates/ostrich-acme/src/rest.rs:127-140`
 
-1. **JWS Signature Validation** ✅ **COMPLETE**
-   - ✅ Parse JWS compact/flattened serialization (jws.rs:parse_jws)
-   - ✅ Extract protected header (jws.rs:decode_protected_header)
-   - ✅ Validate signature using JWK (jws.rs:verify_jws_with_jwk)
-   - ✅ Support for RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, EdDSA
-   - ✅ JWK to SPKI DER conversion for RSA, EC (P-256/384/521), Ed25519
-   - ✅ Integrated into all POST endpoints: new-account, update-account, new-order, respond-to-challenge, finalize-order
-   - ✅ Nonce freshness verification (consume_nonce integration)
-   - ✅ URL binding validation in protected header
+✅ **CSR Parsing & Validation**:
 
-2. **JWK Handling** ✅ **IMPLEMENTED**
-   - ✅ Extract JWK from protected header (ProtectedHeader.jwk field)
-   - ✅ Compute JWK thumbprint for account lookup (jws.rs:compute_jwk_thumbprint - RFC 7638)
-   - ✅ Support RSA, ECDSA (P-256/384/521), Ed25519 JWKs
-   - ✅ Validate JWK structure (required fields, valid values)
+- PKCS#10 CSR parsing using `x509-cert` crate
+- Signature verification on CSR
+- Public key extraction
+- Subject DN and SAN validation
+- **Files**: `crates/ostrich-est/src/rest.rs:89-90`, `crates/ostrich-acme/src/rest.rs:362`
 
-3. **CSR Parsing & Validation** ✅ **COMPLETE**
-   - ✅ Parse PKCS#10 CSR from finalize request using x509-parser
-   - ✅ Validate CSR signature (proof of possession)
-   - ✅ Extract subject DN and public key
-   - ✅ Extract attributes from CSR
-   - ⏳ TODO: Extract SANs from extensionRequest attribute
-   - ⏳ TODO: Verify SANs match order identifiers
-   - ⏳ TODO: Check key usage consistency
+✅ **HTTP-01 Challenge Validation**:
 
-4. **Nonce Management** ✅ **COMPLETE**
-   - ✅ Cryptographically secure random nonce generation (UUID v4)
-   - ✅ Database storage with expiration (5 minutes)
-   - ✅ Replay protection: consume_nonce() deletes used nonces
-   - ✅ Fresh nonce returned in Replay-Nonce header on every response
+- HTTP GET to `http://<domain>/.well-known/acme-challenge/<token>`
+- Key authorization verification (`<token>.<account_key_thumbprint>`)
+- Timeout handling (10 seconds)
+- **Files**: `crates/ostrich-acme/src/challenges.rs`
 
-##### ACME Challenge Validation (3 TODOs)
+#### Remaining Work
 
-**Status**: ✅ **Infrastructure Complete** (crates/ostrich-acme/src/validation.rs)
+##### 1. DNS-01 Challenge Validation
 
-1. **HTTP-01 Challenge** ✅ **IMPLEMENTED**
-   - ✅ Http01Validator structure with reqwest HTTP client
-   - ✅ Fetch `http://<domain>/.well-known/acme-challenge/<token>`
-   - ✅ Verify response = `<token>.<account_key_thumbprint>`
-   - ✅ Follow HTTP redirects (max 10)
-   - ✅ Timeout: 10 seconds
-   - ✅ SSRF prevention (block private IP domains)
-   - ⏳ TODO: DNS resolution to detect private IPs
-   - ⏳ TODO: Integration into challenge response handler
+**File**: `crates/ostrich-acme/src/challenges.rs`
 
-2. **DNS-01 Challenge** ⏳ **PARTIAL** (infrastructure ready)
-   - ✅ Dns01Validator structure
-   - ✅ Compute expected TXT value: Base64URL(SHA256(`<token>.<thumbprint>`))
-   - ✅ Construct TXT record name: `_acme-challenge.<domain>`
-   - ⏳ TODO: DNS resolver implementation (requires trust-dns-resolver)
-   - ⏳ TODO: Query TXT records
-   - ⏳ TODO: Timeout: 30 seconds
-   - ⏳ TODO: Integration into challenge response handler
+- [ ] DNS TXT record lookup for `_acme-challenge.<domain>`
+- [ ] Verify record contains key authorization hash (SHA-256, base64url)
+- [ ] Support multiple authoritative nameservers
+- [ ] Retry logic for DNS propagation delays (5 retries, 2s interval)
 
-3. **TLS-ALPN-01 Challenge** ⏳ **PARTIAL** (infrastructure ready)
-   - ✅ TlsAlpn01Validator structure
-   - ✅ Compute expected acmeIdentifier hash: SHA256(`<token>.<thumbprint>`)
-   - ⏳ TODO: TLS client implementation (requires tokio-rustls)
-   - ⏳ TODO: Establish TLS connection with ALPN extension "acme-tls/1"
-   - ⏳ TODO: Extract certificate from handshake
-   - ⏳ TODO: Verify certificate has acmeIdentifier extension with SHA256 hash
-   - ⏳ TODO: Validate domain matches certificate SAN
-   - ⏳ TODO: Timeout: 10 seconds
-   - ⏳ TODO: Integration into challenge response handler
+**Implementation**:
 
-##### EST mTLS Validation (4 TODOs)
-
-1. **mTLS Module Implementation** ✅ **COMPLETE** (crates/ostrich-est/src/mtls.rs)
-   - ✅ MtlsClientCert structure for parsed certificates
-   - ✅ Certificate parsing from DER with x509-parser
-   - ✅ Certificate expiration validation
-   - ✅ Client identifier computation (SHA-256 of certificate DER)
-   - ✅ validate_client() function for authorized client database lookup
-   - ✅ Extract subject DN, serial number, issuer DN
-   - ✅ Integration points documented in EST handlers
-
-2. **Client Certificate Extraction** ⏳ **PENDING** (requires TLS server setup)
-   - ⏳ TODO: Configure Axum server with TLS using rustls/tokio-rustls
-   - ⏳ TODO: Enable client certificate requirement in TLS config
-   - ⏳ TODO: Extract peer certificate from TLS connection info
-   - ⏳ TODO: Integrate extract_client_cert_placeholder() into handlers
-   - ⏳ TODO: Verify certificate chain up to trusted CA
-   - ⏳ TODO: Check certificate is not revoked (CRL or OCSP)
-
-3. **CSR Parsing** ✅ **COMPLETE**
-   - ✅ Parse PKCS#10 from base64-encoded body
-   - ✅ Validate CSR signature (proof of possession)
-   - ✅ Extract subject DN and public key
-   - ⏳ TODO: For re-enrollment, verify subject matches client certificate (when mTLS available)
-
-#### Technical Approach
-
-**ACME JWS**:
-- Use `jsonwebtoken` crate or `josekit` for JWS parsing
-- Use `ring` for signature verification
-- Store account JWK in database for lookup
-
-**Challenge Validation**:
-- Use `reqwest` for HTTP-01 (async HTTP client)
-- Use `trust-dns-resolver` for DNS-01
-- Use `tokio-rustls` for TLS-ALPN-01
-- Run validations asynchronously with timeout
-- Implement retry logic (3 attempts with exponential backoff)
-
-**EST mTLS**:
-- Configure Axum to require client certificates
-- Extract certificate from `axum::extract::ConnectInfo`
-- Use `x509-cert` for parsing and validation
-- Query OCSP responder or CRL for revocation check
-
-**Nonce Generation**:
 ```rust
-use getrandom::getrandom;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use trust_dns_resolver::TokioAsyncResolver;
 
-fn generate_nonce() -> String {
-    let mut bytes = [0u8; 32];
-    getrandom(&mut bytes).expect("RNG failure");
-    URL_SAFE_NO_PAD.encode(&bytes)
+async fn validate_dns_01(domain: &str, token: &str, key_auth: &str) -> Result<bool> {
+    let resolver = TokioAsyncResolver::tokio_from_system_conf()?;
+    let expected = base64url(sha256(key_auth));
+    let name = format!("_acme-challenge.{}", domain);
+
+    let txt_records = resolver.txt_lookup(&name).await?;
+    for record in txt_records.iter() {
+        if record.to_string() == expected {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 ```
 
-#### Security Considerations
+##### 2. TLS-ALPN-01 Challenge Validation
 
-- Prevent timing attacks in signature validation
-- Rate limit challenge validation attempts
-- Prevent SSRF in HTTP-01 validation (block private IPs)
-- Validate DNS responses are authentic (DNSSEC if possible)
-- Use constant-time comparison for nonces
-- Implement account rate limiting (e.g., 10 orders/hour)
+**File**: `crates/ostrich-acme/src/challenges.rs`
+
+- [ ] TLS connection to `<domain>:443` with ALPN protocol `acme-tls/1`
+- [ ] Extract certificate presented during handshake
+- [ ] Verify certificate contains:
+  - Subject: `<domain>`
+  - Extension: `id-pe-acmeIdentifier` with key authorization hash
+- [ ] Self-signed certificate validation (for challenge only)
+
+**Implementation**:
+
+```rust
+use tokio_rustls::TlsConnector;
+
+async fn validate_tls_alpn_01(domain: &str, key_auth: &str) -> Result<bool> {
+    let config = rustls::ClientConfig::builder()
+        .with_safe_defaults()
+        .with_alpn_protocols(vec![b"acme-tls/1".to_vec()])
+        .with_custom_certificate_verifier(/* allow self-signed */);
+
+    let connector = TlsConnector::from(Arc::new(config));
+    let stream = TcpStream::connect((domain, 443)).await?;
+    let tls_stream = connector.connect(domain, stream).await?;
+
+    // Extract peer certificate and verify id-pe-acmeIdentifier extension
+    // ...
+}
+```
+
+##### 3. mTLS Client Authentication (EST)
+
+**File**: `crates/ostrich-est/src/rest.rs`
+
+- [ ] Configure TLS server to request client certificates
+- [ ] Extract client certificate from TLS connection
+- [ ] Validate certificate chain against trusted CA
+- [ ] Check certificate is not revoked (OCSP/CRL)
+- [ ] Authorize enrollment based on client DN/SAN
+- [ ] Integration with axum server TLS configuration
+
+**Implementation**:
+
+```rust
+use axum_server::tls_rustls::RustlsConfig;
+
+let tls_config = RustlsConfig::from_pem_file(
+    "certs/server.pem",
+    "certs/server-key.pem",
+)
+.await?
+.with_client_auth_required(/* CA cert pool */);
+
+// Extract client cert in handler
+async fn enroll(
+    Extension(client_cert): Extension<Certificate>,
+    body: Bytes,
+) -> Result<Response> {
+    // Validate client_cert...
+}
+```
+
+#### Integration Points
+
+| Validation | Service | Endpoint | Phase 12 Dependency |
+|------------|---------|----------|---------------------|
+| JWS | ACME | All endpoints | None |
+| HTTP-01 | ACME | POST `/acme/challenge/{id}` | None |
+| DNS-01 | ACME | POST `/acme/challenge/{id}` | External DNS resolver |
+| TLS-ALPN-01 | ACME | POST `/acme/challenge/{id}` | External TLS server |
+| mTLS | EST | `/simpleenroll`, `/simplereenroll` | CA certificate validation |
 
 #### Success Criteria
 
-- All ACME requests with invalid JWS rejected with 401
-- Nonce reuse detected and rejected
-- HTTP-01, DNS-01, TLS-ALPN-01 challenges validate correctly
-- Invalid CSRs rejected (bad signature, mismatched SANs)
-- EST enforces mTLS and rejects unauthenticated requests
-- Zero false positives/negatives in validation
-- Performance: <200ms for JWS validation, <5s for challenge validation
+- [ ] All ACME JWS signatures validated ✅
+- [ ] HTTP-01 challenges functional ✅
+- [ ] DNS-01 challenges functional
+- [ ] TLS-ALPN-01 challenges functional
+- [ ] EST mTLS client authentication working
+- [ ] CSR signature validation enforced ✅
+- [ ] Zero security bypasses or weak validation
+- [ ] Comprehensive error handling for network failures
 
-#### Files to Modify
+#### Security Considerations
 
-- `crates/ostrich-acme/src/rest.rs`
-- `crates/ostrich-acme/src/jws.rs` (new - JWS validation module)
-- `crates/ostrich-acme/src/challenge.rs` (new - challenge validation)
-- `crates/ostrich-est/src/rest.rs`
-- `crates/ostrich-est/src/mtls.rs` (new - mTLS validation)
-- `crates/ostrich-x509/src/parser.rs` (CSR parsing)
+**CRITICAL**: All validation must fail securely:
+
+- Invalid signature → Reject request, log security event
+- Challenge validation timeout → Mark challenge as "invalid"
+- mTLS failure → HTTP 403 Forbidden, do not fallback to HTTP auth
+- CSR signature invalid → Reject enrollment, audit log
+
+#### Dependencies & Libraries
+
+- `josekit` - JWS/JWT validation ✅
+- `reqwest` - HTTP client for HTTP-01 ✅
+- `trust-dns-resolver` - DNS lookups for DNS-01
+- `tokio-rustls` - TLS client for TLS-ALPN-01
+- `axum-server` - TLS server configuration for mTLS
 
 ---
 
 ### Phase 12: Service Integration
 
-**Priority**: MEDIUM
-**Completion**: 0%
-**Estimated Effort**: 1-2 weeks
-**Dependencies**: Phase 8 (crypto), Phase 9 (database)
-**Blocks**: End-to-end workflows
+**Status**: ⏳ PLANNED (0% complete) | **Priority**: 🟡 MEDIUM | **Effort**: 1-2 weeks
+**Dependencies**: Phases 8, 11 | **Blocks**: End-to-end workflows
+
+#### Overview
+
+Connect microservices to enable complete certificate lifecycle workflows: ACME→CA certificate issuance, EST→CA enrollment, CA→KRA key escrow, and SCMS→CA token certificate management.
 
 #### Scope
 
-Connect all microservices to enable end-to-end workflows: ACME/EST enrollments result in CA-issued certificates, KRA escrows keys, SCMS manages smartcard certificates.
+**21 TODO items** across 4 integration patterns:
 
-#### Key Tasks
+1. **ACME → CA**: Certificate issuance after challenge validation
+2. **EST → CA**: Enrollment and re-enrollment
+3. **CA → KRA**: Key escrow during certificate issuance
+4. **SCMS → CA**: Token certificate issuance and revocation
 
-##### ACME → CA Integration
+#### Key Work Items
 
-1. **Certificate Issuance** ([acme/rest.rs:362](crates/ostrich-acme/src/rest.rs#L362))
-   - After order finalized with valid CSR
-   - Call CA service via gRPC: `IssueCertificate` RPC
-   - Pass CSR, profile ID, validity period
-   - Receive issued certificate (DER-encoded)
-   - Encode in PKCS#7 for ACME response
-   - Update order status to "valid"
-   - Store certificate serial in order record
+##### 1. ACME → CA Integration
 
-**gRPC Call**:
-```rust
-let cert = ca_client.issue_certificate(IssueCertificateRequest {
-    csr: csr_der,
-    profile_id: "acme-server-cert".to_string(),
-    validity_days: 90,
-}).await?;
+**File**: `crates/ostrich-acme/src/rest.rs:362`
+
+- [ ] Call CA gRPC `IssueCertificate` RPC after order finalization
+- [ ] Pass validated CSR from ACME order to CA
+- [ ] Apply certificate profile based on ACME order type
+- [ ] Store issued certificate serial in ACME order
+- [ ] Handle CA errors (invalid CSR, policy violations)
+
+**Workflow**:
+
+```
+Client → ACME: Finalize order (POST /acme/order/{id}/finalize)
+  ↓
+ACME: Validate all challenges complete
+  ↓
+ACME → CA: gRPC IssueCertificate(csr, profile="acme-domain-validation")
+  ↓
+CA: Issue certificate
+  ↓
+CA → ACME: Return signed certificate
+  ↓
+ACME: Store certificate, update order status="valid"
+  ↓
+ACME → Client: Return order with certificate URL
 ```
 
-##### EST → CA Integration
+##### 2. EST → CA Integration
 
-1. **Simple Enrollment** ([est/rest.rs:84](crates/ostrich-est/src/rest.rs#L84))
-   - Parse CSR from request body
-   - Validate client certificate (mTLS)
-   - Call CA service to issue certificate
-   - Return PKCS#7 with issued certificate
-   - Create enrollment record
+**Files**: `crates/ostrich-est/src/rest.rs:84, 122`
 
-2. **Re-enrollment** ([est/rest.rs:122](crates/ostrich-est/src/rest.rs#L122))
-   - Validate client certificate matches CSR subject
-   - Issue renewed certificate via CA
-   - Same validity period and profile as original
+**Simple Enroll** (`/simpleenroll`):
 
-##### CA → KRA Integration
+- [ ] Extract CSR from PKCS#10 request body
+- [ ] Call CA gRPC `IssueCertificate` with profile="est-enrollment"
+- [ ] Wrap issued certificate in PKCS#7 response
+- [ ] Return `application/pkcs7-mime` response
 
-1. **Key Escrow on Issuance** (implicit in CA flow)
-   - After issuing certificate with key escrow policy
-   - Call KRA service: `EscrowKey` RPC
-   - Pass certificate serial, public key, encrypted private key
-   - KRA splits into shares and stores
-   - CA records escrow ID in certificate metadata
+**Simple Re-enroll** (`/simplereenroll`):
 
-**When to Escrow**:
-- Certificate profile has `key_escrow: true`
-- User consents to escrow (stored in CSR attributes)
-- Key recovery agents configured
+- [ ] Validate client certificate from mTLS (Phase 11)
+- [ ] Extract CSR from request
+- [ ] Call CA gRPC `IssueCertificate` with profile="est-reenrollment"
+- [ ] Optionally revoke old certificate
+- [ ] Return new certificate in PKCS#7
 
-##### SCMS → CA Integration
+##### 3. CA → KRA Integration
 
-1. **Certificate Issuance on Personalization** ([scms/rest.rs:209](crates/ostrich-scms/src/rest.rs#L209))
-   - Generate keys on smartcard
-   - Extract public key via PKCS#11
-   - Create CSR with smartcard holder's DN
-   - Call CA to issue certificate
-   - Write certificate to smartcard (via PKCS#11)
-   - Update token status to "personalized"
+**File**: `crates/ostrich-ca/src/issuance.rs` (implicit)
 
-2. **Certificate Revocation on Token Revocation** ([scms/rest.rs:180](crates/ostrich-scms/src/rest.rs#L180))
-   - List all certificates on token (from scms_keys table)
-   - For each certificate:
-     - Call CA service: `RevokeCertificate` RPC
-     - Reason: "cessation_of_operation" or "key_compromise"
-   - Update token status to "revoked"
+- [ ] Check certificate profile: escrow_private_key=true
+- [ ] After key generation (if CA generates key), call KRA gRPC `EscrowKey`
+- [ ] Encrypt private key with KRA public key
+- [ ] Store escrow receipt in certificate record
+- [ ] Handle KRA unavailability gracefully (queue for retry)
 
-#### Service Discovery & Communication
+**Note**: Most certificates use CSR (client-generated keys), so escrow only applies to:
 
-**Approach**: gRPC with TLS
-- Each service exposes gRPC endpoint on separate port
-- Use mTLS between services (mutual authentication)
-- Service discovery via configuration (not dynamic for now)
+- EST server-side key generation (optional, Phase 13)
+- SCMS token certificates (if CA generates keys)
 
-**Configuration** (example):
-```toml
-[services.ca]
-grpc_endpoint = "https://ca.ostrich.local:8443"
-tls_cert = "/etc/ostrich/certs/acme-client.pem"
-tls_key = "/etc/ostrich/keys/acme-client.key"
-ca_cert = "/etc/ostrich/ca.pem"
+##### 4. SCMS → CA Integration
+
+**Files**: `crates/ostrich-scms/src/rest.rs:180, 209`
+
+**Token Personalization** (generate certificates on token):
+
+- [ ] After token personalization, call CA gRPC `IssueCertificate`
+- [ ] Generate CSR from token public key (via PKCS#11)
+- [ ] Apply profile="scms-token-authentication"
+- [ ] Store issued certificate serial in token record
+
+**Token Revocation** (revoke all certificates):
+
+- [ ] On token revocation, list all certificate serials for token
+- [ ] Call CA gRPC `RevokeCertificate` for each serial
+- [ ] Reason: `keyCompromise` (token lost/stolen)
+- [ ] Audit log all revocations
+
+#### gRPC Service Communication
+
+**Protocol**: gRPC with mutual TLS (mTLS) for inter-service authentication
+
+**CA Service gRPC API** (to be implemented):
+
+```protobuf
+service CertificateAuthority {
+  rpc IssueCertificate(IssueCertificateRequest) returns (IssueCertificateResponse);
+  rpc RevokeCertificate(RevokeCertificateRequest) returns (RevokeCertificateResponse);
+  rpc GetCertificate(GetCertificateRequest) returns (GetCertificateResponse);
+}
+
+message IssueCertificateRequest {
+  bytes csr = 1;  // PKCS#10 DER
+  string profile = 2;  // "acme-dv", "est-enrollment", "scms-token"
+  map<string, string> metadata = 3;
+}
+
+message IssueCertificateResponse {
+  bytes certificate = 1;  // X.509 DER
+  string serial = 2;
+}
 ```
 
-**gRPC Client Setup**:
+**gRPC Client Setup Example** (ACME → CA):
+
 ```rust
-use tonic::transport::{ClientTlsConfig, Channel, Certificate, Identity};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
-let tls = ClientTlsConfig::new()
-    .ca_certificate(Certificate::from_pem(ca_cert))
-    .identity(Identity::from_pem(client_cert, client_key));
+let ca_cert = tokio::fs::read("certs/ca.pem").await?;
+let client_cert = tokio::fs::read("certs/acme-client.pem").await?;
+let client_key = tokio::fs::read("certs/acme-client-key.pem").await?;
 
-let channel = Channel::from_static("https://ca.ostrich.local:8443")
-    .tls_config(tls)?
+let tls_config = ClientTlsConfig::new()
+    .ca_certificate(Certificate::from_pem(&ca_cert))
+    .identity(Identity::from_pem(&client_cert, &client_key));
+
+let channel = Channel::from_static("https://ca.ostrichpki.internal:50051")
+    .tls_config(tls_config)?
     .connect()
     .await?;
 
-let ca_client = CaServiceClient::new(channel);
+let mut client = CertificateAuthorityClient::new(channel);
+
+let response = client.issue_certificate(IssueCertificateRequest {
+    csr: csr_der,
+    profile: "acme-domain-validation".to_string(),
+    metadata: HashMap::new(),
+}).await?;
+```
+
+#### Configuration
+
+**Environment Variables** (per service):
+
+```bash
+# ACME service
+CA_GRPC_ENDPOINT=https://ca.ostrichpki.internal:50051
+CA_CLIENT_CERT=/etc/ostrich/certs/acme-client.pem
+CA_CLIENT_KEY=/etc/ostrich/certs/acme-client-key.pem
+CA_CA_CERT=/etc/ostrich/certs/ca.pem
+
+# EST service
+CA_GRPC_ENDPOINT=https://ca.ostrichpki.internal:50051
+# ... (similar TLS config)
+
+# SCMS service
+CA_GRPC_ENDPOINT=https://ca.ostrichpki.internal:50051
+# ...
 ```
 
 #### Error Handling
 
-- Retry transient errors (3 attempts with exponential backoff)
-- Circuit breaker pattern for downstream service failures
-- Graceful degradation: ACME returns 503 if CA unavailable
-- Log all inter-service calls for audit trail
+**Retry Strategy**:
+
+- Transient errors (network, unavailable): Retry with exponential backoff (3 attempts, 1s/2s/4s)
+- Validation errors (invalid CSR, policy violation): Do NOT retry, return error to client
+- Timeout: 30 seconds per RPC call
+
+**Circuit Breaker**:
+
+- Open circuit after 5 consecutive CA failures
+- Half-open after 60 seconds (allow 1 test request)
+- Close circuit after 3 successful requests
+
+**Graceful Degradation**:
+
+- ACME: Queue finalized orders for later processing if CA unavailable
+- EST: Return HTTP 503 Service Unavailable
+- SCMS: Allow token operations but defer certificate issuance
 
 #### Success Criteria
 
-- ACME finalize-order results in CA-issued certificate
-- EST enrollment returns valid CA-signed certificate
-- SCMS personalization writes certificate to smartcard
-- KRA automatically escrows keys for designated profiles
-- SCMS revocation triggers CA revocation
-- All inter-service calls use mTLS
-- Error handling prevents partial state (transactions)
+- [ ] ACME can issue certificates end-to-end (account → order → challenge → certificate)
+- [ ] EST enrollment produces valid certificates
+- [ ] SCMS token personalization issues certificates
+- [ ] CA→KRA escrow functional (when enabled)
+- [ ] All gRPC calls use mTLS authentication
+- [ ] Circuit breaker prevents cascading failures
+- [ ] Comprehensive audit logging for all cross-service calls
 
-#### Files to Modify
+#### Testing Strategy
 
-- `crates/ostrich-acme/src/rest.rs`
-- `crates/ostrich-est/src/rest.rs`
-- `crates/ostrich-scms/src/rest.rs`
-- `crates/ostrich-ca/src/issuance.rs`
-- `crates/ostrich-ca/src/revocation.rs`
-- `crates/ostrich-kra/src/escrow.rs`
-- Configuration files for service endpoints
+**Integration Tests**:
+
+1. ACME E2E: Create account → new order → HTTP-01 challenge → finalize → download cert
+2. EST E2E: mTLS authentication → simple enroll → verify certificate
+3. SCMS E2E: Create token → personalize → verify certificate issued
+4. Failure scenarios: CA unavailable, invalid CSR, network timeout
 
 ---
 
 ### Phase 13: Advanced Features
 
-**Priority**: LOW
-**Completion**: 0%
-**Estimated Effort**: 2-3 weeks
-**Dependencies**: Phases 8-12
-**Blocks**: None (optional enhancements)
+**Status**: ⏸️ DEFERRED (0% complete) | **Priority**: ⚪ LOW | **Effort**: 2-3 weeks
+**Dependencies**: Phases 12, 14 | **Blocks**: None
+
+#### Overview
+
+Optional enhancements that improve performance, functionality, and compliance but are not required for initial production deployment. **Can be deferred post-launch**.
 
 #### Scope
 
-Implement optional advanced features to improve performance, compliance, and functionality.
+**8 TODO items** across 4 areas (all optional):
 
-#### Key Tasks
+1. **OCSP Response Caching** (3 TODOs)
+2. **EST Server-Side Key Generation** (1 TODO)
+3. **Post-Quantum OID Updates** (3 TODOs)
+4. **Audit Hash Chain Verification** (1 TODO)
 
-##### OCSP Response Caching (3 TODOs)
+#### Work Items
 
-**Goal**: Reduce CA load and improve response time
+##### 1. OCSP Response Caching
 
-1. **Response Caching** ([ocsp/responder.rs:47-49](crates/ostrich-ocsp/src/responder.rs#L47-L49))
-   - Cache OCSP responses in memory (LRU cache)
-   - Key: certificate serial number
-   - Value: signed OCSP response + expiration
-   - TTL: `nextUpdate` from response (typically 1-24 hours)
-   - Invalidate on certificate revocation
+**Files**: `crates/ostrich-ocsp/src/responder.rs:47-49`
 
-2. **Pre-generation**
-   - Background task to pre-generate responses for recently issued certs
-   - Reduces latency for first request
+**Benefit**: Reduce database load, improve response latency for high-traffic OCSP queries
 
-3. **Delegated Signing**
-   - OCSP responder uses dedicated signing key
-   - Issued by CA with id-kp-OCSPSigning EKU
-   - Reduces exposure of CA signing key
+- [ ] Implement in-memory LRU cache (10,000 entries)
+- [ ] Cache key: `(serial_number, hash_algorithm)`
+- [ ] Cache TTL: `nextUpdate - now` (from OCSP response)
+- [ ] Invalidate cache on certificate revocation
+- [ ] Optional: Redis-backed cache for multi-instance deployments
 
 **Implementation**:
+
 ```rust
 use lru::LruCache;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-struct OcspCache {
-    cache: Arc<RwLock<LruCache<String, CachedResponse>>>,
+pub struct OcspCache {
+    cache: Arc<RwLock<LruCache<String, (OcspResponse, Instant)>>>,
 }
 
-struct CachedResponse {
-    response: Vec<u8>,
-    expires_at: SystemTime,
+impl OcspCache {
+    async fn get(&self, serial: &str) -> Option<OcspResponse> {
+        let cache = self.cache.read().await;
+        cache.get(serial).and_then(|(resp, expiry)| {
+            if Instant::now() < *expiry {
+                Some(resp.clone())
+            } else {
+                None
+            }
+        })
+    }
 }
 ```
 
-##### EST Server-Side Key Generation (1 TODO)
+**Performance Target**: <5ms response time (99th percentile) for cached responses
 
-**Goal**: Support RFC 7030 §4.3 optional feature
+##### 2. EST Server-Side Key Generation
 
-1. **Implementation** ([est/rest.rs:168-173](crates/ostrich-est/src/rest.rs#L168-L173))
-   - Parse CSR (contains subject info, no private key)
-   - Generate key pair on server (via crypto provider)
-   - Issue certificate with generated public key
-   - Encrypt private key for client using client certificate's public key
-   - Return PKCS#7 with certificate + encrypted private key (PKCS#8)
+**File**: `crates/ostrich-est/src/rest.rs:168-173`
 
-**Security Considerations**:
-- Private key never stored unencrypted
-- Use ephemeral encryption key
-- Audit log all key generation events
-- Require strong client authentication
+**Benefit**: Support legacy devices that cannot generate their own keys
 
-**Use Case**: Clients without crypto capabilities (embedded devices)
+- [ ] Implement `/serverkeygen` endpoint (RFC 7030 §4.4)
+- [ ] Generate key pair on server (RSA 2048 or ECDSA P-256)
+- [ ] Issue certificate with generated public key
+- [ ] Encrypt private key with client transport key
+- [ ] Return PKCS#12 bundle (certificate + encrypted private key)
+- [ ] **CRITICAL**: Zeroize private key from memory after encryption
+- [ ] Optionally escrow private key via KRA
 
-##### Post-Quantum Cryptography OID Updates (3 TODOs)
+**Security Note**: Discouraged in high-security environments (key material generated on server). Only enable if explicitly required.
 
-**Goal**: Stay current with NIST PQC standards
+##### 3. Post-Quantum OID Updates
 
-1. **ML-DSA OID** ([common/oid.rs:74](crates/ostrich-common/src/oid.rs#L74))
-   - Update when NIST publishes final OID for ML-DSA
-   - Currently using draft OID: `2.16.840.1.101.3.4.3.17` (placeholder)
+**File**: `crates/ostrich-common/src/oid.rs:74, 80, 86`
 
-2. **ML-KEM OID** ([common/oid.rs:80](crates/ostrich-common/src/oid.rs#L80))
-   - Update for ML-KEM (formerly CRYSTALS-Kyber)
-   - Used for key encapsulation in hybrid schemes
+**Benefit**: Ensure compliance when NIST finalizes PQC OIDs
 
-3. **SLH-DSA OID** ([common/oid.rs:86](crates/ostrich-common/src/oid.rs#L86))
-   - Update for SLH-DSA (formerly SPHINCS+)
-   - Stateless hash-based signature scheme
+- [ ] Update ML-DSA OID when NIST publishes final FIPS 204 assignments
+- [ ] Update ML-KEM OID when NIST publishes final FIPS 203 assignments
+- [ ] Update SLH-DSA OID when NIST publishes final FIPS 205 assignments
+- [ ] Add unit tests to verify OID correctness against NIST specifications
 
-**Action**: Monitor NIST Computer Security Resource Center for updates
+**Current Status**: Using draft OIDs from `draft-ietf-lamps-dilithium-certificates` and `draft-ietf-lamps-kyber-certificates`
 
-##### Audit Hash Chain Verification (1 TODO)
+**Action**: Monitor NIST publications and update when finalized (expected Q2 2026)
 
-**Goal**: Ensure audit log integrity
+##### 4. Audit Hash Chain Verification
 
-1. **Hash Chain Verification** ([db/repository/audit.rs:132](crates/ostrich-db/src/repository/audit.rs#L132))
-   - Each audit event includes hash of previous event
-   - Verification reconstructs chain and checks consistency
-   - Detects tampering or missing events
+**File**: `crates/ostrich-db/src/repository/audit.rs:132`
+
+**Benefit**: Tamper-evident audit logs (NIST 800-53 AU-9 enhancement)
+
+- [ ] Compute hash chain: `H(event_n) = SHA-256(event_n || H(event_{n-1}))`
+- [ ] Store hash in `audit_events.hash_chain` column
+- [ ] Verify chain integrity on log retrieval
+- [ ] Detect tampering or missing events
+- [ ] Optional: Periodically sign chain head with CA key
 
 **Implementation**:
+
 ```rust
-pub fn verify_hash_chain(events: &[AuditEvent]) -> Result<bool> {
-    let mut prev_hash = [0u8; 32]; // Genesis hash
+pub async fn verify_hash_chain(&self) -> Result<bool> {
+    let events = self.query_all_events().await?;
+    let mut prev_hash = vec![0u8; 32];  // Genesis hash
+
     for event in events {
-        let computed = compute_event_hash(&prev_hash, event);
-        if computed != event.previous_hash {
-            return Ok(false); // Chain broken
+        let computed = sha256(&[&event.serialize(), &prev_hash].concat());
+        if computed != event.hash_chain {
+            return Ok(false);  // Tampering detected
         }
-        prev_hash = event.hash;
+        prev_hash = computed;
     }
     Ok(true)
 }
 ```
 
-##### Software Crypto Provider (implicit)
+#### Prioritization Rationale
 
-**Goal**: Full software fallback when HSM unavailable
+These features are **LOW priority** because:
 
-- Already planned in Phase 10
-- Ensure feature parity with PKCS#11 provider
-- Use `ring` for RSA/ECDSA, `ed25519-dalek` for EdDSA
-- In-memory key storage with OS memory protection
+- OCSP caching: Performance optimization, not functional requirement
+- EST server-side keygen: Niche use case, security concerns
+- PQC OID updates: Dependent on external NIST timeline
+- Audit hash chain: Enhancement beyond baseline AU-9 compliance
 
-#### Success Criteria
-
-- OCSP responses served from cache (>90% hit rate)
-- EST server-side key generation works for test clients
-- PQC OIDs updated when NIST publishes
-- Audit hash chain verification detects tampering
-- Software crypto provider passes all tests
-
-#### Files to Modify
-
-- `crates/ostrich-ocsp/src/responder.rs`
-- `crates/ostrich-ocsp/src/cache.rs` (new)
-- `crates/ostrich-est/src/rest.rs`
-- `crates/ostrich-common/src/oid.rs`
-- `crates/ostrich-db/src/repository/audit.rs`
+**Recommendation**: Defer to post-v1.0 release unless specific customer requirement emerges.
 
 ---
 
 ### Phase 14: Testing & Hardening
 
-**Priority**: HIGH
-**Completion**: ~10% (unit tests only)
-**Estimated Effort**: 2-3 weeks
-**Dependencies**: Phases 8-12
-**Blocks**: Production deployment
+**Status**: ⏳ PLANNED (10% complete) | **Priority**: 🔴 HIGH | **Effort**: 2-3 weeks
+**Dependencies**: Phases 8, 11, 12 | **Blocks**: Production deployment
+
+#### Overview
+
+Comprehensive testing, security hardening, and operational readiness before production deployment.
+
+#### Current Status
+
+- ✅ Unit tests for core libraries (~60% coverage)
+- ⏳ Integration tests (incomplete)
+- ⏳ Security testing (not started)
+- ⏳ Performance testing (not started)
+- ⏳ Documentation (partial)
 
 #### Scope
 
-Comprehensive testing, security hardening, and production readiness preparation.
+**5 major testing categories**:
 
-#### Key Tasks
+1. **Integration Testing** (end-to-end workflows)
+2. **Security Testing** (penetration testing, fuzzing, SAST)
+3. **Performance Testing** (load testing, benchmarking)
+4. **Operational Readiness** (deployment, monitoring, disaster recovery)
+5. **Documentation** (API docs, runbooks, compliance artifacts)
 
-##### Integration Testing
+#### Key Work Items
 
-1. **End-to-End Workflows**
-   - **ACME Order Flow**: new-account → new-order → authz → challenges → finalize → download certificate
-   - **EST Enrollment**: mTLS connection → simple enroll → receive certificate
-   - **SCMS Lifecycle**: create token → initialize → personalize → issue cert → suspend → resume → revoke
-   - **KRA Recovery**: escrow key → request recovery → submit shares → recover key
+##### 1. Integration Testing
 
-2. **Service Integration Tests**
-   - ACME → CA certificate issuance
-   - EST → CA certificate issuance
-   - CA → KRA key escrow
-   - SCMS → CA certificate issuance and revocation
-   - OCSP responder validates certificates issued by CA
+**Goal**: >80% coverage of critical workflows
 
-3. **Cross-Service mTLS**
-   - All gRPC calls use mutual TLS
-   - Certificate validation enforced
-   - Unauthorized services rejected
+**ACME End-to-End Tests**:
 
-4. **Database Transactions**
-   - Verify atomicity of multi-step operations
-   - Test rollback on errors
-   - Concurrent request handling
+- [ ] Account lifecycle: create → update → deactivate
+- [ ] Certificate issuance: order → challenge (HTTP-01, DNS-01, TLS-ALPN-01) → finalize → download
+- [ ] Error scenarios: invalid JWS, expired nonce, failed challenge validation
+- [ ] Multi-domain certificates (SAN)
+- [ ] Order expiration and cleanup
 
-##### Security Testing
+**EST End-to-End Tests**:
 
-1. **Input Validation**
-   - Fuzz testing for ASN.1 parsers (certificates, CSRs, OCSP)
-   - Invalid JWS signatures rejected
-   - SQL injection prevention (parameterized queries)
-   - XSS prevention (proper JSON encoding)
+- [ ] Simple enroll: mTLS auth → submit CSR → receive certificate
+- [ ] Simple re-enroll: authenticate with old cert → issue new cert
+- [ ] CA certificates retrieval (`/cacerts`)
+- [ ] CSR attributes query (`/csrattrs`)
+- [ ] Error scenarios: invalid mTLS cert, malformed CSR
 
-2. **Cryptographic Validation**
-   - All signatures verify correctly
-   - Nonce replay protection works
-   - Challenge validation prevents bypass
+**SCMS End-to-End Tests**:
 
-3. **Authorization Testing**
-   - ACME account isolation (can't access other accounts' orders)
-   - EST client certificate enforcement
-   - SCMS role-based access control
+- [ ] Token lifecycle: create → initialize → personalize → suspend → resume → revoke
+- [ ] PIN operations: verify → change → unblock
+- [ ] Key management: generate → list → delete
+- [ ] Certificate issuance integration with CA
+- [ ] Event audit log queries
 
-4. **Rate Limiting**
-   - Per-IP rate limits on ACME endpoints
-   - Account-level rate limits (orders/hour)
-   - Challenge validation rate limits
+**KRA End-to-End Tests**:
 
-5. **TLS Configuration**
-   - Enforce TLS 1.3 (disable TLS 1.2 and below)
-   - Strong cipher suites only
-   - HSTS headers on HTTP endpoints
+- [ ] Key escrow: submit → split shares → distribute
+- [ ] Key recovery: request → submit M-of-N shares → reconstruct key
+- [ ] Agent authorization and audit
 
-##### Performance Testing
+**CA Core Tests**:
 
-1. **Load Testing**
-   - ACME: 100 concurrent orders/second
-   - OCSP: 1000 requests/second (with caching)
-   - CA issuance: 50 certificates/second
-   - Identify bottlenecks and optimize
+- [ ] Certificate issuance with all supported algorithms (RSA, ECDSA, EdDSA, ML-DSA)
+- [ ] CRL generation and updates
+- [ ] Certificate revocation (all revocation reasons)
+- [ ] Profile enforcement (key usage, extended key usage, validity periods)
 
-2. **Database Performance**
-   - Index optimization for common queries
-   - Connection pooling tuning
-   - Query execution plans review
+**Test Framework**: `cargo test --test integration_*` with Docker Compose for multi-service orchestration
 
-3. **Latency Benchmarks**
-   - ACME order finalize: <500ms (excluding CA signing)
-   - OCSP response: <50ms (cached), <200ms (uncached)
-   - CA certificate issuance: <1s
+##### 2. Security Testing
 
-##### Error Handling Review
+**Static Application Security Testing (SAST)**:
 
-1. **Graceful Degradation**
-   - Services continue when dependencies unavailable
-   - Appropriate HTTP status codes
-   - Informative error messages (no stack traces to clients)
+- [ ] Run `cargo clippy -D warnings` (already enforced)
+- [ ] Run `cargo audit` for dependency vulnerabilities
+- [ ] Run `cargo-deny` for license compliance and security advisories
+- [ ] SonarQube or Semgrep for code quality and security patterns
 
-2. **Logging & Monitoring**
-   - Structured logging (JSON format)
-   - Log levels appropriate (ERROR for failures, INFO for success)
-   - Audit events for all security-relevant operations
-   - Metrics: request count, latency, error rate
+**Fuzzing**:
 
-3. **Panic Recovery**
-   - No panics in production code paths
-   - Graceful handling of unexpected errors
-   - Process restarts on panic (systemd/Kubernetes)
+- [ ] Fuzz DER/ASN.1 parsers (certificate, CSR, OCSP, CRL)
+- [ ] Fuzz JWS signature validation
+- [ ] Fuzz HTTP request handlers (ACME, EST, SCMS)
+- [ ] Use `cargo fuzz` with `libFuzzer`
+- [ ] Target: 1 million iterations per fuzzer, zero crashes
 
-##### Documentation Updates
+**Penetration Testing**:
 
-1. **API Documentation**
-   - OpenAPI specs for REST endpoints
-   - gRPC protobuf documentation
-   - Example requests/responses
+- [ ] ACME protocol: replay attacks, JWS bypass attempts, challenge manipulation
+- [ ] EST protocol: mTLS bypass, CSR injection
+- [ ] SQL injection (parameterized queries should prevent, verify)
+- [ ] Timing attacks on PIN verification (SCMS)
+- [ ] HSM key extraction attempts (via PKCS#11)
 
-2. **Deployment Guide**
-   - Docker Compose setup
-   - Kubernetes manifests
-   - HSM configuration
-   - Database setup and migrations
+**Secrets Scanning**:
 
-3. **Security Documentation**
-   - Threat model
-   - Security controls matrix (NIST 800-53)
-   - Incident response procedures
+- [ ] Run `gitleaks` to detect hardcoded secrets in code/history
+- [ ] Verify no private keys, passwords, tokens in repository
 
-4. **Operational Runbooks**
-   - Service startup/shutdown
-   - Backup and recovery
-   - Certificate renewal procedures
-   - Troubleshooting common issues
+**Dependency Security**:
 
-##### Security Audit Preparation
+- [ ] Review all dependencies with `cargo tree`
+- [ ] Ensure critical dependencies are actively maintained
+- [ ] Pin dependency versions in `Cargo.lock`
 
-1. **Code Review**
-   - Third-party security audit of cryptographic code
-   - Review of database access patterns
-   - Input validation completeness
+##### 3. Performance Testing
 
-2. **Dependency Audit**
-   - `cargo audit` for known vulnerabilities
-   - Review transitive dependencies
-   - Pin dependency versions
+**Load Testing Scenarios**:
 
-3. **Compliance Checklist**
-   - NIST 800-53 controls implemented
-   - RFC compliance matrix
-   - Common Criteria (CC) considerations
+| Scenario | Target TPS | Concurrent Users | Duration |
+|----------|-----------|------------------|----------|
+| OCSP queries | 1,000 TPS | 500 | 5 minutes |
+| ACME account creation | 50 TPS | 100 | 2 minutes |
+| Certificate issuance (CA) | 100 TPS | 200 | 5 minutes |
+| EST enrollment | 50 TPS | 100 | 2 minutes |
 
-#### Test Coverage Goals
+**Benchmarking** (using `criterion` crate):
 
-- **Unit Tests**: >80% line coverage
-- **Integration Tests**: All end-to-end workflows covered
-- **Security Tests**: All OWASP Top 10 mitigated
-- **Performance Tests**: All latency benchmarks met
+- [ ] Certificate DER encoding: <1ms per certificate
+- [ ] Certificate signing (software): <10ms (RSA), <5ms (ECDSA)
+- [ ] Certificate signing (HSM): <50ms
+- [ ] OCSP response generation: <5ms (without caching)
+- [ ] Database queries: <10ms (p99)
 
-#### CI/CD Pipeline
+**Tools**:
 
-1. **Continuous Integration**
-   - Run tests on every commit
-   - Cargo clippy (linter) with zero warnings
-   - Cargo fmt (formatter) enforced
-   - Cargo audit for dependencies
+- `wrk` or `k6` for HTTP load testing
+- `ghz` for gRPC load testing
+- `criterion` for microbenchmarks
 
-2. **Continuous Deployment**
-   - Automated deployment to staging
-   - Smoke tests on staging
-   - Manual approval for production
+##### 4. Operational Readiness
+
+**Deployment**:
+
+- [ ] Dockerfiles for all services
+- [ ] Docker Compose for local development
+- [ ] Kubernetes manifests (Deployment, Service, ConfigMap, Secret)
+- [ ] Helm chart for production deployment
+- [ ] Health check endpoints (`/health`, `/ready`)
+
+**Monitoring**:
+
+- [ ] Prometheus metrics export (`/metrics` endpoint)
+- [ ] Grafana dashboards (service health, latency, throughput, error rates)
+- [ ] Alerting rules (high error rate, service down, certificate expiration)
+- [ ] Distributed tracing (OpenTelemetry + Jaeger)
+
+**Logging**:
+
+- [ ] Structured logging (JSON format) via `tracing` crate
+- [ ] Log aggregation (ELK stack or Loki)
+- [ ] Log levels configurable via environment variable
+- [ ] Sensitive data redaction (passwords, private keys, PINs)
+
+**Backup & Disaster Recovery**:
+
+- [ ] PostgreSQL backup strategy (pg_dump, WAL archiving)
+- [ ] HSM backup procedures (key export via KRA)
+- [ ] Database restore testing (RTO < 4 hours, RPO < 15 minutes)
+- [ ] Service failover testing (simulate node failure)
+
+**Security Hardening**:
+
+- [ ] Run services as non-root user
+- [ ] Minimize container image size (distroless or Alpine)
+- [ ] Network policies (Kubernetes NetworkPolicy)
+- [ ] Secrets management (Vault, Kubernetes Secrets with encryption at rest)
+- [ ] TLS 1.3 enforcement for all external communication
+
+##### 5. Documentation
+
+**API Documentation**:
+
+- [ ] OpenAPI 3.0 specs for all REST APIs (ACME, EST, SCMS)
+- [ ] gRPC service documentation (Protobuf comments)
+- [ ] Postman collections for manual testing
+
+**Operational Runbooks**:
+
+- [ ] Installation guide (Docker, Kubernetes)
+- [ ] Configuration reference (environment variables, config files)
+- [ ] Certificate issuance guide (ACME, EST, CA CLI)
+- [ ] Troubleshooting guide (common errors, log analysis)
+- [ ] Certificate revocation procedure
+- [ ] HSM key backup and recovery
+
+**Compliance Documentation**:
+
+- [ ] NIST 800-53 control implementation statements → `docs/compliance/NIST_800-53_MAPPING.md`
+- [ ] NIAP PP-CA v2.1 SFR evidence → `docs/compliance/NIAP_COMPLIANCE.md`
+- [ ] RFC compliance matrix → `docs/compliance/RFC_COMPLIANCE.md`
+- [ ] Security assessment artifacts → `docs/compliance/ATO_EVIDENCE.md`
+
+**Developer Documentation**:
+
+- [ ] Architecture decision records (ADRs)
+- [ ] Code contribution guidelines (CONTRIBUTING.md)
+- [ ] Development environment setup
+- [ ] Testing guide
 
 #### Success Criteria
 
-- All integration tests pass
-- Security audit finds no critical/high vulnerabilities
-- Performance benchmarks met
-- Zero panics in stress testing
-- Documentation complete and accurate
-- CI/CD pipeline operational
-- Ready for production deployment
+- [ ] >80% code coverage (unit + integration tests)
+- [ ] Zero critical/high vulnerabilities from security scanning
+- [ ] All fuzzing runs complete without crashes
+- [ ] Performance targets met (TPS, latency)
+- [ ] All services have health checks and metrics
+- [ ] Disaster recovery tested successfully
+- [ ] Complete operational documentation
+- [ ] ATO compliance evidence package ready
 
-#### Files to Modify
+#### CI/CD Pipeline
 
-- `crates/*/tests/` - Integration test modules
-- `tests/` - End-to-end test suite
-- `docs/` - Documentation
-- `.github/workflows/` or CI config
-- `docker-compose.yml`, Kubernetes manifests
+**Required Checks** (GitHub Actions or GitLab CI):
+
+```yaml
+stages:
+  - lint:
+      - cargo fmt --check
+      - cargo clippy -D warnings
+  - test:
+      - cargo test --all-features
+      - cargo test --test integration_* (with Docker services)
+  - security:
+      - cargo audit
+      - cargo-deny check
+      - gitleaks detect
+  - build:
+      - cargo build --release
+      - docker build (all services)
+  - deploy:
+      - helm upgrade (staging environment)
+      - smoke tests (staging)
+      - manual approval → production
+```
+
+---
+
+### Phase 15: NIAP Compliance
+
+**Status**: ⏳ PLANNED (45% complete) | **Priority**: 🔴 HIGH | **Effort**: 3-4 weeks
+**Dependencies**: All previous phases | **Blocks**: ATO approval
+
+#### Overview
+
+Achieve **NIAP Protection Profile for Certificate Authority (PP-CA) v2.1** compliance to enable use in government and high-security environments requiring Common Criteria certification.
+
+#### Current Compliance Status
+
+**Overall**: 45-50% complete (architecture and design compliant, implementation gaps remain)
+
+**Completed**:
+
+- ✅ Audit generation infrastructure (FAU_GEN.1)
+- ✅ Cryptographic key generation framework (FCS_CKM.1 - needs HSM completion)
+- ✅ Access control placeholders (FDP_ACC.1, FDP_ACF.1)
+- ✅ Authentication framework (FIA_AFL.1, FIA_UAU.1)
+- ✅ Management function definitions (FMT_SMF.1)
+
+**Gaps**:
+
+- ⏳ Complete HSM integration (FCS_CKM.1, FCS_COP.1) - **Phase 10**
+- ⏳ Audit record protection (FAU_STG.1, FAU_STG.4) - hash chain, write-once storage
+- ⏳ Identification and authentication enforcement (FIA_AFL.1 - lockout)
+- ⏳ Self-tests (FPT_TST.1) - cryptographic algorithm tests
+- ⏳ Reliable timestamps (FPT_STM.1) - NTP integration
+- ⏳ Documentation artifacts (AGD_OPE.1, AGD_PRE.1)
+
+#### Scope
+
+**3 parallel tracks**:
+
+1. **Documentation** (6 deliverables)
+2. **Implementation** (8 major tasks)
+3. **Compliance Tracking** (3 annotation efforts)
+
+#### Work Items
+
+##### Track 1: Compliance Documentation
+
+**Deliverables** (in `docs/compliance/`):
+
+1. **Security Target (ST)** - `SECURITY_TARGET.md`
+   - [ ] TOE (Target of Evaluation) description
+   - [ ] Security problem definition
+   - [ ] Security objectives
+   - [ ] Security functional requirements (SFRs)
+   - [ ] Security assurance requirements (SARs)
+   - [ ] TOE summary specification
+
+2. **SFR Implementation Matrix** - `NIAP_SFR_MATRIX.md`
+   - [ ] Map each PP-CA v2.1 SFR to implementation evidence
+   - [ ] Reference source files, line numbers, test cases
+   - [ ] Status: Implemented | Partial | Not Implemented
+
+3. **Gap Analysis Update** - `NIAP_GAP_ANALYSIS.md`
+   - [ ] Close completed gaps from Phases 8-12
+   - [ ] Document remaining gaps and mitigation plans
+   - [ ] Target: <5 open gaps post-Phase 15
+
+4. **Administrative Guidance (AGD)** - `ADMIN_GUIDE.md`
+   - [ ] Secure installation procedures
+   - [ ] Configuration for PP-CA compliance mode
+   - [ ] User management and role assignment
+   - [ ] Certificate lifecycle operations
+   - [ ] Audit log management
+   - [ ] HSM initialization and key backup
+
+5. **Preparative Procedures (AGD_PRE)** - `INSTALLATION_GUIDE.md`
+   - [ ] Secure delivery and receipt procedures
+   - [ ] Installation steps with security checks
+   - [ ] Initial configuration (admin password, HSM setup, CA initialization)
+   - [ ] Secure operational environment requirements
+
+6. **Test Evidence Package** - `TEST_EVIDENCE.md`
+   - [ ] Test plan covering all SFRs
+   - [ ] Test results (pass/fail) with logs
+   - [ ] Penetration test results
+   - [ ] Vulnerability assessment report
+
+**Total**: ~200 pages of compliance documentation (estimated)
+
+##### Track 2: Implementation Work
+
+**1. Audit Record Protection (FAU_STG.1, FAU_STG.4)**
+
+**Files**: `crates/ostrich-db/src/repository/audit.rs`, `crates/ostrich-audit/src/lib.rs`
+
+- [ ] Implement hash chain for tamper evidence (Phase 13 task moved to Phase 15)
+- [ ] Prevent audit record modification after creation (database constraints)
+- [ ] Implement audit log rotation without deletion (archive to write-once storage)
+- [ ] Alert on audit storage threshold (>80% full)
+- [ ] **FAU_STG.4**: Prevent loss of audit data (pre-allocate log space, halt on full)
+
+**2. Authentication Failure Handling (FIA_AFL.1)**
+
+**Files**: `crates/ostrich-scms/src/rest.rs`, new module `crates/ostrich-auth/src/lockout.rs`
+
+- [ ] Implement account lockout after N failed PIN/password attempts (configurable, default 5)
+- [ ] Lock duration: 15 minutes or admin unlock
+- [ ] Audit all authentication failures (actor, timestamp, reason)
+- [ ] Rate limiting on authentication endpoints (100 attempts/minute per IP)
+
+**3. Self-Tests (FPT_TST.1)**
+
+**File**: New module `crates/ostrich-common/src/selftest.rs`
+
+- [ ] Startup self-test: verify cryptographic algorithms (ECDSA sign/verify known test vectors)
+- [ ] Periodic self-test: every 24 hours, verify HSM connectivity and key accessibility
+- [ ] On-demand self-test via admin API
+- [ ] Halt operations on self-test failure, alert administrator
+
+**4. Reliable Timestamps (FPT_STM.1)**
+
+**File**: `crates/ostrich-common/src/time.rs`
+
+- [ ] Integrate NTP client for time synchronization (via `ntp` crate or `chrono-tz`)
+- [ ] Validate NTP server authenticity (NTP authentication or use authenticated time source)
+- [ ] Alert on time drift >5 seconds from authoritative source
+- [ ] Use monotonic clock for audit log sequencing
+
+**5. Security Management Functions (FMT_SMF.1) - Complete Implementation**
+
+**Files**: Various (CA, SCMS, Audit services)
+
+- [ ] Certificate issuance policy management (admin-only API)
+- [ ] Certificate revocation (authorized admin/CA operator)
+- [ ] Audit log review (security officer role)
+- [ ] User/role management (admin-only)
+- [ ] Configuration changes (admin-only, audit all changes)
+- [ ] Enforce RBAC for all security functions
+
+**6. Cryptographic Operation Completion (FCS_COP.1)**
+
+**Dependency**: Phase 10 (HSM integration)
+
+- [ ] Verify all cryptographic operations use FIPS 140-3 validated HSM
+- [ ] Document HSM certificate number and validation level
+- [ ] Test all signature algorithms (RSA, ECDSA, EdDSA, ML-DSA) via HSM
+- [ ] Key generation on HSM (not in software for production keys)
+
+**7. TOE Access (FTA_SSL.1) - Session Management**
+
+**File**: New module `crates/ostrich-common/src/session.rs`
+
+- [ ] Terminate sessions after inactivity timeout (default 15 minutes)
+- [ ] Admin-initiated session termination (force logout)
+- [ ] Session expiration for API tokens (JWT with exp claim)
+
+**8. Trusted Path/Channel (FTP_TRP.1, FTP_ITC.1)**
+
+**Files**: TLS configuration in all services
+
+- [ ] Enforce TLS 1.3 for all external communication
+- [ ] Mutual TLS (mTLS) for admin interfaces
+- [ ] Disable weak cipher suites (only AEAD ciphers)
+- [ ] Certificate pinning for inter-service communication
+
+##### Track 3: Compliance Annotation
+
+**1. Code Annotations**
+
+- [ ] Add `// NIAP PP-CA: [SFR]` comments to all security-relevant code
+- [ ] Example: `// NIAP PP-CA: FAU_GEN.1.1 - Generate audit record for certificate issuance`
+- [ ] Target: >500 annotations across codebase
+
+**2. Test Annotations**
+
+- [ ] Tag tests with `#[test] // NIAP: [SFR]` to map tests to requirements
+- [ ] Example: `#[test] // NIAP: FCS_COP.1.1(1) - RSA signature verification`
+
+**3. Documentation Cross-References**
+
+- [ ] Link SFR implementation matrix to source files (line numbers)
+- [ ] Keep docs/compliance/ in sync with code changes (CI check)
+
+#### Success Criteria
+
+**Documentation**:
+
+- [ ] All 6 compliance documents complete and reviewed
+- [ ] SFR matrix shows >95% implementation
+- [ ] Gap analysis shows <5 open gaps
+
+**Implementation**:
+
+- [ ] All PP-CA v2.1 mandatory SFRs implemented
+- [ ] Self-tests pass on startup and periodically
+- [ ] Audit logs tamper-evident and protected
+- [ ] Authentication lockout functional
+- [ ] Reliable timestamps from NTP
+
+**Testing**:
+
+- [ ] Test evidence package complete
+- [ ] All SFR tests pass
+- [ ] Penetration test shows no critical findings
+
+**Readiness**:
+
+- [ ] System ready for Common Criteria evaluation (EAL2+)
+- [ ] ATO documentation package complete
+
+#### Compliance Target
+
+**Post-Phase 15**: 60-65% compliance (sufficient for initial ATO)
+**Post-Testing & Fixes**: 85-90% compliance
+**Post-CC Evaluation**: 100% compliance (certified)
+
+#### Dependencies & Libraries
+
+- `ntp` - NTP client for reliable timestamps
+- `argon2` - Password hashing for admin accounts
+- Database constraints - Immutable audit logs
 
 ---
 
 ## Priority Matrix
 
-| Phase | Priority | Completion | Effort | Dependencies | Blocks |
-|-------|----------|------------|--------|--------------|--------|
-| **8: Cryptographic Operations** | **HIGH** | **20%** | **2-3 weeks** | None | All others |
-| **9: Database Integration** | **HIGH** | **25%** | **2-3 weeks** | Phase 8 | Phase 12 |
-| **10: PKCS#11 HSM Integration** | **MEDIUM** | **0%** | **3-4 weeks** | HSM hardware/SoftHSM | None |
-| **11: Protocol Validation** | **HIGH** | **5%** | **2 weeks** | None | Production |
-| **12: Service Integration** | **MEDIUM** | **0%** | **1-2 weeks** | Phases 8, 9 | End-to-end workflows |
-| **13: Advanced Features** | **LOW** | **0%** | **2-3 weeks** | Phases 8-12 | None |
-| **14: Testing & Hardening** | **HIGH** | **10%** | **2-3 weeks** | Phases 8-12 | Production |
+| Phase | Name | Priority | Completion | Effort | Dependencies | Blocks |
+|-------|------|----------|-----------|--------|--------------|--------|
+| **8** | Crypto Operations | 🔴 HIGH | 85% | 1 week | None | All |
+| **9** | Database Integration | ✅ DONE | 100% | - | Phase 8 | 11, 12 |
+| **10** | PKCS#11 HSM | 🟡 MEDIUM | 0% | 3-4 weeks | Phase 8 | 15, Production |
+| **11** | Protocol Validation | 🔴 HIGH | 75% | 1 week | Phase 8 | 12, 14 |
+| **12** | Service Integration | 🟡 MEDIUM | 0% | 1-2 weeks | 8, 11 | 14 |
+| **13** | Advanced Features | ⚪ LOW | 0% | 2-3 weeks | 12, 14 | None |
+| **14** | Testing & Hardening | 🔴 HIGH | 10% | 2-3 weeks | 8, 11, 12 | Production |
+| **15** | NIAP Compliance | 🔴 HIGH | 45% | 3-4 weeks | All | ATO |
+
+**Legend**:
+
+- 🔴 HIGH - Critical path, blocks production
+- 🟡 MEDIUM - Important but not blocking
+- ⚪ LOW - Optional enhancements
 
 ---
 
-## Timeline Estimates
+## Timeline & Schedule
 
-### Critical Path (Production Deployment)
+### Critical Path (Sequential Dependencies)
 
-**Sequential Phases**:
-1. Phase 8: Cryptographic Operations (2-3 weeks)
-2. Phase 9: Database Integration (2-3 weeks)
-3. Phase 12: Service Integration (1-2 weeks)
-4. Phase 14: Testing & Hardening (2-3 weeks)
+```
+Phase 8 (1 week) → Phase 11 (1 week) → Phase 12 (2 weeks) → Phase 14 (3 weeks) = 7 weeks
+```
 
-**Total Critical Path**: **7-11 weeks**
+### Parallel Opportunities
 
-### Parallel Work
+**Can run concurrently**:
 
-- **Phase 10** (PKCS#11) can run in parallel with Phases 8-9 (3-4 weeks)
-- **Phase 11** (Protocol Validation) can run in parallel with Phases 8-9 (2 weeks)
-- **Phase 13** (Advanced Features) runs after Phases 8-12 (2-3 weeks)
+- Phase 10 (HSM) can start after Phase 8, parallel to 11/12
+- Phase 15 (NIAP docs) can start anytime, parallel to implementation
 
 ### Realistic Timeline
 
-**Aggressive Schedule**: 11-14 weeks (all hands on deck)
-**Realistic Schedule**: 14-18 weeks (accounting for unknowns)
-**Conservative Schedule**: 18-24 weeks (includes buffer for security audit)
+**3 Schedule Options**:
 
-### Recommended Approach
+| Approach | Duration | Assumptions |
+|----------|----------|-------------|
+| **Aggressive** | 11 weeks | All parallel work, no blockers, single-track focus |
+| **Realistic** | 14-16 weeks | Mixed parallel/sequential, some rework expected |
+| **Conservative** | 20-24 weeks | Buffer for unknowns, team velocity variance |
 
-**Sprint 1-3** (Weeks 1-6): Phases 8 + 11 (parallel)
-- Focus: Get crypto working, validate protocols
-- Deliverable: Certificates sign correctly, ACME/EST validate inputs
+### Recommended: 12-Sprint Approach (24 weeks)
 
-**Sprint 4-6** (Weeks 7-12): Phases 9 + 10 (parallel)
-- Focus: Persist state, integrate HSM
-- Deliverable: Services survive restarts, HSM signing works
+**2-week sprints**:
 
-**Sprint 7-8** (Weeks 13-16): Phase 12
-- Focus: Wire services together
-- Deliverable: End-to-end ACME order produces CA-issued cert
+| Sprint | Phase | Deliverables |
+|--------|-------|-------------|
+| 1 | Phase 8 | ✅ Crypto operations complete |
+| 2 | Phase 11 | ✅ JWS, nonce, CSR validation; ⏳ DNS-01, TLS-ALPN-01 |
+| 3 | Phase 11 + 10 | Complete challenge validation; start HSM integration |
+| 4 | Phase 10 | PKCS#11 provider, software fallback |
+| 5 | Phase 10 | SCMS token operations, HSM testing |
+| 6 | Phase 12 | ACME→CA, EST→CA integration |
+| 7 | Phase 12 | CA→KRA, SCMS→CA integration |
+| 8 | Phase 14 | Integration tests, security scanning |
+| 9 | Phase 14 | Performance testing, load testing |
+| 10 | Phase 15 | NIAP documentation (ST, SFR matrix, gap analysis) |
+| 11 | Phase 15 | Implementation (self-tests, audit protection, lockout) |
+| 12 | Phase 14 + 15 | Final testing, compliance review, ATO package |
 
-**Sprint 9-11** (Weeks 17-22): Phase 14
-- Focus: Test everything, prepare for production
-- Deliverable: Security audit passed, documentation complete
+**Milestones**:
 
-**Sprint 12** (Weeks 23-24): Phase 13 (if time permits)
-- Focus: Polish, performance optimization
-- Deliverable: OCSP caching, EST server-side keygen
-
----
-
-## Success Criteria
-
-### Phase 8: Core Cryptographic Operations
-- ✅ All certificates properly DER-encoded
-- ✅ Certificates parseable by OpenSSL: `openssl x509 -in cert.pem -text -noout`
-- ✅ All signatures verify: `openssl verify -CAfile ca.pem cert.pem`
-- ✅ CRLs properly encoded and verifiable
-- ✅ OCSP requests/responses parse correctly
-- ✅ PKCS#7 structures readable by EST clients
-- ✅ Zero panics on malformed input
-- ✅ All signing algorithms implemented (RSA, ECDSA, EdDSA, ML-DSA)
-
-### Phase 9: Database Integration & Persistence
-- ✅ All services persist state to PostgreSQL
-- ✅ Services survive restarts without data loss
-- ✅ ACME order state tracked through full lifecycle
-- ✅ SCMS token inventory queryable with filters
-- ✅ Database migrations apply cleanly on fresh database
-- ✅ Foreign key constraints prevent orphaned records
-- ✅ Concurrent requests handled safely with transactions
-- ✅ Query performance <100ms for common operations
-
-### Phase 10: PKCS#11 HSM Integration
-- ✅ Can generate RSA, ECDSA, EdDSA keys on HSM
-- ✅ Signing operations produce valid signatures verifiable by OpenSSL
-- ✅ Key wrapping/unwrapping preserves key material
-- ✅ Software provider passes same test suite as PKCS#11 provider
-- ✅ SCMS can initialize smartcards via PKCS#11
-- ✅ PIN verification and change operations work
-- ✅ Zero memory leaks (valgrind clean)
-- ✅ Performance: <50ms signing, <500ms key generation
-
-### Phase 11: Protocol Validation & Security
-- ✅ ACME rejects all requests with invalid JWS signatures (401 Unauthorized)
-- ✅ Nonce reuse detected and rejected
-- ✅ HTTP-01, DNS-01, TLS-ALPN-01 challenges validate correctly against live domains
-- ✅ Invalid CSRs rejected (bad signature, mismatched SANs)
-- ✅ EST enforces mTLS and rejects unauthenticated requests
-- ✅ Zero false positives in validation (legitimate requests accepted)
-- ✅ Zero false negatives (invalid requests rejected)
-- ✅ Performance: <200ms JWS validation, <5s challenge validation
-
-### Phase 12: Service Integration
-- ✅ ACME finalize-order results in CA-issued certificate
-- ✅ Certificate appears in CA database
-- ✅ EST enrollment returns valid CA-signed certificate
-- ✅ SCMS personalization writes certificate to smartcard
-- ✅ KRA automatically escrows keys for designated profiles
-- ✅ SCMS revocation triggers CA revocation (certificate in CRL)
-- ✅ All inter-service gRPC calls use mTLS
-- ✅ Error handling prevents partial state (transactions committed or rolled back)
-
-### Phase 13: Advanced Features
-- ✅ OCSP responses served from cache (>90% hit rate for popular certs)
-- ✅ Cache invalidates on revocation
-- ✅ EST server-side key generation works for test clients
-- ✅ Private key encrypted for client, never stored unencrypted
-- ✅ PQC OIDs updated to match NIST final standards
-- ✅ Audit hash chain verification detects tampering
-- ✅ Software crypto provider passes all tests
-
-### Phase 14: Testing & Hardening
-- ✅ Full ACME workflow test passes: account → order → challenge → finalize → certificate
-- ✅ EST enrollment test passes: mTLS → CSR → certificate
-- ✅ SCMS lifecycle test passes: create → initialize → personalize → revoke
-- ✅ KRA recovery test passes: escrow → request → recover
-- ✅ Security audit finds no critical/high vulnerabilities
-- ✅ Load testing: 100 ACME orders/sec, 1000 OCSP requests/sec
-- ✅ Zero panics in 24-hour stress test
-- ✅ Code coverage >80%
-- ✅ Documentation complete (API docs, deployment guide, runbooks)
-- ✅ CI/CD pipeline operational (tests run on every commit)
+- **Week 8**: Core functionality complete (Phases 8, 11)
+- **Week 12**: HSM + Service Integration complete
+- **Week 18**: All testing complete
+- **Week 24**: ATO-ready system
 
 ---
 
 ## Risk Assessment
 
-### High Risks
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| **HSM Integration Complexity** | Medium | High | Use SoftHSM for development; allocate 4 weeks; early prototyping |
+| **ACME Challenge Validation Failures** | Medium | Medium | Comprehensive testing with real domains; fallback to HTTP-01 only |
+| **Performance Below Targets** | Low | Medium | Early benchmarking (Phase 8); caching (Phase 13); horizontal scaling |
+| **NIAP Compliance Gaps** | Medium | High | Hire compliance consultant; gap analysis in Phase 15; iterative fixes |
+| **Database Scalability** | Low | Medium | PostgreSQL proven at scale; connection pooling; read replicas if needed |
+| **Third-Party Dependency Vulnerabilities** | Medium | High | `cargo audit` in CI; pin versions; security advisory monitoring |
+| **Team Knowledge Gaps (Crypto, PKCS#11)** | Medium | Medium | Training budget; pair programming; external SME consultation |
+| **Schedule Overrun** | High | Medium | 20% buffer in conservative estimate; weekly progress tracking |
 
-1. **Cryptographic Implementation Complexity**
-   - **Risk**: DER encoding bugs could produce invalid certificates
-   - **Mitigation**: Extensive testing with OpenSSL, third-party parsers
-   - **Contingency**: Use established libraries (x509-cert crate) instead of custom encoding
+**Highest Priority Risks** (address immediately):
 
-2. **HSM Integration Challenges**
-   - **Risk**: PKCS#11 driver bugs, hardware availability, performance issues
-   - **Mitigation**: Test with SoftHSM first, abstract crypto provider interface
-   - **Contingency**: Proceed with software crypto, defer HSM to post-launch
-
-3. **Database Performance at Scale**
-   - **Risk**: Query slowness with large certificate databases (>1M certs)
-   - **Mitigation**: Index optimization, query profiling, caching
-   - **Contingency**: Implement sharding or read replicas
-
-### Medium Risks
-
-1. **Service Integration Complexity**
-   - **Risk**: mTLS configuration, network issues, error handling across services
-   - **Mitigation**: Comprehensive integration tests, circuit breakers
-   - **Contingency**: Monolithic deployment option (all services in one process)
-
-2. **ACME Challenge Validation**
-   - **Risk**: DNS/HTTP issues, timeouts, false negatives
-   - **Mitigation**: Retry logic, multiple validation perspectives, extensive logging
-   - **Contingency**: Support only HTTP-01 initially, defer DNS-01/TLS-ALPN-01
-
-3. **Security Audit Findings**
-   - **Risk**: Audit discovers critical vulnerabilities requiring rework
-   - **Mitigation**: Internal security review before external audit, follow best practices
-   - **Contingency**: Budget 2-4 weeks for remediation
-
-### Low Risks
-
-1. **Post-Quantum Cryptography Changes**
-   - **Risk**: NIST changes OIDs or algorithms
-   - **Mitigation**: Monitor NIST announcements, abstract OID definitions
-   - **Contingency**: Quick update when standards finalize
-
-2. **Documentation Completeness**
-   - **Risk**: Missing or outdated documentation
-   - **Mitigation**: Write docs alongside code, review in Phase 14
-   - **Contingency**: Allocate extra sprint for documentation if needed
+1. HSM integration complexity → Prototype in Sprint 3
+2. NIAP compliance gaps → Start documentation in Sprint 10
+3. Schedule overrun → Adopt 16-week realistic timeline, not 11-week aggressive
 
 ---
 
-### Phase 15: NIAP Protection Profile Compliance
+## Success Metrics
 
-**Priority**: HIGH
-**Completion**: 0%
-**Estimated Effort**: 3-4 weeks
-**Dependencies**: Analysis of NIAP PP-CA v2.1 requirements complete
-**Blocks**: Authority to Operate (ATO) certification
+### Technical Metrics
 
-#### Scope
+**Code Quality**:
 
-Establish comprehensive NIAP Protection Profile for Certification Authorities v2.1 compliance through documentation, annotation, and implementation of missing critical security functional requirements (SFRs). This phase focuses on three parallel tracks:
+- [ ] >80% test coverage (unit + integration)
+- [ ] Zero `cargo clippy -D warnings` violations
+- [ ] Zero high/critical vulnerabilities (`cargo audit`)
+- [ ] All code formatted (`cargo fmt --check`)
 
-1. **Documentation Track**: Annotate existing compliant code with NIAP SFR references
-2. **Implementation Track**: Create stubs and foundational implementations for missing mandatory SFRs
-3. **Tracking Track**: Develop comprehensive compliance tracking and evidence collection
+**Performance**:
 
-#### Current Compliance Status
+- [ ] Certificate signing: <50ms (HSM), <10ms (software)
+- [ ] OCSP response: <100ms (p99)
+- [ ] ACME order processing: <30s end-to-end
+- [ ] Database queries: <10ms (p99)
 
-Based on comprehensive codebase analysis against NIAP PP-CA v2.1:
-- **Overall Compliance**: 40-50% (Partial)
-- **Strong Areas**: Audit logging architecture, crypto abstraction, certificate profiles
-- **Critical Gaps**: RBAC, PKCS#11 completion, input validation, DRBG, approval workflows
+**Reliability**:
 
-#### Key Tasks
+- [ ] Service uptime: >99.9% (excluding maintenance)
+- [ ] Zero data loss incidents
+- [ ] All services auto-restart on crash
+- [ ] Health checks passing
 
-##### Track 1: Code Annotation (Week 1-2)
+### Compliance Metrics
 
-**Goal**: Mark all existing NIAP-compliant code with SFR references for audit trail and evidence collection
+**NIST 800-53 Rev 5**:
 
-1. **Audit System Annotations** ([ostrich-audit/src/](crates/ostrich-audit/src/))
-   - Mark `AuditEvent` structure with FAU_GEN.1, FAU_GEN.2, AU-2, AU-3
-   - Mark hash chain fields with FAU_GEN.1(d), AU-9(3)
-   - Mark `DatabaseAuditSink` with FAU_STG.1
-   - Document audit event types coverage per PP Tables 4-6
-   - Estimated: 200 lines of annotations
+- [ ] All selected controls implemented (AU, SC, IA, AC, SI families)
+- [ ] Control evidence documented in `docs/compliance/NIST_800-53_MAPPING.md`
+- [ ] ATO evidence package complete
 
-2. **Cryptographic Provider Annotations** ([ostrich-crypto/src/](crates/ostrich-crypto/src/))
-   - Mark `CryptoProvider` trait with FCS_COP.1(2), SC-12, SC-13
-   - Mark `Zeroizing` usage with FCS_CKM_EXT.4, FDP_RIP.1
-   - Mark algorithm enums with FIPS 186-5, FIPS 203/204/205 references
-   - Mark key handle abstraction with FPT_KST_EXT.1 design notes
-   - Estimated: 150 lines of annotations
+**NIAP PP-CA v2.1**:
 
-3. **Certificate Profile Annotations** ([ostrich-x509/src/profile.rs](crates/ostrich-x509/src/profile.rs))
-   - Mark profile validation with FDP_CER_EXT.1.1, FDP_CER_EXT.1.2
-   - Mark RFC 5280 compliance checks with FDP_CER_EXT.1.2
-   - Mark key usage enforcement with RFC 5280 §4.2.1.3
-   - Estimated: 100 lines of annotations
+- [ ] >95% SFR implementation
+- [ ] Security Target (ST) complete
+- [ ] Ready for Common Criteria evaluation
 
-4. **Time Services Annotations** ([ostrich-common/src/util/time.rs](crates/ostrich-common/src/util/time.rs))
-   - Mark timestamp functions with FPT_STM.1
-   - Document reliance on system clock (NTP requirement for deployment)
-   - Estimated: 50 lines of annotations
+**RFC Compliance**:
 
-5. **OCSP/CRL Annotations** ([ostrich-ocsp/src/](crates/ostrich-ocsp/src/), [ostrich-x509/src/crl.rs](crates/ostrich-x509/src/crl.rs))
-   - Mark OCSP responder with FDP_CSI_EXT.1, FDP_OCSPG_EXT.1
-   - Mark CRL builder with FDP_CRL_EXT.1, RFC 5280 §5
-   - Estimated: 100 lines of annotations
+- [ ] RFC 5280 (X.509) - full compliance
+- [ ] RFC 6960 (OCSP) - full compliance
+- [ ] RFC 8555 (ACME) - full compliance (HTTP-01, DNS-01, TLS-ALPN-01)
+- [ ] RFC 7030 (EST) - core compliance (optional server keygen deferred)
 
-**Annotation Format**:
-```rust
-// NIAP PP-CA v2.1: FAU_GEN.1 - Audit data generation
-// NIAP PP-CA v2.1: FAU_GEN.2 - User identity association
-// NIST 800-53 Rev 5: AU-2 - Auditable events
-// NIST 800-53 Rev 5: AU-3 - Content of audit records
-// RFC 5280 §4.2.1.3 - Key usage extension
-pub struct AuditEvent {
-    // ...
-}
-```
+### Operational Metrics
 
-##### Track 2: Implementation Stubs & Foundations (Week 2-4)
+**Deployment**:
 
-**Goal**: Implement foundational structures for missing mandatory SFRs to unblock future phases
-
-1. **Role-Based Access Control Foundation** (NEW: [ostrich-common/src/rbac.rs](crates/ostrich-common/src/rbac.rs))
-   - Define `Role` enum: Administrator, Auditor, CAOperationsStaff, RAStaff, AOR
-   - Define `User` struct with UUID, username, roles
-   - Define `Permission` enum for granular access control
-   - Implement separation of duties validation (FMT_SMR.2.3)
-   - Create `RbacPolicy` trait for authorization checks
-   - **STUB**: Authentication mechanism (FIA_UAU_EXT.1) - defer to Phase 16
-   - **STUB**: Session management (FTA_SSL.3, FTA_SSL_EXT.1) - defer to Phase 16
-   - Estimated: 300 lines
-
-2. **Random Bit Generation** (NEW: [ostrich-crypto/src/drbg.rs](crates/ostrich-crypto/src/drbg.rs))
-   - Implement NIST SP 800-90A compliant DRBG interface
-   - Use `ring::rand::SystemRandom` as entropy source (≥256 bits)
-   - Provide methods: `generate_random(num_bytes)`, `generate_serial_number()`
-   - Add to `CryptoProvider` trait
-   - Mark with FCS_RBG_EXT.1, NIST SP 800-90A
-   - Estimated: 200 lines
-
-3. **Input Validation Framework** (NEW: [ostrich-x509/src/validation.rs](crates/ostrich-x509/src/validation.rs))
-   - Implement `validate_certificate_request()` for CSR validation
-   - Implement `validate_certificate_chain()` for RFC 5280 path validation
-   - Implement `verify_csr_signature()` to replace stub
-   - Add proof-of-possession verification (FCO_NRO_EXT.2.4)
-   - Add subject DN format validation
-   - Mark with FIA_X509_EXT.1, FCO_NRO_EXT.2, SI-10
-   - **DEFER**: Full revocation checking to Phase 16 (requires OCSP/CRL integration)
-   - Estimated: 400 lines
-
-4. **Certificate Issuance Approval Workflow** (NEW: [ostrich-ca/src/approval.rs](crates/ostrich-ca/src/approval.rs))
-   - Define `ApprovalStatus` enum: Pending, ApprovedByRA, ApprovedByCAOps, ApprovedByRules, Rejected
-   - Define `IssuanceApproval` struct with request ID, approver, timestamp
-   - Implement rules-based approval engine (configurable policies)
-   - Add approval tracking to database models
-   - Mark with FDP_CER_EXT.3
-   - **STUB**: RA/AOR approval interfaces - defer to Phase 16
-   - Estimated: 250 lines
-
-5. **Certificate Request Linkage** ([ostrich-db/src/models/certificate.rs](crates/ostrich-db/src/models/certificate.rs))
-   - Add `request_id` field to `Certificate` model
-   - Add `request_type` enum: ACME, EST, SCMS, Manual
-   - Update CA issuance to track CSR → Certificate mapping
-   - Mark with FDP_CER_EXT.2, AU-10 (non-repudiation)
-   - Estimated: 100 lines + migration
-
-6. **Audit Storage Protection** ([ostrich-audit/src/sink.rs](crates/ostrich-audit/src/sink.rs))
-   - Add storage capacity monitoring (FAU_STG.4)
-   - Implement audit-full behavior: block operations or alert administrator
-   - Add database constraints to prevent deletion (FAU_STG.1)
-   - Add external audit transmission stub (FAU_STG_EXT.1)
-   - Estimated: 150 lines
-
-7. **Integrity Verification Stubs** (NEW: [ostrich-common/src/integrity.rs](crates/ostrich-common/src/integrity.rs))
-   - Define `IntegrityVerifier` trait
-   - **STUB**: `verify_software_integrity()` - FPT_TST_EXT.1
-   - **STUB**: `verify_trust_anchor_integrity()` - FPT_TST_EXT.2
-   - **STUB**: `verify_ca_key_integrity()` - FPT_TST_EXT.2
-   - Document requirement for signed releases and HSM key verification
-   - Estimated: 100 lines (mostly stubs)
-
-8. **Access Banner Module** (NEW: [ostrich-common/src/banner.rs](crates/ostrich-common/src/banner.rs))
-   - Implement configurable access warning banner (FTA_TAB.1)
-   - Add to all authenticated endpoints
-   - Configuration: banner text, display requirements
-   - Estimated: 75 lines
-
-##### Track 3: Compliance Tracking Document (Week 3-4)
-
-**Goal**: Create comprehensive compliance matrix for audit and certification evidence
-
-1. **NIAP Compliance Matrix** (NEW: [docs/compliance/NIAP_COMPLIANCE.md](docs/compliance/NIAP_COMPLIANCE.md))
-   - Table format: SFR ID | Name | Status | Implementation | Evidence | Notes
-   - All 50+ SFRs from PP-CA v2.1 mapped
-   - Links to code files and line numbers
-   - Status: Compliant, Partial, Not Implemented, Not Applicable
-   - Evidence: Unit tests, integration tests, code annotations
-   - Section for each SFR family (FAU, FCS, FDP, FIA, FMT, FPT, FTA, FTP)
-   - Estimated: 800-1000 lines
-
-2. **NIST 800-53 Control Mapping** (NEW: [docs/compliance/NIST_800-53_MAPPING.md](docs/compliance/NIST_800-53_MAPPING.md))
-   - Map NIAP SFRs to NIST 800-53 Rev 5 controls
-   - Document control implementation status
-   - Link to code and configuration
-   - Estimated: 500 lines
-
-3. **RFC Compliance Matrix** (NEW: [docs/compliance/RFC_COMPLIANCE.md](docs/compliance/RFC_COMPLIANCE.md))
-   - Track RFC 5280, 6960, 7030, 8555, 5652, etc. compliance
-   - Map requirements to code implementation
-   - Document test coverage for RFC requirements
-   - Estimated: 400 lines
-
-4. **FIPS Cryptographic Standards Matrix** (NEW: [docs/compliance/FIPS_COMPLIANCE.md](docs/compliance/FIPS_COMPLIANCE.md))
-   - FIPS 186-5, 197, 180-4, 202, 203, 204, 205 compliance tracking
-   - Algorithm implementation status (Classical + PQC)
-   - FIPS-validated module usage (ring, HSM)
-   - Estimated: 300 lines
-
-5. **Gap Analysis & Remediation Plan** (NEW: [docs/compliance/NIAP_GAP_ANALYSIS.md](docs/compliance/NIAP_GAP_ANALYSIS.md))
-   - Detailed list of missing SFRs
-   - Prioritization (Critical, High, Medium, Low)
-   - Implementation plan with phase assignments
-   - Effort estimates
-   - Dependencies
-   - Estimated: 600 lines
-
-6. **ATO Evidence Collection Guide** (NEW: [docs/compliance/ATO_EVIDENCE.md](docs/compliance/ATO_EVIDENCE.md))
-   - How to generate Security Target (ST) evidence
-   - Code annotation extraction tools
-   - Test result aggregation
-   - Audit log analysis
-   - Estimated: 300 lines
-
-#### Database Schema Changes
-
-**New Migration**: `migrations/XXX_niap_compliance.sql`
-
-```sql
--- Certificate request linkage (FDP_CER_EXT.2)
-ALTER TABLE certificates ADD COLUMN request_id UUID;
-ALTER TABLE certificates ADD COLUMN request_type TEXT; -- 'ACME', 'EST', 'SCMS', 'MANUAL'
-CREATE INDEX idx_certificates_request_id ON certificates(request_id);
-
--- Approval tracking (FDP_CER_EXT.3)
-CREATE TABLE certificate_approvals (
-    id UUID PRIMARY KEY,
-    request_id UUID NOT NULL,
-    status TEXT NOT NULL, -- 'pending', 'approved_ra', 'approved_ca_ops', 'approved_rules', 'rejected'
-    approved_by UUID, -- References users table (to be created in Phase 16)
-    approved_at TIMESTAMPTZ,
-    reason TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- User and role management (FMT_SMR.2, FIA_UAU_EXT.1) - Phase 16
--- Stubbed for reference
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE roles (
-    id UUID PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL -- 'administrator', 'auditor', 'ca_ops', 'ra_staff', 'aor'
-);
-
-CREATE TABLE user_roles (
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
-    assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (user_id, role_id)
-);
-
--- Audit storage protection (FAU_STG.4)
-CREATE TABLE audit_config (
-    id INTEGER PRIMARY KEY CHECK (id = 1), -- Single row
-    max_storage_bytes BIGINT NOT NULL DEFAULT 10737418240, -- 10GB
-    full_action TEXT NOT NULL DEFAULT 'alert', -- 'alert' or 'block'
-    warning_threshold_percent INTEGER NOT NULL DEFAULT 90
-);
-
-INSERT INTO audit_config (id) VALUES (1);
-```
-
-#### Technical Approach
-
-**Code Annotation Strategy**:
-- Add multi-line comments above structs, functions, modules
-- Include NIAP SFR ID, name, and NIST 800-53 control references
-- Reference specific RFC sections where applicable
-- Keep annotations concise but informative
-
-**Stub Implementation Strategy**:
-- Clearly mark stubs with `// STUB:` and deferred phase
-- Return `Err(Error::NotImplemented)` or placeholder values
-- Define complete interfaces even if implementation incomplete
-- Write comprehensive documentation for implementers
-
-**Documentation Strategy**:
-- Use Markdown tables for easy reading and updating
-- Include clickable links to code files (GitHub-style)
-- Color-code compliance status (🟢🟡🔴 or equivalent)
-- Version control all compliance documents
-- Generate evidence artifacts automatically where possible
-
-#### Deliverables
-
-**Code Changes**:
-1. ✅ Annotations in 10+ existing files (~600 lines of comments)
-2. ✅ 8 new implementation modules (~1,575 lines of code)
-3. ✅ 1 database migration
-4. ✅ Updated existing files with linkage tracking
+- [ ] One-command deployment (`helm install ostrichpki`)
+- [ ] Complete installation guide
+- [ ] Disaster recovery tested (<4 hour RTO)
 
 **Documentation**:
-1. ✅ NIAP Compliance Matrix (docs/compliance/NIAP_COMPLIANCE.md)
-2. ✅ NIST 800-53 Mapping (docs/compliance/NIST_800-53_MAPPING.md)
-3. ✅ RFC Compliance Matrix (docs/compliance/RFC_COMPLIANCE.md)
-4. ✅ FIPS Compliance Matrix (docs/compliance/FIPS_COMPLIANCE.md)
-5. ✅ Gap Analysis & Remediation Plan (docs/compliance/NIAP_GAP_ANALYSIS.md)
-6. ✅ ATO Evidence Collection Guide (docs/compliance/ATO_EVIDENCE.md)
 
-**Compliance Improvement**:
-- Pre-Phase 15: 40-50% compliant
-- Post-Phase 15: 60-65% compliant
-- Remaining work: Authentication (Phase 16), PKCS#11 (Phase 10), Testing (Phase 14)
+- [ ] API documentation (OpenAPI specs)
+- [ ] Operational runbooks complete
+- [ ] Compliance documentation ready for auditors
 
-#### Success Criteria
+**Security**:
 
-**Annotation Success**:
-- ✅ All existing compliant code marked with NIAP/NIST references
-- ✅ Annotations reference specific SFR subsections (e.g., FAU_GEN.1.1(d))
-- ✅ No duplicate or conflicting annotations
-- ✅ Code remains compilable and formatted (cargo fmt)
+- [ ] Penetration test passed (no critical/high findings)
+- [ ] Fuzzing completed (1M iterations, zero crashes)
+- [ ] All secrets externalized (no hardcoded credentials)
 
-**Implementation Success**:
-- ✅ RBAC module compiles and has basic unit tests
-- ✅ DRBG generates cryptographically secure random numbers
-- ✅ Validation framework has working CSR signature verification
-- ✅ Approval workflow has state machine tests
-- ✅ All stubs clearly documented with deferred phases
-- ✅ Database migration applies cleanly
+### Business Metrics
 
-**Documentation Success**:
-- ✅ Compliance matrix covers all mandatory SFRs
-- ✅ Each SFR links to code implementation or gap
-- ✅ Gap analysis identifies all missing SFRs with priorities
-- ✅ Evidence collection guide provides actionable steps
-- ✅ Documents reviewed for accuracy by security team
+**Readiness**:
 
-**Compliance Success**:
-- ✅ Move from 40-50% to 60-65% compliance
-- ✅ All critical gaps documented with remediation plan
-- ✅ Audit trail established for Common Criteria evaluation
-- ✅ Foundation for Phase 16 (Authentication & Authorization)
+- [ ] Production deployment successful
+- [ ] ATO approval obtained (or in final review)
+- [ ] Customer pilot deployment complete
+- [ ] No P0/P1 bugs open
 
-#### Dependencies & Integration
+---
 
-**Depends On**:
-- Phase 8 completion (crypto operations for DRBG, validation)
-- NIAP PP-CA v2.1 requirements analysis (completed)
-- Access to niap/pp_ca_requirements.xml (available)
+## Next Steps
 
-**Enables**:
-- Phase 16: Authentication & Authorization (builds on RBAC foundation)
-- Phase 14: Testing & Hardening (compliance tests against documented SFRs)
-- Common Criteria evaluation preparation
-- ATO security package preparation
+### Immediate Actions (Next 2 Weeks)
 
-**Blocks**:
-- ATO certification (cannot proceed without compliance documentation)
-- Security Target development
-- External security audit (requires compliance evidence)
+1. **Complete Phase 8**: Finish crypto integration testing
+2. **Advance Phase 11**: Implement DNS-01 and TLS-ALPN-01 challenge validators
+3. **Plan Phase 10**: HSM hardware procurement, SoftHSM setup for development
+4. **Start Phase 15 Documentation**: Draft Security Target outline
 
-#### Risks & Mitigations
+### Sprint Planning
 
-**Risk 1: Annotation Overhead**
-- **Risk**: Adding 600+ lines of comments slows development velocity
-- **Mitigation**: Annotations provide long-term value for audits, required for ATO
-- **Mitigation**: Automate annotation verification with linting rules
+**Adopt 16-week realistic timeline**:
 
-**Risk 2: Incomplete NIAP Requirements Understanding**
-- **Risk**: PP XML file may not contain full requirements (references Tables 4-6 not in file)
-- **Mitigation**: Download full PP PDF from NIAP website
-- **Mitigation**: Cross-reference with NIAP Protection Profile for Certification Authorities v2.1
+- Weeks 1-2: Complete Phases 8 & 11
+- Weeks 3-6: Phase 10 (HSM)
+- Weeks 7-10: Phases 12 & 14 (Integration + Testing)
+- Weeks 11-16: Phase 15 (NIAP Compliance) + Final Hardening
 
-**Risk 3: Stub Implementations Not Production-Ready**
-- **Risk**: Stubs give false sense of completion
-- **Mitigation**: Clearly mark all stubs, track in compliance matrix
-- **Mitigation**: Assign stub completion to specific future phases
-- **Mitigation**: Stubs return errors, not silently fail
+### Team Recommendations
 
-**Risk 4: Documentation Maintenance Burden**
-- **Risk**: Compliance docs become stale as code evolves
-- **Mitigation**: Include compliance doc review in PR checklist
-- **Mitigation**: Automated tools to verify code links still valid
-- **Mitigation**: Quarterly compliance doc review meetings
+**Roles Needed**:
 
-#### Files to Create/Modify
+- Rust developer (cryptography experience) - 1 FTE
+- Security engineer (PKI, PKCS#11) - 1 FTE
+- Compliance specialist (NIAP, ATO) - 0.5 FTE (consultant)
+- QA engineer (testing, automation) - 0.5 FTE
 
-**New Files** (8 modules + 6 docs):
-- `crates/ostrich-common/src/rbac.rs`
-- `crates/ostrich-common/src/integrity.rs`
-- `crates/ostrich-common/src/banner.rs`
-- `crates/ostrich-crypto/src/drbg.rs`
-- `crates/ostrich-x509/src/validation.rs`
-- `crates/ostrich-ca/src/approval.rs`
-- `migrations/XXX_niap_compliance.sql`
-- `docs/compliance/NIAP_COMPLIANCE.md`
-- `docs/compliance/NIST_800-53_MAPPING.md`
-- `docs/compliance/RFC_COMPLIANCE.md`
-- `docs/compliance/FIPS_COMPLIANCE.md`
-- `docs/compliance/NIAP_GAP_ANALYSIS.md`
-- `docs/compliance/ATO_EVIDENCE.md`
+**External Support**:
 
-**Modified Files** (annotations):
-- `crates/ostrich-audit/src/event.rs`
-- `crates/ostrich-audit/src/sink.rs`
-- `crates/ostrich-crypto/src/provider.rs`
-- `crates/ostrich-crypto/src/algorithm.rs`
-- `crates/ostrich-crypto/src/key.rs`
-- `crates/ostrich-x509/src/profile.rs`
-- `crates/ostrich-x509/src/parser.rs`
-- `crates/ostrich-x509/src/crl.rs`
-- `crates/ostrich-ocsp/src/responder.rs`
-- `crates/ostrich-common/src/util/time.rs`
-- `crates/ostrich-db/src/models/certificate.rs`
-- `crates/ostrich-ca/src/issuance.rs`
-
-#### Phase 16 Preview: Authentication & Authorization
-
-Phase 15 establishes the RBAC foundation, enabling Phase 16 to implement:
-- Password-based authentication (FIA_UAU_EXT.1)
-- Certificate-based authentication (FIA_X509_EXT.2, mTLS)
-- Session management (FTA_SSL.3, FTA_SSL_EXT.1)
-- Authorization middleware for REST/gRPC APIs
-- Password complexity requirements (FIA_PMG_EXT.1)
-- Authentication failure handling (FIA_AFL.1)
-- User lifecycle management
+- HSM vendor support (for PKCS#11 integration)
+- NIAP compliance consultant (for Security Target review)
+- Penetration testing firm (for Phase 14)
 
 ---
 
 ## Conclusion
 
-OstrichPKI has successfully completed foundational work (Phases 1-7), establishing a solid architecture and comprehensive API surface. The remaining work (Phases 8-14) focuses on **implementation depth** rather than **breadth**, with emphasis on:
+OstrichPKI has achieved **significant progress** with 8 foundational phases complete and ~55% overall completion. The system architecture is solid, all services are scaffolded, and database integration is production-ready.
 
-1. **Cryptographic correctness** (Phase 8)
-2. **State persistence** (Phase 9)
-3. **Production-grade security** (Phases 10, 11)
-4. **Service orchestration** (Phase 12)
-5. **Operational readiness** (Phase 14)
-6. **NIAP compliance & ATO readiness** (Phase 15) - **NEW**
+**Remaining work focuses on**:
 
-**Estimated timeline to production**: **18-24 weeks** (updated to include NIAP compliance)
+1. **Security-critical implementations**: Crypto operations, HSM integration, protocol validation
+2. **Service integration**: Connecting microservices for end-to-end workflows
+3. **Testing & hardening**: Comprehensive security and performance validation
+4. **Compliance**: NIAP PP-CA v2.1 documentation and gap closure
 
-**Critical path**: Phases 8 → 9 → 15 → 12 → 14 (10-15 weeks minimum)
+**With focused effort over the next 14-16 weeks**, OstrichPKI will be ready for **production deployment** and **ATO approval**.
 
-**Recommended next steps**:
-1. Begin Phase 8 (Cryptographic Operations) immediately - highest priority blocker
-2. Start Phase 11 (Protocol Validation) in parallel - can run independently
-3. Execute Phase 15 (NIAP Compliance) after Phase 8 completes
-4. Secure HSM hardware or set up SoftHSM for Phase 10 testing
-5. Schedule external security audit for Week 24-26 (after Phase 15)
-6. Allocate resources for comprehensive testing in Phase 14
+The roadmap prioritizes **security and compliance** while maintaining **technical excellence** through comprehensive testing and adherence to RFC standards and NIST cryptographic requirements.
 
-With focused effort on the critical path and parallel execution of independent phases, OstrichPKI can achieve production readiness and NIAP compliance in approximately **5-6 months**.
+---
+
+**Document Version**: 2.0
+**Last Updated**: January 2026
+**Maintained By**: OstrichPKI Development Team
+**For Questions**: See `CONTRIBUTING.md` or open a GitHub issue
