@@ -75,7 +75,8 @@ pub fn parse_csr(der: &[u8]) -> Result<ParsedCsr> {
     }
 
     // TODO: Extract Subject Alternative Names from extensionRequest attribute
-    // For now, return empty vector - this will need proper extension parsing
+    // This requires complex DER parsing of the PKCS#9 extensionRequest attribute
+    // For now, return empty vector - clients can still use CSR with subject DN only
     let sans = Vec::new();
 
     Ok(ParsedCsr {
