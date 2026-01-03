@@ -749,7 +749,7 @@ softhsm2-util --init-token --slot 0 --label "OstrichPKI" --so-pin 1234 --pin 567
 ### Phase 11: Protocol Validation & Security
 
 **Priority**: HIGH
-**Completion**: ~30%
+**Completion**: ~50%
 **Estimated Effort**: 2 weeks
 **Dependencies**: None (can run in parallel with Phase 8-9)
 **Blocks**: Production deployment
@@ -762,17 +762,17 @@ Implement comprehensive protocol validation for ACME and EST, including JWS sign
 
 ##### ACME JWS Validation (10 TODOs)
 
-**Status**: ✅ **Base64url utilities and JWS validation module COMPLETE**
+**Status**: ✅ **JWS validation fully integrated into all ACME POST endpoints**
 
-1. **JWS Signature Validation** ✅ **IMPLEMENTED**
+1. **JWS Signature Validation** ✅ **COMPLETE**
    - ✅ Parse JWS compact/flattened serialization (jws.rs:parse_jws)
    - ✅ Extract protected header (jws.rs:decode_protected_header)
    - ✅ Validate signature using JWK (jws.rs:verify_jws_with_jwk)
    - ✅ Support for RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, EdDSA
    - ✅ JWK to SPKI DER conversion for RSA, EC (P-256/384/521), Ed25519
-   - ⏳ TODO: Integrate into endpoints: new-account, account update, new-order, authz, finalize, challenge
-   - ⏳ TODO: Verify nonce freshness (consume_nonce integration)
-   - ⏳ TODO: Check URL binding in protected header
+   - ✅ Integrated into all POST endpoints: new-account, update-account, new-order, respond-to-challenge, finalize-order
+   - ✅ Nonce freshness verification (consume_nonce integration)
+   - ✅ URL binding validation in protected header
 
 2. **JWK Handling** ✅ **IMPLEMENTED**
    - ✅ Extract JWK from protected header (ProtectedHeader.jwk field)
@@ -780,19 +780,20 @@ Implement comprehensive protocol validation for ACME and EST, including JWS sign
    - ✅ Support RSA, ECDSA (P-256/384/521), Ed25519 JWKs
    - ✅ Validate JWK structure (required fields, valid values)
 
-3. **CSR Parsing & Validation**
-   - Parse PKCS#10 CSR from finalize request ([acme/rest.rs:362](crates/ostrich-acme/src/rest.rs#L362))
-   - Validate CSR signature
-   - Extract subject DN and SANs
-   - Verify SANs match order identifiers
-   - Check key usage consistency
+3. **CSR Parsing & Validation** ✅ **COMPLETE**
+   - ✅ Parse PKCS#10 CSR from finalize request using x509-parser
+   - ✅ Validate CSR signature (proof of possession)
+   - ✅ Extract subject DN and public key
+   - ✅ Extract attributes from CSR
+   - ⏳ TODO: Extract SANs from extensionRequest attribute
+   - ⏳ TODO: Verify SANs match order identifiers
+   - ⏳ TODO: Check key usage consistency
 
-4. **Nonce Management**
-   - Cryptographically secure random nonce generation ([acme/rest.rs:127](crates/ostrich-acme/src/rest.rs#L127))
-   - Use `getrandom` crate or `/dev/urandom`
-   - Base64URL encode nonces
-   - Expiration: 5-10 minutes
-   - Replay protection: mark used, reject duplicates
+4. **Nonce Management** ✅ **COMPLETE**
+   - ✅ Cryptographically secure random nonce generation (UUID v4)
+   - ✅ Database storage with expiration (5 minutes)
+   - ✅ Replay protection: consume_nonce() deletes used nonces
+   - ✅ Fresh nonce returned in Replay-Nonce header on every response
 
 ##### ACME Challenge Validation (3 TODOs)
 
