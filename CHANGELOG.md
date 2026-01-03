@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-01-02
+
+### Added
+
+#### X.509 Certificate Handling (Phase 2 - Part 1)
+
+##### ostrich-x509
+
+- X.509 certificate parsing and validation with RFC 5280 compliance
+- Certificate builder with profile-based generation
+- CRL (Certificate Revocation List) generation and parsing
+- Certificate profile system (Root CA, Intermediate CA, TLS Server/Client, Code Signing, OCSP Signing)
+- Extension support: BasicConstraints, KeyUsage, ExtendedKeyUsage, SubjectAltName, AuthorityInfoAccess, CRL Distribution Points
+- RFC 5280 validation: path length constraints, critical extensions, validity periods
+- DER and PEM encoding/decoding
+- Serial number generation with cryptographic randomness
+
+#### Certificate Authority Service (Phase 2 - Parts 2-4)
+
+##### ostrich-protocol
+
+- gRPC Protocol Buffers definitions for CA service
+- 6 RPC methods: IssueCertificate, RevokeCertificate, GenerateCrl, CheckRevocationStatus, GetCaInfo, ListProfiles
+- Type-safe message definitions for all request/response types
+- tonic-build integration for code generation
+
+##### ostrich-ca
+
+- Core CA service with certificate issuance and revocation
+- CertificateIssuer with profile-based certificate generation
+- RevocationManager with RFC 5280 revocation reason codes
+- CRL generation with proper ASN.1 encoding
+- gRPC service implementation with bidirectional type conversion
+- REST API with 8 endpoints (health check, CA info, issue, revoke, status, CRL, profiles)
+- Integration with audit logging for all operations
+- Profile management system
+
+##### ostrich-cli
+
+- Command-line interface for CA administration
+- CA commands: info, issue, revoke, status, generate-crl, list-profiles
+- Full subject DN specification (CN, O, OU, L, ST, C)
+- Multiple SAN types (DNS, email, IP address)
+- Base64 encoding for binary data transfer
+- PEM certificate and CRL output
+
+#### OCSP Responder Service (Phase 3)
+
+##### ostrich-ocsp
+
+- RFC 6960 compliant OCSP responder
+- OcspRequest parsing with serial number and issuer hash support
+- OcspResponse generation with status codes (Good, Revoked, Unknown)
+- REST API with GET and POST methods for OCSP requests
+- Nonce support for replay protection
+- SHA-256 hash algorithm for CertID
+- Response caching infrastructure (placeholder)
+- Delegated signing support (placeholder)
+- Integration with certificate repository for status lookups
+- Audit logging for OCSP protocol events
+
+#### Audit System Enhancement
+
+##### ostrich-audit
+
+- Added OcspProtocol event type for OCSP operations
+
+### Changed
+
+- Base64 API migration to v0.22 Engine trait
+- Improved error handling across all services
+- Enhanced type safety with proper conversions
+
+### Technical Details
+
+- All code passes cargo check, fmt, and clippy with -D warnings
+- Full RFC compliance: RFC 5280 (X.509), RFC 6960 (OCSP)
+- NIST 800-53 Rev 5 compliance maintained
+- Proper ASN.1/DER encoding throughout
+- Comprehensive test coverage
+
 ## [0.2.0] - 2026-01-02
 
 ### Added
@@ -99,6 +180,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project architecture documentation
 - Workspace structure with all crate stubs
 
-[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/yourusername/ostrich-pki/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yourusername/ostrich-pki/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yourusername/ostrich-pki/releases/tag/v0.1.0
