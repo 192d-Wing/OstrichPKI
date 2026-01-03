@@ -1,0 +1,239 @@
+// Certificate Authority Service Protocol
+// RFC 5280: X.509 Public Key Infrastructure
+// NIST 800-53: SC-12 - Cryptographic key establishment and management
+
+syntax = "proto3";
+
+package ostrich.ca.v1;
+
+// Certificate Authority Service
+//
+// Provides certificate issuance, revocation, and CRL generation
+service CertificateAuthorityService {
+  // Issue a new certificate based on a profile
+  //
+  // RFC 5280 §4.1 - Certificate issuance
+  rpc IssueCertificate(IssueCertificateRequest) returns (IssueCertificateResponse);
+
+  // Revoke an existing certificate
+  //
+  // RFC 5280 §5 - Certificate revocation
+  rpc RevokeCertificate(RevokeCertificateRequest) returns (RevokeCertificateResponse);
+
+  // Generate a new Certificate Revocation List
+  //
+  // RFC 5280 §5.1 - CRL generation
+  rpc GenerateCrl(GenerateCrlRequest) returns (GenerateCrlResponse);
+
+  // Check if a certificate is revoked
+  //
+  // RFC 6960 §2.2 - Revocation status check
+  rpc CheckRevocationStatus(CheckRevocationStatusRequest) returns (CheckRevocationStatusResponse);
+
+  // Get CA information
+  rpc GetCaInfo(GetCaInfoRequest) returns (GetCaInfoResponse);
+
+  // List certificate profiles
+  rpc ListProfiles(ListProfilesRequest) returns (ListProfilesResponse);
+}
+
+// Certificate issuance request
+message IssueCertificateRequest {
+  // Profile to use for issuance
+  string profile_name = 1;
+
+  // Subject distinguished name
+  DistinguishedName subject = 2;
+
+  // Subject alternative names (optional)
+  repeated SubjectAltName subject_alt_names = 3;
+
+  // Public key (DER-encoded SubjectPublicKeyInfo)
+  bytes public_key = 4;
+
+  // Requestor identity (for audit)
+  string requestor = 5;
+
+  // Additional metadata (optional)
+  map<string, string> metadata = 6;
+}
+
+// Certificate issuance response
+message IssueCertificateResponse {
+  // Certificate ID
+  string certificate_id = 1;
+
+  // Serial number
+  bytes serial_number = 2;
+
+  // DER-encoded certificate
+  bytes der_encoded = 3;
+
+  // PEM-encoded certificate
+  string pem_encoded = 4;
+
+  // Validity period
+  int64 not_before = 5;
+  int64 not_after = 6;
+}
+
+// Certificate revocation request
+message RevokeCertificateRequest {
+  // Certificate ID to revoke
+  string certificate_id = 1;
+
+  // Revocation reason
+  RevocationReason reason = 2;
+
+  // Requestor identity (for audit)
+  string requestor = 3;
+
+  // Justification (optional)
+  string justification = 4;
+}
+
+// Certificate revocation response
+message RevokeCertificateResponse {
+  // Success indicator
+  bool success = 1;
+
+  // Revocation time
+  int64 revocation_time = 2;
+}
+
+// CRL generation request
+message GenerateCrlRequest {
+  // No parameters required - generates for the CA
+}
+
+// CRL generation response
+message GenerateCrlResponse {
+  // CRL number
+  uint64 crl_number = 1;
+
+  // This update time
+  int64 this_update = 2;
+
+  // Next update time
+  int64 next_update = 3;
+
+  // Number of revoked certificates
+  uint32 revoked_count = 4;
+
+  // DER-encoded CRL
+  bytes der_encoded = 5;
+
+  // PEM-encoded CRL
+  string pem_encoded = 6;
+}
+
+// Revocation status check request
+message CheckRevocationStatusRequest {
+  // Certificate ID to check
+  string certificate_id = 1;
+}
+
+// Revocation status check response
+message CheckRevocationStatusResponse {
+  // Is the certificate revoked
+  bool revoked = 1;
+
+  // Revocation time (if revoked)
+  optional int64 revocation_time = 2;
+
+  // Revocation reason (if revoked)
+  optional RevocationReason reason = 3;
+}
+
+// CA information request
+message GetCaInfoRequest {
+  // No parameters required
+}
+
+// CA information response
+message GetCaInfoResponse {
+  // CA identifier
+  string ca_id = 1;
+
+  // CA distinguished name
+  string ca_dn = 2;
+}
+
+// List profiles request
+message ListProfilesRequest {
+  // No parameters required
+}
+
+// List profiles response
+message ListProfilesResponse {
+  // Available certificate profiles
+  repeated CertificateProfile profiles = 1;
+}
+
+// Distinguished Name
+message DistinguishedName {
+  optional string common_name = 1;
+  optional string organization = 2;
+  optional string organizational_unit = 3;
+  optional string locality = 4;
+  optional string state_or_province = 5;
+  optional string country = 6;
+  optional string serial_number = 7;
+}
+
+// Subject Alternative Name
+message SubjectAltName {
+  oneof name {
+    string dns_name = 1;
+    string rfc822_name = 2;
+    string uri = 3;
+    string ip_address = 4;
+    string directory_name = 5;
+  }
+}
+
+// Certificate Profile
+message CertificateProfile {
+  // Profile name
+  string name = 1;
+
+  // Profile type
+  string profile_type = 2;
+
+  // Description
+  string description = 3;
+
+  // Validity period in days
+  uint32 validity_days = 4;
+
+  // Key type
+  string key_type = 5;
+
+  // Signature algorithm
+  string algorithm = 6;
+
+  // Is CA certificate
+  bool basic_constraints_ca = 7;
+
+  // Path length constraint (optional)
+  optional uint32 basic_constraints_path_len = 8;
+
+  // Subject Alternative Name required
+  bool subject_alt_name_required = 9;
+}
+
+// Revocation reason codes
+//
+// RFC 5280 §5.3.1
+enum RevocationReason {
+  REVOCATION_REASON_UNSPECIFIED = 0;
+  REVOCATION_REASON_KEY_COMPROMISE = 1;
+  REVOCATION_REASON_CA_COMPROMISE = 2;
+  REVOCATION_REASON_AFFILIATION_CHANGED = 3;
+  REVOCATION_REASON_SUPERSEDED = 4;
+  REVOCATION_REASON_CESSATION_OF_OPERATION = 5;
+  REVOCATION_REASON_CERTIFICATE_HOLD = 6;
+  REVOCATION_REASON_REMOVE_FROM_CRL = 8;
+  REVOCATION_REASON_PRIVILEGE_WITHDRAWN = 9;
+  REVOCATION_REASON_AA_COMPROMISE = 10;
+}

@@ -324,9 +324,7 @@ impl CertificateProfile {
     /// NIST 800-53: CM-2 - Configuration validation
     pub fn validate(&self) -> Result<()> {
         // Validate CA profiles
-        if self.basic_constraints_ca
-            && !self.key_usage.contains(&KeyUsage::KeyCertSign)
-        {
+        if self.basic_constraints_ca && !self.key_usage.contains(&KeyUsage::KeyCertSign) {
             return Err(Error::ProfileValidation(
                 "CA certificates must have keyCertSign".to_string(),
             ));

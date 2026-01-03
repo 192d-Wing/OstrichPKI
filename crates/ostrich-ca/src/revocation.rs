@@ -169,9 +169,7 @@ impl RevocationManager {
             .iter()
             .filter_map(|cert| {
                 let revocation_time = cert.revocation_time?;
-                let reason = cert
-                    .revocation_reason
-                    .and_then(RevocationReason::from_i32);
+                let reason = cert.revocation_reason.and_then(RevocationReason::from_i32);
 
                 Some(RevokedCertificateInfo::new(
                     cert.serial_number.clone(),
