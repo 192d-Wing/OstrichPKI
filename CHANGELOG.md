@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-01-02
+
+### Added
+
+#### Core Cryptographic Operations (Phase 8)
+
+##### ostrich-x509
+
+- Implemented RFC 5280 compliant DER encoding for TBS certificates
+- Added `TbsCertificate::to_der()` method with complete ASN.1 structure encoding
+- Implemented RFC 5280 compliant DER encoding for TBS CRLs
+- Added `TbsCrl::to_der()` method for CRL encoding
+- Distinguished Name to X.509 Name conversion with proper RDN construction
+- DateTime to X.509 Time conversion (UTCTime for ≤2049, GeneralizedTime for >2049)
+- Helper methods for signature algorithm encoding
+- Error handling for encoding failures
+
+##### ostrich-ca
+
+- Implemented real certificate signing workflow (previously placeholder)
+- TBS certificate DER encoding → crypto signing → final certificate construction
+- Implemented real CRL signing workflow (previously placeholder)
+- TBS CRL DER encoding → crypto signing → final CRL construction
+- DER to PEM conversion for certificate distribution
+- DER to PEM conversion for CRL distribution
+- Added dependencies: `der`, `x509-cert`, `pem-rfc7468`
+
+##### ostrich-ocsp
+
+- Implemented RFC 6960 §4.1.1 compliant OCSP request parsing from DER
+- ASN.1 structure definitions for OCSPRequest, TBSRequest, Request, CertID
+- OID to hash algorithm conversion (SHA-256/384/512)
+- Serial number extraction from ASN.1 Int
+- Implemented RFC 6960 §4.2.1 compliant OCSP response encoding to DER
+- BasicOCSPResponse structure with proper ASN.1 encoding
+- SingleResponse encoding with CertID and status
+- ResponseData encoding for signature computation
+- Implemented OCSP response signing workflow
+- Response data → DER encoding → crypto signing → final BasicOCSPResponse
+
+##### ostrich-est
+
+- Implemented RFC 5652 compliant PKCS#7 encoding for certificate distribution
+- Degenerate SignedData structure (certs-only, no signed content)
+- CertificateChoices wrapping for X.509 certificates
+- ContentInfo construction with proper OIDs
+- Added dependencies: `der`, `cms`, `x509-cert`
+
+### Changed
+
+- All cryptographic operations now use proper RFC-compliant DER/ASN.1 encoding
+- Certificate and CRL signing moved from placeholder to production implementation
+- OCSP request parsing moved from placeholder to full ASN.1 decoder
+- EST certificate distribution moved from placeholder to PKCS#7 encoding
+
+### Technical Details
+
+- All code passes cargo check, fmt, and clippy with -D warnings
+- RFC 5280: X.509 Certificate and CRL Profile (DER encoding)
+- RFC 6960: Online Certificate Status Protocol (request/response encoding)
+- RFC 5652: Cryptographic Message Syntax (PKCS#7 for EST)
+- RFC 7468: PEM encoding for certificate distribution
+- Comprehensive ROADMAP.md created documenting all 142 TODOs across phases 8-14
+- Project completion: 45-50% (up from 35-40%)
+
 ## [0.7.0] - 2026-01-02
 
 ### Added
@@ -312,7 +377,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project architecture documentation
 - Workspace structure with all crate stubs
 
-[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/yourusername/ostrich-pki/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/yourusername/ostrich-pki/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/yourusername/ostrich-pki/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/yourusername/ostrich-pki/compare/v0.4.0...v0.5.0
