@@ -1,0 +1,1847 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Protection Profile for Certification Authorities v2.1
+  Requirements Document
+  Source: NIAP (National Information Assurance Partnership)
+  Date: 2017-12-01
+-->
+<ProtectionProfile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Metadata>
+    <Title>Protection Profile for Certification Authorities</Title>
+    <Version>2.1</Version>
+    <Date>2017-12-01</Date>
+    <Organization>National Information Assurance Partnership</Organization>
+    <CCVersion>Common Criteria Version 3.1 Revision 5</CCVersion>
+    <CCConformance>Part 2 (extended), Part 3 (conformant)</CCConformance>
+  </Metadata>
+
+  <!-- SECTION 3: Security Problem Description -->
+  <SecurityProblemDescription>
+    <Threats>
+      <Threat id="T.PRIVILEGED_USER_ERROR">
+        <Name>Privileged User Error</Name>
+        <Description>A privileged user or non-person entity (NPE) improperly exercises or adversely affects the TOE, resulting in unauthorized services, ineffective security mechanisms, or unintended circumvention of security mechanisms.</Description>
+      </Threat>
+      <Threat id="T.TSF_FAILURE">
+        <Name>TSF Failure</Name>
+        <Description>Security mechanisms of the TOE may fail, leading to a compromise of the TSF.</Description>
+      </Threat>
+      <Threat id="T.UNAUTHENTICATED_TRANSACTIONS">
+        <Name>Unauthenticated Transactions</Name>
+        <Description>Relying parties within an information system depend on the TOE to accurately bind subjects to their credentials for use in authenticating and providing privacy for transactions. Without the proper binding provided by the TOE, relying parties cannot ensure adequate access controls on sensitive information, ensure transactional integrity, ensure proper accountability, and/or enforce non-repudiation.</Description>
+      </Threat>
+      <Threat id="T.UNAUTHORIZED_ACCESS">
+        <Name>Unauthorized Access</Name>
+        <Description>A malicious user, process, or external IT entity intentionally circumvents TOE security mechanisms.</Description>
+      </Threat>
+      <Threat id="T.UNAUTHORIZED_UPDATE">
+        <Name>Unauthorized Update</Name>
+        <Description>A malicious party attempts to supply the end user with an update to the product that may compromise the security features of the TOE.</Description>
+      </Threat>
+      <Threat id="T.UNDETECTED_ACTIONS">
+        <Name>Undetected Actions</Name>
+        <Description>Remote users or external IT entities may take actions that adversely affect the security of the TOE.</Description>
+      </Threat>
+      <Threat id="T.USER_DATA_REUSE">
+        <Name>User Data Reuse</Name>
+        <Description>A malicious user, process, or external IT entity may gain access to user data that is not cleared when resources are reallocated.</Description>
+      </Threat>
+      <Threat id="T.WEAK_CRYPTO">
+        <Name>Weak Cryptography</Name>
+        <Description>A weak hash or signature scheme may be compromised by an attacker and used to apply integrity checks to malicious content so that it appears legitimate.</Description>
+      </Threat>
+    </Threats>
+
+    <Assumptions>
+      <Assumption id="A.NO_GENERAL_PURPOSE">
+        <Name>No General Purpose Computing</Name>
+        <Description>It is assumed that there are no general-purpose computing capabilities (e.g., compilers or user applications) available on the TOE, other than those services necessary for the operation, administration and support of the TOE.</Description>
+      </Assumption>
+      <Assumption id="A.PHYSICAL">
+        <Name>Physical Security</Name>
+        <Description>Physical security, commensurate with the value of the TOE and the data it contains, is assumed to be provided by the environment.</Description>
+      </Assumption>
+      <Assumption id="A.TRUSTED_ADMIN">
+        <Name>Trusted Administrator</Name>
+        <Description>TOE Administrators are assumed to follow and apply all administrator guidance in a trusted manner.</Description>
+      </Assumption>
+    </Assumptions>
+
+    <OrganizationalSecurityPolicies>
+      <Policy id="P.ACCESS_BANNER">
+        <Name>Access Banner</Name>
+        <Description>The TOE shall display an initial banner describing restrictions of use, legal agreements, or any other appropriate information to which users consent by accessing the TOE.</Description>
+      </Policy>
+    </OrganizationalSecurityPolicies>
+  </SecurityProblemDescription>
+
+  <!-- SECTION 4: Security Objectives -->
+  <SecurityObjectives>
+    <TOEObjectives>
+      <Objective id="O.AUDIT_LOSS_RESPONSE">
+        <Name>Audit Loss Response</Name>
+        <Description>The TOE will respond to possible loss of audit records when audit trail storage is full or nearly full by restricting auditable events.</Description>
+        <AddressedBy>FAU_ADP_EXT.1, FAU_STG.4</AddressedBy>
+      </Objective>
+      <Objective id="O.AUDIT_PROTECTION">
+        <Name>Audit Protection</Name>
+        <Description>The TOE will protect audit records against unauthorized access, modification, or deletion to ensure accountability of user actions.</Description>
+        <AddressedBy>FAU_ADP_EXT.1, FAU_STG.1(1), FAU_STG.1(2), FAU_STG_EXT.2</AddressedBy>
+      </Objective>
+      <Objective id="O.CERTIFICATES">
+        <Name>Certificate Validity</Name>
+        <Description>The TSF must ensure that certificates, certificate revocation lists, and certificate status information are valid.</Description>
+        <AddressedBy>FDP_CER_EXT.1, FDP_CER_EXT.2, FDP_CER_EXT.3, FDP_CER_EXT.4, FDP_CRL_EXT.1, FDP_CSI_EXT.1, FDP_OCSPG_EXT.1, FDP_SDP_EXT.1, FDP_STG_EXT.1, FIA_CMCS_EXT.1, FIA_ESTS_EXT.1, FIA_X509_EXT.1, FIA_X509_EXT.2, FPT_NPE_EXT.1</AddressedBy>
+      </Objective>
+      <Objective id="O.CONFIGURATION_MANAGEMENT">
+        <Name>Configuration Management</Name>
+        <Description>The TOE will conduct configuration management to assure identification of system connectivity (software, hardware, and firmware), and components (software, hardware, and firmware), auditing of configuration data, and controlling changes to configuration items.</Description>
+        <AddressedBy>FDP_CER_EXT.1, FDP_CER_EXT.4, FDP_CRL_EXT.1, FDP_OCSPG_EXT.1, FMT_MOF.1(1), FMT_MOF.1(2), FMT_MOF.1(3), FMT_MOF.1(4), FMT_MOF.1(5), FMT_MTD.1, FPT_NPE_EXT.1</AddressedBy>
+      </Objective>
+      <Objective id="O.DISPLAY_BANNER">
+        <Name>Display Banner</Name>
+        <Description>The TOE will display an advisory warning regarding use of the TOE.</Description>
+        <AddressedBy>FTA_TAB.1</AddressedBy>
+      </Objective>
+      <Objective id="O.INTEGRITY_PROTECTION">
+        <Name>Integrity Protection</Name>
+        <Description>The TOE will provide appropriate integrity protection for TSF data and software and any user data stored by the TOE.</Description>
+        <AddressedBy>FCS_CDP_EXT.1, FCS_CKM_EXT.5, FDP_ITT.1, FPT_ITT.1, FPT_TST_EXT.1, FPT_TST_EXT.2</AddressedBy>
+      </Objective>
+      <Objective id="O.NON_REPUDIATION">
+        <Name>Non-Repudiation</Name>
+        <Description>The TOE will prevent a subscriber from avoiding accountability for sending a message by providing evidence that the subscriber sent the message; and control communications from unknown source.</Description>
+        <AddressedBy>FCO_NRO_EXT.2, FCO_NRR_EXT.2, FIA_CMCC_EXT.1, FIA_ESTC_EXT.1</AddressedBy>
+      </Objective>
+      <Objective id="O.PROTECTED_COMMUNICATIONS">
+        <Name>Protected Communications</Name>
+        <Description>The TOE will provide protected communication channels for administrators, other parts of a distributed TOE, and authorized IT entities. The TOE will protect data assets when they are being transmitted to and from the TOE, including through intervening untrusted components.</Description>
+        <AddressedBy>FCS_CDP_EXT.1, FCS_CKM.1, FCS_CKM.2, FCS_CKM_EXT.1, FCS_CKM_EXT.4, FCS_CKM_EXT.7, FCS_CKM_EXT.8, FCS_COP.1, FCS_HTTPS_EXT.1, FCS_IPSEC_EXT.1, FCS_RBG_EXT.1, FCS_STG_EXT.1, FCS_TLSC_EXT.2, FCS_TLSS_EXT.1, FDP_ITT.1, FIA_PSK_EXT.1, FPT_ITT.1, FPT_KST_EXT.1, FPT_KST_EXT.2, FPT_SKP_EXT.1, FPT_SKY_EXT.1, FPT_SKY_EXT.2, FTP_ITC.1, FTP_TRP.1</AddressedBy>
+      </Objective>
+      <Objective id="O.RECOVERY">
+        <Name>Recovery</Name>
+        <Description>The TOE will have the capability to store and recover to a previous state at the direction of the administrator (e.g., provide support for archival and recovery capabilities).</Description>
+        <AddressedBy>FCS_CDP_EXT.1, FCS_CKM_EXT.6, FPT_FLS.1, FPT_RCV.1</AddressedBy>
+      </Objective>
+      <Objective id="O.RESIDUAL_INFORMATION_CLEARING">
+        <Name>Residual Information Clearing</Name>
+        <Description>The TOE will ensure that any data contained in a protected resource is not available when the resource is reallocated.</Description>
+        <AddressedBy>FDP_RIP.1</AddressedBy>
+      </Objective>
+      <Objective id="O.SESSION_LOCK">
+        <Name>Session Lock</Name>
+        <Description>The TOE will provide mechanisms that mitigate the risk of unattended sessions being hijacked.</Description>
+        <AddressedBy>FTA_SSL_EXT.1</AddressedBy>
+      </Objective>
+      <Objective id="O.SYSTEM_MONITORING">
+        <Name>System Monitoring</Name>
+        <Description>The TOE will provide the capability to generate audit data. The TOE will record in audit records: date and time of action and the entity responsible for the action.</Description>
+        <AddressedBy>FAU_ADP_EXT.1, FAU_GEN.1, FAU_GEN.2, FAU_SAR.1, FAU_SAR.3, FAU_GCR_EXT.1, FAU_SCR_EXT.1, FAU_SEL.1, FAU_STG_EXT.1, FIA_UIA_EXT.1, FPT_STM.1</AddressedBy>
+      </Objective>
+      <Objective id="O.TOE_ADMINISTRATION">
+        <Name>TOE Administration</Name>
+        <Description>The TOE will provide mechanisms to ensure that only privileged users are able to log in and configure the TOE, and provide protections for logged-in users. The TOE will ensure that administrative responsibilities are separated across different roles in order to mitigate the impact of improper administrative activities or unauthorized administrative access.</Description>
+        <AddressedBy>FIA_AFL.1, FIA_PMG_EXT.1, FIA_UAU.7, FIA_UAU_EXT.1, FIA_UIA_EXT.1, FMT_MOF.1, FMT_MTD.1, FMT_SMF.1, FMT_SMR.2, FPT_APW_EXT.1, FTA_SSL_EXT.1, FTA_SSL.3, FTA_SSL.4</AddressedBy>
+      </Objective>
+      <Objective id="O.TSF_SELF_TEST">
+        <Name>TSF Self Test</Name>
+        <Description>The TOE will provide integrity protection to detect modifications to firmware, software, and archived data.</Description>
+        <AddressedBy>FPT_TST_EXT.1, FPT_TST_EXT.2</AddressedBy>
+      </Objective>
+      <Objective id="O.VERIFIABLE_UPDATES">
+        <Name>Verifiable Updates</Name>
+        <Description>The TOE will provide the capability to help ensure that any updates to the TOE can be verified by the administrator to be unaltered and from a trusted source.</Description>
+        <AddressedBy>FCS_CDP_EXT.1, FCS_COP.1(2), FIA_X509_EXT.2, FPT_TUD_EXT.1</AddressedBy>
+      </Objective>
+    </TOEObjectives>
+
+    <OperationalEnvironmentObjectives>
+      <Objective id="OE.AUDIT_GENERATION">
+        <Name>Audit Generation</Name>
+        <Description>The Operational Environment provides a mechanism for the generation of portions of the audit data.</Description>
+      </Objective>
+      <Objective id="OE.CERT_REPOSITORY">
+        <Name>Certificate Repository</Name>
+        <Description>The Operational Environment provides a certificate repository for storage of certificates (and optionally CRLs) issued by the TSF.</Description>
+      </Objective>
+      <Objective id="OE.CERT_REPOSITORY_SEARCH">
+        <Name>Certificate Repository Search</Name>
+        <Description>The Operational Environment provides the ability to search a certificate repository for specific certificate fields in certificates issued by the TSF and return the certificate and an identifier for the certificate that can be used to search the audit trail for events related to that certificate.</Description>
+      </Objective>
+      <Objective id="OE.AUDIT_RETENTION">
+        <Name>Audit Retention</Name>
+        <Description>The Operational Environment provides mechanisms for retention of audit records for both normal and extended retention periods.</Description>
+      </Objective>
+      <Objective id="OE.AUDIT_REVIEW">
+        <Name>Audit Review</Name>
+        <Description>The Operational Environment provides a mechanism for the review of specified audit data.</Description>
+      </Objective>
+      <Objective id="OE.AUDIT_STORAGE">
+        <Name>Audit Storage</Name>
+        <Description>The Operational Environment provides a mechanism for the storage of specified audit data.</Description>
+      </Objective>
+      <Objective id="OE.CRYPTOGRAPHY">
+        <Name>Cryptographic Services</Name>
+        <Description>The Operational Environment provides cryptographic services that can be invoked by the TSF in order to perform security functionality.</Description>
+      </Objective>
+      <Objective id="OE.KEY_ARCHIVAL">
+        <Name>Key Archival</Name>
+        <Description>The Operational Environment provides the ability to use split knowledge procedures to enforce two-party control to export keys necessary to resume CA functionality if the TSF should fail.</Description>
+      </Objective>
+      <Objective id="OE.NO_GENERAL_PURPOSE">
+        <Name>No General Purpose Computing</Name>
+        <Description>There are no general-purpose computing capabilities (e.g., compilers or user applications) available on the TOE, other than those services necessary for the operation, administration and support of the TOE.</Description>
+      </Objective>
+      <Objective id="OE.PHYSICAL">
+        <Name>Physical Security</Name>
+        <Description>Physical security, commensurate with the value of the TOE and the data it contains, is provided by the environment.</Description>
+      </Objective>
+      <Objective id="OE.PUBLIC_KEY_PROTECTION">
+        <Name>Public Key Protection</Name>
+        <Description>The Operational Environment provides protection for specified public keys associated with CA functions.</Description>
+      </Objective>
+      <Objective id="OE.SESSION_PROTECTION_LOCAL">
+        <Name>Local Session Protection</Name>
+        <Description>The Operational Environment provides the ability to lock or terminate local administrative sessions.</Description>
+      </Objective>
+      <Objective id="OE.SESSION_PROTECTION_REMOTE">
+        <Name>Remote Session Protection</Name>
+        <Description>The Operational Environment provides the ability to lock or terminate remote administrative sessions.</Description>
+      </Objective>
+      <Objective id="OE.TOE_ADMINISTRATION">
+        <Name>TOE Administration Support</Name>
+        <Description>The Operational Environment provides specified management capabilities required for the overall operation of a Certificate Authority, and the ability to restrict access to a subset of the capabilities as specified in the ST.</Description>
+      </Objective>
+      <Objective id="OE.TRUSTED_ADMIN">
+        <Name>Trusted Administrator</Name>
+        <Description>The administrator of the TOE is not careless, willfully negligent or hostile, and administers the software within compliance of the applied enterprise security policy.</Description>
+      </Objective>
+      <Objective id="OE.TRUSTED_PLATFORM">
+        <Name>Trusted Platform</Name>
+        <Description>The operating system on which the TOE has been installed is securely configured, regularly patched, and not subject to unauthorized access.</Description>
+      </Objective>
+    </OperationalEnvironmentObjectives>
+  </SecurityObjectives>
+
+  <!-- SECTION 5: Security Functional Requirements -->
+  <SecurityFunctionalRequirements>
+    <!-- Mandatory/Unconditional Requirements -->
+    <MandatoryRequirements>
+      <!-- Security Audit (FAU) -->
+      <RequirementClass name="Security Audit" id="FAU">
+        <Requirement id="FAU_ADP_EXT.1" type="Extended">
+          <Name>Audit Dependencies</Name>
+          <Elements>
+            <Element id="FAU_ADP_EXT.1.1">The TSF shall implement audit functionality and [selection: interface with auditing function(s) in the Operational Environment, no additional audit functionality] in order to perform audit operations on the following audit data: [assignment: Auditable events in Table 4 through Table 6 that require persistent storage].</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FAU_GCR_EXT.1" type="Extended">
+          <Name>Generation of Certificate Repository</Name>
+          <Elements>
+            <Element id="FAU_GCR_EXT.1.1">The TSF shall [selection: store, invoke the Operational Environment to store] certificates and [selection: CRLs, no other information] issued by the TSF.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FAU_GEN.1" type="Refined">
+          <Name>Audit Data Generation</Name>
+          <Elements>
+            <Element id="FAU_GEN.1.1">The TSF shall generate and [selection: invoke the Operational Environment to generate, no other actions] an audit record of: (a) Start-up of the TSF audit functions; (b) All auditable events for the [not specified] level of audit; (c) All administrative actions invoked through the TSF interface; (d) Specifically defined auditable events listed in Table 4 through Table 6.</Element>
+            <Element id="FAU_GEN.1.2">The TSF shall [selection: include, invoke the Operational Environment to include] within each audit record at least: (a) Date and time of the event, type of event, subject identity, and the outcome (success or failure) of the event; (b) For each audit event type, information specified in column three of Table 4 through Table 6.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FAU_GEN.2" type="Refined">
+          <Name>User Identity Association</Name>
+          <Elements>
+            <Element id="FAU_GEN.2.1">For audit events resulting from actions of identified users, the TSF shall be able to [selection: associate, invoke the Operational Environment to associate] each auditable event with the identity of the user that caused the event.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FAU_STG.4" type="Refined">
+          <Name>Prevention of Audit Data Loss</Name>
+          <Elements>
+            <Element id="FAU_STG.4.1">The TSF shall [prevent audited events, except those taken by the Auditor] and [assignment: other actions to be taken in case of audit storage failure] if the audit trail cannot be written to.</Element>
+          </Elements>
+        </Requirement>
+      </RequirementClass>
+
+      <!-- Communications (FCO) -->
+      <RequirementClass name="Communications" id="FCO">
+        <Requirement id="FCO_NRO_EXT.2" type="Extended">
+          <Name>Certificate-Based Proof of Origin</Name>
+          <Elements>
+            <Element id="FCO_NRO_EXT.2.1">The TSF shall provide proof of origin for certificates it issues in accordance with the digital signature requirements using a mechanism in accordance with RFC 5280 and FCS_COP.1(2).</Element>
+            <Element id="FCO_NRO_EXT.2.2">The TSF shall provide proof of origin for certificate status information it issues in accordance with the digital signature requirements in [selection: CRLs (RFC 5280), OCSP (RFC 6960), [assignment: other OCSP standards]] and FCS_COP.1(2).</Element>
+            <Element id="FCO_NRO_EXT.2.3">The TSF shall require and verify proof of origin for certificate requests it receives [selection: CMC using mechanisms in accordance with FIA_CMCS_EXT.1, EST using mechanisms in accordance with FIA_ESTS_EXT.1].</Element>
+            <Element id="FCO_NRO_EXT.2.4">The TSF shall require and verify proof of origin for public keys contained in certificate requests it receives via [selection: proof-of-possession mechanisms in CMC, proof-of-possession mechanisms in EST].</Element>
+            <Element id="FCO_NRO_EXT.2.5">The TSF shall [selection: require and verify proof of origin for revocation requests it receives via [selection: CMC, EST using optional "full CMC" functionality], [assignment: support manual processes for revocation requests and responses]].</Element>
+          </Elements>
+        </Requirement>
+      </RequirementClass>
+
+      <!-- Cryptographic Support (FCS) -->
+      <RequirementClass name="Cryptographic Support" id="FCS">
+        <Requirement id="FCS_CDP_EXT.1" type="Extended">
+          <Name>Cryptographic Dependencies</Name>
+          <Elements>
+            <Element id="FCS_CDP_EXT.1.1">The TSF shall [selection: implement cryptographic functionality, invoke interfaces provided by the Operational Environment] in order to perform [selection: all, [selection: FCS_CKM.1, FCS_CKM.2, FCS_CKM_EXT.1(1), FCS_CKM_EXT.1(2), FCS_CKM_EXT.1(3), FCS_CKM_EXT.1(4), FCS_CKM_EXT.4, FCS_CKM_EXT.5, FCS_CKM_EXT.6, FCS_CKM_EXT.7, FCS_CKM_EXT.8, FCS_COP.1(1), FCS_COP.1(2), FCS_COP.1(3), FCS_COP.1(4), FCS_RBG_EXT.1, FCS_KSH_EXT.1]] cryptographic operations.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FCS_STG_EXT.1" type="Extended">
+          <Name>Cryptographic Key Storage</Name>
+          <Elements>
+            <Element id="FCS_STG_EXT.1.1">Persistent private and secret keys shall be stored within the [selection: TSF, Operational Environment] [selection: encrypted within a hardware rooted key hierarchy, in a hardware cryptographic module].</Element>
+          </Elements>
+        </Requirement>
+      </RequirementClass>
+
+      <!-- User Data Protection (FDP) -->
+      <RequirementClass name="User Data Protection" id="FDP">
+        <Requirement id="FDP_CER_EXT.1" type="Extended">
+          <Name>Certificate Profiles</Name>
+          <Elements>
+            <Element id="FDP_CER_EXT.1.1">The TSF shall implement a certificate profile function and shall ensure that issued certificates are consistent with configured profiles.</Element>
+            <Element id="FDP_CER_EXT.1.2">The TSF shall generate certificates using profiles that comply with requirements for certificates as specified in IETF RFC 5280, ensuring: (a) version field contains integer 2; (b) issuerUniqueID or subjectUniqueID fields are not populated; (c) serialNumber unique per CA; (d) validity field notBefore/notAfter valid; (e) issuer field not empty; (f) signature and subjectPublicKeyInfo fields contain OID per FCS_COP.1(2); (g) extensions supported: subjectKeyIdentifier, authorityKeyIdentifier, basicConstraints, keyUsage, extendedKeyUsage, certificatePolicy; (h) null subject name accompanied by critical subjectAltName; (i) subjectKeyIdentifier unique per public key; (j) authorityKeyIdentifier matches issuer's subjectKeyIdentifier; (k) keyUsage and extendedKeyUsage consistent.</Element>
+            <Element id="FDP_CER_EXT.1.3">The TSF shall be able to generate at least 20 bits of random for use in issued certificates in [selection: serialNumber, notBefore, notAfter] fields, in accordance with FCS_RBG_EXT.1.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FDP_CER_EXT.2" type="Extended">
+          <Name>Certificate Request Matching</Name>
+          <Elements>
+            <Element id="FDP_CER_EXT.2.1">The TSF shall establish a linkage from certificate requests to issued certificates.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FDP_CER_EXT.3" type="Extended">
+          <Name>Certificate Issuance Approval</Name>
+          <Elements>
+            <Element id="FDP_CER_EXT.3.1">The TSF shall support the approval of certificates by [selection: RA, AOR, CA Operations Staff, rules] issued according to a configured certificate profile.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FDP_CSI_EXT.1" type="Extended">
+          <Name>Certificate Status Information</Name>
+          <Elements>
+            <Element id="FDP_CSI_EXT.1.1">The TSF shall provide certificate status information whose format complies with [selection: ITU-T Recommendation X.509v1 CRL, ITU-T Recommendation X.509v2 CRL, the OCSP standard as defined by [selection: RFC 6960, other OCSP standard]].</Element>
+            <Element id="FDP_CSI_EXT.1.2">The TSF shall support the approval of changes to the status of a certificate by [selection: RA, CA operations staff, rules].</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FDP_RIP.1" type="Refined">
+          <Name>Subset Residual Information Protection</Name>
+          <Elements>
+            <Element id="FDP_RIP.1.1">The TSF and [selection: Operational Environment, no other component] shall ensure that any previous information content of a resource is made unavailable upon the [selection: allocation of the resource to, deallocation of the resource from] the following objects: [assignment: list of objects].</Element>
+          </Elements>
+        </Requirement>
+      </RequirementClass>
+
+      <!-- Identification and Authentication (FIA) -->
+      <RequirementClass name="Identification and Authentication" id="FIA">
+        <Requirement id="FIA_X509_EXT.1" type="Extended">
+          <Name>Certificate Validation</Name>
+          <Elements>
+            <Element id="FIA_X509_EXT.1.1">The TSF shall [selection: validate, interface with the Operational Environment to validate] certificates in accordance with: IETF RFC 5280 certificate validation and certificate path validation; certificate path must terminate with a certificate in the Trust Anchor Database; validate basicConstraints extension with cA flag set to TRUE for all CA certificates; validate revocation status using [selection: OCSP, CRL]; validate extendedKeyUsage field (Code Signing for updates, Client Authentication for TLS clients, Server Authentication for TLS servers).</Element>
+            <Element id="FIA_X509_EXT.1.2">The TSF shall only treat a certificate as a CA certificate if the basicConstraints extension is present and the CA flag is set to TRUE.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FIA_X509_EXT.2" type="Extended">
+          <Name>Certificate-Based Authentication</Name>
+          <Elements>
+            <Element id="FIA_X509_EXT.2.1">The TSF shall [selection: use, interface with the Operational Environment to use] X.509v3 certificates as defined by RFC 5280 to support authentication for code signing for TOE updates, [selection: IPsec, TLS, HTTPS, SSH], and [selection: integrity verification for TSF protected data, integrity verification for TSF software and firmware, [assignment: other uses], no additional uses].</Element>
+            <Element id="FIA_X509_EXT.2.2">When the TSF cannot determine the current revocation status of a certificate, the TSF shall [selection: allow the administrator to choose whether to accept the certificate, accept the certificate, not accept the certificate].</Element>
+            <Element id="FIA_X509_EXT.2.3">The TSF shall not establish a trusted communication channel if the peer certificate is deemed invalid.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FIA_UAU_EXT.1" type="Extended">
+          <Name>Authentication Mechanism</Name>
+          <Elements>
+            <Element id="FIA_UAU_EXT.1.1">The TSF shall [selection: provide, interface with the OE to provide] a [selection: password-based authentication mechanism, [assignment: other authentication mechanism(s)]] to perform privileged user authentication.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FIA_UIA_EXT.1" type="Extended">
+          <Name>User Identification and Authentication</Name>
+          <Elements>
+            <Element id="FIA_UIA_EXT.1.1">The TSF shall allow the following actions prior to requiring a non-TOE entity to initiate the identification and authentication process: Display the warning banner per FTA_TAB.1; Obtain certificate status information; [selection: download certificate from repository, no other actions, [assignment: list of services or actions]].</Element>
+            <Element id="FIA_UIA_EXT.1.2">The TSF shall require each user to be successfully identified and authenticated before allowing any other TSF-mediated actions on behalf of that user, including subscriber certificate renewal, subscriber revocation requests, privileged user access, [selection: no other actions, [assignment: other TSF-mediated actions]].</Element>
+            <Element id="FIA_UIA_EXT.1.3">For subscriber actions, the TSF shall verify that the DN of the certificate presented by the subscriber for authentication matches that of the certificate being affected by the subscriber's actions.</Element>
+          </Elements>
+        </Requirement>
+      </RequirementClass>
+
+      <!-- Security Management (FMT) -->
+      <RequirementClass name="Security Management" id="FMT">
+        <Requirement id="FMT_MOF.1_1" type="Refined">
+          <Name>Management of Security Functions Behavior (Administrator Functions)</Name>
+          <Elements>
+            <Element id="FMT_MOF.1.1(1)">The [selection: TSF, Operational Environment] shall restrict the ability to: (1) manage the TOE locally and remotely; (2) configure the audit mechanism; (3) configure and manage certificate profiles; (4) modify revocation configuration; (5) perform updates to the TOE; (6) perform on-demand integrity tests; (7) import and remove X.509v3 certificates into/from the Trust Anchor Database; [selection: (8) import secret and private keys; (9) configure CRL function; (10) configure OCSP function; (11) disable deprecated algorithms; (12) accept certificates whose validity cannot be determined; (13) [assignment: other security management functions]] to Administrators.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FMT_MOF.1_2" type="Refined">
+          <Name>Management of Security Functions Behavior (CA/RA Functions)</Name>
+          <Elements>
+            <Element id="FMT_MOF.1.1(2)">The [selection: TSF, Operational Environment] shall restrict the ability to: (1) approve and execute the issuance of certificates; (2) configure subscriber self-service request constraints; [selection: (3) configure automated certificate approval management; (4) approve rulesets for AORs; (5) accept, process and export CMC messages; (6) no other function] to [selection: CA Operations Staff, RA Staff].</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FMT_MOF.1_3" type="Refined">
+          <Name>Management of Security Functions Behavior (CA Operations Functions)</Name>
+          <Elements>
+            <Element id="FMT_MOF.1.1(3)">The [selection: TSF, Operational Environment] shall restrict the ability to: (1) approve certificate revocation; [selection: (2) perform archival and recovery; (3) import a key share; (4) approve RA/AOR rulesets; (5) export PKCS#10 certificate request; (6) import CA certificate; (7) no other function] to CA Operations Staff.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FMT_MOF.1_4" type="Refined">
+          <Name>Management of Security Functions Behavior (Admin/Officer Functions)</Name>
+          <Elements>
+            <Element id="FMT_MOF.1.1(4)">The [selection: TSF, Operational Environment] shall restrict the ability to: (1) perform destruction of sensitive data when no longer needed; [selection: (2) participate as a second party for archival and recovery; (3) import a key share; (4) perform encrypted export of private or secret key or critical data] to [selection: Administrators, Auditor, CA Operations staff].</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FMT_MOF.1_5" type="Refined">
+          <Name>Management of Security Functions Behavior (Auditor Functions)</Name>
+          <Elements>
+            <Element id="FMT_MOF.1.1(5)">The [selection: TSF, Operational Environment] shall restrict the ability to: Delete entries from the audit trail; [selection: Search the audit trail; Set or change the retention period parameter for audit records requiring extended retention] to Auditors.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FMT_MTD.1">
+          <Name>Management of TSF Data</Name>
+          <Elements>
+            <Element id="FMT_MTD.1.1">The TSF shall restrict the ability to manage the TSF data to privileged users.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FMT_SMF.1" type="Refined">
+          <Name>Specification of Management Functions</Name>
+          <Elements>
+            <Element id="FMT_SMF.1.1">The [selection: TSF, Operational Environment] shall be capable of performing the following management functions: (1) Ability to manage the TOE locally and remotely; (2) Ability to perform updates to the TOE; (3) Ability to perform archival and recovery; (4) Ability to manage the audit mechanism; (5) Ability to configure and manage certificate profiles; (6) Ability to approve and execute the issuance of certificates; (7) Ability to approve certificate revocation; (8) Ability to modify revocation configuration; (9) Ability to configure subscriber self-service request constraints; (10) Ability to perform on-demand integrity tests; (11) Ability to destroy sensitive user data when no longer needed; (12) Ability to import and remove X.509v3 certificates into/from the Trust Anchor Database; [selection: (13-24) additional management functions].</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FMT_SMR.2" type="Refined">
+          <Name>Restrictions on Security Roles</Name>
+          <Elements>
+            <Element id="FMT_SMR.2.1">The TSF and [selection: Operational Environment, no other component] shall maintain the roles: Administrator, Auditor, CA Operations Staff, [selection: RA Staff, Authorized Organizational Representative, no other roles].</Element>
+            <Element id="FMT_SMR.2.2">The TSF and [selection: Operational Environment, no other component] shall be able to associate users with roles.</Element>
+            <Element id="FMT_SMR.2.3">The TSF and [selection: Operational Environment, no other component] shall ensure that: No identity is authorized to assume both an Auditor role and any other role; No identity is authorized to assume both a CA Operations Staff role and any other role.</Element>
+          </Elements>
+        </Requirement>
+      </RequirementClass>
+
+      <!-- Protection of the TSF (FPT) -->
+      <RequirementClass name="Protection of the TSF" id="FPT">
+        <Requirement id="FPT_FLS.1">
+          <Name>Failure with Preservation of Secure State</Name>
+          <Elements>
+            <Element id="FPT_FLS.1.1">The TSF shall preserve a secure state when the following types of failures occur: [selection: DRBG failure, signature verification failure, integrity test failure, integrity failure on audit, integrity failure on Trust Anchor database, [assignment: other potential TSF failures], [assignment: other potential Operational Environment failures]].</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FPT_KST_EXT.1" type="Extended">
+          <Name>No Plaintext Key Export</Name>
+          <Elements>
+            <Element id="FPT_KST_EXT.1.1">The TSF and [selection: Operational Environment, no other component] shall prevent the plaintext export of [assignment: list of all keys used by the TSF].</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FPT_KST_EXT.2" type="Extended">
+          <Name>TSF Key Protection</Name>
+          <Elements>
+            <Element id="FPT_KST_EXT.2.1">The TSF and [selection: Operational Environment, no other components] shall prevent unauthorized use of all TSF private and secret keys.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FPT_RCV.1">
+          <Name>Manual Trusted Recovery</Name>
+          <Elements>
+            <Element id="FPT_RCV.1.1">After [assignment: list of failures/service discontinuities] the TSF shall enter a maintenance mode where the ability to return to a secure state is provided.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FPT_SKP_EXT.1" type="Extended">
+          <Name>Protection of Keys</Name>
+          <Elements>
+            <Element id="FPT_SKP_EXT.1.1">The TSF shall [selection: implement, interface with the Operational Environment to implement] the ability to prevent reading of all pre-shared keys, private, and secret keys (e.g., KEKs, DEKs, session keys).</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FPT_STM.1" type="Refined">
+          <Name>Reliable Time Stamps</Name>
+          <Elements>
+            <Element id="FPT_STM.1.1">The TSF shall [selection: provide, interface with the Operational Environment to provide] reliable time stamps.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FPT_TUD_EXT.1" type="Extended">
+          <Name>Trusted Update</Name>
+          <Elements>
+            <Element id="FPT_TUD_EXT.1.1">The TSF shall [selection: implement, interface with the Operational Environment to implement] the ability to check for updates and patches to the TOE.</Element>
+            <Element id="FPT_TUD_EXT.1.2">The TSF shall [selection: implement, interface with the Operational Environment to implement] the ability to provide Administrators the ability to initiate updates to TOE firmware/software.</Element>
+            <Element id="FPT_TUD_EXT.1.3">The TSF shall [selection: implement, interface with the Operational Environment to implement] the ability to verify firmware/software updates to the TOE using a digital signature prior to installing those updates.</Element>
+            <Element id="FPT_TUD_EXT.1.4">The TSF shall [selection: implement, interface with the Operational Environment to implement] the ability to verify the digital signature whenever the software or firmware is externally loaded into the TOE and if verification fails, the TSF shall [assignment: action to be taken if the verification fails].</Element>
+          </Elements>
+        </Requirement>
+      </RequirementClass>
+
+      <!-- TOE Access (FTA) -->
+      <RequirementClass name="TOE Access" id="FTA">
+        <Requirement id="FTA_SSL.4" type="Refined">
+          <Name>User-Initiated Termination</Name>
+          <Elements>
+            <Element id="FTA_SSL.4.1">The TSF shall [selection: implement, interface with the Operational Environment to implement] the ability to allow privileged user-initiated termination of the privileged user's own interactive session.</Element>
+          </Elements>
+        </Requirement>
+        <Requirement id="FTA_TAB.1" type="Refined">
+          <Name>Default TOE Access Banners</Name>
+          <Elements>
+            <Element id="FTA_TAB.1.1">Before establishing a privileged user session the TSF shall display an Administrator-configured advisory notice and consent warning message regarding unauthorized use of the TOE.</Element>
+          </Elements>
+        </Requirement>
+      </RequirementClass>
+
+      <!-- Trusted Path/Channels (FTP) -->
+      <RequirementClass name="Trusted Path/Channels" id="FTP">
+        <Requirement id="FTP_TRP.1" type="Refined">
+          <Name>Trusted Path</Name>
+          <Elements>
+            <Element id="FTP_TRP.1.1">The TSF shall use [selection: HTTPS, IPsec, SSH, TLS] to provide a trusted communication path between itself and remote subscribers and privileged users that is logically distinct from other communication paths and provides assured identification of its end points and protection of the communicated data from modification, disclosure.</Element>
+            <Element id="FTP_TRP.1.2">The TSF shall permit remote subscribers and privileged users to initiate communication via the trusted path.</Element>
+            <Element id="FTP_TRP.1.3">The TSF shall require the use of the trusted path for initial subscriber and privileged user authentication and all remote administration actions.</Element>
+          </Elements>
+        </Requirement>
+      </RequirementClass>
+    </MandatoryRequirements>
+
+    <!-- Selection-Based Requirements -->
+    <SelectionBasedRequirements>
+      <Requirement id="FAU_SAR.1" triggerSFR="FAU_ADP_EXT.1">
+        <Name>Audit Review</Name>
+        <Condition>If TSF implements audit review functionality</Condition>
+        <Elements>
+          <Element id="FAU_SAR.1.1">The TSF shall provide Auditors with the capability to read all information from the audit records.</Element>
+          <Element id="FAU_SAR.1.2">The TSF shall provide the audit records in a manner suitable for the Auditor to interpret the information.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FAU_SAR.3" triggerSFR="FAU_ADP_EXT.1">
+        <Name>Selectable Audit Review</Name>
+        <Condition>If TSF implements audit review functionality</Condition>
+        <Elements>
+          <Element id="FAU_SAR.3.1">The TSF shall provide the ability to apply searches of audit data based on [assignment: object identifier of certificate] associated with the event.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FAU_SCR_EXT.1" triggerSFR="FAU_ADP_EXT.1">
+        <Name>Certificate Repository Review</Name>
+        <Condition>If certificate repository search is provided by TSF</Condition>
+        <Elements>
+          <Element id="FAU_SCR_EXT.1.1">The TSF shall [provide, invoke the Operational Environment to provide] the capability to search for certificates containing specified values of certificate fields.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FAU_SEL.1" triggerSFR="FAU_ADP_EXT.1">
+        <Name>Selective Audit</Name>
+        <Condition>If TSF implements pre-selection of audit records</Condition>
+        <Elements>
+          <Element id="FAU_SEL.1.1">The TSF shall be able to select the set of events to be audited by specific mechanisms from the set of all auditable events based on [selection: object identity, user identity, subject identity, host identity, event type] and [assignment: list of additional attributes].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FAU_STG.1_1" triggerSFR="FAU_ADP_EXT.1">
+        <Name>Protected Audit Trail Storage (Normal)</Name>
+        <Condition>If audit data stored by the TOE</Condition>
+        <Elements>
+          <Element id="FAU_STG.1.1(1)">The TSF shall protect the stored audit records in the audit trail from unauthorized deletion.</Element>
+          <Element id="FAU_STG.1.2(1)">The TSF shall be able to prevent unauthorized modifications to the stored audit records in the audit trail.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FAU_STG.1_2" triggerSFR="FAU_ADP_EXT.1">
+        <Name>Protected Audit Trail Storage (Extended)</Name>
+        <Condition>If extended audit records stored by the TOE</Condition>
+        <Elements>
+          <Element id="FAU_STG.1.1(2)">The TSF shall protect the stored audit records in the extended retention audit trail from unauthorized deletion.</Element>
+          <Element id="FAU_STG.1.2(2)">The TSF shall be able to prevent unauthorized modifications to the stored audit records in the extended retention audit trail.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FAU_STG_EXT.1" triggerSFR="FAU_ADP_EXT.1">
+        <Name>External Audit Trail Storage</Name>
+        <Condition>If TSF initiates storage of audit data</Condition>
+        <Elements>
+          <Element id="FAU_STG_EXT.1.1">The TSF shall transmit generated audit data to an external IT entity using a trusted channel in accordance with FTP_ITC.1.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FAU_STG_EXT.2" triggerSFR="FAU_ADP_EXT.1">
+        <Name>Extended Audit Trail Retention</Name>
+        <Condition>If TSF provides extended audit record retention</Condition>
+        <Elements>
+          <Element id="FAU_STG_EXT.2.1">The TSF shall [selection: store, invoke the Operational Environment to store] extended-retention audit records for [assignment: Administrator-configurable time period specified in days].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCO_NRR_EXT.2" triggerSFR="FCO_NRO_EXT.2">
+        <Name>Proof of Receipt</Name>
+        <Condition>If CMC or EST selected</Condition>
+        <Elements>
+          <Element id="FCO_NRR_EXT.2.1">The TSF shall provide proof of receipt for certificate requests in accordance with [selection: CMC (RFC 5272), EST (RFC 7030)].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_CKM.1" triggerSFR="FCS_CDP_EXT.1">
+        <Name>Cryptographic Key Generation</Name>
+        <Condition>If TSF implements cryptographic key generation</Condition>
+        <Elements>
+          <Element id="FCS_CKM.1.1">The TSF shall generate cryptographic keys in accordance with specified algorithm and key sizes.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_CKM.2" triggerSFR="FCS_CDP_EXT.1">
+        <Name>Cryptographic Key Establishment</Name>
+        <Condition>If TSF implements cryptographic key establishment</Condition>
+        <Elements>
+          <Element id="FCS_CKM.2.1">The TSF shall perform cryptographic key establishment in accordance with specified method.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_CKM_EXT.1_1" triggerSFR="FDP_SDP_EXT.1">
+        <Name>Symmetric Key Generation for DEKs</Name>
+        <Condition>If DEKs are used for subscriber data protection</Condition>
+        <Elements>
+          <Element id="FCS_CKM_EXT.1.1(1)">The TSF shall [selection: generate, invoke interfaces provided by the Operational Environment to generate] data encryption keys (DEKs) of size [selection: 128-bit, 256-bit] using [selection: an RBG, a key generation capability of the OE, a TSF-provided mechanism that combines KEKs].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_CKM_EXT.4" triggerSFR="FCS_CDP_EXT.1">
+        <Name>Cryptographic Key Zeroization</Name>
+        <Condition>If TSF implements key zeroization</Condition>
+        <Elements>
+          <Element id="FCS_CKM_EXT.4.1">The TSF shall zeroize plaintext secret and private cryptographic keys when no longer needed.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_CKM_EXT.5" triggerSFR="FDP_STG_EXT.1">
+        <Name>TSF Public Key Integrity</Name>
+        <Condition>If integrity mechanism selected for public key protection</Condition>
+        <Elements>
+          <Element id="FCS_CKM_EXT.5.1">The TSF shall verify integrity of TSF public keys using [selection: digital signature per FCS_COP.1(2), keyed hash per FCS_COP.1(4)].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_COP.1_1" triggerSFR="FCS_CDP_EXT.1">
+        <Name>Cryptographic Operation (Symmetric Encryption/Decryption)</Name>
+        <Condition>If TSF implements symmetric encryption</Condition>
+        <Elements>
+          <Element id="FCS_COP.1.1(1)">The TSF shall perform symmetric encryption/decryption using AES with key sizes of [selection: 128, 256] bits and modes [selection: CBC, CCM, GCM, CTR, Key Wrap, Key Wrap with Padding] per ISO 18033-3, NIST SP 800-38A/C/D/E.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_COP.1_2" triggerSFR="FCS_CDP_EXT.1">
+        <Name>Cryptographic Operation (Digital Signature)</Name>
+        <Condition>If TSF implements digital signature operations</Condition>
+        <Elements>
+          <Element id="FCS_COP.1.1(2)">The TSF shall perform digital signature services in accordance with [selection: RSA per FIPS PUB 186-4, ECDSA per FIPS PUB 186-4] using key sizes of [selection: 2048, 3072, 4096 bits for RSA; 256, 384, 521 bits for ECDSA].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_COP.1_3" triggerSFR="FCS_CDP_EXT.1">
+        <Name>Cryptographic Operation (Hash Algorithm)</Name>
+        <Condition>If TSF implements hash operations</Condition>
+        <Elements>
+          <Element id="FCS_COP.1.1(3)">The TSF shall perform cryptographic hashing services in accordance with [selection: SHA-1, SHA-256, SHA-384, SHA-512] per ISO/IEC 10118-3:2004.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_COP.1_4" triggerSFR="FCS_CDP_EXT.1">
+        <Name>Cryptographic Operation (Keyed Hash Algorithm)</Name>
+        <Condition>If TSF implements keyed hash operations</Condition>
+        <Elements>
+          <Element id="FCS_COP.1.1(4)">The TSF shall perform keyed-hash message authentication in accordance with [selection: HMAC-SHA-1, HMAC-SHA-256, HMAC-SHA-384, HMAC-SHA-512] with key sizes [selection: 160, 256, 384, 512 bits] per ISO/IEC 9797-2:2011.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_HTTPS_EXT.1" triggerSFR="FTP_TRP.1">
+        <Name>HTTPS Protocol</Name>
+        <Condition>If HTTPS selected in FTP_TRP.1</Condition>
+        <Elements>
+          <Element id="FCS_HTTPS_EXT.1.1">The TSF shall implement HTTPS using TLS per FCS_TLSS_EXT.1 or FCS_TLSC_EXT.2.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_IPSEC_EXT.1" triggerSFR="FTP_TRP.1">
+        <Name>IPsec Protocol</Name>
+        <Condition>If IPsec selected in FTP_TRP.1</Condition>
+        <Elements>
+          <Element id="FCS_IPSEC_EXT.1.1">The TSF shall implement IPsec architecture as specified in RFC 4301.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_RBG_EXT.1" triggerSFR="FCS_CDP_EXT.1">
+        <Name>Random Bit Generation</Name>
+        <Condition>If TSF implements random bit generation</Condition>
+        <Elements>
+          <Element id="FCS_RBG_EXT.1.1">The TSF shall perform all deterministic random bit generation services in accordance with [selection: NIST SP 800-90A] using [selection: Hash_DRBG, HMAC_DRBG, CTR_DRBG (AES)].</Element>
+          <Element id="FCS_RBG_EXT.1.2">The deterministic RBG shall be seeded by an entropy source that accumulates entropy from [selection: hardware-based noise source, platform-based RBG] with a minimum of 256 bits of entropy.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_TLSC_EXT.2" triggerSFR="FTP_TRP.1">
+        <Name>TLS Client Protocol</Name>
+        <Condition>If TLS selected and TOE acts as client</Condition>
+        <Elements>
+          <Element id="FCS_TLSC_EXT.2.1">The TSF shall implement TLS 1.2 (RFC 5246) supporting [selection: ciphersuites per RFC 5246, RFC 5289, RFC 5288].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FCS_TLSS_EXT.1" triggerSFR="FTP_TRP.1">
+        <Name>TLS Server Protocol</Name>
+        <Condition>If TLS selected and TOE acts as server</Condition>
+        <Elements>
+          <Element id="FCS_TLSS_EXT.1.1">The TSF shall implement TLS 1.2 (RFC 5246) supporting [selection: ciphersuites per RFC 5246, RFC 5289, RFC 5288].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FDP_CRL_EXT.1" triggerSFR="FCO_NRO_EXT.2">
+        <Name>CRL Generation</Name>
+        <Condition>If CRLs selected in FCO_NRO_EXT.2.2</Condition>
+        <Elements>
+          <Element id="FDP_CRL_EXT.1.1">The TSF shall generate CRLs conforming to RFC 5280.</Element>
+          <Element id="FDP_CRL_EXT.1.2">The TSF shall sign CRLs with [selection: the CA signing key, a key specifically designated for CRL signing].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FDP_ITT.1" triggerSFR="FCS_CDP_EXT.1">
+        <Name>Basic Internal Transfer Protection</Name>
+        <Condition>If TSF is distributed across multiple physical platforms</Condition>
+        <Elements>
+          <Element id="FDP_ITT.1.1">The TSF shall enforce the access control SFP to prevent the disclosure, modification of user data when it is transmitted between physically-separated parts of the TOE.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FDP_OCSPG_EXT.1" triggerSFR="FCO_NRO_EXT.2">
+        <Name>OCSP Response Generation</Name>
+        <Condition>If OCSP selected in FCO_NRO_EXT.2.2</Condition>
+        <Elements>
+          <Element id="FDP_OCSPG_EXT.1.1">The TSF shall generate OCSP responses conforming to [selection: RFC 6960, [assignment: other OCSP standard]].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FIA_AFL.1" triggerSFR="FIA_UAU_EXT.1">
+        <Name>Authentication Failure Handling</Name>
+        <Condition>If password-based authentication selected</Condition>
+        <Elements>
+          <Element id="FIA_AFL.1.1">The TSF shall detect when [selection: [assignment: positive integer number], an administrator configurable positive integer within [assignment: range of acceptable values]] unsuccessful authentication attempts occur related to [assignment: list of authentication events].</Element>
+          <Element id="FIA_AFL.1.2">When the defined number of unsuccessful authentication attempts has been surpassed, the TSF shall [assignment: list of actions].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FIA_CMCC_EXT.1" triggerSFR="FCO_NRO_EXT.2">
+        <Name>CMC Client Authentication</Name>
+        <Condition>If CMC selected in FCO_NRO_EXT.2.3</Condition>
+        <Elements>
+          <Element id="FIA_CMCC_EXT.1.1">The TSF shall perform authentication for certificate requests received via CMC using [selection: shared secret, certificate-based authentication, [assignment: other authentication mechanism]].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FIA_CMCS_EXT.1" triggerSFR="FCO_NRO_EXT.2">
+        <Name>CMC Server Authentication</Name>
+        <Condition>If CMC selected in FCO_NRO_EXT.2.3</Condition>
+        <Elements>
+          <Element id="FIA_CMCS_EXT.1.1">The TSF shall support certificate requests via CMC in accordance with RFC 5272, RFC 5273, RFC 5274.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FIA_ESTC_EXT.1" triggerSFR="FCO_NRO_EXT.2">
+        <Name>EST Client Authentication</Name>
+        <Condition>If EST selected in FCO_NRO_EXT.2.3</Condition>
+        <Elements>
+          <Element id="FIA_ESTC_EXT.1.1">The TSF shall perform authentication for certificate requests received via EST using [selection: shared secret, certificate-based authentication, [assignment: other authentication mechanism]].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FIA_ESTS_EXT.1" triggerSFR="FCO_NRO_EXT.2">
+        <Name>EST Server</Name>
+        <Condition>If EST selected in FCO_NRO_EXT.2.3</Condition>
+        <Elements>
+          <Element id="FIA_ESTS_EXT.1.1">The TSF shall support certificate requests via EST in accordance with RFC 7030.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FIA_PMG_EXT.1" triggerSFR="FIA_UAU_EXT.1">
+        <Name>Password Management</Name>
+        <Condition>If password-based authentication selected</Condition>
+        <Elements>
+          <Element id="FIA_PMG_EXT.1.1">The TSF shall provide the following password management capabilities: (a) Passwords shall be able to be composed of any combination of upper and lower case characters, digits, and special characters; (b) Minimum password length configurable by an administrator to at least 15 characters.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FIA_PSK_EXT.1" triggerSFR="FCS_IPSEC_EXT.1">
+        <Name>Pre-Shared Key Composition</Name>
+        <Condition>If IPsec with pre-shared keys selected</Condition>
+        <Elements>
+          <Element id="FIA_PSK_EXT.1.1">The TSF shall be able to use pre-shared keys for IPsec connections.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FIA_UAU.7" triggerSFR="FIA_UAU_EXT.1">
+        <Name>Protected Authentication Feedback</Name>
+        <Condition>If password-based authentication selected</Condition>
+        <Elements>
+          <Element id="FIA_UAU.7.1">The TSF shall provide only obscured feedback to the user while the authentication is in progress.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FPT_APW_EXT.1" triggerSFR="FIA_UAU_EXT.1">
+        <Name>Protection of Administrator Passwords</Name>
+        <Condition>If password-based authentication selected</Condition>
+        <Elements>
+          <Element id="FPT_APW_EXT.1.1">The TSF shall store passwords in non-plaintext form.</Element>
+          <Element id="FPT_APW_EXT.1.2">The TSF shall prevent the reading of plaintext passwords.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FPT_ITT.1" triggerSFR="FCS_CDP_EXT.1">
+        <Name>Basic Internal TSF Data Transfer Protection</Name>
+        <Condition>If TSF is distributed across multiple physical platforms</Condition>
+        <Elements>
+          <Element id="FPT_ITT.1.1">The TSF shall protect TSF data from disclosure, modification when it is transmitted between separate parts of the TOE.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FPT_SKY_EXT.2" triggerSFR="FPT_SKY_EXT.1">
+        <Name>Key Share Protection</Name>
+        <Condition>If split knowledge procedures implemented by TSF</Condition>
+        <Elements>
+          <Element id="FPT_SKY_EXT.2.1">The TSF shall protect key shares using [selection: FCS_COP.1(1) encryption with a password-derived KEK per FCS_COP.1(5), FCS_COP.1(1) encryption with a KEK derived from [assignment: other derivation method], [assignment: other protection mechanism]].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FTP_ITC.1" triggerSFR="FAU_ADP_EXT.1">
+        <Name>Inter-TSF Trusted Channel</Name>
+        <Condition>If TSF communicates with external audit server or cryptographic module</Condition>
+        <Elements>
+          <Element id="FTP_ITC.1.1">The TSF shall provide a communication channel between itself and [selection: an external audit server, an external cryptographic module, other IT entity] that is logically distinct from other communication channels and provides assured identification of its end points and protection of the channel data from modification and disclosure.</Element>
+          <Element id="FTP_ITC.1.2">The TSF shall permit [selection: the TSF, another IT entity] to initiate communication via the trusted channel.</Element>
+          <Element id="FTP_ITC.1.3">The TSF shall initiate communication via the trusted channel for [assignment: list of functions].</Element>
+        </Elements>
+      </Requirement>
+    </SelectionBasedRequirements>
+
+    <!-- Optional Requirements -->
+    <OptionalRequirements>
+      <Requirement id="FCS_COP.1_5">
+        <Name>Cryptographic Operation (Password-Based Key Derivation Function)</Name>
+        <Description>Optional requirement for password-based key derivation</Description>
+        <Elements>
+          <Element id="FCS_COP.1.1(5)">The TSF shall perform Password-based Key Derivation Functions using HMAC-[selection: SHA-1, SHA-256, SHA-384, SHA-512] with output key sizes [selection: 128-bit, 256-bit] per NIST SP 800-132.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FDP_CER_EXT.4">
+        <Name>Non-X.509v3 Certificate Generation</Name>
+        <Description>Optional support for X.509 certificate formats other than v3</Description>
+        <Elements>
+          <Element id="FDP_CER_EXT.4.1">For X.509 certificate formats other than v3, the TSF shall ensure these contain: Version (0 or 1); Unique identifier of the issuer; keyUsage; Unique identifier of the certificate; Validity period; Signature field per FCS_COP.1(2).</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FDP_SDP_EXT.1">
+        <Name>User Sensitive Data Protection</Name>
+        <Description>Optional requirement if subscriber PII is stored by the TOE</Description>
+        <Elements>
+          <Element id="FDP_SDP_EXT.1.1">The TSF shall protect [selection: subscriber identity information, subscriber contact information, photograph from official ID, background check information, copies of legal documents, captured biometrics, [assignment: other PII]] through encryption per FCS_COP.1(1) using a DEK.</Element>
+          <Element id="FDP_SDP_EXT.1.2">The TSF shall destroy all protected data when no longer required using specified cryptographic data destruction method.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FDP_STG_EXT.1">
+        <Name>Public Key Protection</Name>
+        <Description>Optional requirement if TOE protects public keys used for CA functions</Description>
+        <Elements>
+          <Element id="FDP_STG_EXT.1.1">The TSF shall use [selection: access controlled storage, an integrity mechanism] to protect the trusted public keys and certificates (trust store elements) used to validate local logon, trusted channel, and external communication to the CA.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FPT_NPE_EXT.1">
+        <Name>NPE Constraints</Name>
+        <Description>Optional requirement for Non-Person Entity certificate management</Description>
+        <Elements>
+          <Element id="FPT_NPE_EXT.1.1">The TSF shall enforce an Administrator-configurable ruleset that specifies authorizations to submit NPE certificate requests.</Element>
+          <Element id="FPT_NPE_EXT.1.2">The TSF shall require CA Operations Staff to register any RA, and shall require CA Operations Staff or authorized RA to register any AORs, and associate each AOR with an organization or set of devices prior to that AOR making requests on behalf of an assigned organization or devices.</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FPT_SKY_EXT.1">
+        <Name>Split Knowledge Procedures</Name>
+        <Description>Optional requirement if TOE enforces split knowledge procedures</Description>
+        <Elements>
+          <Element id="FPT_SKY_EXT.1.1">The TSF shall [selection: support, interface with the operational environment to support] split knowledge procedures to enforce two-party control for the export of CA signing keys and [selection: no other data, user private keys, [assignment: critical data or keys]] necessary to resume CA functionality after TSF failure using [selection: key sharing mechanisms, [assignment: other mechanism]].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FPT_TST_EXT.1">
+        <Name>TOE Integrity Test</Name>
+        <Description>Optional requirement if TOE provides software/firmware integrity testing</Description>
+        <Elements>
+          <Element id="FPT_TST_EXT.1.1">The TSF shall apply a [selection: keyed hash per FCS_COP.1(4), digital signature per FCS_COP.1(2)] to the TOE software and firmware.</Element>
+          <Element id="FPT_TST_EXT.1.2">The [selection: TSF, Operational Environment] shall verify the integrity of the TOE software and firmware [selection: at power-up, at initialization, on-demand by a privileged user].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FPT_TST_EXT.2">
+        <Name>Integrity Test</Name>
+        <Description>Optional requirement if TSF provides integrity protection for TSF data</Description>
+        <Elements>
+          <Element id="FPT_TST_EXT.2.1">The TSF shall apply a [selection: keyed hash per FCS_COP.1(4), digital signature per FCS_COP.1(2)] to the [selection: Trust Anchor Database element(s), TSF keys used to manage certificates, certificate database, [assignment: other data relevant to TSF security]].</Element>
+          <Element id="FPT_TST_EXT.2.2">Integrity shall be verified at [selection: power-up, initialization, on-demand by a privileged user].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FTA_SSL.3">
+        <Name>TSF-Initiated Termination</Name>
+        <Description>Optional requirement if TSF implements remote session termination after inactivity</Description>
+        <Elements>
+          <Element id="FTA_SSL.3.1">The TSF shall terminate a remote interactive session after a [assignment: Administrator-configurable time interval of session inactivity].</Element>
+        </Elements>
+      </Requirement>
+      <Requirement id="FTA_SSL_EXT.1">
+        <Name>TSF-Initiated Session Locking</Name>
+        <Description>Optional requirement if TSF implements local session locking/termination after inactivity</Description>
+        <Elements>
+          <Element id="FTA_SSL_EXT.1.1">The TSF shall, for local interactive sessions, [selection: lock the session, terminate the session] after an Administrator-configured time period of inactivity.</Element>
+        </Elements>
+      </Requirement>
+    </OptionalRequirements>
+  </SecurityFunctionalRequirements>
+
+  <!-- Security Assurance Requirements -->
+  <SecurityAssuranceRequirements>
+    <AssuranceClass name="Development" id="ADV">
+      <Requirement id="ADV_FSP.1">
+        <Name>Basic Functional Specification</Name>
+        <Description>Developer shall provide a functional specification and tracing from functional specification to SFRs. The functional specification shall describe purpose and method of use for each SFR-enforcing and SFR-supporting TSFI, identify all parameters, and provide rationale for implicit categorization of interfaces as SFR-non-interfering.</Description>
+      </Requirement>
+    </AssuranceClass>
+
+    <AssuranceClass name="Guidance Documentation" id="AGD">
+      <Requirement id="AGD_OPE.1">
+        <Name>Operational User Guidance</Name>
+        <Description>Developer shall provide operational user guidance that describes for each privileged user role: user-accessible functions and privileges, how to use interfaces securely, available functions and security parameters, security-relevant events, all possible modes of operation, and security measures for fulfilling security objectives.</Description>
+      </Requirement>
+      <Requirement id="AGD_PRE.1">
+        <Name>Preparative Procedures</Name>
+        <Description>Developer shall provide preparative procedures describing all steps necessary for secure acceptance of the delivered TOE and secure installation of the TOE and preparation of the operational environment.</Description>
+      </Requirement>
+    </AssuranceClass>
+
+    <AssuranceClass name="Life-Cycle Support" id="ALC">
+      <Requirement id="ALC_CMC.1">
+        <Name>Labeling of the TOE</Name>
+        <Description>Developer shall provide the TOE and a reference for the TOE. The TOE shall be labeled with its unique reference.</Description>
+      </Requirement>
+      <Requirement id="ALC_CMS.1">
+        <Name>TOE CM Coverage</Name>
+        <Description>Developer shall provide a configuration list for the TOE that includes the TOE itself and the evaluation evidence required by the SARs. The configuration list shall uniquely identify the configuration items.</Description>
+      </Requirement>
+    </AssuranceClass>
+
+    <AssuranceClass name="Security Target Evaluation" id="ASE">
+      <Description>As per activities defined in Common Evaluation Methodology (CEM).</Description>
+    </AssuranceClass>
+
+    <AssuranceClass name="Tests" id="ATE">
+      <Requirement id="ATE_IND.1">
+        <Name>Independent Testing - Conformance</Name>
+        <Description>Developer shall provide the TOE for testing. The TOE shall be suitable for testing. Evaluator shall prepare a test plan and report documenting testing aspects, covering all CEM and PP Assurance Activities requirements.</Description>
+      </Requirement>
+    </AssuranceClass>
+
+    <AssuranceClass name="Vulnerability Analysis" id="AVA">
+      <Requirement id="AVA_VAN.1">
+        <Name>Vulnerability Survey</Name>
+        <Description>Developer shall provide the TOE for testing. Evaluator shall perform a search of public domain sources to identify potential vulnerabilities and conduct penetration testing to determine that the TOE is resistant to attacks performed by an attacker possessing Basic attack potential.</Description>
+      </Requirement>
+    </AssuranceClass>
+  </SecurityAssuranceRequirements>
+
+  <!-- Roles defined in the PP -->
+  <Roles>
+    <Role id="Administrator">
+      <Description>Responsible for management activities, including configuration of the CA and its security functions.</Description>
+      <Mandatory>true</Mandatory>
+    </Role>
+    <Role id="Auditor">
+      <Description>Responsible for reviewing and managing audit records. Must be separate from other roles.</Description>
+      <Mandatory>true</Mandatory>
+    </Role>
+    <Role id="CAOperationsStaff">
+      <Description>CA Operations Staff responsible for certificate issuance approval, revocation, and operational functions. Must be separate from other roles.</Description>
+      <Mandatory>true</Mandatory>
+    </Role>
+    <Role id="RAStaff">
+      <Description>Registration Authority Staff responsible for validating subscriber identity before instructing the CA to manipulate certificates.</Description>
+      <Mandatory>false</Mandatory>
+    </Role>
+    <Role id="AOR">
+      <Description>Authorized Organizational Representative delegated authority to manage a restricted set of certificates associated to devices belonging to a particular organization.</Description>
+      <Mandatory>false</Mandatory>
+    </Role>
+  </Roles>
+
+  <!-- Reference Standards -->
+  <ReferenceStandards>
+    <Standard id="RFC5272">Certificate Management over CMS (CMC)</Standard>
+    <Standard id="RFC5273">CMC: Transport Protocols</Standard>
+    <Standard id="RFC5274">CMC: Compliance Requirements</Standard>
+    <Standard id="RFC5280">Internet X.509 Public Key Infrastructure Certificate and CRL Profile</Standard>
+    <Standard id="RFC5246">Transport Layer Security (TLS) Protocol Version 1.2</Standard>
+    <Standard id="RFC5288">AES Galois Counter Mode (GCM) Cipher Suites for TLS</Standard>
+    <Standard id="RFC5289">TLS Elliptic Curve Cipher Suites with SHA-256/384</Standard>
+    <Standard id="RFC6960">X.509 Internet Public Key Infrastructure Online Certificate Status Protocol - OCSP</Standard>
+    <Standard id="RFC7030">Enrollment over Secure Transport (EST)</Standard>
+    <Standard id="RFC4301">Security Architecture for the Internet Protocol</Standard>
+    <Standard id="FIPS186-4">Digital Signature Standard (DSS)</Standard>
+    <Standard id="SP800-38A">Recommendation for Block Cipher Modes of Operation</Standard>
+    <Standard id="SP800-38C">Recommendation for Block Cipher Modes of Operation: CCM Mode</Standard>
+    <Standard id="SP800-38D">Recommendation for Block Cipher Modes of Operation: GCM Mode</Standard>
+    <Standard id="SP800-38E">Recommendation for Block Cipher Modes of Operation: XTS-AES Mode</Standard>
+    <Standard id="SP800-90A">Recommendation for Random Number Generation Using Deterministic RBGs</Standard>
+    <Standard id="SP800-108">Recommendation for Key Derivation Using Pseudorandom Functions</Standard>
+    <Standard id="SP800-132">Recommendation for Password-Based Key Derivation</Standard>
+    <Standard id="ISO18033-3">Encryption algorithms - Part 3: Block ciphers</Standard>
+    <Standard id="NISTIR7924">Reference Certificate Policy</Standard>
+  </ReferenceStandards>
+  <!-- NIST SP 800-53 Revision 5 Mappings -->
+  <NISTMappings>
+    <MappingMetadata>
+      <Title>Mapping Between Protection Profile for Certification Authorities, Version 2.1 and NIST SP 800-53 Revision 5</Title>
+      <SourcePP>Protection Profile for Certification Authorities, Version 2.1, 1-December-2017</SourcePP>
+      <TargetFramework>NIST SP 800-53 Revision 5</TargetFramework>
+      <Caveats>
+        <Caveat id="1">Product vs. System: Common Criteria evaluates products; RMF (NIST SP 800-37 Rev 2, DoD 8510.01) and associated controls (NIST SP 800-53 Rev 5, CNSSI 1253) are used for system assessment and authorization. Products cannot satisfy controls outside system context.</Caveat>
+        <Caveat id="2">IA-4, IA-5(2), and SC-17: The primary purpose of a CA product is to handle distribution and maintenance of identifiers in support of PKI infrastructure. A conformant TOE supports system satisfaction of these controls at a general level.</Caveat>
+        <Caveat id="3">SA-4(7): Satisfaction of any NIAP PP supports system satisfaction of SA-4(7), which implements CNSSP No. 11.</Caveat>
+        <Caveat id="4">System Context: For a conformant TOE to support controls in an information system context, selections and assignments in the Security Target must be congruent with those made for the supported controls.</Caveat>
+        <Caveat id="5">TOE vs OE Implementation: Many SFRs describe functionality that may be implemented by the TOE or through TSF invocation of a similarly-validated component in the operational environment. Such SFRs are denoted with asterisk (*).</Caveat>
+      </Caveats>
+    </MappingMetadata>
+
+    <!-- Mandatory Requirements Mappings -->
+    <MandatoryMappings>
+      <SFRMapping sfr="FAU_ADP_EXT.1" name="Audit Dependencies" oeCapable="true">
+        <Control id="AU-2" name="Event Logging">
+          <Comment>A conformant TOE has the ability to generate audit records for various events. It may also make use of the operational environment to generate a subset of the required audit records.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_GCR_EXT.1" name="Generation of Certificate Repository" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE partially supports the enforcement of this control by storing certificates and potentially CRLs using either TSF or environmental mechanisms.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_GEN.1" name="Audit Data Generation" oeCapable="true">
+        <Control id="AU-2" name="Event Logging">
+          <Comment>A conformant TOE has the ability to generate audit records for various events. It may also make use of the operational environment to generate a subset of the required audit records. The TOE supports the enforcement of the control if its auditable events are consistent with the assignments chosen for the control and if the TOE's audit log is part of the overall system's auditing.</Comment>
+        </Control>
+        <Control id="AU-3" name="Content of Audit Records">
+          <Comment>A conformant TOE will ensure that audit records include date, type, outcome, and subject identity data. The TOE supports the enforcement of the control if its auditable events are consistent with the assignments chosen for the control and if the TOE's audit log is part of the overall system's auditing.</Comment>
+        </Control>
+        <Control id="AU-3(1)" name="Content of Audit Records: Additional Audit Information">
+          <Comment>A conformant TOE will ensure that audit records include date, type, outcome, and subject identity data. It may also make use of the operational environment to satisfy this control.</Comment>
+        </Control>
+        <Control id="AU-12" name="Audit Record Generation">
+          <Comment>A conformant TOE has the ability to generate audit logs. The TOE supports the enforcement of parts (a) and (c) of the control if its auditable events are consistent with the assignments chosen for the control. Part (b) is not satisfied by a conformant TOE because the PP does not define functionality to suppress/enable the generation of specific audit records.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_GEN.2" name="User Identity Association" oeCapable="true">
+        <Control id="AU-3" name="Content of Audit Records">
+          <Comment>A conformant TOE will ensure that audit records include date, type, outcome, and subject identity data. The TOE supports the enforcement of the control if its auditable events are consistent with the assignments chosen for the control and if the TOE's audit log is part of the overall system's auditing.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_STG.4" name="Prevention of Audit Data Loss" oeCapable="false">
+        <Control id="AU-4" name="Audit Log Storage Capacity">
+          <Comment>A conformant TOE supports the enforcement of this control by allocating storage for audit data.</Comment>
+        </Control>
+        <Control id="AU-5" name="Response to Audit Logging Process Failures">
+          <Comment>A conformant TOE supports the enforcement of part (b) of this control by taking some action in the event that audit data cannot be written. This SFR does not require an alerting method so part (a) is not applicable.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCO_NRO_EXT.2" name="Certificate-Based Proof of Origin" oeCapable="false">
+        <Control id="AU-10" name="Non-repudiation">
+          <Comment>A conformant TOE enforces non-repudiation through verification of certificate origin.</Comment>
+        </Control>
+        <Control id="AU-10(1)" name="Non-repudiation: Association of Identities">
+          <Comment>A conformant TOE supports the enforcement of part (a) of this control through its binding of its issued certificates. It supports the enforcement of part (b) of this control by associating its own identity with its issued certificates.</Comment>
+        </Control>
+        <Control id="AU-10(2)" name="Non-repudiation: Validate Binding of Information Producer Identity">
+          <Comment>A conformant TOE may support this control by having a mechanism for verifying proof of origin for revocation requests.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_CDP_EXT.1" name="Cryptographic Dependencies" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>Depending on the selections made in this SFR, a conformant TOE or its operational environment supports the enforcement of this control. Specific control applicability for each selection can be found in the mappings for the individual SFRs that the selection items represent.</Comment>
+        </Control>
+        <Control id="SC-13" name="Cryptographic Protection">
+          <Comment>Depending on the selections made in this SFR, a conformant TOE or its operational environment supports the enforcement of this control.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_STG_EXT.1" name="Cryptographic Key Storage" oeCapable="true">
+        <Control id="IA-5" name="Authenticator Management">
+          <Comment>A conformant TOE protects private key data used as authenticators from unauthorized disclosure, either through its own mechanisms or through environmental ones, in support of part (h) of this control.</Comment>
+        </Control>
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE supports the enforcement of this control by protecting stored cryptographic data, either through its own mechanisms or through invocation of environmental ones.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FDP_CER_EXT.1" name="Certificate Profiles" oeCapable="false">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE partially supports the enforcement of this control by defining parameters for certificate generation.</Comment>
+        </Control>
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>A conformant TOE implements a certificate profile function and ensures that certificates are generated following the policy defined by that function.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FDP_CER_EXT.2" name="Certificate Request Matching" oeCapable="false">
+        <Control id="AU-10" name="Non-repudiation">
+          <Comment>A conformant TOE supports the implementation of this control through association of certificates and the entities that request them.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FDP_CER_EXT.3" name="Certificate Issuance Approval" oeCapable="false">
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>A conformant TOE implements a certificate profile function and ensures that certificates are approved in accordance with the policy defined by that function.</Comment>
+        </Control>
+        <Control id="SC-23(5)" name="Session Authenticity: Allowed Certificate Authorities">
+          <Comment>A conformant TOE supports the enforcement of this control by allowing the TSF to act as an allowed CA for approving certificates.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FDP_CSI_EXT.1" name="Certificate Status Information" oeCapable="false">
+        <Control id="IA-5(2)" name="Authenticator Management: Public Key-Based Authentication">
+          <Comment>A conformant TOE supports part (b) of this control through a mechanism that allows external entities to determine whether the presented certificate is valid.</Comment>
+        </Control>
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>A conformant TOE supports the issuance of PKI certificates by generating status information about the certificates it has issued.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FDP_RIP.1" name="Subset Residual Information Protection" oeCapable="true">
+        <Control id="SC-4" name="Information in Shared System Resources">
+          <Comment>A conformant TOE ensures, either through its own mechanisms or through invocation of its operational environment, that residual data stored in data buffers is purged prior to re-use of those buffers.</Comment>
+        </Control>
+        <Control id="SC-8(2)" name="Transmission Confidentiality and Integrity: Pre- and Post-Transmission Handling">
+          <Comment>A conformant TOE and potentially the operational environment ensures that any previous information content of certificate authority functions and network communications is made unavailable before reuse.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_X509_EXT.1" name="Certificate Validation" oeCapable="true">
+        <Control id="IA-5(2)" name="Authenticator Management: Public Key-Based Authentication">
+          <Comment>A conformant TOE has the ability to validate certificate path and status or invoke an environmental service to do this, which satisfies this control.</Comment>
+        </Control>
+        <Control id="SC-23" name="Session Authenticity">
+          <Comment>Depending on the TOE's use of trusted communications channels, it may use X.509 certificate validation in support of session authentication.</Comment>
+        </Control>
+        <Control id="SC-23(5)" name="Session Authenticity: Allowed Certificate Authorities">
+          <Comment>If the TOE uses X.509 certificates as part of session authentication, it will include the functionality needed to validate certificate authorities or invoke this functionality in its operational environment.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_X509_EXT.2" name="Certificate-Based Authentication" oeCapable="true">
+        <Control id="CM-14" name="Signed Components">
+          <Comment>A conformant TOE supports the enforcement of this control by using code signing certificates for software updates or invokes this functionality in its operational environment.</Comment>
+        </Control>
+        <Control id="IA-2" name="Identification and Authentication (Organizational Users)">
+          <Comment>A conformant TOE has the ability to identify and authenticate organizational users via X.509 certificates.</Comment>
+        </Control>
+        <Control id="SI-7(15)" name="Software, Firmware, and Information Integrity: Code Authentication">
+          <Comment>A conformant TOE's use of a code signing certificate for software updates supports the enforcement of this control. It may make use of the operational environment to support the enforcement of this control.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_UAU_EXT.1" name="Authentication Mechanism" oeCapable="true">
+        <Control id="IA-2" name="Identification and Authentication (Organizational Users)">
+          <Comment>A conformant TOE has the ability to provide an authentication mechanism for privileged users, or to interface with its operational environment to provide this.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_UIA_EXT.1" name="User Identification and Authentication" oeCapable="false">
+        <Control id="AC-14" name="Permitted Actions without Identification or Authentication">
+          <Comment>A conformant TOE will define a list of actions that are permitted prior to authentication.</Comment>
+        </Control>
+        <Control id="IA-2" name="Identification and Authentication (Organizational Users)">
+          <Comment>A conformant TOE has the ability to require that certain functions require successful authentication to access, whether provided by the TOE itself or its environment.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FMT_MOF.1(1)" name="Management of Security Functions Behavior (Administrator Functions)" oeCapable="true">
+        <Control id="AC-3(7)" name="Access Enforcement: Role-Based Access Control">
+          <Comment>A conformant TOE supports the enforcement of this control by specifying the management functions that are available to the Administrator role as opposed to other defined roles.</Comment>
+        </Control>
+        <Control id="AC-6" name="Least Privilege">
+          <Comment>A conformant TOE or the operational environment enforces least privilege by defining the minimum set of relevant management functions that are available to the Administrator role as opposed to other defined roles.</Comment>
+        </Control>
+        <Control id="AC-6(1)" name="Least Privilege: Authorize Access to Security Functions">
+          <Comment>A conformant TOE or the operational environment defines its management authorizations such that explicit authorization is required to perform a management function.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FMT_MOF.1(2)" name="Management of Security Functions Behavior (CA/RA Functions)" oeCapable="true">
+        <Control id="AC-3(7)" name="Access Enforcement: Role-Based Access Control">
+          <Comment>A conformant TOE or the operational environment supports the enforcement of this control by specifying the management functions that are available to the CA Operations Staff or RA Staff role as opposed to other defined roles.</Comment>
+        </Control>
+        <Control id="AC-6" name="Least Privilege">
+          <Comment>A conformant TOE or the operational environment enforces least privilege by defining the minimum set of relevant management functions that are available to the CA Operations Staff or RA Staff role as opposed to other defined roles.</Comment>
+        </Control>
+        <Control id="AC-6(1)" name="Least Privilege: Authorize Access to Security Functions">
+          <Comment>A conformant TOE or the operational environment defines its management authorizations such that explicit authorization is required to perform a management function.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FMT_MOF.1(3)" name="Management of Security Functions Behavior (CA Operations Functions)" oeCapable="true">
+        <Control id="AC-3(7)" name="Access Enforcement: Role-Based Access Control">
+          <Comment>A conformant TOE or the operational environment supports the enforcement of this control by specifying the management functions that are available to the CA Operations Staff role as opposed to other defined roles.</Comment>
+        </Control>
+        <Control id="AC-6" name="Least Privilege">
+          <Comment>A conformant TOE or the operational environment enforces least privilege by defining the minimum set of relevant management functions that are available to the CA Operations Staff role as opposed to other defined roles.</Comment>
+        </Control>
+        <Control id="AC-6(1)" name="Least Privilege: Authorize Access to Security Functions">
+          <Comment>A conformant TOE or the operational environment defines its management authorizations such that explicit authorization is required to perform a management function.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FMT_MOF.1(4)" name="Management of Security Functions Behavior (Admin/Officer Functions)" oeCapable="true">
+        <Control id="AC-3(7)" name="Access Enforcement: Role-Based Access Control">
+          <Comment>A conformant TOE or the operational environment supports the enforcement of this control by specifying the management functions that are available to the Administrator, Auditor, or CA Operations Staff role as opposed to other defined roles.</Comment>
+        </Control>
+        <Control id="AC-6" name="Least Privilege">
+          <Comment>A conformant TOE or the operational environment enforces least privilege by defining the minimum set of relevant management functions that are available to the Administrator, Auditor, or CA Operations Staff role as opposed to other defined roles.</Comment>
+        </Control>
+        <Control id="AC-6(1)" name="Least Privilege: Authorize Access to Security Functions">
+          <Comment>A conformant TOE or the operational environment defines its management authorizations such that explicit authorization is required to perform a management function.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FMT_MOF.1(5)" name="Management of Security Functions Behavior (Auditor Functions)" oeCapable="true">
+        <Control id="AC-3(7)" name="Access Enforcement: Role-Based Access Control">
+          <Comment>A conformant TOE or the operational environment supports the enforcement of this control by specifying the management functions that are available to the Auditor role as opposed to other defined roles.</Comment>
+        </Control>
+        <Control id="AC-6" name="Least Privilege">
+          <Comment>A conformant TOE or the operational environment enforces least privilege by defining the minimum set of relevant management functions that are available to the Auditor role as opposed to other defined roles.</Comment>
+        </Control>
+        <Control id="AC-6(1)" name="Least Privilege: Authorize Access to Security Functions">
+          <Comment>A conformant TOE or the operational environment defines its management authorizations such that explicit authorization is required to perform a management function.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FMT_MTD.1" name="Management of TSF Data" oeCapable="false">
+        <Control id="AC-3(7)" name="Access Enforcement: Role-Based Access Control">
+          <Comment>A conformant TOE supports this control by restricting the management of TSF data to privileged users.</Comment>
+        </Control>
+        <Control id="AC-6" name="Least Privilege">
+          <Comment>A conformant TOE supports this control by restricting the management of TSF data to privileged users.</Comment>
+        </Control>
+        <Control id="AC-6(1)" name="Least Privilege: Authorize Access to Security Functions">
+          <Comment>A conformant TOE supports this control by restricting the management of TSF data to privileged users.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FMT_SMF.1" name="Specification of Management Functions" oeCapable="true">
+        <Control id="CM-6" name="Configuration Settings">
+          <Comment>A conformant TOE or the operational environment may satisfy one or more optional capabilities defined in this SFR. In general, a conformant TOE will satisfy this control to the extent that the TOE provides a method to configure its behavior in accordance with organizational requirements.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FMT_SMR.2" name="Restrictions on Security Roles" oeCapable="true">
+        <Control id="AC-2(7)" name="Account Management: Privileged User Accounts">
+          <Comment>A conformant TOE and potentially its operational environment maintains roles and is able to associate users with roles, in support of part (a) of the control.</Comment>
+        </Control>
+        <Control id="AC-5" name="Separation of Duties">
+          <Comment>A conformant TOE or potentially its operational environment enforces separation of duties of individuals and roles.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_FLS.1" name="Failure with Preservation of Secure State" oeCapable="false">
+        <Control id="SC-24" name="Fail in Known State">
+          <Comment>A conformant TOE preserves a secure state in the event of a failure.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_KST_EXT.1" name="No Plaintext Key Export" oeCapable="true">
+        <Control id="MP-5" name="Media Transport">
+          <Comment>A conformant TOE and optionally the operational environment prevents the export of plaintext keys, including to any physical media attached to the system on which the TOE is running.</Comment>
+        </Control>
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE supports the enforcement of this control by ensuring that key data exported from the TOE is protected. It may also make use of the operational environment to provide this functionality.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>A conformant TOE supports the enforcement of this control by ensuring that key data exported from the TOE is encrypted. It may also make use of the operational environment to provide this functionality.</Comment>
+        </Control>
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE supports the enforcement of this control by ensuring the protection of stored cryptographic data. It may also make use of the operational environment to provide this functionality.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_KST_EXT.2" name="TSF Key Protection" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE supports the enforcement of this control by ensuring the protection of stored cryptographic data. It may also make use of the operational environment to provide this functionality.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_RCV.1" name="Manual Trusted Recovery" oeCapable="false">
+        <Control id="CP-10" name="System Recovery and Reconstitution">
+          <Comment>A conformant TOE supports the enforcement of this control by providing a mechanism for itself to be restored to a secure state following a failure.</Comment>
+        </Control>
+        <Control id="CP-12" name="Safe Mode">
+          <Comment>A conformant TOE supports the enforcement of this control through its support of a maintenance mode, which is equivalent to the 'safe mode' specified by this control.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_SKP_EXT.1" name="Protection of Keys" oeCapable="true">
+        <Control id="AC-3(11)" name="Access Enforcement: Restrict Access to Specific Information Types">
+          <Comment>A conformant TOE restricts access to the key storage repository, which supports this control if such a repository is identified by the organization as requiring restricted access.</Comment>
+        </Control>
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE supports the enforcement of this control by protecting stored cryptographic data, either through the TSF or through reliance on the operational environment.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_STM.1" name="Reliable Time Stamps" oeCapable="true">
+        <Control id="AU-8" name="Time Stamps">
+          <Comment>A conformant TOE can generate or use time stamps to address the actions defined in this control.</Comment>
+        </Control>
+        <Control id="SC-45(1)" name="System Time Synchronization: Synchronization with Authoritative Time Source">
+          <Comment>A conformant TOE may have the ability to synchronize with an NTP server in its operational environment, satisfying this control.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_TUD_EXT.1" name="Trusted Update" oeCapable="true">
+        <Control id="CM-14" name="Signed Components">
+          <Comment>A conformant TOE requires that updates to it include digital signatures for integrity measures, either through the TSF or through reliance on the operational environment.</Comment>
+        </Control>
+        <Control id="SI-7(1)" name="Software, Firmware, and Information Integrity: Integrity Checks">
+          <Comment>A conformant TOE has the ability to verify the integrity of updates to it, either through the TSF or through reliance on the operational environment.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FTA_SSL.4" name="User-Initiated Termination" oeCapable="true">
+        <Control id="AC-12(1)" name="Session Termination: User-Initiated Logouts">
+          <Comment>A conformant TOE has the ability to terminate an active session upon user request, either through the TSF or through reliance on the operational environment.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FTA_TAB.1" name="Default TOE Access Banners" oeCapable="false">
+        <Control id="AC-8" name="System Use Notification">
+          <Comment>A conformant TOE displays an advisory warning to the user prior to authentication.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FTP_TRP.1" name="Trusted Path" oeCapable="false">
+        <Control id="IA-3(1)" name="Device Identification and Authentication: Cryptographic Bidirectional Authentication">
+          <Comment>A conformant TOE may support the enforcement of this control if the protocol(s) used to establish trusted communications uses mutual authentication.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>A conformant TOE will have the ability to prevent unauthorized disclosure of information and detect modification to that information.</Comment>
+        </Control>
+        <Control id="SC-11" name="Trusted Path">
+          <Comment>The TOE establishes a trusted communication path between remote users and itself.</Comment>
+        </Control>
+      </SFRMapping>
+    </MandatoryMappings>
+
+    <!-- Optional Requirements Mappings -->
+    <OptionalMappings>
+      <SFRMapping sfr="FCS_COP.1(5)" name="Cryptographic Operation (Password-Based Key Derivation Function)" oeCapable="true">
+        <Control id="SC-13" name="Cryptographic Protection">
+          <Comment>A conformant TOE has the ability to perform or invoke environmental services for key derivation using NSA-approved and FIPS-validated algorithms.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FDP_CER_EXT.4" name="Non-X.509v3 Certificate Generation" oeCapable="false">
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>A conformant TOE implements a certificate profile function and ensures that X.509 certificates in formats other than v3 are generated following the policy defined by that function.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FDP_SDP_EXT.1" name="User Sensitive Data Protection" oeCapable="true">
+        <Control id="SC-28" name="Protection of Information at Rest">
+          <Comment>A conformant TOE or the operational environment has the ability to protect sensitive information at rest. This supports the enforcement of the control through use by the Privacy Overlay to protect PII.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FDP_STG_EXT.1" name="Public Key Protection" oeCapable="false">
+        <Control id="AC-3" name="Access Enforcement">
+          <Comment>A conformant TOE will use access control or integrity protection to protect key and certificate data.</Comment>
+        </Control>
+        <Control id="SI-7" name="Software, Firmware, and Information Integrity">
+          <Comment>A conformant TOE will use access control or integrity protection to protect key and certificate data.</Comment>
+        </Control>
+        <Control id="IA-5" name="Authenticator Management">
+          <Comment>A conformant TOE supports part (h) of this control by ensuring the confidentiality or integrity of stored public key and certificate data.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_NPE_EXT.1" name="NPE Constraints" oeCapable="false">
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>A conformant TOE enforces a certificate issuance policy through an administrator-configurable ruleset that specifies authorizations to submit non-person entity certificate requests.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_SKY_EXT.1" name="Split Knowledge Procedures" oeCapable="true">
+        <Control id="AC-3(2)" name="Access Enforcement: Dual Authorization">
+          <Comment>A conformant TOE supports the enforcement of this control by requiring split knowledge procedures for export of key data, either through its own functionality or by interfacing with its operational environment.</Comment>
+        </Control>
+        <Control id="CP-9" name="System Backup">
+          <Comment>A conformant TOE supports the enforcement of part (b) of this control because the key data being exported from the TOE is system-level information that is being stored externally in the case that a recovery from failure is needed. Part (d) is enforced through the use of split knowledge procedures that ensure the confidentiality of this data is maintained while outside the TOE boundary.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_TST_EXT.1" name="TOE Integrity Test" oeCapable="true">
+        <Control id="SI-6" name="Security and Privacy Function Verification">
+          <Comment>A conformant TOE or the operational environment will run automatic tests to ensure correct operation of its own functionality.</Comment>
+        </Control>
+        <Control id="SI-7" name="Software, Firmware, and Information Integrity">
+          <Comment>A conformant TOE or the operational environment supports the enforcement of this control by including an integrity checking mechanism for itself.</Comment>
+        </Control>
+        <Control id="SI-7(1)" name="Software, Firmware, and Information Integrity: Integrity Checks">
+          <Comment>A conformant TOE or the operational environment supports the enforcement of this control by including an integrity checking mechanism for itself.</Comment>
+        </Control>
+        <Control id="SI-7(12)" name="Software, Firmware, and Information Integrity: Integrity Verification">
+          <Comment>A conformant TOE or the operational environment supports the enforcement of this control by providing an integrity verification mechanism for the TOE software.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_TST_EXT.2" name="Integrity Test" oeCapable="false">
+        <Control id="SI-7" name="Software, Firmware, and Information Integrity">
+          <Comment>A conformant TOE supports the enforcement of this control by including an integrity checking mechanism for its stored data.</Comment>
+        </Control>
+        <Control id="SI-7(1)" name="Software, Firmware, and Information Integrity: Integrity Checks">
+          <Comment>A conformant TOE supports the enforcement of this control by including an integrity checking mechanism for its stored data.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FTA_SSL.3" name="TSF-Initiated Termination" oeCapable="false">
+        <Control id="AC-2(5)" name="Account Management: Inactivity Logout">
+          <Comment>A conformant TOE will have the ability to log out after a period of inactivity.</Comment>
+        </Control>
+        <Control id="AC-12" name="Session Termination">
+          <Comment>A conformant TOE will have the ability to terminate an idle remote interactive session.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FTA_SSL_EXT.1" name="TSF-Initiated Session Locking" oeCapable="false">
+        <Control id="AC-11" name="Device Lock">
+          <Comment>A conformant TOE may have the ability to lock an idle local interactive session, depending on the selection made in the SFR.</Comment>
+        </Control>
+        <Control id="AC-12" name="Session Termination">
+          <Comment>A conformant TOE may have the ability to terminate an idle local interactive session, depending on the selection made in the SFR.</Comment>
+        </Control>
+        <Control id="IA-11" name="Re-authentication">
+          <Comment>A conformant TOE may have the ability to require user re-authentication after the termination of an idle local interactive session, depending on the selection made in the SFR.</Comment>
+        </Control>
+      </SFRMapping>
+    </OptionalMappings>
+
+    <!-- Selection-Based Requirements Mappings -->
+    <SelectionBasedMappings>
+      <SFRMapping sfr="FCS_CKM_EXT.1(1)" name="Symmetric Key Generation for DEKs" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE supports the enforcement of this control by using a mechanism to generate DEKs, either through the TSF or through reliance on the operational environment.</Comment>
+        </Control>
+        <Control id="SC-12(2)" name="Cryptographic Key Establishment and Management: Symmetric Keys">
+          <Comment>The TOE generates or interfaces with the operational environment to generate DEKs, which are symmetric keys.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_SCR_EXT.1" name="Certificate Repository Review" oeCapable="true">
+        <Control id="N/A" name="Not Applicable">
+          <Comment>This function allows searches to be performed for certificate data based on specified fields. It does not relate to the enforcement of any security controls.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_SAR.1" name="Audit Review" oeCapable="false">
+        <Control id="AU-6(7)" name="Audit Record Review, Analysis, and Reporting: Permitted Actions">
+          <Comment>A conformant TOE supports the enforcement of this control by limiting access to the audit review function to members of the Auditor role.</Comment>
+        </Control>
+        <Control id="AU-7" name="Audit Reduction and Report Generation">
+          <Comment>A conformant TOE supports the enforcement of this control by providing a mechanism to read audit information.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_SAR.3" name="Selectable Audit Review" oeCapable="false">
+        <Control id="AU-7" name="Audit Reduction and Report Generation">
+          <Comment>A conformant TOE supports the enforcement of this control by providing a mechanism to review stored audit data.</Comment>
+        </Control>
+        <Control id="AU-7(1)" name="Audit Reduction and Report Generation: Automatic Processing">
+          <Comment>A conformant TOE supports the enforcement of this control by allowing for the definition of audit search criteria that can be used to search for and read an auditor-defined subset of the audit records.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_SEL.1" name="Selective Audit" oeCapable="false">
+        <Control id="AU-12" name="Audit Record Generation">
+          <Comment>A conformant TOE supports part (b) of this control by allowing authorized users to specify the auditable events that the TSF will generate.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_STG.1(1)" name="Protected Audit Trail Storage" oeCapable="false">
+        <Control id="AU-9" name="Protection of Audit Information">
+          <Comment>A conformant TOE has the ability to prevent unauthorized modification and deletion of audit records.</Comment>
+        </Control>
+        <Control id="AU-9(6)" name="Protection of Audit Information: Read-Only Access">
+          <Comment>A conformant TOE has the ability to prevent unauthorized modification and deletion of audit records. If the TOE prevents this by preventing all modification and deletion of audit records, it can be used to support the enforcement of this control.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_STG.1(2)" name="Protected Audit Trail Storage (Archive Data)" oeCapable="false">
+        <Control id="AU-9" name="Protection of Audit Information">
+          <Comment>A conformant TOE has the ability to prevent unauthorized modification and deletion of audit records.</Comment>
+        </Control>
+        <Control id="AU-9(6)" name="Protection of Audit Information: Read-Only Access">
+          <Comment>A conformant TOE has the ability to prevent unauthorized modification and deletion of audit records. If the TOE prevents this by preventing all modification and deletion of audit records, it can be used to support the enforcement of this control.</Comment>
+        </Control>
+        <Control id="AU-11" name="Audit Record Retention">
+          <Comment>A conformant TOE supports the enforcement of this control by defining 'archive' audit records that can have extended retention requirements in accordance with organizational procedures.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_STG_EXT.1" name="External Audit Trail Storage" oeCapable="false">
+        <Control id="AU-4" name="Audit Log Storage Capacity">
+          <Comment>A conformant TOE shall maintain availability and integrity of audit data by storing it locally on the TOE or TOE platform, or on an external IT entity using a trusted channel protocol.</Comment>
+        </Control>
+        <Control id="AU-4(1)" name="Audit Log Storage Capacity: Transfer to Alternate Storage">
+          <Comment>A conformant TOE has the ability to transmit audit data to a location in its operational environment using a trusted channel protocol.</Comment>
+        </Control>
+        <Control id="AU-9" name="Protection of Audit Information">
+          <Comment>A conformant TOE has the ability to prevent unauthorized modification and deletion of audit records.</Comment>
+        </Control>
+        <Control id="AU-9(2)" name="Protection of Audit Information: Store on Separate Physical Systems or Components">
+          <Comment>A conformant TOE has the ability to transmit audit data to a location in its operational environment using a trusted channel protocol.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FAU_STG_EXT.2" name="Audit Data Retention" oeCapable="false">
+        <Control id="AU-11" name="Audit Record Retention">
+          <Comment>A conformant TOE supports the enforcement of this control by defining 'archive' audit records that can have extended retention requirements in accordance with organizational procedures.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_CKM.1" name="Cryptographic Key Generation" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>The ability of the TOE to generate asymmetric keys or invoke interfaces provided by the operational environment to generate asymmetric keys satisfies the key generation portion of this control.</Comment>
+        </Control>
+        <Control id="SC-12(3)" name="Cryptographic Key Establishment and Management: Asymmetric Keys">
+          <Comment>A conformant TOE ensures that generated asymmetric keys or the invoking interfaces provided by the operational environment to generated asymmetric keys provide an appropriate level of security.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_CKM.2" name="Cryptographic Key Establishment" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE or interfaces provided by the operational environment supports this control by providing a key establishment function.</Comment>
+        </Control>
+        <Control id="SC-12(3)" name="Cryptographic Key Establishment and Management: Asymmetric Keys">
+          <Comment>A conformant TOE or interfaces provided by the operational environment supports the production of asymmetric keys by providing a key establishment function.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_CKM_EXT.1(2)" name="Key Generation Key Encryption Keys" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE supports the key generation portion of this control by generating, or interfacing with its operational environment to generate, key encryption keys. The TOE will also support SC-12(2) or SC-12(3), depending on whether it uses symmetric or asymmetric keys for this purpose.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_CKM_EXT.1(3)" name="Key Generation for Key Encryption Keys (TOE Key Archival)" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE supports the key generation portion of this control by generating, or interfacing with its operational environment to generate, key encryption keys. The TOE will also support SC-12(2) or SC-12(3), depending on whether it uses symmetric or asymmetric keys for this purpose.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_CKM_EXT.1(4)" name="Generation of Key Shares" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE supports the key generation portion of this control by generating, or interfacing with its operational environment to generate, key shares. The TOE will also support SC-12(2) or SC-12(3), depending on whether it uses symmetric or asymmetric keys for this purpose.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_CKM_EXT.4" name="Cryptographic Key Destruction" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE securely destroys or interfaces with the operational environment to securely destroy cryptographic keys.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_CKM_EXT.5" name="Public Key Integrity" oeCapable="true">
+        <Control id="SI-7(6)" name="Software, Firmware, and Information Integrity: Cryptographic Protection">
+          <Comment>A conformant TOE supports the enforcement of this control by using cryptographic methods to protect the integrity of stored key data either through the TSF or through reliance on the operational environment.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_CKM_EXT.6" name="TOE Key Archival" oeCapable="true">
+        <Control id="CP-10" name="System Recovery and Reconstitution">
+          <Comment>A conformant TOE supports the enforcement of this control by providing a mechanism, either internal to the TOE or invoked from its operational environment, to import/export a key archive to maintain continuity of operations in the event of a TSF failure.</Comment>
+        </Control>
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE supports the enforcement of this control by protecting the stored key archive, either within the TSF or through invocation of an environmental interface.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_CKM_EXT.7" name="Key Generation for KEKs" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE supports the key generation portion of this control by generating, or interfacing with its operational environment to generate, a root encryption key. The TOE will also support SC-12(2) or SC-12(3), depending on whether it uses symmetric or asymmetric keys for this purpose.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_CKM_EXT.8" name="Key Hierarchy Entropy" oeCapable="false">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE will use a key hierarchy to ensure the secure storage of cryptographic keys.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_COP.1(1)" name="Cryptographic Operation (AES Encryption/Decryption)" oeCapable="true">
+        <Control id="SC-13" name="Cryptographic Protection">
+          <Comment>A conformant TOE performs or interfaces with the operational environment to perform symmetric encryption and decryption using NSA-approved and FIPS-validated algorithms.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_COP.1(2)" name="Cryptographic Operation (Cryptographic Signature)" oeCapable="true">
+        <Control id="SC-13" name="Cryptographic Protection">
+          <Comment>A conformant TOE performs or interfaces with the operational environment to perform cryptographic signing using NSA-approved and FIPS-validated algorithms.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_COP.1(3)" name="Cryptographic Operation (Cryptographic Hashing)" oeCapable="true">
+        <Control id="SC-13" name="Cryptographic Protection">
+          <Comment>A conformant TOE performs or interfaces with the operational environment to perform cryptographic hashing using NSA-approved and FIPS-validated algorithms.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_COP.1(4)" name="Cryptographic Operation (Keyed-Hash Message Authentication)" oeCapable="true">
+        <Control id="SC-13" name="Cryptographic Protection">
+          <Comment>A conformant TOE performs or interfaces with the operational environment to perform keyed-hash message authentication using NSA-approved and FIPS-validated algorithms.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_RBG_EXT.1" name="Cryptographic Random Bit Generation" oeCapable="true">
+        <Control id="SC-12" name="Cryptographic Key Establishment and Management">
+          <Comment>A conformant TOE's use of an appropriate DRBG ensures that generated keys provide an appropriate level of security either through the TSF or through reliance on the operational environment.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_AFL.1" name="Authentication Failure Handling" oeCapable="true">
+        <Control id="AC-7" name="Unsuccessful Logon Attempts">
+          <Comment>The TOE or through reliance on the operational environment has the ability to detect when a defined number of unsuccessful authentication attempts occur and take some corrective action.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_PMG_EXT.1" name="Password Management" oeCapable="false">
+        <Control id="IA-5(1)" name="Authenticator Management: Password-Based Authentication">
+          <Comment>A conformant TOE will have the ability to enforce some minimum password complexity requirements, although they are not identical to CNSS or DoD requirements or to those specified in part (a) of this control.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_UAU.7" name="Protected Authentication Feedback" oeCapable="false">
+        <Control id="IA-6" name="Authentication Feedback">
+          <Comment>The TOE is required to provide obscured feedback to the user while authentication is in progress.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_APW_EXT.1" name="Protection of Privileged User Passwords" oeCapable="false">
+        <Control id="AC-3(11)" name="Access Enforcement: Restrict Access to Specific Information Types">
+          <Comment>A conformant TOE restricts access to administrative credentials, which supports the control to the extent that such a repository is identified by the organization as requiring restricted access.</Comment>
+        </Control>
+        <Control id="IA-5" name="Authenticator Management">
+          <Comment>A conformant TOE protects authentication data from unauthorized disclosure, in support of part (h) of this control.</Comment>
+        </Control>
+        <Control id="IA-5(6)" name="Authenticator Management: Protection of Authenticators">
+          <Comment>A conformant TOE must have the ability to securely store passwords and other credential data it uses.</Comment>
+        </Control>
+        <Control id="SC-28(1)" name="Protection of Information at Rest: Cryptographic Protection">
+          <Comment>A conformant TOE uses a cryptographic mechanism to prevent credential data at rest from being stored in plaintext.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCO_NRR_EXT.2" name="Certificate-Based Proof of Receipt" oeCapable="false">
+        <Control id="AU-10" name="Non-repudiation">
+          <Comment>A conformant TOE supports enforcement of this control by providing proof of receipt for CMC or EST data.</Comment>
+        </Control>
+        <Control id="AU-10(1)" name="Non-repudiation: Association of Identities">
+          <Comment>A conformant TOE binds its identity to proof of receipt using digital signature.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_CMCS_EXT.1" name="Certificate Management over CMS (CMC) Server" oeCapable="false">
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE uses HTTPS to protect CMC data in transit.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>A conformant TOE uses HTTPS to protect CMC data in transit.</Comment>
+        </Control>
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>A conformant TOE acts as a CMC server as part of the certificate issuance process.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_CMCC_EXT.1" name="Certificate Management over CMS (CMC) Client" oeCapable="false">
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE uses HTTPS to protect CMC data in transit.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>A conformant TOE uses HTTPS to protect CMC data in transit.</Comment>
+        </Control>
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>A conformant TOE acts as a CMC client as part of the certificate issuance process.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_ESTS_EXT.1" name="Enrollment over Secure Transport (EST) Server" oeCapable="false">
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE uses TLS to protect EST data in transit.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>A conformant TOE uses TLS to protect EST data in transit.</Comment>
+        </Control>
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>A conformant TOE acts as an EST server as part of the certificate issuance process.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_ESTC_EXT.1" name="Enrollment over Secure Transport (EST) Client" oeCapable="false">
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE uses TLS to protect EST data in transit.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>A conformant TOE uses TLS to protect EST data in transit.</Comment>
+        </Control>
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>A conformant TOE acts as an EST client as part of the certificate issuance process.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_X509_EXT.3" name="X509 Certificate Request" oeCapable="false">
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>This function supports behavior related to certificate issuance.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FDP_CRL_EXT.1" name="Certificate Revocation List Validation" oeCapable="false">
+        <Control id="IA-5(2)" name="Authenticator Management: Public Key-Based Authentication">
+          <Comment>A conformant TOE supports enforcement of part (a) of this control by serving as a mechanism where certificate status information can be authoritatively checked.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FDP_OCSPG_EXT.1" name="OCSP Basic Response Generation" oeCapable="false">
+        <Control id="IA-5(2)" name="Authenticator Management: Public Key-Based Authentication">
+          <Comment>A conformant TOE supports enforcement of part (a) of this control by serving as a mechanism where certificate status information can be authoritatively checked.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FTP_ITC.1" name="Inter-TSF Trusted Channel" oeCapable="false">
+        <Control id="IA-3(1)" name="Device Identification and Authentication: Cryptographic Bidirectional Authentication">
+          <Comment>A conformant TOE may support the enforcement of this control if any protocols used to establish trusted communications use mutual authentication.</Comment>
+        </Control>
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE has the ability to ensure the confidentiality and integrity of information transmitted between the TOE and another trusted IT product.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>The TOE supports a cryptographic method of protecting data in transit.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_HTTPS_EXT.1" name="HTTPS Protocol" oeCapable="false">
+        <Control id="IA-5(2)" name="Authenticator Management: Public Key-Based Authentication">
+          <Comment>A conformant TOE may support the implementation of PKI-based authentication by validating peer certificates as part of the authentication process.</Comment>
+        </Control>
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE has the ability to ensure the confidentiality and integrity of information transmitted between the TOE and another trusted IT product.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>The TOE supports a cryptographic method of protecting data in transit.</Comment>
+        </Control>
+        <Control id="SC-13" name="Cryptographic Protection">
+          <Comment>The TOE provides cryptographic methods to secure data in transit, which may satisfy organization-defined uses if the functionality claimed by the TSF is consistent with organizational requirements.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_IPSEC_EXT.1" name="IPsec Protocol" oeCapable="false">
+        <Control id="IA-5(2)" name="Authenticator Management: Public Key-Based Authentication">
+          <Comment>A conformant TOE implements peer authentication for IPsec.</Comment>
+        </Control>
+        <Control id="SC-7(5)" name="Boundary Protection: Deny by Default - Allow by Exception">
+          <Comment>A conformant TOE's IPsec implementation includes a default-deny posture in its SPD.</Comment>
+        </Control>
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE implements IPsec as a method of ensuring confidentiality and integrity of data in transit.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>The TOE's use of IPsec provides a cryptographic means to protect data in transit.</Comment>
+        </Control>
+        <Control id="SC-13" name="Cryptographic Protection">
+          <Comment>The TOE provides cryptographic methods to secure data in transit, which may satisfy organization-defined uses if the functionality claimed by the TSF is consistent with organizational requirements.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_TLSC_EXT.1" name="TLS Client Protocol" oeCapable="false">
+        <Control id="IA-5(2)" name="Authenticator Management: Public Key-Based Authentication">
+          <Comment>The TOE requires peers to possess a valid certificate before establishing trusted communications, supporting this control.</Comment>
+        </Control>
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE has the ability to ensure the confidentiality and integrity of information transmitted between the TOE and another trusted IT product.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>The TOE supports a cryptographic method of protecting data in transit.</Comment>
+        </Control>
+        <Control id="SC-13" name="Cryptographic Protection">
+          <Comment>The TOE provides cryptographic methods to secure data in transit, which may satisfy organization-defined uses if the functionality claimed by the TSF is consistent with organizational requirements.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FCS_TLSS_EXT.1" name="TLS Server Protocol" oeCapable="false">
+        <Control id="IA-5(2)" name="Authenticator Management: Public Key-Based Authentication">
+          <Comment>The TOE provides a server certificate to a TLS client before establishing trusted communications, supporting this control.</Comment>
+        </Control>
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE has the ability to ensure the confidentiality and integrity of information transmitted between the TOE and another trusted IT product.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>The TOE supports a cryptographic method of protecting data in transit.</Comment>
+        </Control>
+        <Control id="SC-13" name="Cryptographic Protection">
+          <Comment>The TOE provides cryptographic methods to secure data in transit, which may satisfy organization-defined uses if the functionality claimed by the TSF is consistent with organizational requirements.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FDP_ITT.1" name="Basic Internal Transfer Protection" oeCapable="false">
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE will support this control by providing a protected communication channel between remote distributed TOE components.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>A conformant TOE will use cryptographic methods to protect data in transit between different parts of the TOE.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_PSK_EXT.1" name="Pre-Shared Key Composition" oeCapable="false">
+        <Control id="IA-5" name="Authenticator Management">
+          <Comment>A conformant TOE uses pre-shared keys as a type of authenticator and will ensure their strength and confidentiality, which supports parts (c) and (h) of this control.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_ITT.1" name="Basic Internal TSF Data Transfer Protection" oeCapable="false">
+        <Control id="SC-8" name="Transmission Confidentiality and Integrity">
+          <Comment>A conformant TOE will support this control by providing a protected communication channel between remote distributed TOE components.</Comment>
+        </Control>
+        <Control id="SC-8(1)" name="Transmission Confidentiality and Integrity: Cryptographic Protection">
+          <Comment>A conformant TOE will use cryptographic methods to protect data in transit between different parts of the TOE.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FPT_SKY_EXT.2" name="Key Share Access" oeCapable="true">
+        <Control id="AC-3" name="Access Enforcement">
+          <Comment>A conformant TOE supports the enforcement of this control by limiting key share access to individual authorized users.</Comment>
+        </Control>
+        <Control id="AC-5" name="Separation of Duties">
+          <Comment>A conformant TOE supports the enforcement of this control by ensuring that each key share is only accessible by a single privileged user.</Comment>
+        </Control>
+      </SFRMapping>
+    </SelectionBasedMappings>
+
+    <!-- Objective Requirements Mappings -->
+    <ObjectiveMappings>
+      <SFRMapping sfr="FCS_KSH_EXT.1" name="Key Sharing" oeCapable="true">
+        <Control id="AC-3(2)" name="Access Enforcement: Dual Authorization">
+          <Comment>A conformant TOE supports the enforcement of this control by requiring dual authorization for the export of key data that is used for recovery from TSF failure.</Comment>
+        </Control>
+        <Control id="CP-9" name="System Backup">
+          <Comment>A conformant TOE supports the enforcement of part (b) of this control because the key data being exported from the TOE is system-level information that is being stored externally in the case that a recovery from failure is needed. Part (d) is enforced through the use of split knowledge procedures that ensure the confidentiality of this data is maintained while outside the TOE boundary.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_ESTC_EXT.2" name="EST Client use of TLS-unique value" oeCapable="false">
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>This function supports behavior related to certificate issuance.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_ESTS_EXT.2" name="Enrollment over Secure Transport (EST) Server" oeCapable="false">
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>This function supports behavior related to certificate issuance.</Comment>
+        </Control>
+      </SFRMapping>
+
+      <SFRMapping sfr="FIA_ENR_EXT.1.1" name="Certificate Enrollment" oeCapable="false">
+        <Control id="SC-17" name="Public Key Infrastructure Certificates">
+          <Comment>This function supports behavior related to certificate issuance.</Comment>
+        </Control>
+      </SFRMapping>
+    </ObjectiveMappings>
+
+    <!-- Control Family Summary -->
+    <ControlFamilySummary>
+      <Family id="AC" name="Access Control">
+        <Controls>AC-2(5), AC-2(7), AC-3, AC-3(2), AC-3(7), AC-3(11), AC-5, AC-6, AC-6(1), AC-7, AC-8, AC-11, AC-12, AC-12(1), AC-14</Controls>
+      </Family>
+      <Family id="AU" name="Audit and Accountability">
+        <Controls>AU-2, AU-3, AU-3(1), AU-4, AU-4(1), AU-5, AU-6(7), AU-7, AU-7(1), AU-8, AU-9, AU-9(2), AU-9(6), AU-10, AU-10(1), AU-10(2), AU-11, AU-12</Controls>
+      </Family>
+      <Family id="CM" name="Configuration Management">
+        <Controls>CM-6, CM-14</Controls>
+      </Family>
+      <Family id="CP" name="Contingency Planning">
+        <Controls>CP-9, CP-10, CP-12</Controls>
+      </Family>
+      <Family id="IA" name="Identification and Authentication">
+        <Controls>IA-2, IA-3(1), IA-5, IA-5(1), IA-5(2), IA-5(6), IA-6, IA-11</Controls>
+      </Family>
+      <Family id="MP" name="Media Protection">
+        <Controls>MP-5</Controls>
+      </Family>
+      <Family id="SC" name="System and Communications Protection">
+        <Controls>SC-4, SC-7(5), SC-8, SC-8(1), SC-8(2), SC-11, SC-12, SC-12(2), SC-12(3), SC-13, SC-17, SC-23, SC-23(5), SC-24, SC-28, SC-28(1), SC-45(1)</Controls>
+      </Family>
+      <Family id="SI" name="System and Information Integrity">
+        <Controls>SI-6, SI-7, SI-7(1), SI-7(6), SI-7(12), SI-7(15)</Controls>
+      </Family>
+    </ControlFamilySummary>
+  </NISTMappings>
+</ProtectionProfile>

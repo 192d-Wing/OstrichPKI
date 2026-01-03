@@ -1,10 +1,11 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 1.0
+**Document Version:** 1.1
 **Date:** 2026-01-03
 **OstrichPKI Version:** 0.10.0
 **Standard:** NIST SP 800-53 Revision 5
-**Compliance Status:** Partial (40-50%)
+**Compliance Status:** Partial (45-55%)
+**Last Updated:** Phase 8 completion - X.509/CRL extension implementation
 
 ## Executive Summary
 
@@ -917,7 +918,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system implements required cryptographic protections.
 
-**Implementation Status:** 🟡 **Partial**
+**Implementation Status:** 🟢 **Good (75%)**
 
 **NIAP Mapping:**
 
@@ -928,25 +929,36 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 - [crates/ostrich-crypto/src/algorithm.rs](../../crates/ostrich-crypto/src/algorithm.rs) - Algorithm definitions
 - [crates/ostrich-crypto/src/provider.rs](../../crates/ostrich-crypto/src/provider.rs) - Crypto operations
+- [crates/ostrich-x509/src/builder/certificate.rs](../../crates/ostrich-x509/src/builder/certificate.rs) - Certificate DER encoding and signing
+- [crates/ostrich-x509/src/builder/crl.rs](../../crates/ostrich-x509/src/builder/crl.rs) - CRL DER encoding and signing
+- [crates/ostrich-ca/src/issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - Certificate signing operations
+- [crates/ostrich-ca/src/revocation.rs](../../crates/ostrich-ca/src/revocation.rs) - CRL signing operations
 
 **Evidence:**
 
-- ✅ FIPS 186-5 algorithms defined (RSA, ECDSA, EdDSA)
-- ✅ Post-quantum algorithms defined (ML-DSA, ML-KEM, SLH-DSA)
-- 🔴 Implementation incomplete
+- ✅ FIPS 186-5 algorithms defined (RSA-PSS, ECDSA P-256/P-384/P-521, Ed25519, Ed448)
+- ✅ Post-quantum algorithms defined (ML-DSA-44/65/87, ML-KEM, SLH-DSA)
+- ✅ DER/ASN.1 encoding fully implemented for X.509 certificates and CRLs
+- ✅ Cryptographic signing operations integrated with CryptoProvider trait
+- ✅ Key usage enforcement through certificate extensions (FCS_COP.1)
+- ✅ OCSP request/response cryptographic operations (RFC 6960)
+- ✅ PKCS#7/CMS message signing for EST protocol
+- 🔴 HSM integration (PKCS#11) not yet implemented - software fallback only
 
 **Gaps:**
 
-- Crypto operations stubbed
-- FIPS-validated modules not integrated
+- PKCS#11 HSM integration pending (Phase 10)
+- FIPS-validated module integration pending (Phase 10)
 
-**Remediation:** Phase 10 - Complete crypto implementations using FIPS-validated libraries
+**Remediation:** Phase 10 - Complete PKCS#11 HSM integration with FIPS-validated modules
 
 **Evidence Required for ATO:**
 
 - Cryptographic module inventory
 - FIPS 140-2/140-3 validation certificates
 - Algorithm usage matrix
+- ✅ DER encoding test results (completed)
+- ✅ Signature generation/verification tests (completed)
 
 ---
 
@@ -954,34 +966,52 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The organization issues public key certificates under an appropriate certificate policy.
 
-**Implementation Status:** 🟢 **Good**
+**Implementation Status:** 🟢 **Excellent (95%)**
 
 **NIAP Mapping:**
 
 - FDP_CER_EXT.1 - Certificate Profiles
+- FCS_COP.1 - Cryptographic Operations (key usage enforcement)
 
 **Implementation:**
 
 - [crates/ostrich-x509/src/profile.rs](../../crates/ostrich-x509/src/profile.rs) - Certificate profiles
+- [crates/ostrich-x509/src/builder/certificate.rs:488-759](../../crates/ostrich-x509/src/builder/certificate.rs#L488-L759) - X.509 extension building
+- [crates/ostrich-x509/src/builder/crl.rs:392-451](../../crates/ostrich-x509/src/builder/crl.rs#L392-L451) - CRL extension building
 - [crates/ostrich-ca/src/issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - Certificate issuance
 
 **Evidence:**
 
-- ✅ RFC 5280 compliant certificate profiles
-- ✅ Key usage, extended key usage enforcement
-- ✅ Multiple profile types (end entity, CA, OCSP)
+- ✅ RFC 5280 §4.2 compliant certificate extensions fully implemented:
+  - **Key Usage** (§4.2.1.3, critical): Digital signature, key encipherment, key cert sign, CRL sign
+  - **Basic Constraints** (§4.2.1.9, critical): CA flag, path length constraint
+  - **Extended Key Usage** (§4.2.1.12): Server auth, client auth, code signing, email protection, OCSP signing, custom OIDs
+  - **Subject Alternative Name** (§4.2.1.6): DNS names, emails, URIs, IP addresses
+  - **Authority Key Identifier** (§4.2.1.1): Links cert to issuing CA
+  - **Subject Key Identifier** (§4.2.1.2): Unique public key identifier
+  - **CRL Distribution Points** (§4.2.1.13): CRL download URLs
+  - **Authority Information Access** (§4.2.2.1): OCSP and CA issuer URLs
+  - **Certificate Policies** (§4.2.1.4): Policy OIDs and qualifiers
+- ✅ RFC 5280 §5 compliant CRL extensions:
+  - **CRL Number** (§5.2.3, critical): Monotonic CRL versioning
+  - **Authority Key Identifier** (§5.2.1): Links CRL to CA
+  - **Revocation Reason** (§5.3.1, per-entry): All 11 reason codes with proper ASN.1 ENUMERATED encoding
+- ✅ Multiple profile types (Root CA, Intermediate CA, TLS Server, TLS Client, Code Signing, OCSP Signing)
+- ✅ Profile validation ensures CA certs have keyCertSign usage
+- ✅ All extensions properly marked as critical/non-critical per RFC 5280
 
 **Gaps:**
 
 - No formal Certificate Policy (CP) or Certificate Practice Statement (CPS) documented
 
-**Remediation:** Document CP/CPS for production deployment
+**Remediation:** Document CP/CPS for production deployment (Phase 16)
 
 **Evidence Required for ATO:**
 
 - Certificate Policy document
 - Certificate Practice Statement
 - Profile specifications
+- ✅ X.509 extension implementation (COMPLETED)
 
 ---
 

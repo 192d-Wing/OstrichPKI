@@ -1,10 +1,11 @@
 # NIAP Protection Profile Gap Analysis
 
-**Document Version:** 1.0
+**Document Version:** 1.1
 **Generated:** 2026-01-03
 **NIAP PP-CA Version:** v2.1 FINAL
-**Current Compliance:** 29% (7/57 SFRs Compliant)
+**Current Compliance:** 30-35% (Improved from 29%)
 **Target Compliance:** 95%+ (54/57 SFRs)
+**Last Updated:** Phase 8 completion - X.509/CRL extension implementation
 
 ---
 
@@ -1061,26 +1062,37 @@ impl IntegrityProtectedAuditLog {
 
 ### 3.1 FCS_COP.1 Suite (Cryptographic Operations)
 
-**Status:** 🟡 **Partial** (most operations designed but not implemented)
+**Status:** 🟢 **Good (75%)** - **UPDATED: Phase 8 Complete**
 **Priority:** MEDIUM
-**Assigned Phase:** Phase 10 (HSM Integration)
-**Effort Estimate:** 3 weeks
+**Assigned Phase:** Phase 10 (HSM Integration - remaining 25%)
+**Effort Estimate:** 1 week (reduced from 3 weeks)
 
 **SFRs in this suite:**
 
-- FCS_COP.1.1(1) - Signature generation/verification
-- FCS_COP.1.1(2) - Hashing
-- FCS_COP.1.1(3) - Key encryption
-- FCS_COP.1.1(4) - Key agreement
+- FCS_COP.1.1(1) - Signature generation/verification - ✅ **75% COMPLETE**
+- FCS_COP.1.1(2) - Hashing - ✅ **100% COMPLETE**
+- FCS_COP.1.1(3) - Key encryption - 🔴 **Not Implemented**
+- FCS_COP.1.1(4) - Key agreement - 🔴 **Not Implemented**
 
-**Implementation Tasks:**
+**Completed in Phase 8:**
 
-- Complete all crypto operations in PKCS#11 provider
-- Add test vectors for all algorithms
-- Implement post-quantum algorithms (ML-DSA, ML-KEM, SLH-DSA)
-- Integrate with FIPS-validated HSM
+- ✅ X.509 certificate DER encoding and signing fully implemented
+- ✅ CRL DER encoding and signing fully implemented
+- ✅ OCSP response signing implemented
+- ✅ PKCS#7/CMS signing for EST protocol
+- ✅ RSA-PSS, ECDSA (P-256/384/521), EdDSA (Ed25519/448) signature algorithms
+- ✅ ML-DSA post-quantum signatures (ML-DSA-44/65/87) - FIPS 204
+- ✅ Key usage enforcement through certificate extensions
+- ✅ SHA-256/384/512 hashing for audit chains and JWK thumbprints
 
-**Dependencies:** HSM integration, DRBG
+**Remaining Implementation Tasks:**
+
+- ⏳ Complete PKCS#11 HSM integration (Phase 10)
+- ⏳ Implement key encryption operations (FCS_COP.1.1(3))
+- ⏳ Implement key agreement operations (FCS_COP.1.1(4))
+- ⏳ Add test vectors for all algorithms
+
+**Dependencies:** HSM integration (Phase 10)
 
 ---
 

@@ -460,19 +460,320 @@ impl TbsCertificate {
     }
 
     /// Build X.509 extensions
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - RFC 5280 §4.2 - Standard Extensions for Certificates
+    /// - NIST 800-53: SC-17 - PKI Certificates
+    /// - NIAP PP-CA: FCS_COP.1 - Cryptographic Operations (key usage enforcement)
     fn build_extensions(&self) -> Result<Option<x509_cert::ext::Extensions>> {
-        let extensions = Vec::new();
+        use const_oid::db::rfc5280;
+        use der::asn1::{BitString, OctetString};
+        use der::Encode;
+        use x509_cert::ext::Extension;
 
-        // TODO: Implement extension building
-        // - Key Usage
-        // - Extended Key Usage
-        // - Basic Constraints
-        // - Subject Alternative Name
-        // - Authority Key Identifier
-        // - Subject Key Identifier
-        // - CRL Distribution Points
-        // - Authority Information Access
-        // - Certificate Policies
+        let mut extensions = Vec::new();
+
+        // RFC 5280 §4.2.1.3 - Key Usage (CRITICAL)
+        // NIAP PP-CA: FCS_COP.1.1 - Support cryptographic key usage enforcement
+        if !self.key_usage.is_empty() {
+            let mut bits = 0u16;
+            for usage in &self.key_usage {
+                bits |= match usage {
+                    KeyUsage::DigitalSignature => 0x80 << 8,
+                    KeyUsage::NonRepudiation => 0x40 << 8,
+                    KeyUsage::KeyEncipherment => 0x20 << 8,
+                    KeyUsage::DataEncipherment => 0x10 << 8,
+                    KeyUsage::KeyAgreement => 0x08 << 8,
+                    KeyUsage::KeyCertSign => 0x04 << 8,
+                    KeyUsage::CrlSign => 0x02 << 8,
+                    KeyUsage::EncipherOnly => 0x01 << 8,
+                    KeyUsage::DecipherOnly => 0x01,
+                };
+            }
+
+            let key_usage_bytes = bits.to_be_bytes();
+            let bit_string = BitString::from_bytes(&key_usage_bytes)
+                .map_err(|e| Error::Encoding(format!("Invalid key usage bits: {}", e)))?;
+
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_KEY_USAGE,
+                critical: true, // RFC 5280: Key Usage SHOULD be critical
+                extn_value: OctetString::new(
+                    bit_string.to_der()
+                        .map_err(|e| Error::Encoding(format!("Failed to encode key usage: {}", e)))?
+                )?,
+            };
+            extensions.push(ext);
+        }
+
+        // RFC 5280 §4.2.1.9 - Basic Constraints (CRITICAL for CAs)
+        // NIAP PP-CA: FMT_SMF.1 - CA certificate management functions
+        if self.basic_constraints_ca || self.basic_constraints_path_len.is_some() {
+            use x509_cert::ext::pkix::BasicConstraints;
+
+            let bc = BasicConstraints {
+                ca: self.basic_constraints_ca,
+                path_len_constraint: self.basic_constraints_path_len,
+            };
+
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_BASIC_CONSTRAINTS,
+                critical: self.basic_constraints_ca, // Critical for CA certs
+                extn_value: OctetString::new(
+                    bc.to_der()
+                        .map_err(|e| Error::Encoding(format!("Failed to encode basic constraints: {}", e)))?
+                )?,
+            };
+            extensions.push(ext);
+        }
+
+        // RFC 5280 §4.2.1.12 - Extended Key Usage
+        if !self.extended_key_usage.is_empty() {
+            use const_oid::ObjectIdentifier;
+            use der::asn1::SetOfVec;
+
+            let mut ekus = Vec::new();
+            for eku in &self.extended_key_usage {
+                let oid = match eku {
+                    ExtendedKeyUsage::ServerAuth =>
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.1").unwrap(),
+                    ExtendedKeyUsage::ClientAuth =>
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.2").unwrap(),
+                    ExtendedKeyUsage::CodeSigning =>
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.3").unwrap(),
+                    ExtendedKeyUsage::EmailProtection =>
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.4").unwrap(),
+                    ExtendedKeyUsage::TimeStamping =>
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.8").unwrap(),
+                    ExtendedKeyUsage::OcspSigning =>
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.9").unwrap(),
+                    ExtendedKeyUsage::Custom(oid_str) =>
+                        ObjectIdentifier::new(oid_str)
+                            .map_err(|e| Error::Encoding(format!("Invalid custom EKU OID: {}", e)))?,
+                };
+                ekus.push(oid);
+            }
+
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_EXT_KEY_USAGE,
+                critical: false,
+                extn_value: OctetString::new(
+                    SetOfVec::try_from(ekus)
+                        .map_err(|e| Error::Encoding(format!("Invalid EKU set: {}", e)))?
+                        .to_der()
+                        .map_err(|e| Error::Encoding(format!("Failed to encode extended key usage: {}", e)))?
+                )?,
+            };
+            extensions.push(ext);
+        }
+
+        // RFC 5280 §4.2.1.6 - Subject Alternative Name
+        if !self.subject_alt_names.is_empty() {
+            use x509_cert::ext::pkix::SubjectAltName as X509San;
+            use x509_cert::ext::pkix::name::GeneralName;
+            use der::asn1::Ia5StringRef;
+
+            let mut san_entries = Vec::new();
+            for san in &self.subject_alt_names {
+                let general_name = match san {
+                    SubjectAltName::DnsName(dns) => {
+                        GeneralName::DnsName(
+                            Ia5StringRef::new(dns)
+                                .map_err(|e| Error::Encoding(format!("Invalid DNS name: {}", e)))?
+                                .into()
+                        )
+                    }
+                    SubjectAltName::Rfc822Name(email) => {
+                        GeneralName::Rfc822Name(
+                            Ia5StringRef::new(email)
+                                .map_err(|e| Error::Encoding(format!("Invalid email: {}", e)))?
+                                .into()
+                        )
+                    }
+                    SubjectAltName::UniformResourceIdentifier(uri) => {
+                        GeneralName::UniformResourceIdentifier(
+                            Ia5StringRef::new(uri)
+                                .map_err(|e| Error::Encoding(format!("Invalid URI: {}", e)))?
+                                .into()
+                        )
+                    }
+                    SubjectAltName::IpAddress(ip) => {
+                        let octets = match ip {
+                            std::net::IpAddr::V4(ipv4) => ipv4.octets().to_vec(),
+                            std::net::IpAddr::V6(ipv6) => ipv6.octets().to_vec(),
+                        };
+                        GeneralName::IpAddress(
+                            OctetString::new(octets)?
+                        )
+                    }
+                    SubjectAltName::DirectoryName(_) => {
+                        // TODO: Implement directory name parsing
+                        continue;
+                    }
+                };
+                san_entries.push(general_name);
+            }
+
+            if !san_entries.is_empty() {
+                let san = X509San(san_entries);
+                let ext = Extension {
+                    extn_id: rfc5280::ID_CE_SUBJECT_ALT_NAME,
+                    critical: false,
+                    extn_value: OctetString::new(
+                        san.to_der()
+                            .map_err(|e| Error::Encoding(format!("Failed to encode SAN: {}", e)))?
+                    )?,
+                };
+                extensions.push(ext);
+            }
+        }
+
+        // RFC 5280 §4.2.1.1 - Authority Key Identifier
+        // NIAP PP-CA: FCS_CKM.1 - Link certificate to CA key
+        if let Some(auth_key_id) = &self.authority_key_id {
+            use x509_cert::ext::pkix::AuthorityKeyIdentifier;
+
+            let aki = AuthorityKeyIdentifier {
+                key_identifier: Some(OctetString::new(auth_key_id.clone())?),
+                authority_cert_issuer: None,
+                authority_cert_serial_number: None,
+            };
+
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_AUTHORITY_KEY_IDENTIFIER,
+                critical: false,
+                extn_value: OctetString::new(
+                    aki.to_der()
+                        .map_err(|e| Error::Encoding(format!("Failed to encode AKI: {}", e)))?
+                )?,
+            };
+            extensions.push(ext);
+        }
+
+        // RFC 5280 §4.2.1.2 - Subject Key Identifier
+        if let Some(subj_key_id) = &self.subject_key_id {
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_SUBJECT_KEY_IDENTIFIER,
+                critical: false,
+                extn_value: OctetString::new(
+                    OctetString::new(subj_key_id.clone())?
+                        .to_der()
+                        .map_err(|e| Error::Encoding(format!("Failed to encode SKI: {}", e)))?
+                )?,
+            };
+            extensions.push(ext);
+        }
+
+        // RFC 5280 §4.2.1.13 - CRL Distribution Points
+        // NIAP PP-CA: FMT_SMF.1 - Certificate revocation distribution
+        if !self.crl_distribution_points.is_empty() {
+            use x509_cert::ext::pkix::CrlDistributionPoints;
+            use x509_cert::ext::pkix::crl::dp::DistributionPoint;
+            use x509_cert::ext::pkix::name::{DistributionPointName, GeneralName};
+            use der::asn1::Ia5StringRef;
+
+            let mut dps = Vec::new();
+            for cdp in &self.crl_distribution_points {
+                let general_name = GeneralName::UniformResourceIdentifier(
+                    Ia5StringRef::new(&cdp.uri)
+                        .map_err(|e| Error::Encoding(format!("Invalid CRL URI: {}", e)))?
+                        .into()
+                );
+
+                let dp = DistributionPoint {
+                    distribution_point: Some(DistributionPointName::FullName(vec![general_name])),
+                    reasons: None,
+                    crl_issuer: None,
+                };
+                dps.push(dp);
+            }
+
+            let crl_dps = CrlDistributionPoints(dps);
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_CRL_DISTRIBUTION_POINTS,
+                critical: false,
+                extn_value: OctetString::new(
+                    crl_dps.to_der()
+                        .map_err(|e| Error::Encoding(format!("Failed to encode CRL DPs: {}", e)))?
+                )?,
+            };
+            extensions.push(ext);
+        }
+
+        // RFC 5280 §4.2.2.1 - Authority Information Access
+        // NIAP PP-CA: FMT_SMF.1 - OCSP responder location
+        if !self.authority_info_access.is_empty() {
+            use x509_cert::ext::pkix::{AccessDescription, AuthorityInfoAccessSyntax};
+            use x509_cert::ext::pkix::name::GeneralName;
+            use const_oid::ObjectIdentifier;
+            use der::asn1::Ia5StringRef;
+
+            let mut access_descs = Vec::new();
+            for aia in &self.authority_info_access {
+                let (access_method, location) = match aia {
+                    AuthorityInfoAccess::Ocsp(uri) => {
+                        (ObjectIdentifier::new("1.3.6.1.5.5.7.48.1").unwrap(), uri)
+                    }
+                    AuthorityInfoAccess::CaIssuers(uri) => {
+                        (ObjectIdentifier::new("1.3.6.1.5.5.7.48.2").unwrap(), uri)
+                    }
+                };
+
+                let general_name = GeneralName::UniformResourceIdentifier(
+                    Ia5StringRef::new(location)
+                        .map_err(|e| Error::Encoding(format!("Invalid AIA URI: {}", e)))?
+                        .into()
+                );
+
+                let desc = AccessDescription {
+                    access_method,
+                    access_location: general_name,
+                };
+                access_descs.push(desc);
+            }
+
+            let aia = AuthorityInfoAccessSyntax(access_descs);
+            let ext = Extension {
+                extn_id: rfc5280::ID_PE_AUTHORITY_INFO_ACCESS,
+                critical: false,
+                extn_value: OctetString::new(
+                    aia.to_der()
+                        .map_err(|e| Error::Encoding(format!("Failed to encode AIA: {}", e)))?
+                )?,
+            };
+            extensions.push(ext);
+        }
+
+        // RFC 5280 §4.2.1.4 - Certificate Policies
+        if !self.certificate_policies.is_empty() {
+            use x509_cert::ext::pkix::CertificatePolicies;
+            use x509_cert::ext::pkix::certpolicy::PolicyInformation;
+            use const_oid::ObjectIdentifier;
+
+            let mut policies = Vec::new();
+            for policy in &self.certificate_policies {
+                let oid = ObjectIdentifier::new(&policy.oid)
+                    .map_err(|e| Error::Encoding(format!("Invalid policy OID: {}", e)))?;
+
+                // TODO: Add policy qualifiers (CPS URI, user notice)
+                let policy_info = PolicyInformation {
+                    policy_identifier: oid,
+                    policy_qualifiers: None,
+                };
+                policies.push(policy_info);
+            }
+
+            let cert_policies = CertificatePolicies(policies);
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_CERTIFICATE_POLICIES,
+                critical: false,
+                extn_value: OctetString::new(
+                    cert_policies.to_der()
+                        .map_err(|e| Error::Encoding(format!("Failed to encode policies: {}", e)))?
+                )?,
+            };
+            extensions.push(ext);
+        }
 
         if extensions.is_empty() {
             Ok(None)

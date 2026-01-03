@@ -178,12 +178,50 @@ impl TbsCrl {
 
             let revocation_time = self.datetime_to_time(entry.revocation_time)?;
 
+            // Build CRL entry extensions (revocation reason)
+            // COMPLIANCE MAPPING:
+            // - RFC 5280 §5.3.1 - Reason Code
+            // - NIAP PP-CA: FAU_GEN.1 - Audit revocation reason
+            let crl_entry_extensions = if let Some(reason) = &entry.reason {
+                use const_oid::db::rfc5280;
+                use der::asn1::OctetString;
+                use x509_cert::ext::Extension;
+
+                // Map revocation reason to ASN.1 enumerated value
+                let reason_code: u8 = match reason {
+                    RevocationReason::Unspecified => 0,
+                    RevocationReason::KeyCompromise => 1,
+                    RevocationReason::CaCompromise => 2,
+                    RevocationReason::AffiliationChanged => 3,
+                    RevocationReason::Superseded => 4,
+                    RevocationReason::CessationOfOperation => 5,
+                    RevocationReason::CertificateHold => 6,
+                    // 7 is not used
+                    RevocationReason::RemoveFromCrl => 8,
+                    RevocationReason::PrivilegeWithdrawn => 9,
+                    RevocationReason::AaCompromise => 10,
+                };
+
+                // Encode reason as ENUMERATED ASN.1 type
+                // For reason codes, we need to create a simple integer value
+                let reason_bytes = vec![0x0A, 0x01, reason_code]; // 0x0A = ENUMERATED tag, 0x01 = length
+
+                let ext = Extension {
+                    extn_id: rfc5280::ID_CE_CRL_REASONS,
+                    critical: false, // RFC 5280: reason code is non-critical
+                    extn_value: OctetString::new(reason_bytes)?,
+                };
+
+                Some(vec![ext])
+            } else {
+                None
+            };
+
             // Build revoked cert entry
-            // Note: extensions for revocation reason will be added separately
             let revoked = RevokedCert {
                 serial_number: serial,
                 revocation_date: revocation_time,
-                crl_entry_extensions: None, // TODO: Add revocation reason extension
+                crl_entry_extensions,
             };
 
             revoked_certs.push(revoked);
@@ -352,16 +390,68 @@ impl TbsCrl {
 
     /// Build CRL extensions
     ///
-    /// RFC 5280 §5.2 - CRL extensions
+    /// COMPLIANCE MAPPING:
+    /// - RFC 5280 §5.2 - CRL Extensions
+    /// - NIST 800-53: SC-17 - PKI Certificates (CRL management)
+    /// - NIAP PP-CA: FMT_SMF.1 - Certificate revocation list generation
     fn build_extensions(&self) -> Result<Option<x509_cert::ext::Extensions>> {
-        // TODO: Implement CRL extensions:
-        // - CRL Number (required)
-        // - Authority Key Identifier
-        // - Issuing Distribution Point
+        use const_oid::db::rfc5280;
+        use der::asn1::OctetString;
+        use der::Encode;
+        use x509_cert::ext::Extension;
 
-        // For now, return None (empty extensions)
-        // CRL Number should be added here when implementing extensions
-        Ok(None)
+        let mut extensions = Vec::new();
+
+        // RFC 5280 §5.2.3 - CRL Number (MUST be present in conforming CRLs)
+        // NIAP PP-CA: FMT_SMF.1 - CRL versioning for revocation tracking
+        if let Some(crl_num) = self.crl_number {
+            use der::asn1::Uint;
+
+            let crl_number = Uint::new(&crl_num.to_be_bytes())
+                .map_err(|e| Error::Encoding(format!("Invalid CRL number: {}", e)))?;
+
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_CRL_NUMBER,
+                critical: false, // RFC 5280: CRL number is non-critical
+                extn_value: OctetString::new(
+                    crl_number.to_der()
+                        .map_err(|e| Error::Encoding(format!("Failed to encode CRL number: {}", e)))?
+                )?,
+            };
+            extensions.push(ext);
+        }
+
+        // RFC 5280 §5.2.1 - Authority Key Identifier
+        // NIAP PP-CA: FCS_CKM.1 - Link CRL to CA key
+        if let Some(auth_key_id) = &self.authority_key_id {
+            use x509_cert::ext::pkix::AuthorityKeyIdentifier;
+
+            let aki = AuthorityKeyIdentifier {
+                key_identifier: Some(OctetString::new(auth_key_id.clone())?),
+                authority_cert_issuer: None,
+                authority_cert_serial_number: None,
+            };
+
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_AUTHORITY_KEY_IDENTIFIER,
+                critical: false,
+                extn_value: OctetString::new(
+                    aki.to_der()
+                        .map_err(|e| Error::Encoding(format!("Failed to encode AKI: {}", e)))?
+                )?,
+            };
+            extensions.push(ext);
+        }
+
+        // RFC 5280 §5.2.5 - Issuing Distribution Point (optional but recommended)
+        // Indicates scope of the CRL (which certificates this CRL covers)
+        // For now, we'll skip this as it requires more complex configuration
+
+        if extensions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(extensions))
+        }
     }
 }
 
