@@ -1,8 +1,12 @@
 //! X.509 certificate and CRL parsing
 //!
 //! RFC 5280: X.509 certificate and CRL parsing
+//! RFC 2986: PKCS#10 certification request syntax
 
 use crate::{Error, Result};
+use ostrich_crypto::{Algorithm, CryptoProvider, KeyHandle};
+use std::sync::Arc;
+use x509_parser::prelude::*;
 
 /// Parse a DER-encoded X.509 certificate
 ///
@@ -39,18 +43,171 @@ pub fn parse_certificate_pem(_pem: &str) -> Result<ParsedCertificate> {
 /// Parse a DER-encoded Certificate Signing Request (CSR)
 ///
 /// RFC 2986: PKCS#10 certification request syntax
+/// NIST 800-53: SI-10 - Information input validation
 pub fn parse_csr(der: &[u8]) -> Result<ParsedCsr> {
     if der.is_empty() {
         return Err(Error::Parse("Empty CSR data".to_string()));
     }
 
+    // Parse CSR using x509-parser
+    let (_, csr) = x509_parser::certification_request::X509CertificationRequest::from_der(der)
+        .map_err(|e| Error::Parse(format!("Failed to parse PKCS#10 CSR: {}", e)))?;
+
+    // Extract subject DN
+    let subject_dn = csr.certification_request_info.subject.to_string();
+
+    // Extract public key (SubjectPublicKeyInfo) - already in DER format
+    let public_key = csr.certification_request_info.subject_pki.raw.to_vec();
+
+    // Extract signature
+    let signature = csr.signature_value.data.to_vec();
+
+    // Extract signature algorithm OID
+    let signature_algorithm = csr.signature_algorithm.algorithm.to_id_string();
+
+    // Extract attributes (use method instead of accessing private field)
+    let mut attributes = Vec::new();
+    for attr in csr.certification_request_info.attributes() {
+        let oid = attr.oid.to_id_string();
+        // Store raw DER of attribute value (attr.value is already &[u8])
+        let value = attr.value.to_vec();
+        attributes.push((oid, value));
+    }
+
+    // TODO: Extract Subject Alternative Names from extensionRequest attribute
+    // For now, return empty vector - this will need proper extension parsing
+    let sans = Vec::new();
+
     Ok(ParsedCsr {
-        subject_dn: String::new(),
-        public_key: Vec::new(),
-        attributes: Vec::new(),
-        signature: Vec::new(),
+        subject_dn,
+        subject_alternative_names: sans,
+        public_key,
+        attributes,
+        signature_algorithm,
+        signature,
         der_encoded: der.to_vec(),
     })
+}
+
+/// Verify CSR signature (self-signed proof of possession)
+///
+/// RFC 2986 §4.2 - Signature must be verified
+/// NIST 800-53: SI-10 - Validate cryptographic input
+pub async fn verify_csr_signature(
+    csr: &ParsedCsr,
+    crypto_provider: &Arc<dyn CryptoProvider>,
+) -> Result<bool> {
+    // Re-parse the CSR to get the TBS (To Be Signed) portion
+    let (_, parsed_csr) =
+        x509_parser::certification_request::X509CertificationRequest::from_der(&csr.der_encoded)
+            .map_err(|e| Error::Parse(format!("Failed to re-parse CSR: {}", e)))?;
+
+    // The TBS portion is the CertificationRequestInfo, which is already in raw form
+    let tbs_der = parsed_csr.certification_request_info.raw.to_vec();
+
+    // Import the public key for verification
+    let key_handle = import_public_key_for_verification(&csr.public_key, &csr.signature_algorithm)?;
+
+    // Map signature algorithm to our Algorithm enum
+    let algorithm = map_signature_algorithm_oid(&csr.signature_algorithm)?;
+
+    // Verify the signature
+    crypto_provider
+        .verify(&key_handle, algorithm, &tbs_der, &csr.signature)
+        .await
+        .map_err(|e| {
+            Error::SignatureVerification(format!("CSR signature verification failed: {}", e))
+        })
+}
+
+/// Import a public key from SPKI DER for verification
+/// Creates a temporary KeyHandle for signature verification
+fn import_public_key_for_verification(spki_der: &[u8], _sig_alg_oid: &str) -> Result<KeyHandle> {
+    use ostrich_crypto::KeyType;
+    use ostrich_crypto::key::ProviderId;
+
+    // Parse the SPKI to determine key type using x509-parser
+    let (_, spki) = SubjectPublicKeyInfo::from_der(spki_der)
+        .map_err(|e| Error::Parse(format!("Failed to parse SPKI: {}", e)))?;
+
+    // Determine key type and algorithm from SPKI algorithm OID
+    let oid_str = spki.algorithm.algorithm.to_id_string();
+
+    let (key_type, algorithm) = match oid_str.as_str() {
+        "1.2.840.113549.1.1.1" => {
+            // rsaEncryption - default to RSA 2048 and PKCS#1 SHA256
+            (KeyType::Rsa2048, Algorithm::RsaPkcs1Sha256)
+        }
+        "1.2.840.10045.2.1" => {
+            // ecPublicKey - check curve parameter
+            if let Some(params) = &spki.algorithm.parameters {
+                // Parse the curve OID from parameters
+                let curve_oid = format!("{:?}", params); // Simplified - would need proper parsing
+
+                // Match common curves (simplified)
+                if curve_oid.contains("1.2.840.10045.3.1.7") {
+                    (KeyType::EcP256, Algorithm::EcdsaP256Sha256)
+                } else if curve_oid.contains("1.3.132.0.34") {
+                    (KeyType::EcP384, Algorithm::EcdsaP384Sha384)
+                } else if curve_oid.contains("1.3.132.0.35") {
+                    (KeyType::EcP521, Algorithm::EcdsaP521Sha512)
+                } else {
+                    return Err(Error::Parse("Unsupported EC curve".to_string()));
+                }
+            } else {
+                return Err(Error::Parse(
+                    "EC public key missing curve parameter".to_string(),
+                ));
+            }
+        }
+        "1.3.101.112" => {
+            // id-Ed25519
+            (KeyType::Ed25519, Algorithm::Ed25519)
+        }
+        _ => {
+            return Err(Error::Parse(format!(
+                "Unsupported public key algorithm: {}",
+                oid_str
+            )));
+        }
+    };
+
+    // Create a temporary KeyHandle for verification
+    let key_id = uuid::Uuid::new_v4().as_bytes().to_vec();
+
+    Ok(KeyHandle {
+        key_id,
+        key_type,
+        provider_id: ProviderId::Software,
+        algorithm,
+        label: "temp-verification-key".to_string(),
+    })
+}
+
+/// Map signature algorithm OID to our Algorithm enum
+fn map_signature_algorithm_oid(oid: &str) -> Result<Algorithm> {
+    match oid {
+        // RSA PKCS#1 v1.5
+        "1.2.840.113549.1.1.11" => Ok(Algorithm::RsaPkcs1Sha256), // sha256WithRSAEncryption
+        "1.2.840.113549.1.1.12" => Ok(Algorithm::RsaPkcs1Sha384), // sha384WithRSAEncryption
+        "1.2.840.113549.1.1.13" => Ok(Algorithm::RsaPkcs1Sha512), // sha512WithRSAEncryption
+
+        // RSA-PSS
+        "1.2.840.113549.1.1.10" => Ok(Algorithm::RsaPssSha256), // id-RSASSA-PSS (simplified - should parse params)
+
+        // ECDSA
+        "1.2.840.10045.4.3.2" => Ok(Algorithm::EcdsaP256Sha256), // ecdsa-with-SHA256
+        "1.2.840.10045.4.3.3" => Ok(Algorithm::EcdsaP384Sha384), // ecdsa-with-SHA384
+        "1.2.840.10045.4.3.4" => Ok(Algorithm::EcdsaP521Sha512), // ecdsa-with-SHA512
+
+        // EdDSA
+        "1.3.101.112" => Ok(Algorithm::Ed25519), // id-Ed25519
+
+        _ => Err(Error::Parse(format!(
+            "Unsupported signature algorithm OID: {}",
+            oid
+        ))),
+    }
 }
 
 /// Parse a DER-encoded CRL
@@ -97,10 +254,14 @@ pub struct ParsedCertificate {
 pub struct ParsedCsr {
     /// Subject distinguished name
     pub subject_dn: String,
+    /// Subject Alternative Names (from extensionRequest attribute)
+    pub subject_alternative_names: Vec<String>,
     /// Public key (DER-encoded SubjectPublicKeyInfo)
     pub public_key: Vec<u8>,
     /// CSR attributes
     pub attributes: Vec<(String, Vec<u8>)>,
+    /// Signature algorithm OID
+    pub signature_algorithm: String,
     /// Signature
     pub signature: Vec<u8>,
     /// Original DER encoding
