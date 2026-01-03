@@ -13,25 +13,34 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
+use ostrich_audit::AuditSink;
+use ostrich_crypto::CryptoProvider;
+use ostrich_db::DatabasePool;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// SCMS service state
 #[derive(Clone)]
 pub struct ScmsState {
-    // TODO: Add database pool, crypto provider, audit sink, PKCS#11 provider
+    pub db_pool: DatabasePool,
+    pub crypto_provider: Arc<dyn CryptoProvider>,
+    pub audit_sink: Arc<dyn AuditSink>,
+    // TODO: Add PKCS#11 provider (Phase 10)
 }
 
 impl ScmsState {
     /// Create new SCMS service state
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Default for ScmsState {
-    fn default() -> Self {
-        Self::new()
+    pub fn new(
+        db_pool: DatabasePool,
+        crypto_provider: Arc<dyn CryptoProvider>,
+        audit_sink: Arc<dyn AuditSink>,
+    ) -> Self {
+        Self {
+            db_pool,
+            crypto_provider,
+            audit_sink,
+        }
     }
 }
 

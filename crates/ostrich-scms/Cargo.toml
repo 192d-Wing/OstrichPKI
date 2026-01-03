@@ -11,6 +11,8 @@ rust-version.workspace = true
 # Internal
 ostrich-common = { workspace = true }
 ostrich-db = { workspace = true }
+ostrich-crypto = { workspace = true }
+ostrich-audit = { workspace = true }
 
 # Web
 axum = { workspace = true }
