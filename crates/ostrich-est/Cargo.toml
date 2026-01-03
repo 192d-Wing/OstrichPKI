@@ -13,6 +13,7 @@ ostrich-common = { workspace = true }
 ostrich-db = { workspace = true }
 ostrich-crypto = { workspace = true }
 ostrich-audit = { workspace = true }
+ostrich-x509 = { workspace = true }
 
 # Web
 axum = { workspace = true }

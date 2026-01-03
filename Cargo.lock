@@ -1921,6 +1921,7 @@ dependencies = [
  "ostrich-common",
  "ostrich-crypto",
  "ostrich-db",
+ "ostrich-x509",
  "serde",
  "serde_json",
  "thiserror 2.0.17",

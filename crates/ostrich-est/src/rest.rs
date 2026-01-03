@@ -158,8 +158,19 @@ async fn simple_enroll(State(state): State<EstState>, body: Bytes) -> Result<Res
         return Err(Error::InvalidCsr("CSR too short".to_string()));
     }
 
-    // TODO: Parse PKCS#10 CSR from body - Phase 11
-    // TODO: Validate CSR signature - Phase 11
+    // Parse and validate PKCS#10 CSR
+    let parsed_csr = ostrich_x509::parser::parse_csr(&csr_der)
+        .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR: {}", e)))?;
+
+    // Verify CSR signature (proof of possession)
+    let signature_valid =
+        ostrich_x509::parser::verify_csr_signature(&parsed_csr, &state.crypto_provider)
+            .await
+            .map_err(|e| Error::InvalidCsr(format!("CSR signature verification failed: {}", e)))?;
+
+    if !signature_valid {
+        return Err(Error::InvalidCsr("Invalid CSR signature".to_string()));
+    }
 
     // Create enrollment record in database
     let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
@@ -210,7 +221,24 @@ async fn simple_reenroll(State(state): State<EstState>, body: Bytes) -> Result<R
         return Err(Error::InvalidCsr("CSR too short".to_string()));
     }
 
-    // TODO: Parse PKCS#10 CSR - Phase 11
+    // Parse and validate PKCS#10 CSR
+    let parsed_csr = ostrich_x509::parser::parse_csr(&csr_der)
+        .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR: {}", e)))?;
+
+    // Verify CSR signature (proof of possession)
+    let signature_valid =
+        ostrich_x509::parser::verify_csr_signature(&parsed_csr, &state.crypto_provider)
+            .await
+            .map_err(|e| Error::InvalidCsr(format!("CSR signature verification failed: {}", e)))?;
+
+    if !signature_valid {
+        return Err(Error::InvalidCsr("Invalid CSR signature".to_string()));
+    }
+
+    // TODO: When mTLS is implemented, verify CSR subject matches client certificate subject
+    // if parsed_csr.subject_dn != client_cert.subject_dn {
+    //     return Err(Error::Forbidden("CSR subject doesn't match client certificate".into()));
+    // }
 
     // Create re-enrollment record in database
     let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
