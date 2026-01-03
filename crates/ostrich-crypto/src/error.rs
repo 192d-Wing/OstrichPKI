@@ -29,6 +29,12 @@ pub enum Error {
     #[error("Invalid key type: {0}")]
     InvalidKeyType(String),
 
+    #[error("Invalid key handle: {0}")]
+    InvalidKeyHandle(String),
+
+    #[error("Operation not implemented: {0}")]
+    NotImplemented(String),
+
     #[error("Encoding error: {0}")]
     Encoding(String),
 
