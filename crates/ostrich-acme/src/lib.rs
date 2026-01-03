@@ -7,6 +7,7 @@ pub mod account;
 pub mod authorization;
 pub mod challenge;
 pub mod error;
+pub mod jws;
 pub mod order;
 pub mod rest;
 

@@ -749,7 +749,7 @@ softhsm2-util --init-token --slot 0 --label "OstrichPKI" --so-pin 1234 --pin 567
 ### Phase 11: Protocol Validation & Security
 
 **Priority**: HIGH
-**Completion**: ~5%
+**Completion**: ~30%
 **Estimated Effort**: 2 weeks
 **Dependencies**: None (can run in parallel with Phase 8-9)
 **Blocks**: Production deployment
@@ -762,19 +762,23 @@ Implement comprehensive protocol validation for ACME and EST, including JWS sign
 
 ##### ACME JWS Validation (10 TODOs)
 
-1. **JWS Signature Validation**
-   - Parse JWS compact/flattened serialization
-   - Extract protected header
-   - Validate signature using JWK from header or account lookup
-   - Verify nonce freshness
-   - Check URL binding in protected header
-   - Implement for all endpoints: new-account ([acme/rest.rs:145](crates/ostrich-acme/src/rest.rs#L145)), account update (187), new-order (237), authz (305), finalize (358), challenge (424, 464)
+**Status**: ✅ **Base64url utilities and JWS validation module COMPLETE**
 
-2. **JWK Handling**
-   - Extract JWK from protected header ([acme/rest.rs:146](crates/ostrich-acme/src/rest.rs#L146))
-   - Compute JWK thumbprint for account lookup
-   - Support RSA and ECDSA JWKs
-   - Validate JWK structure (required fields, valid values)
+1. **JWS Signature Validation** ✅ **IMPLEMENTED**
+   - ✅ Parse JWS compact/flattened serialization (jws.rs:parse_jws)
+   - ✅ Extract protected header (jws.rs:decode_protected_header)
+   - ✅ Validate signature using JWK (jws.rs:verify_jws_with_jwk)
+   - ✅ Support for RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, EdDSA
+   - ✅ JWK to SPKI DER conversion for RSA, EC (P-256/384/521), Ed25519
+   - ⏳ TODO: Integrate into endpoints: new-account, account update, new-order, authz, finalize, challenge
+   - ⏳ TODO: Verify nonce freshness (consume_nonce integration)
+   - ⏳ TODO: Check URL binding in protected header
+
+2. **JWK Handling** ✅ **IMPLEMENTED**
+   - ✅ Extract JWK from protected header (ProtectedHeader.jwk field)
+   - ✅ Compute JWK thumbprint for account lookup (jws.rs:compute_jwk_thumbprint - RFC 7638)
+   - ✅ Support RSA, ECDSA (P-256/384/521), Ed25519 JWKs
+   - ✅ Validate JWK structure (required fields, valid values)
 
 3. **CSR Parsing & Validation**
    - Parse PKCS#10 CSR from finalize request ([acme/rest.rs:362](crates/ostrich-acme/src/rest.rs#L362))

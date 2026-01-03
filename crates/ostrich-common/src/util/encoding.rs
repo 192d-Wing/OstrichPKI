@@ -1,8 +1,12 @@
 // RFC 7468: PEM encoding
+// RFC 4648 §5: Base64url encoding (for JWS/JWT)
 // NIST 800-53: SI-10 - Information input validation
 
 use crate::error::{Error, Result};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 
 /// Encode bytes to base64
 pub fn encode_base64(data: &[u8]) -> String {
@@ -15,6 +19,21 @@ pub fn decode_base64(data: &str) -> Result<Vec<u8>> {
     STANDARD
         .decode(data)
         .map_err(|e| Error::Decoding(format!("Base64 decode error: {}", e)))
+}
+
+/// Encode bytes to base64url (RFC 4648 §5)
+/// Used for JWS/JWT encoding - no padding, URL-safe alphabet
+pub fn encode_base64url(data: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(data)
+}
+
+/// Decode base64url to bytes (RFC 4648 §5)
+/// Used for JWS/JWT decoding - no padding, URL-safe alphabet
+/// NIST 800-53: SI-10 - Validate input
+pub fn decode_base64url(data: &str) -> Result<Vec<u8>> {
+    URL_SAFE_NO_PAD
+        .decode(data)
+        .map_err(|e| Error::Decoding(format!("Base64url decode error: {}", e)))
 }
 
 /// Encode bytes to hexadecimal
@@ -130,5 +149,47 @@ mod tests {
         let pem = "-----BEGIN FOO-----\nZGF0YQ==\n-----END FOO-----\n";
         let result = pem_to_der(pem, Some("BAR"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_base64url_roundtrip() {
+        let data = b"Hello, World!";
+        let encoded = encode_base64url(data);
+        let decoded = decode_base64url(&encoded).unwrap();
+        assert_eq!(data.as_slice(), decoded.as_slice());
+
+        // Verify no padding
+        assert!(!encoded.contains('='));
+    }
+
+    #[test]
+    fn test_base64url_vs_base64() {
+        // Test data with characters that differ between base64 and base64url
+        let data = &[0xfb, 0xff, 0xbf]; // Results in '+' and '/' in standard base64
+
+        let standard = encode_base64(data);
+        let url_safe = encode_base64url(data);
+
+        // Standard base64 uses + and /
+        // Base64url uses - and _
+        assert_ne!(standard, url_safe);
+
+        // Both should decode to same data
+        assert_eq!(decode_base64(&standard).unwrap(), data);
+        assert_eq!(decode_base64url(&url_safe).unwrap(), data);
+    }
+
+    #[test]
+    fn test_base64url_rfc_example() {
+        // RFC 7515 Appendix C example
+        let data = b"{\"typ\":\"JWT\",\r\n \"alg\":\"HS256\"}";
+        let encoded = encode_base64url(data);
+
+        // Should not contain padding
+        assert!(!encoded.contains('='));
+
+        // Should decode correctly
+        let decoded = decode_base64url(&encoded).unwrap();
+        assert_eq!(data.as_slice(), decoded.as_slice());
     }
 }

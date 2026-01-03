@@ -26,5 +26,11 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 
+# Cryptography (for JWS validation)
+rsa = { workspace = true }
+sha2 = { workspace = true }
+der = { workspace = true }
+spki = { workspace = true }
+
 # Utilities
 thiserror = { workspace = true }
