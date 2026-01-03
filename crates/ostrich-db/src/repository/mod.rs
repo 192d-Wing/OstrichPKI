@@ -2,9 +2,11 @@
 //!
 //! NIST 800-53: SC-28 - Protection of information at rest
 
+pub mod acme;
 pub mod audit;
 pub mod certificate;
 
+pub use acme::AcmeRepository;
 pub use audit::AuditRepository;
 pub use certificate::CertificateRepository;
 
