@@ -3,7 +3,7 @@
 //! RFC 7030: Enrollment over Secure Transport
 
 use crate::{
-    enrollment::{CsrAttributes, Enrollment},
+    enrollment::CsrAttributes,
     error::{Error, Result},
 };
 use axum::{
@@ -15,23 +15,32 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use ostrich_audit::AuditSink;
+use ostrich_crypto::CryptoProvider;
+use ostrich_db::DatabasePool;
+use std::sync::Arc;
 
 /// EST service state
 #[derive(Clone)]
 pub struct EstState {
-    // TODO: Add database pool, crypto provider, audit sink, CA client
+    pub db_pool: DatabasePool,
+    pub crypto_provider: Arc<dyn CryptoProvider>,
+    pub audit_sink: Arc<dyn AuditSink>,
+    // TODO: Add CA client for certificate issuance (Phase 12)
 }
 
 impl EstState {
     /// Create new EST service state
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Default for EstState {
-    fn default() -> Self {
-        Self::new()
+    pub fn new(
+        db_pool: DatabasePool,
+        crypto_provider: Arc<dyn CryptoProvider>,
+        audit_sink: Arc<dyn AuditSink>,
+    ) -> Self {
+        Self {
+            db_pool,
+            crypto_provider,
+            audit_sink,
+        }
     }
 }
 
@@ -56,9 +65,10 @@ pub fn create_router(state: EstState) -> Router {
 /// Get CA certificates (RFC 7030 §4.1)
 ///
 /// Returns a PKCS#7 certs-only structure containing CA certificate chain
-async fn get_ca_certs(State(_state): State<EstState>) -> Result<Response> {
-    // TODO: Fetch CA certificate chain from database
+async fn get_ca_certs(State(state): State<EstState>) -> Result<Response> {
+    // TODO: Fetch CA certificate chain from database (Phase 12 - CA integration)
     // For now, create empty PKCS#7 certs-only structure
+    let _repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
 
     let pkcs7_der = encode_certs_only_pkcs7(&[])?;
 
@@ -135,13 +145,9 @@ fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
 /// Simple enrollment (RFC 7030 §4.2.1)
 ///
 /// Client submits PKCS#10 CSR, server returns PKCS#7 with issued certificate
-async fn simple_enroll(State(_state): State<EstState>, body: Bytes) -> Result<Response> {
-    // TODO: Validate client certificate (mTLS)
-    // TODO: Parse PKCS#10 CSR from body
-    // TODO: Validate CSR signature
-    // TODO: Submit to CA for issuance
-    // TODO: Create enrollment record
-    // TODO: Audit log
+async fn simple_enroll(State(state): State<EstState>, body: Bytes) -> Result<Response> {
+    // TODO: Validate client certificate (mTLS) - Phase 11
+    let client_identifier = "placeholder-client"; // TODO: Extract from mTLS cert
 
     // Decode base64-encoded CSR
     let csr_der = BASE64_STANDARD
@@ -152,16 +158,36 @@ async fn simple_enroll(State(_state): State<EstState>, body: Bytes) -> Result<Re
         return Err(Error::InvalidCsr("CSR too short".to_string()));
     }
 
-    // Create enrollment record
-    let _enrollment = Enrollment::new("client-unknown".to_string(), csr_der.clone());
+    // TODO: Parse PKCS#10 CSR from body - Phase 11
+    // TODO: Validate CSR signature - Phase 11
 
-    // TODO: Issue certificate via CA service
-    // For now, return empty PKCS#7 structure
+    // Create enrollment record in database
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let enrollment = repo
+        .create_enrollment(
+            client_identifier,
+            "simple-enroll",
+            csr_der.clone(),
+            "pending",
+        )
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to create enrollment: {}", e)))?;
+
+    // TODO: Audit log enrollment creation
+    // TODO: Submit to CA for issuance - Phase 12
+
+    // For now, return empty PKCS#7 structure with 202 Accepted status
     let pkcs7_response = encode_certs_only_pkcs7(&[])?;
 
     Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/pkcs7-mime")],
+        StatusCode::ACCEPTED, // 202 - enrollment pending
+        [
+            (header::CONTENT_TYPE, "application/pkcs7-mime"),
+            (
+                header::LOCATION,
+                format!("/est/enrollments/{}", enrollment.id).as_str(),
+            ),
+        ],
         BASE64_STANDARD.encode(&pkcs7_response),
     )
         .into_response())
@@ -170,12 +196,10 @@ async fn simple_enroll(State(_state): State<EstState>, body: Bytes) -> Result<Re
 /// Simple re-enrollment (RFC 7030 §4.2.2)
 ///
 /// Authenticated client re-enrolls for certificate renewal
-async fn simple_reenroll(State(_state): State<EstState>, body: Bytes) -> Result<Response> {
-    // TODO: Validate client certificate (mTLS required)
-    // TODO: Verify client is authorized for re-enrollment
-    // TODO: Parse PKCS#10 CSR
-    // TODO: Issue new certificate with same subject
-    // TODO: Audit log
+async fn simple_reenroll(State(state): State<EstState>, body: Bytes) -> Result<Response> {
+    // TODO: Validate client certificate (mTLS required) - Phase 11
+    // TODO: Verify client is authorized for re-enrollment - Phase 11
+    let client_identifier = "placeholder-client"; // TODO: Extract from mTLS cert
 
     // Decode base64-encoded CSR
     let csr_der = BASE64_STANDARD
@@ -186,13 +210,35 @@ async fn simple_reenroll(State(_state): State<EstState>, body: Bytes) -> Result<
         return Err(Error::InvalidCsr("CSR too short".to_string()));
     }
 
-    // TODO: Issue new certificate via CA service
-    // For now, return empty PKCS#7 structure
+    // TODO: Parse PKCS#10 CSR - Phase 11
+
+    // Create re-enrollment record in database
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let enrollment = repo
+        .create_enrollment(
+            client_identifier,
+            "simple-reenroll",
+            csr_der.clone(),
+            "pending",
+        )
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to create re-enrollment: {}", e)))?;
+
+    // TODO: Audit log re-enrollment
+    // TODO: Issue new certificate with same subject via CA service - Phase 12
+
+    // For now, return empty PKCS#7 structure with 202 Accepted status
     let pkcs7_response = encode_certs_only_pkcs7(&[])?;
 
     Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/pkcs7-mime")],
+        StatusCode::ACCEPTED,
+        [
+            (header::CONTENT_TYPE, "application/pkcs7-mime"),
+            (
+                header::LOCATION,
+                format!("/est/enrollments/{}", enrollment.id).as_str(),
+            ),
+        ],
         BASE64_STANDARD.encode(&pkcs7_response),
     )
         .into_response())
