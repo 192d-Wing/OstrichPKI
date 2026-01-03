@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-01-03
+
+### Added
+
+#### PKCS#11 HSM Integration (Phase 10 - Complete)
+
+##### ostrich-crypto
+
+- **Production-Ready PKCS#11 HSM Provider** (`src/pkcs11/mod.rs`, 1,123 lines):
+  - Thread-safe session management with on-demand session creation
+  - PIN-based authentication with secure zeroization
+  - Full FIPS 186-5 digital signature support
+  - Compatible with any PKCS#11 v2.40 compliant HSM
+- **Key Generation** (FIPS 186-5):
+  - RSA-2048, RSA-3072, RSA-4096 key pairs
+  - ECDSA P-256, P-384, P-521 key pairs
+  - Configurable extractable/non-extractable keys
+  - Persistent token storage with unique 32-byte key IDs
+- **Digital Signatures**:
+  - RSA-PSS with SHA-256/384/512 (preferred)
+  - RSA PKCS#1 v1.5 with SHA-256/384/512 (legacy compatibility)
+  - ECDSA with SHA-256/384/512
+  - Signature verification with tamper detection
+  - Algorithm mismatch detection
+- **Key Management**:
+  - Public key export in SPKI format (RFC 5280)
+  - AES Key Wrap (NIST SP 800-38F) for key escrow
+  - Key wrapping/unwrapping for KRA integration
+  - Private keys never leave HSM
+- **Integration Test Suite** (`tests/pkcs11_integration_test.rs`, 586 lines):
+  - 18 comprehensive tests covering all cryptographic operations
+  - Automated SoftHSM setup script (`tests/setup_softhsm.sh`, 147 lines)
+  - Cross-platform support (macOS/Linux)
+  - Comprehensive test documentation (`tests/README.md`)
+  - Concurrent operations testing (thread safety validation)
+- **Compliance Achievements**:
+  - NIST 800-53 IA-7: 🔴 Partial → 🟢 **Compliant** (HSM authentication)
+  - NIST 800-53 SC-12: 🟡 Partial → 🟢 **Excellent (90%)** (Key management)
+  - NIST 800-53 SC-13: 🟢 Good (75%) → 🟢 **Excellent (95%)** (Cryptographic protection)
+  - Overall NIST 800-53 compliance: 45-55% → **50-60%**
+  - FIPS 140-3 module support enabled
+  - NIAP PP-CA v2.1: FCS_CKM.1, FCS_CKM.4, FCS_COP.1 implemented
+
+##### Documentation
+
+- **Phase 10 Summary** (`crates/ostrich-crypto/PHASE_10_SUMMARY.md`):
+  - Complete implementation details and architecture
+  - Test coverage summary
+  - Compliance validation
+  - Production deployment guidelines
+- **Updated Compliance Documentation**:
+  - NIST 800-53 Rev 5 mapping updated to version 1.2
+  - Detailed evidence for IA-7, SC-12, SC-13 controls
+  - Code references and test validation
+  - ATO evidence tracking
+
+### Changed
+
+- **Compliance Status**: Overall NIST 800-53 Rev 5 compliance improved from 45-55% to 50-60%
+- **Documentation Version**: NIST_800-53_MAPPING.md updated to v1.2
+
 ## [0.10.0] - 2026-01-03
 
 ### Added

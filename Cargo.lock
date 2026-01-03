@@ -1753,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-acme"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "axum 0.8.8",
  "chrono",
@@ -1776,14 +1776,14 @@ dependencies = [
 
 [[package]]
 name = "ostrich-api"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "ostrich-common",
 ]
 
 [[package]]
 name = "ostrich-audit"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1802,7 +1802,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-ca"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1833,7 +1833,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-cli"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -1846,7 +1846,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-common"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1865,7 +1865,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-crypto"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1892,7 +1892,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-db"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1911,7 +1911,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-est"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-init"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "clap",
  "ostrich-common",
@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-kra"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1964,7 +1964,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-ocsp"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-protocol"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "ostrich-common",
  "prost",
@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-scms"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "axum 0.8.8",
  "chrono",
@@ -2018,7 +2018,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-x509"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
