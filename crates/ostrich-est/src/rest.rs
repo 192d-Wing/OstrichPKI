@@ -7,12 +7,12 @@ use crate::{
     error::{Error, Result},
 };
 use axum::{
+    Router,
     body::Bytes,
     extract::State,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Router,
 };
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 

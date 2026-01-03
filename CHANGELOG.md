@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-01-02
+
+### Added
+
+#### Smartcard Management System Service (Phase 7)
+
+##### ostrich-scms
+
+- Complete smartcard token lifecycle management
+- Token status tracking (Uninitialized, Initialized, Active, Suspended, Blocked, Expired, Revoked)
+- Token inventory management with model support
+- PIN/SO-PIN management with retry counters
+- Token personalization and assignment
+- Key management on tokens (generation, storage, deletion)
+- Token event audit trail
+- PKCS#11 integration support (placeholder)
+- REST API endpoints:
+  - GET/POST /scms/tokens - List and create tokens
+  - GET/PUT/DELETE /scms/tokens/{id} - Token operations
+  - POST /scms/tokens/{id}/initialize - Initialize token
+  - POST /scms/tokens/{id}/personalize - Personalize token
+  - POST /scms/tokens/{id}/suspend - Suspend token
+  - POST /scms/tokens/{id}/resume - Resume suspended token
+  - POST /scms/tokens/{id}/unblock - Unblock token (SO-PIN recovery)
+  - POST /scms/tokens/{id}/verify-pin - Verify user PIN
+  - POST /scms/tokens/{id}/change-pin - Change PIN
+  - GET /scms/tokens/{id}/keys - List keys on token
+  - POST /scms/tokens/{id}/keys/generate - Generate key pair
+  - DELETE /scms/tokens/{token_id}/keys/{key_id} - Delete key
+  - GET/POST /scms/models - Token model management
+  - GET /scms/tokens/{id}/events - Token event history
+
+### Technical Details
+
+- All code passes cargo check, fmt, and clippy with -D warnings
+- NIST 800-53: IA-2, IA-5 - Multi-factor authentication with smartcards
+- Comprehensive test coverage
+- PIN retry mechanism with automatic blocking
+
 ## [0.6.0] - 2026-01-02
 
 ### Added
@@ -235,6 +274,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AU-10: Non-repudiation
 - SC-12: Cryptographic key establishment and management
 - SC-13: Cryptographic protection
+[0.7.0]: https://github.com/yourusername/ostrich-pki/compare/v0.6.0...v0.7.0
 - SC-28: Protection of information at rest
 - IA-2: Database authentication
 - IA-7: Cryptographic module authentication
@@ -272,7 +312,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project architecture documentation
 - Workspace structure with all crate stubs
 
-[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/yourusername/ostrich-pki/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/yourusername/ostrich-pki/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/yourusername/ostrich-pki/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yourusername/ostrich-pki/compare/v0.3.0...v0.4.0
