@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Database Integration - EST and KRA Services (Phase 9 - Part 2a)
+
+##### ostrich-est
+
+- Integrated EST service with database persistence layer
+- Updated `EstState` struct with database pool, crypto provider, and audit sink
+- Implemented database operations in 5 REST handlers:
+  - `simple_enroll`: Creates enrollment records with pending status workflow
+  - `simple_reenroll`: Tracks re-enrollment requests
+  - `get_ca_certs`: Prepared for CA certificate chain retrieval (Phase 12)
+  - `get_csr_attrs`: Returns CSR attributes for clients
+  - `server_key_gen`: Tracks server-generated key enrollments
+- Added dependencies: `ostrich-crypto`, `ostrich-audit`
+- Deferred work: CA integration (Phase 12), mTLS client certificate validation (Phase 11)
+
+##### ostrich-kra
+
+- Integrated KRA library services with database persistence layer
+- `KeyEscrow::escrow_key()`: Database integration complete
+  - Stores encrypted keys with wrapping key metadata
+  - Splits KEK into M-of-N shares using Shamir secret sharing
+  - Records audit events for escrow operations
+  - Default threshold: 3-of-5 recovery agents
+- `KeyRecovery::initiate_recovery()`: Database integration complete
+  - Validates escrowed key existence
+  - Creates recovery request records
+  - Tracks recovery sessions with status workflow
+- `KeyRecovery::submit_share()`: Share tracking and threshold monitoring
+  - Stores recovery shares from authorized agents
+  - Counts submitted shares against threshold
+  - Updates recovery session status
+- `KeyRecovery::list_agents()`: Recovery agent management
+  - Lists active recovery agents from database
+- Deferred work: Crypto provider key wrapping/unwrapping (Phase 10), agent authorization (Phase 12)
+
+### Technical Details
+
+- All code passes cargo check, fmt, and clippy with -D warnings
+- Phase 9 completion: ~60% (repository layer + EST + KRA REST integration complete)
+- ACME and SCMS REST integration deferred to future increments
+- NIST 800-53: SC-28 - Protection of information at rest, AU-2 - Audit events
+- RFC compliance: RFC 7030 (EST), NIST 800-57 (Key Management)
+
 ## [0.9.0] - 2026-01-02
 
 ### Added

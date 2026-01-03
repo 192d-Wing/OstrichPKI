@@ -269,7 +269,7 @@ Implement all cryptographic operations required for certificate lifecycle manage
 ### Phase 9: Database Integration & Persistence
 
 **Priority**: HIGH
-**Completion**: ~40% (Repository layer complete)
+**Completion**: ~60% (Repository layer + EST + KRA integration complete)
 **Estimated Effort**: 2-3 weeks
 **Dependencies**: Phase 8 (need signing before storing certificates)
 **Blocks**: Phase 12 (service integration)
@@ -286,12 +286,25 @@ Implement all cryptographic operations required for certificate lifecycle manage
 - ✅ Type-safe parameterized queries using sqlx
 - ✅ Repository exports and module organization
 
+**Phase 9 Part 2a - REST Handler Integration (Partial)**:
+
+- ✅ **EST Service** (commit 7c1d080): Database integration complete
+  - EstState struct with database pool, crypto provider, audit sink
+  - 5 REST endpoints integrated with EstRepository
+  - Enrollment tracking with pending status workflow
+  - Deferred: CA integration (Phase 12), mTLS validation (Phase 11)
+
+- ✅ **KRA Service** (commit d2c571c): Database integration complete
+  - KeyEscrow and KeyRecovery services integrated with KraRepository
+  - Escrowed key storage with M-of-N threshold tracking (3-of-5 default)
+  - Recovery request and share submission tracking
+  - Recovery agent management
+  - Deferred: Crypto provider key wrapping (Phase 10), agent authorization (Phase 12)
+
 **Remaining**:
 
-- ⏳ REST handler integration for ACME (28 TODOs)
+- ⏳ REST handler integration for ACME (28 TODOs) - Complex RFC 8555 state machine
 - ⏳ REST handler integration for SCMS (45 TODOs)
-- ⏳ REST handler integration for EST (17 TODOs)
-- ⏳ REST handler integration for KRA (8 TODOs)
 
 #### Scope
 
