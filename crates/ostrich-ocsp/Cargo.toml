@@ -8,4 +8,36 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Internal
 ostrich-common = { workspace = true }
+ostrich-crypto = { workspace = true }
+ostrich-db = { workspace = true }
+ostrich-audit = { workspace = true }
+
+# Async
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+# Web framework
+axum = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+base64 = { workspace = true }
+
+# Cryptography
+der = { workspace = true }
+sha2 = { workspace = true }
+
+# Utilities
+thiserror = { workspace = true }
+hex = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

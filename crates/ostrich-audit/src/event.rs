@@ -79,6 +79,9 @@ pub enum EventType {
     /// EST protocol event
     EstProtocol,
 
+    /// OCSP protocol event
+    OcspProtocol,
+
     /// System event (startup, shutdown, etc.)
     System,
 
@@ -124,6 +127,7 @@ impl EventType {
             EventType::TokenLifecycle => "token_lifecycle",
             EventType::AcmeProtocol => "acme_protocol",
             EventType::EstProtocol => "est_protocol",
+            EventType::OcspProtocol => "ocsp_protocol",
             EventType::System => "system",
             EventType::Database => "database",
             EventType::Other => "other",
