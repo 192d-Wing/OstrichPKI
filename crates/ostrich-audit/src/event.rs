@@ -239,10 +239,10 @@ impl AuditEvent {
         hasher.update(self.action.as_bytes());
         hasher.update(self.outcome.as_str().as_bytes());
 
-        if let Some(details) = &self.details {
-            if let Ok(json_str) = serde_json::to_string(details) {
-                hasher.update(json_str.as_bytes());
-            }
+        if let Some(details) = &self.details
+            && let Ok(json_str) = serde_json::to_string(details)
+        {
+            hasher.update(json_str.as_bytes());
         }
 
         if let Some(ip) = &self.ip_address {

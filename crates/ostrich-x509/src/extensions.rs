@@ -5,7 +5,7 @@
 /// Subject Alternative Name types
 ///
 /// RFC 5280 §4.2.1.6 - Subject alternative name
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SubjectAltName {
     /// DNS name
     DnsName(String),
@@ -44,7 +44,7 @@ impl SubjectAltName {
 /// Authority Information Access types
 ///
 /// RFC 5280 §4.2.2.1 - Authority information access
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AuthorityInfoAccess {
     /// OCSP responder location
     Ocsp(String),
@@ -55,7 +55,7 @@ pub enum AuthorityInfoAccess {
 /// CRL Distribution Points
 ///
 /// RFC 5280 §4.2.1.13 - CRL distribution points
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CrlDistributionPoint {
     /// Distribution point URI
     pub uri: String,

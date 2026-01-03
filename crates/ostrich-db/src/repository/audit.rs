@@ -47,7 +47,7 @@ impl AuditRepository {
                       previous_hash, event_hash, timestamp
             "#,
         )
-        .bind(&event.id)
+        .bind(event.id)
         .bind(&event.event_type)
         .bind(&event.actor)
         .bind(&event.target)
@@ -59,7 +59,7 @@ impl AuditRepository {
         .bind(&event.session_id)
         .bind(&prev_hash)
         .bind(&event.event_hash)
-        .bind(&event.timestamp)
+        .bind(event.timestamp)
         .fetch_one(self.pool.pool())
         .await
         .map_err(|e| Error::Query(e.to_string()))?;

@@ -71,6 +71,7 @@ pub struct Certificate {
 
 impl Certificate {
     /// Create a new certificate record
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ca_id: Uuid,
         serial_number: Vec<u8>,

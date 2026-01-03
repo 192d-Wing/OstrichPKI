@@ -205,11 +205,18 @@ pub struct MemoryAuditSink {
 }
 
 #[cfg(test)]
-impl MemoryAuditSink {
-    pub fn new() -> Self {
+impl Default for MemoryAuditSink {
+    fn default() -> Self {
         Self {
             events: tokio::sync::RwLock::new(Vec::new()),
         }
+    }
+}
+
+#[cfg(test)]
+impl MemoryAuditSink {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -260,25 +267,25 @@ impl AuditSink for MemoryAuditSink {
         let mut filtered: Vec<AuditEvent> = events
             .iter()
             .filter(|e| {
-                if let Some(ref actor) = criteria.actor {
-                    if e.actor != *actor {
-                        return false;
-                    }
+                if let Some(ref actor) = criteria.actor
+                    && e.actor != *actor
+                {
+                    return false;
                 }
-                if let Some(ref event_type) = criteria.event_type {
-                    if e.event_type.as_str() != event_type {
-                        return false;
-                    }
+                if let Some(ref event_type) = criteria.event_type
+                    && e.event_type.as_str() != event_type
+                {
+                    return false;
                 }
-                if let Some(start) = criteria.start_time {
-                    if e.timestamp < start {
-                        return false;
-                    }
+                if let Some(start) = criteria.start_time
+                    && e.timestamp < start
+                {
+                    return false;
                 }
-                if let Some(end) = criteria.end_time {
-                    if e.timestamp > end {
-                        return false;
-                    }
+                if let Some(end) = criteria.end_time
+                    && e.timestamp > end
+                {
+                    return false;
                 }
                 true
             })

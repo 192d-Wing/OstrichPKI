@@ -199,29 +199,29 @@ impl super::Repository<Certificate> for CertificateRepository {
                       created_at, updated_at
             "#,
         )
-        .bind(&cert.id)
-        .bind(&cert.ca_id)
+        .bind(cert.id)
+        .bind(cert.ca_id)
         .bind(&cert.serial_number)
         .bind(&cert.subject_dn)
         .bind(&cert.issuer_dn)
-        .bind(&cert.not_before)
-        .bind(&cert.not_after)
+        .bind(cert.not_before)
+        .bind(cert.not_after)
         .bind(&cert.der_encoded)
         .bind(&cert.pem_encoded)
-        .bind(&cert.revoked)
-        .bind(&cert.revocation_time)
-        .bind(&cert.revocation_reason)
-        .bind(&cert.created_at)
-        .bind(&cert.updated_at)
+        .bind(cert.revoked)
+        .bind(cert.revocation_time)
+        .bind(cert.revocation_reason)
+        .bind(cert.created_at)
+        .bind(cert.updated_at)
         .fetch_one(self.pool.pool())
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(db_err) = &e {
-                if db_err.is_unique_violation() {
-                    return Error::Duplicate(
-                        "Certificate with this serial number already exists".to_string(),
-                    );
-                }
+            if let sqlx::Error::Database(db_err) = &e
+                && db_err.is_unique_violation()
+            {
+                return Error::Duplicate(
+                    "Certificate with this serial number already exists".to_string(),
+                );
             }
             Error::Query(e.to_string())
         })?;
@@ -252,19 +252,19 @@ impl super::Repository<Certificate> for CertificateRepository {
                       created_at, updated_at
             "#,
         )
-        .bind(&cert.id)
-        .bind(&cert.ca_id)
+        .bind(cert.id)
+        .bind(cert.ca_id)
         .bind(&cert.serial_number)
         .bind(&cert.subject_dn)
         .bind(&cert.issuer_dn)
-        .bind(&cert.not_before)
-        .bind(&cert.not_after)
+        .bind(cert.not_before)
+        .bind(cert.not_after)
         .bind(&cert.der_encoded)
         .bind(&cert.pem_encoded)
-        .bind(&cert.revoked)
-        .bind(&cert.revocation_time)
-        .bind(&cert.revocation_reason)
-        .bind(&cert.updated_at)
+        .bind(cert.revoked)
+        .bind(cert.revocation_time)
+        .bind(cert.revocation_reason)
+        .bind(cert.updated_at)
         .fetch_optional(self.pool.pool())
         .await
         .map_err(|e| Error::Query(e.to_string()))?

@@ -1299,7 +1299,23 @@ dependencies = [
 name = "ostrich-ca"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "hex",
+ "ostrich-audit",
  "ostrich-common",
+ "ostrich-crypto",
+ "ostrich-db",
+ "ostrich-x509",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

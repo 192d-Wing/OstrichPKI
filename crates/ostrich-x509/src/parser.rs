@@ -138,7 +138,7 @@ pub struct RevokedCertificate {
 /// Revocation reason codes
 ///
 /// RFC 5280 §5.3.1 - Reason code
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(i32)]
 pub enum RevocationReason {
     Unspecified = 0,
