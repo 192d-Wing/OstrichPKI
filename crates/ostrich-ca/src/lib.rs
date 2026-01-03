@@ -5,10 +5,12 @@
 
 pub mod ca;
 pub mod error;
+pub mod grpc;
 pub mod issuance;
 pub mod revocation;
 
 pub use ca::CertificateAuthority;
 pub use error::{Error, Result};
+pub use grpc::CaGrpcService;
 pub use issuance::{CertificateIssuer, IssuanceRequest};
 pub use revocation::{RevocationManager, RevocationRequest};
