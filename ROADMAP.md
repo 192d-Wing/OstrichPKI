@@ -269,10 +269,29 @@ Implement all cryptographic operations required for certificate lifecycle manage
 ### Phase 9: Database Integration & Persistence
 
 **Priority**: HIGH
-**Completion**: ~25% (CA only)
+**Completion**: ~40% (Repository layer complete)
 **Estimated Effort**: 2-3 weeks
 **Dependencies**: Phase 8 (need signing before storing certificates)
 **Blocks**: Phase 12 (service integration)
+
+#### Progress Update (v0.9.0)
+
+**Completed**:
+
+- ✅ ACME repository layer with full CRUD operations (553 lines, 28 methods)
+- ✅ SCMS repository layer for token lifecycle management (383 lines)
+- ✅ EST repository layer for enrollment tracking (205 lines)
+- ✅ KRA repository layer for key recovery workflows (346 lines)
+- ✅ All database models with proper FromRow derivation
+- ✅ Type-safe parameterized queries using sqlx
+- ✅ Repository exports and module organization
+
+**Remaining**:
+
+- ⏳ REST handler integration for ACME (28 TODOs)
+- ⏳ REST handler integration for SCMS (45 TODOs)
+- ⏳ REST handler integration for EST (17 TODOs)
+- ⏳ REST handler integration for KRA (8 TODOs)
 
 #### Scope
 

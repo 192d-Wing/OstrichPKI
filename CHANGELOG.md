@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-01-02
+
+### Added
+
+#### Database Repository Layer (Phase 9 - Part 1)
+
+##### ostrich-db
+
+- Implemented complete ACME repository with 28 methods for RFC 8555 protocol state management
+  - Account management: create, find by ID/account ID/JWK thumbprint, update, deactivate
+  - Order lifecycle: create, find, update status, list by account
+  - Authorization tracking: create, find, update status, list by order
+  - Challenge management: create, find, update status, list by authorization
+  - Nonce operations: create, consume (atomic replay protection), cleanup expired
+- Implemented SCMS repository for smartcard token lifecycle management
+  - Token model registry: create, list, find by ID
+  - Token inventory: create, find by ID/serial, list with filters, update, delete
+  - Token lifecycle operations: status updates, PIN/PUK attempt tracking
+  - Key management: create, list by token, find, delete
+  - Event audit: record events, list by token
+- Implemented EST repository for enrollment tracking
+  - Enrollment records: create, find, list by client, update status
+  - Client authorization: create, find, list (active/all), update status
+- Implemented KRA repository for key recovery workflows
+  - Escrowed key storage: create, find by ID/certificate
+  - Recovery agent management: create, find, list active, update status
+  - Recovery request tracking: create, find, list by status, update status
+  - Share management: create, submit, list by request, count submitted shares
+- Database models with sqlx FromRow derivation for all entities
+  - ACME: AcmeAccount, AcmeOrder, AcmeAuthorization, AcmeChallenge, AcmeNonce
+  - SCMS: TokenModel, Token, TokenKey, TokenEvent
+  - EST: EstEnrollment, EstClient
+  - KRA: EscrowedKey, RecoveryAgent, RecoveryRequest, RecoveryShare
+- Type-safe parameterized queries using sqlx for SQL injection protection
+- Proper timestamp tracking (created_at, updated_at) across all entities
+- UUID v4 primary keys for all records
+- Repository exports and module organization
+
+### Technical Details
+
+- All code passes cargo check, fmt, and clippy with -D warnings
+- Phase 9 completion: ~40% (repository layer complete, REST integration pending)
+- 1,487 lines of repository code across 4 services
+- Database schema already present in migration 00001
+- NIST 800-53: SC-28 - Protection of information at rest
+- RFC compliance: RFC 8555 (ACME), RFC 7030 (EST)
+
 ## [0.8.0] - 2026-01-02
 
 ### Added
@@ -377,7 +424,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project architecture documentation
 - Workspace structure with all crate stubs
 
-[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/yourusername/ostrich-pki/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/yourusername/ostrich-pki/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/yourusername/ostrich-pki/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/yourusername/ostrich-pki/compare/v0.5.0...v0.6.0
