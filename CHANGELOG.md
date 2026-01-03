@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-01-02
+
+### Added
+
+#### ACME Responder Service (Phase 5)
+
+##### ostrich-acme
+
+- RFC 8555 compliant ACME responder implementation
+- Account management with JWK-based authentication
+- Order lifecycle management (Pending → Ready → Processing → Valid → Invalid)
+- Authorization objects linking identifiers to challenges
+- Challenge types: HTTP-01, DNS-01, TLS-ALPN-01
+- Key authorization computation for challenge validation
+- ACME directory endpoint for service discovery
+- Nonce management for replay protection
+- Error types with RFC 8555 URNs and HTTP status codes
+- REST API endpoints:
+  - Directory (GET /acme/directory)
+  - New nonce (GET /acme/new-nonce)
+  - New account (POST /acme/new-account)
+  - New order (POST /acme/new-order)
+  - Get authorization (GET /acme/authz/{id})
+  - Respond to challenge (POST /acme/challenge/{id})
+  - Finalize order (POST /acme/order/{id}/finalize)
+  - Download certificate (GET /acme/cert/{id})
+
+### Technical Details
+
+- All code passes cargo check, fmt, and clippy with -D warnings
+- RFC 8555: Automatic Certificate Management Environment (ACME)
+- NIST 800-53: SC-12 - Automated certificate lifecycle management
+- Comprehensive test coverage
+
 ## [0.4.0] - 2026-01-02
 
 ### Added
@@ -207,7 +241,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project architecture documentation
 - Workspace structure with all crate stubs
 
-[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/yourusername/ostrich-pki/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yourusername/ostrich-pki/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yourusername/ostrich-pki/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yourusername/ostrich-pki/compare/v0.1.0...v0.2.0
