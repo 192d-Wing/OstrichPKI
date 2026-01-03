@@ -5,10 +5,12 @@
 
 pub mod enrollment;
 pub mod error;
+pub mod mtls;
 pub mod rest;
 
 pub use enrollment::{
     CsrAttributes, Enrollment, EnrollmentRequest, EnrollmentResponse, EnrollmentStatus,
 };
 pub use error::{Error, Result};
+pub use mtls::{MtlsClientCert, extract_client_cert_placeholder, validate_client};
 pub use rest::create_router;

@@ -1912,6 +1912,7 @@ dependencies = [
 name = "ostrich-est"
 version = "0.10.0"
 dependencies = [
+ "async-trait",
  "axum 0.8.8",
  "base64 0.22.1",
  "chrono",
@@ -1924,10 +1925,12 @@ dependencies = [
  "ostrich-x509",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.17",
  "tokio",
  "uuid",
  "x509-cert",
+ "x509-parser",
 ]
 
 [[package]]

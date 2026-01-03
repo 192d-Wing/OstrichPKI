@@ -749,7 +749,7 @@ softhsm2-util --init-token --slot 0 --label "OstrichPKI" --so-pin 1234 --pin 567
 ### Phase 11: Protocol Validation & Security
 
 **Priority**: HIGH
-**Completion**: ~60%
+**Completion**: ~65%
 **Estimated Effort**: 2 weeks
 **Dependencies**: None (can run in parallel with Phase 8-9)
 **Blocks**: Production deployment
@@ -765,11 +765,12 @@ Implement comprehensive protocol validation for ACME and EST, including JWS sign
 - ✅ ACME URL binding validation
 - ✅ ACME CSR parsing and signature verification
 - ✅ EST CSR parsing and signature verification
+- ✅ EST mTLS module implementation (certificate parsing, validation structure)
 
 **Remaining**:
 
 - Challenge validation (HTTP-01, DNS-01, TLS-ALPN-01)
-- EST mTLS client certificate extraction (requires TLS server)
+- EST mTLS TLS server integration (requires rustls/tokio-rustls setup)
 - SAN extraction from CSR extensionRequest
 
 #### Key Tasks
@@ -834,14 +835,24 @@ Implement comprehensive protocol validation for ACME and EST, including JWS sign
 
 ##### EST mTLS Validation (4 TODOs)
 
-1. **Client Certificate Validation** ⏳ **PENDING** (requires TLS server setup)
-   - Extract client certificate from TLS layer
-   - Verify certificate chain up to trusted CA
-   - Check certificate is not revoked (CRL or OCSP)
-   - Verify certificate is within validity period
-   - Extract subject DN for authorization
+1. **mTLS Module Implementation** ✅ **COMPLETE** (crates/ostrich-est/src/mtls.rs)
+   - ✅ MtlsClientCert structure for parsed certificates
+   - ✅ Certificate parsing from DER with x509-parser
+   - ✅ Certificate expiration validation
+   - ✅ Client identifier computation (SHA-256 of certificate DER)
+   - ✅ validate_client() function for authorized client database lookup
+   - ✅ Extract subject DN, serial number, issuer DN
+   - ✅ Integration points documented in EST handlers
 
-2. **CSR Parsing** ✅ **COMPLETE**
+2. **Client Certificate Extraction** ⏳ **PENDING** (requires TLS server setup)
+   - ⏳ TODO: Configure Axum server with TLS using rustls/tokio-rustls
+   - ⏳ TODO: Enable client certificate requirement in TLS config
+   - ⏳ TODO: Extract peer certificate from TLS connection info
+   - ⏳ TODO: Integrate extract_client_cert_placeholder() into handlers
+   - ⏳ TODO: Verify certificate chain up to trusted CA
+   - ⏳ TODO: Check certificate is not revoked (CRL or OCSP)
+
+3. **CSR Parsing** ✅ **COMPLETE**
    - ✅ Parse PKCS#10 from base64-encoded body
    - ✅ Validate CSR signature (proof of possession)
    - ✅ Extract subject DN and public key
