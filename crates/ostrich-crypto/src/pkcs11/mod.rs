@@ -9,7 +9,7 @@
 
 use crate::{Algorithm, Error, KeyHandle, KeyType, Result, key::ProviderId};
 use async_trait::async_trait;
-use cryptoki::context::{CInitializeArgs, Pkcs11};
+use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::session::{Session, UserType};
 use cryptoki::slot::Slot;
 use cryptoki::types::AuthPin;
@@ -68,8 +68,10 @@ impl Pkcs11Provider {
             .map_err(|e| Error::Pkcs11(format!("Failed to load PKCS#11 library: {}", e)))?;
 
         // Initialize PKCS#11 library with thread-safe settings
+        // COMPLIANCE MAPPING:
+        // - NIST 800-53: SC-13 - OS_LOCKING_OK enables thread-safe cryptographic operations
         context
-            .initialize(CInitializeArgs::OsThreads)
+            .initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
             .map_err(|e| Error::Pkcs11(format!("Failed to initialize PKCS#11: {}", e)))?;
 
         tracing::debug!("PKCS#11 library initialized successfully");
@@ -115,7 +117,7 @@ impl Pkcs11Provider {
         // Authenticate with PIN
         // NIST 800-53: IA-7 - Cryptographic module authentication
         // FIPS 140-3: User must authenticate before performing cryptographic operations
-        let auth_pin = AuthPin::new(pin.to_string());
+        let auth_pin = AuthPin::new(pin.to_string().into_boxed_str());
         test_session
             .login(UserType::User, Some(&auth_pin))
             .map_err(|e| Error::Pkcs11(format!("Failed to authenticate to HSM: {}", e)))?;
@@ -164,7 +166,7 @@ impl Pkcs11Provider {
             .lock()
             .map_err(|e| Error::SessionError(format!("Failed to acquire PIN lock: {}", e)))?;
 
-        let auth_pin = AuthPin::new(pin_guard.to_string());
+        let auth_pin = AuthPin::new(pin_guard.to_string().into_boxed_str());
         session
             .login(UserType::User, Some(&auth_pin))
             .map_err(|e| Error::Pkcs11(format!("Failed to authenticate session: {}", e)))?;
