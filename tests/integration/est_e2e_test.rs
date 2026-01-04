@@ -8,10 +8,7 @@
 
 mod common;
 
-use common::{
-    http_client::create_test_client,
-    TestConfig,
-};
+use common::{http_client::create_test_client, TestConfig};
 
 /// Test EST health endpoint
 #[tokio::test]
@@ -21,7 +18,10 @@ async fn test_est_health() {
 
     // EST uses HTTPS, but we test the HTTP health endpoint
     // In production, EST would have mTLS on its main endpoints
-    let health_url = config.est_base_url.replace("https://", "http://").replace(":8443", ":8444");
+    let health_url = config
+        .est_base_url
+        .replace("https://", "http://")
+        .replace(":8443", ":8444");
 
     let response = client
         .get(&format!("{}/health", health_url))
@@ -31,7 +31,10 @@ async fn test_est_health() {
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 
-    let health: serde_json::Value = response.json().await.expect("Failed to parse health response");
+    let health: serde_json::Value = response
+        .json()
+        .await
+        .expect("Failed to parse health response");
     assert_eq!(health["status"], "healthy");
     assert_eq!(health["service"], "ostrich-est");
 
@@ -44,7 +47,10 @@ async fn test_est_readiness() {
     let config = TestConfig::default();
     let client = create_test_client();
 
-    let health_url = config.est_base_url.replace("https://", "http://").replace(":8443", ":8444");
+    let health_url = config
+        .est_base_url
+        .replace("https://", "http://")
+        .replace(":8443", ":8444");
 
     let response = client
         .get(&format!("{}/ready", health_url))

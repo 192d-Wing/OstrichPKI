@@ -6,10 +6,7 @@
 
 mod common;
 
-use common::{
-    http_client::create_test_client,
-    TestConfig,
-};
+use common::{http_client::create_test_client, TestConfig};
 
 /// Test CA health endpoint
 #[tokio::test]
@@ -25,7 +22,10 @@ async fn test_ca_health() {
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 
-    let health: serde_json::Value = response.json().await.expect("Failed to parse health response");
+    let health: serde_json::Value = response
+        .json()
+        .await
+        .expect("Failed to parse health response");
     assert_eq!(health["status"], "healthy");
     assert_eq!(health["service"], "ostrich-ca");
 

@@ -69,11 +69,8 @@ async fn main() -> Result<()> {
     let audit_sink = ostrich_audit::DatabaseAuditSink::new(db_pool.clone());
 
     // Create EST state
-    let state = ostrich_est::rest::EstState::new(
-        db_pool,
-        Arc::new(crypto_provider),
-        Arc::new(audit_sink),
-    );
+    let state =
+        ostrich_est::rest::EstState::new(db_pool, Arc::new(crypto_provider), Arc::new(audit_sink));
 
     // Create router
     let app = ostrich_est::rest::create_router(state);

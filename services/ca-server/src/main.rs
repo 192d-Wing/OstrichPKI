@@ -7,7 +7,7 @@
 //! - NIAP PP-CA: FCS_CKM.1 (Cryptographic Key Generation)
 
 use anyhow::Result;
-use axum::{Router, Json, routing::get};
+use axum::{Json, Router, routing::get};
 use clap::Parser;
 use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
