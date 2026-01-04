@@ -52,3 +52,4 @@ sqlx = { workspace = true }
 # Authentication
 async-trait = { workspace = true }
 secrecy = { workspace = true }
+argon2 = { workspace = true }

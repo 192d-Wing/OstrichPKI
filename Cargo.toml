@@ -95,6 +95,9 @@ getrandom = "0.2"
 aes = "0.8"
 cipher = "0.4"
 
+# Password hashing
+argon2 = { version = "0.5", features = ["std"] }
+
 # Post-Quantum Cryptography
 # Note: These are placeholders - RustCrypto PQC crates are still in development
 # ml-kem = "0.1"

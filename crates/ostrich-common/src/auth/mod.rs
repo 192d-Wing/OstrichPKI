@@ -9,6 +9,7 @@
 //! - **Roles** (`roles`): NIAP PP-CA defined security roles with separation of duties
 //! - **Permissions** (`permissions`): Fine-grained permission definitions
 //! - **Provider** (`provider`): Authentication provider trait and implementations
+//! - **Password** (`password`): Password authentication with Argon2id
 //! - **RBAC** (`rbac`): Role-Based Access Control policy engine
 //! - **Lockout** (`lockout`): Account lockout after failed attempts
 //! - **Session** (`session`): Session management
@@ -56,6 +57,7 @@
 //! ```
 
 pub mod lockout;
+pub mod password;
 pub mod permissions;
 pub mod provider;
 pub mod rbac;
@@ -65,6 +67,7 @@ pub mod user;
 
 // Re-export commonly used types
 pub use lockout::{AuthLockout, LockoutConfig, LockoutStatus};
+pub use password::{PasswordAuthProvider, PasswordHashConfig, UserRepository};
 pub use permissions::{
     Permission, aggregate_permissions, any_role_has_permission, permissions_for_role,
     role_has_permission,
