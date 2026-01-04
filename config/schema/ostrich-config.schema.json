@@ -1,0 +1,355 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ostrichpki.example.com/schemas/config.schema.json",
+  "title": "OstrichPKI Configuration",
+  "description": "Configuration schema for OstrichPKI services - NIAP PP-CA: FMT_MSA.1, FMT_SMF.1",
+  "type": "object",
+  "required": ["service", "database", "logging"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference for validation"
+    },
+    "service": {
+      "$ref": "#/$defs/serviceConfig"
+    },
+    "database": {
+      "$ref": "#/$defs/databaseConfig"
+    },
+    "tls": {
+      "$ref": "#/$defs/tlsConfig"
+    },
+    "acme": {
+      "$ref": "#/$defs/acmeConfig"
+    },
+    "est": {
+      "$ref": "#/$defs/estConfig"
+    },
+    "ca": {
+      "$ref": "#/$defs/caConfig"
+    },
+    "ocsp": {
+      "$ref": "#/$defs/ocspConfig"
+    },
+    "kra": {
+      "$ref": "#/$defs/kraConfig"
+    },
+    "scms": {
+      "$ref": "#/$defs/scmsConfig"
+    },
+    "logging": {
+      "$ref": "#/$defs/loggingConfig"
+    }
+  },
+  "$defs": {
+    "serviceConfig": {
+      "type": "object",
+      "description": "Core service configuration",
+      "required": ["name", "listen", "baseUrl"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Service name for identification",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "listen": {
+          "$ref": "#/$defs/listenConfig"
+        },
+        "baseUrl": {
+          "type": "string",
+          "description": "Public base URL (must use hostname, not IP literal)",
+          "format": "uri",
+          "pattern": "^https?://[a-zA-Z][a-zA-Z0-9.-]*"
+        },
+        "maxBodySize": {
+          "type": "integer",
+          "description": "Maximum request body size in bytes",
+          "minimum": 1024,
+          "maximum": 104857600,
+          "default": 1048576
+        },
+        "requestTimeoutSeconds": {
+          "type": "integer",
+          "description": "Request timeout in seconds",
+          "minimum": 1,
+          "maximum": 300,
+          "default": 30
+        }
+      },
+      "additionalProperties": false
+    },
+    "listenConfig": {
+      "type": "object",
+      "description": "Network listen configuration - NO IP LITERALS ALLOWED except '::' and '0.0.0.0'",
+      "required": ["host", "port"],
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Listen hostname (use '::' for dual-stack, '0.0.0.0' for all IPv4, or hostname for specific interface)"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Listen port",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      },
+      "additionalProperties": false
+    },
+    "databaseConfig": {
+      "type": "object",
+      "description": "Database connection configuration",
+      "required": ["host", "port", "database", "username"],
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Database hostname (NO IP LITERALS)",
+          "pattern": "^[a-zA-Z][a-zA-Z0-9.-]*$"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 5432
+        },
+        "database": {
+          "type": "string",
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$"
+        },
+        "username": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string",
+          "description": "Database password (use $ENV{VAR} for environment variable reference)"
+        },
+        "poolSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 10
+        },
+        "sslMode": {
+          "type": "string",
+          "enum": ["disable", "prefer", "require", "verify-ca", "verify-full"],
+          "default": "require"
+        }
+      },
+      "additionalProperties": false
+    },
+    "tlsConfig": {
+      "type": "object",
+      "description": "TLS configuration - NIAP PP-CA: FTP_ITC.1",
+      "required": ["certFile", "keyFile"],
+      "properties": {
+        "certFile": {
+          "type": "string",
+          "description": "Path to TLS certificate file"
+        },
+        "keyFile": {
+          "type": "string",
+          "description": "Path to TLS private key file"
+        },
+        "caFile": {
+          "type": "string",
+          "description": "Path to CA certificate for client verification"
+        },
+        "minVersion": {
+          "type": "string",
+          "enum": ["1.2", "1.3"],
+          "default": "1.3",
+          "description": "Minimum TLS version (1.3 required for NIAP compliance)"
+        },
+        "clientAuth": {
+          "type": "string",
+          "enum": ["none", "request", "require"],
+          "default": "none"
+        }
+      },
+      "additionalProperties": false
+    },
+    "acmeConfig": {
+      "type": "object",
+      "description": "ACME service configuration - RFC 8555",
+      "properties": {
+        "directoryUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "ACME directory URL (NO IP LITERALS)",
+          "pattern": "^https://[a-zA-Z][a-zA-Z0-9.-]*"
+        },
+        "termsOfServiceUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "nonceExpirationSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 3600,
+          "default": 900
+        },
+        "orderExpirationSeconds": {
+          "type": "integer",
+          "minimum": 3600,
+          "maximum": 604800,
+          "default": 86400
+        },
+        "maxIdentifiersPerOrder": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 10
+        },
+        "challengeTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["http-01", "dns-01", "tls-alpn-01"]
+          },
+          "default": ["http-01", "dns-01"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "estConfig": {
+      "type": "object",
+      "description": "EST service configuration - RFC 7030",
+      "properties": {
+        "requireClientCert": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require mTLS client certificate"
+        },
+        "allowServerKeygen": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow server-side key generation (security risk)"
+        },
+        "escrowServerKeys": {
+          "type": "boolean",
+          "default": true,
+          "description": "Escrow server-generated keys via KRA"
+        }
+      },
+      "additionalProperties": false
+    },
+    "caConfig": {
+      "type": "object",
+      "description": "Certificate Authority configuration",
+      "properties": {
+        "grpcEndpoint": {
+          "type": "string",
+          "format": "uri",
+          "description": "CA gRPC endpoint (NO IP LITERALS)",
+          "pattern": "^https://[a-zA-Z][a-zA-Z0-9.-]*"
+        },
+        "defaultProfile": {
+          "type": "string",
+          "default": "end-entity"
+        },
+        "maxValidityDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3650,
+          "default": 825
+        }
+      },
+      "additionalProperties": false
+    },
+    "ocspConfig": {
+      "type": "object",
+      "description": "OCSP responder configuration - RFC 6960",
+      "properties": {
+        "cacheEnabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "cacheSize": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 1000000,
+          "default": 10000
+        },
+        "cacheTtlSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 86400,
+          "default": 3600
+        }
+      },
+      "additionalProperties": false
+    },
+    "kraConfig": {
+      "type": "object",
+      "description": "Key Recovery Authority configuration",
+      "properties": {
+        "shamirThreshold": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 10,
+          "default": 3
+        },
+        "shamirShares": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 20,
+          "default": 5
+        }
+      },
+      "additionalProperties": false
+    },
+    "scmsConfig": {
+      "type": "object",
+      "description": "Smartcard Management System configuration",
+      "properties": {
+        "pkcs11ModulePath": {
+          "type": "string",
+          "description": "Path to PKCS#11 module library"
+        },
+        "maxPinRetries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
+        },
+        "pinLockoutMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60,
+          "default": 15
+        }
+      },
+      "additionalProperties": false
+    },
+    "loggingConfig": {
+      "type": "object",
+      "description": "Logging configuration - NIAP PP-CA: FAU_GEN.1",
+      "required": ["level"],
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["trace", "debug", "info", "warn", "error"],
+          "default": "info"
+        },
+        "format": {
+          "type": "string",
+          "enum": ["json", "pretty", "compact"],
+          "default": "json"
+        },
+        "output": {
+          "type": "string",
+          "enum": ["stdout", "stderr", "file"],
+          "default": "stdout"
+        },
+        "file": {
+          "type": "string",
+          "description": "Log file path (required if output is 'file')"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

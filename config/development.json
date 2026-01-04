@@ -1,0 +1,66 @@
+{
+  "$schema": "./schema/ostrich-config.schema.json",
+  "service": {
+    "name": "ostrich-dev",
+    "listen": {
+      "host": "::",
+      "port": 8443
+    },
+    "baseUrl": "https://localhost:8443",
+    "maxBodySize": 10485760,
+    "requestTimeoutSeconds": 60
+  },
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "database": "ostrich_dev",
+    "username": "ostrich",
+    "password": "$ENV{OSTRICH_DB_PASSWORD}",
+    "poolSize": 5,
+    "sslMode": "prefer"
+  },
+  "tls": {
+    "certFile": "./certs/server.crt",
+    "keyFile": "./certs/server.key",
+    "caFile": "./certs/ca.crt",
+    "minVersion": "1.2",
+    "clientAuth": "none"
+  },
+  "acme": {
+    "directoryUrl": "https://localhost:8443/acme/directory",
+    "termsOfServiceUrl": "https://localhost:8443/terms",
+    "nonceExpirationSeconds": 3600,
+    "orderExpirationSeconds": 604800,
+    "maxIdentifiersPerOrder": 100,
+    "challengeTypes": ["http-01", "dns-01", "tls-alpn-01"]
+  },
+  "est": {
+    "requireClientCert": false,
+    "allowServerKeygen": true,
+    "escrowServerKeys": true
+  },
+  "ca": {
+    "grpcEndpoint": "https://localhost:50051",
+    "defaultProfile": "end-entity",
+    "maxValidityDays": 365
+  },
+  "ocsp": {
+    "cacheEnabled": true,
+    "cacheSize": 1000,
+    "cacheTtlSeconds": 300
+  },
+  "kra": {
+    "shamirThreshold": 2,
+    "shamirShares": 3
+  },
+  "scms": {
+    "pkcs11ModulePath": "/usr/local/lib/softhsm/libsofthsm2.so",
+    "maxPinRetries": 5,
+    "pinLockoutMinutes": 5
+  },
+  "logging": {
+    "level": "debug",
+    "format": "pretty",
+    "output": "stdout"
+  }
+}

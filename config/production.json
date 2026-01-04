@@ -1,0 +1,66 @@
+{
+  "$schema": "./schema/ostrich-config.schema.json",
+  "service": {
+    "name": "ostrich-pki",
+    "listen": {
+      "host": "::",
+      "port": 443
+    },
+    "baseUrl": "https://pki.example.com",
+    "maxBodySize": 1048576,
+    "requestTimeoutSeconds": 30
+  },
+  "database": {
+    "host": "db.example.com",
+    "port": 5432,
+    "database": "ostrich",
+    "username": "ostrich",
+    "password": "$ENV{OSTRICH_DB_PASSWORD}",
+    "poolSize": 20,
+    "sslMode": "verify-full"
+  },
+  "tls": {
+    "certFile": "/etc/ostrich/tls/server.crt",
+    "keyFile": "/etc/ostrich/tls/server.key",
+    "caFile": "/etc/ostrich/tls/ca.crt",
+    "minVersion": "1.3",
+    "clientAuth": "require"
+  },
+  "acme": {
+    "directoryUrl": "https://acme.example.com/directory",
+    "termsOfServiceUrl": "https://example.com/terms-of-service",
+    "nonceExpirationSeconds": 900,
+    "orderExpirationSeconds": 86400,
+    "maxIdentifiersPerOrder": 10,
+    "challengeTypes": ["http-01", "dns-01"]
+  },
+  "est": {
+    "requireClientCert": true,
+    "allowServerKeygen": false,
+    "escrowServerKeys": true
+  },
+  "ca": {
+    "grpcEndpoint": "https://ca.example.com:8443",
+    "defaultProfile": "end-entity",
+    "maxValidityDays": 825
+  },
+  "ocsp": {
+    "cacheEnabled": true,
+    "cacheSize": 100000,
+    "cacheTtlSeconds": 3600
+  },
+  "kra": {
+    "shamirThreshold": 3,
+    "shamirShares": 5
+  },
+  "scms": {
+    "pkcs11ModulePath": "/usr/lib/pkcs11/opensc-pkcs11.so",
+    "maxPinRetries": 3,
+    "pinLockoutMinutes": 15
+  },
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "output": "stdout"
+  }
+}

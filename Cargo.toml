@@ -108,6 +108,8 @@ serde_json = "1.0"
 # Configuration
 config = "0.14"
 toml = "0.8"
+jsonschema = "0.28"
+regex = "1.11"
 
 # Logging/Tracing
 tracing = "0.1"

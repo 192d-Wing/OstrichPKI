@@ -661,13 +661,14 @@ pub enum SessionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_constants::test_ipv4;
 
     /// FTA_SSL.1 - Test session creation
     #[test]
     fn test_session_creation() {
         let manager = SessionManager::with_defaults();
         let session = manager
-            .create_session("user1", Some("192.168.1.1".to_string()), None)
+            .create_session("user1", Some(test_ipv4::TEST_NET_1.to_string()), None) // RFC 5737 TEST-NET-1
             .unwrap();
 
         assert_eq!(session.user_id, "user1");

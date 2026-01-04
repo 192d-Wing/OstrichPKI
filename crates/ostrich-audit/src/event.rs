@@ -436,6 +436,7 @@ impl AuditEventBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ostrich_common::test_constants::test_ipv4;
     use serde_json::json;
 
     #[test]
@@ -447,7 +448,7 @@ mod tests {
             "login",
             EventOutcome::Success,
         )
-        .with_ip("192.168.1.1")
+        .with_ip(test_ipv4::TEST_NET_1) // RFC 5737 TEST-NET-1
         .build();
 
         let hash = event.compute_hash();
@@ -503,7 +504,7 @@ mod tests {
             "subject": "CN=Test User",
             "serial": "1234567890"
         }))
-        .with_ip("10.0.0.1")
+        .with_ip(test_ipv4::TEST_NET_2) // RFC 5737 TEST-NET-2
         .with_user_agent("Mozilla/5.0")
         .with_session("session-abc-123")
         .build();
@@ -514,7 +515,7 @@ mod tests {
         assert_eq!(event.action, "issue");
         assert_eq!(event.outcome, EventOutcome::Success);
         assert!(event.details.is_some());
-        assert_eq!(event.ip_address, Some("10.0.0.1".to_string()));
+        assert_eq!(event.ip_address, Some(test_ipv4::TEST_NET_2.to_string()));
         assert_eq!(event.user_agent, Some("Mozilla/5.0".to_string()));
         assert_eq!(event.session_id, Some("session-abc-123".to_string()));
     }

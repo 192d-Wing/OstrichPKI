@@ -128,6 +128,7 @@ impl AuditEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ostrich_common::test_constants::test_ipv4;
 
     #[test]
     fn test_audit_event_new() {
@@ -181,9 +182,9 @@ mod tests {
             "read".to_string(),
             "success".to_string(),
         )
-        .with_ip("192.168.1.100".to_string());
+        .with_ip(test_ipv4::TEST_NET_1_HOST_100.to_string()); // RFC 5737 TEST-NET-1
 
-        assert_eq!(event.ip_address, Some("192.168.1.100".to_string()));
+        assert_eq!(event.ip_address, Some(test_ipv4::TEST_NET_1_HOST_100.to_string()));
     }
 
     #[test]
@@ -224,12 +225,12 @@ mod tests {
             "success".to_string(),
         )
         .with_details(serde_json::json!({"algorithm": "ECDSA-P256"}))
-        .with_ip("10.0.0.1".to_string())
+        .with_ip(test_ipv4::TEST_NET_2.to_string()) // RFC 5737 TEST-NET-2
         .with_user_agent("HSM-Admin/2.0".to_string())
         .with_session("operator-session-789".to_string());
 
         assert!(event.details.is_some());
-        assert_eq!(event.ip_address, Some("10.0.0.1".to_string()));
+        assert_eq!(event.ip_address, Some(test_ipv4::TEST_NET_2.to_string()));
         assert_eq!(event.user_agent, Some("HSM-Admin/2.0".to_string()));
         assert_eq!(event.session_id, Some("operator-session-789".to_string()));
     }

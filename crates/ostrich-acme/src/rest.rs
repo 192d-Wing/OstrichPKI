@@ -75,6 +75,8 @@ pub struct AcmeState {
     pub db_pool: DatabasePool,
     pub crypto_provider: Arc<dyn CryptoProvider>,
     pub audit_sink: Arc<dyn AuditSink>,
+    /// Base URL for ACME directory (from configuration)
+    pub base_url: String,
 }
 
 impl AcmeState {
@@ -83,11 +85,13 @@ impl AcmeState {
         db_pool: DatabasePool,
         crypto_provider: Arc<dyn CryptoProvider>,
         audit_sink: Arc<dyn AuditSink>,
+        base_url: String,
     ) -> Self {
         Self {
             db_pool,
             crypto_provider,
             audit_sink,
+            base_url,
         }
     }
 }
@@ -368,17 +372,17 @@ pub struct FinalizeRequest {
 }
 
 /// Get ACME directory (RFC 8555 §7.1.1)
-async fn get_directory() -> Response {
+async fn get_directory(State(state): State<AcmeState>) -> Response {
     let directory = Directory {
-        new_nonce: "/acme/new-nonce".to_string(),
-        new_account: "/acme/new-account".to_string(),
-        new_order: "/acme/new-order".to_string(),
+        new_nonce: format!("{}/acme/new-nonce", state.base_url),
+        new_account: format!("{}/acme/new-account", state.base_url),
+        new_order: format!("{}/acme/new-order", state.base_url),
         new_authz: None,
-        revoke_cert: "/acme/revoke-cert".to_string(),
-        key_change: "/acme/key-change".to_string(),
+        revoke_cert: format!("{}/acme/revoke-cert", state.base_url),
+        key_change: format!("{}/acme/key-change", state.base_url),
         meta: Some(DirectoryMeta {
-            terms_of_service: Some("https://example.com/acme/terms".to_string()),
-            website: Some("https://example.com".to_string()),
+            terms_of_service: Some(format!("{}/acme/terms", state.base_url)),
+            website: Some(state.base_url.clone()),
             caa_identities: None,
             external_account_required: false,
         }),
@@ -426,9 +430,10 @@ async fn get_new_nonce(State(state): State<AcmeState>) -> Response {
 /// - **AU-2/AU-3**: Audit Events - Account creation logged.
 async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Response> {
     // Validate JWS and extract payload
+    let url = format!("{}/acme/new-account", state.base_url);
     let validated = validate_jws_new_account::<NewAccountRequest>(
         &body,
-        "https://example.com/acme/new-account", // TODO: Get actual URL from request
+        &url,
         &state,
     )
     .await?;
@@ -513,9 +518,10 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
 /// - **AU-2/AU-3**: Order lifecycle events logged.
 async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Response> {
     // Validate JWS and extract payload
+    let url = format!("{}/acme/new-order", state.base_url);
     let validated = validate_jws_with_account::<NewOrderRequest>(
         &body,
-        "https://example.com/acme/new-order", // TODO: Get actual URL from request
+        &url,
         &state,
     )
     .await?;
@@ -615,9 +621,10 @@ async fn update_account(
     body: Bytes,
 ) -> Result<Response> {
     // Validate JWS and extract payload
+    let url = format!("{}/acme/account/{}", state.base_url, id);
     let validated = validate_jws_with_account::<UpdateAccountRequest>(
         &body,
-        &format!("https://example.com/acme/account/{}", id), // TODO: Get actual URL from request
+        &url,
         &state,
     )
     .await?;
@@ -695,9 +702,10 @@ async fn respond_to_challenge(
     body: Bytes,
 ) -> Result<Response> {
     // Validate JWS (payload is typically empty object {})
+    let url = format!("{}/acme/challenge/{}", state.base_url, id);
     let _validated = validate_jws_with_account::<ChallengeResponse>(
         &body,
-        &format!("https://example.com/acme/challenge/{}", id), // TODO: Get actual URL from request
+        &url,
         &state,
     )
     .await?;
@@ -774,9 +782,10 @@ async fn finalize_order(
     body: Bytes,
 ) -> Result<Response> {
     // Validate JWS and extract payload
+    let url = format!("{}/acme/order/{}/finalize", state.base_url, id);
     let validated = validate_jws_with_account::<FinalizeRequest>(
         &body,
-        &format!("https://example.com/acme/order/{}/finalize", id), // TODO: Get actual URL from request
+        &url,
         &state,
     )
     .await?;

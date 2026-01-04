@@ -517,6 +517,7 @@ pub enum LockoutError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_constants::test_ipv4;
 
     /// FIA_AFL.1 - Test lockout configuration
     #[test]
@@ -539,21 +540,21 @@ mod tests {
     fn test_record_failure() {
         let lockout = AuthLockout::new(LockoutConfig::new().with_max_attempts(3));
 
-        // First failure
+        // First failure (RFC 5737 TEST-NET-1)
         let status = lockout
-            .record_failure("user1", Some("192.168.1.1".to_string()), "invalid password")
+            .record_failure("user1", Some(test_ipv4::TEST_NET_1.to_string()), "invalid password")
             .unwrap();
         assert_eq!(status, LockoutStatus::Active);
 
         // Second failure
         let status = lockout
-            .record_failure("user1", Some("192.168.1.1".to_string()), "invalid password")
+            .record_failure("user1", Some(test_ipv4::TEST_NET_1.to_string()), "invalid password")
             .unwrap();
         assert_eq!(status, LockoutStatus::Active);
 
         // Third failure - should lock
         let status = lockout
-            .record_failure("user1", Some("192.168.1.1".to_string()), "invalid password")
+            .record_failure("user1", Some(test_ipv4::TEST_NET_1.to_string()), "invalid password")
             .unwrap();
         assert_eq!(status, LockoutStatus::TemporarilyLocked);
     }
