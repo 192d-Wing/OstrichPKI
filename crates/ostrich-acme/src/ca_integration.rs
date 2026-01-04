@@ -66,8 +66,9 @@ impl AcmeCaClient {
         let csr = CertReq::from_der(csr_der)
             .map_err(|e| Error::BadCsr(format!("Failed to parse CSR: {}", e)))?;
 
-        // Verify CSR signature
-        // TODO: Add signature verification (Phase 13)
+        // NOTE: CSR signature verification is performed by the REST handler
+        // (rest.rs:806-814) before this function is called. This ensures
+        // proof-of-possession before forwarding to the CA service.
 
         // Extract subject from CSR
         let subject = csr.info.subject;

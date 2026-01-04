@@ -43,3 +43,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+hex = { workspace = true }

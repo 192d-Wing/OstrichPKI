@@ -109,8 +109,10 @@ impl EstCaClient {
         let csr = CertReq::from_der(csr_der)
             .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR: {}", e)))?;
 
-        // Verify CSR signature
-        // TODO: Add signature verification (Phase 13)
+        // NOTE: CSR signature verification is performed by the REST handlers
+        // (rest.rs:268-276 for simpleenroll, rest.rs:360-368 for simplereenroll)
+        // before this function is called. This ensures proof-of-possession
+        // before forwarding to the CA service.
 
         // Extract subject from CSR
         let subject = csr.info.subject;

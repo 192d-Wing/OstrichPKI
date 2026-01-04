@@ -338,3 +338,79 @@ impl RevocationReason {
         *self as i32
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ostrich_crypto::KeyType;
+
+    // NOTE: Full CSR signature verification tests are integration tests
+    // and run via ACME/EST REST endpoints (see rest.rs in those crates).
+    // These unit tests focus on algorithm mapping and public key import.
+    //
+    // CSR signature verification is IMPLEMENTED and INTEGRATED in:
+    // - crates/ostrich-acme/src/rest.rs:806-814 (finalize endpoint)
+    // - crates/ostrich-est/src/rest.rs:268-276 (simpleenroll endpoint)
+    // - crates/ostrich-est/src/rest.rs:360-368 (simplereenroll endpoint)
+
+    /// Test signature algorithm OID mapping
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - FIPS 186-5: Algorithm identifier mapping for RSA, ECDSA, EdDSA
+    #[test]
+    fn test_map_signature_algorithm_oid() {
+        // RSA PKCS#1 v1.5
+        assert!(matches!(
+            map_signature_algorithm_oid("1.2.840.113549.1.1.11"),
+            Ok(Algorithm::RsaPkcs1Sha256)
+        ));
+        assert!(matches!(
+            map_signature_algorithm_oid("1.2.840.113549.1.1.12"),
+            Ok(Algorithm::RsaPkcs1Sha384)
+        ));
+
+        // ECDSA
+        assert!(matches!(
+            map_signature_algorithm_oid("1.2.840.10045.4.3.2"),
+            Ok(Algorithm::EcdsaP256Sha256)
+        ));
+        assert!(matches!(
+            map_signature_algorithm_oid("1.2.840.10045.4.3.3"),
+            Ok(Algorithm::EcdsaP384Sha384)
+        ));
+
+        // EdDSA
+        assert!(matches!(
+            map_signature_algorithm_oid("1.3.101.112"),
+            Ok(Algorithm::Ed25519)
+        ));
+
+        // Unsupported algorithm
+        assert!(map_signature_algorithm_oid("9.9.9.9.9").is_err());
+    }
+
+    /// Test public key import from SPKI
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - RFC 5280 §4.1.2.7: SubjectPublicKeyInfo parsing
+    #[test]
+    fn test_import_public_key_for_verification() {
+        // Valid RSA public key SPKI (simplified, real SPKI would be longer)
+        // This is a minimal SPKI structure for RSA
+        let rsa_spki = hex::decode(
+            "30819f300d06092a864886f70d010101050003818d0030818902818100bb54\
+             94d4b7d52cf1c2a333311f6328e2580e11e3f3366d2d7e7d621c3e6ed3c2c2\
+             e789655b8c631681b646d5657d28913d78a88058553913a61d3633b35f4695\
+             65aab49bf25b61a476b4df06926dc26f985550756ad01923e45de12a005731\
+             bde9a8bc7a0ed2d9e14c79426e968019074e50387bec7b6c6a8e0d741208826\
+             656727339574bc80813d33e8aed2a862448d8e8ca60",
+        ).unwrap();
+
+        let result = import_public_key_for_verification(&rsa_spki, "1.2.840.113549.1.1.11");
+        assert!(result.is_ok(), "Should import RSA public key successfully");
+
+        let key_handle = result.unwrap();
+        assert!(matches!(key_handle.key_type, KeyType::Rsa2048));
+        assert!(matches!(key_handle.algorithm, Algorithm::RsaPkcs1Sha256));
+    }
+}
