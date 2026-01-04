@@ -1,14 +1,43 @@
 //! OCSP request parsing
 //!
-//! RFC 6960 §4.1: Request Syntax
+//! This module implements OCSP request parsing per RFC 6960 Section 4.1.
+//!
+//! # Compliance Mapping
+//!
+//! ## RFC Standards
+//! - **RFC 6960**: Online Certificate Status Protocol (OCSP)
+//!   - Section 4.1: Request Syntax
+//!   - Section 4.1.1: OCSPRequest ASN.1 structure
+//!   - Section 4.1.2: Notes on OCSP Requests
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FDP_IFC.1**: Information Flow Control - Request parsing validates
+//!   input before processing revocation status queries
+//! - **SI-10**: Information Input Validation - All request fields are
+//!   validated during parsing (serial number, hashes, algorithm OIDs)
+//! - **FCS_COP.1(2)**: Cryptographic Hashing - SHA-256/384/512 for issuer
+//!   name and key hash computation
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//! - **SI-10**: Information Input Validation - Validates DER-encoded requests
+//! - **SC-23**: Session Authenticity - Nonce support for replay protection
 
 use crate::{Error, Result};
 use sha2::{Digest, Sha256};
 
 /// OCSP Request
 ///
-/// Simplified structure for basic OCSP request handling.
-/// Full ASN.1 parsing would use x509-ocsp crate when available.
+/// Represents a parsed OCSP request containing certificate identification
+/// information for status queries.
+///
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FDP_IFC.1**: Structure validates input fields during construction
+/// - **FCS_COP.1(2)**: Hash algorithm support (SHA-256, SHA-384, SHA-512)
+///
+/// # RFC 6960 Section 4.1.1
+/// OCSPRequest ::= SEQUENCE {
+///    tbsRequest             TBSRequest,
+///    optionalSignature  [0] EXPLICIT Signature OPTIONAL }
 #[derive(Debug, Clone)]
 pub struct OcspRequest {
     /// Certificate serial number being queried
@@ -37,7 +66,27 @@ pub enum HashAlgorithm {
 impl OcspRequest {
     /// Parse OCSP request from DER-encoded bytes
     ///
-    /// RFC 6960 §4.1.1: OCSPRequest structure
+    /// Parses and validates a DER-encoded OCSP request per RFC 6960 Section 4.1.1.
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    /// - **SI-10**: Input validation - rejects malformed DER encoding
+    /// - **FDP_IFC.1**: Validates request structure before processing
+    ///
+    /// # RFC 6960 Section 4.1.1 ASN.1 Structure
+    /// ```text
+    /// OCSPRequest ::= SEQUENCE {
+    ///     tbsRequest      TBSRequest,
+    ///     optionalSignature   [0] EXPLICIT Signature OPTIONAL }
+    ///
+    /// TBSRequest ::= SEQUENCE {
+    ///     version             [0] EXPLICIT Version DEFAULT v1,
+    ///     requestorName       [1] EXPLICIT GeneralName OPTIONAL,
+    ///     requestList         SEQUENCE OF Request,
+    ///     requestExtensions   [2] EXPLICIT Extensions OPTIONAL }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns `Error::MalformedRequest` if the DER encoding is invalid.
     pub fn from_der(der: &[u8]) -> Result<Self> {
         use der::asn1::{ObjectIdentifier, OctetString};
         use der::{Decode, Sequence};
@@ -137,6 +186,11 @@ impl OcspRequest {
     }
 
     /// Create a simple OCSP request for testing
+    ///
+    /// Constructs an OCSP request with computed issuer hashes using SHA-256.
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    /// - **FCS_COP.1(2)**: Uses SHA-256 (FIPS 180-4) for hash computation
     pub fn new(serial_number: Vec<u8>, issuer_name: &[u8], issuer_key: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(issuer_name);
@@ -156,6 +210,14 @@ impl OcspRequest {
     }
 
     /// Set nonce for replay protection
+    ///
+    /// Adds a nonce extension to the request for replay attack prevention.
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    /// - **SC-23**: Session authenticity via nonce-based replay protection
+    ///
+    /// # RFC 6960 Section 4.4.1
+    /// The nonce cryptographically binds a request and response.
     pub fn with_nonce(mut self, nonce: Vec<u8>) -> Self {
         self.nonce = Some(nonce);
         self

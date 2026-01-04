@@ -1,7 +1,24 @@
 //! gRPC service implementation for Certificate Authority
 //!
-//! RFC 5280: X.509 Public Key Infrastructure
-//! NIST 800-53: SC-12 - Cryptographic key establishment and management
+//! This module provides gRPC service endpoints for certificate issuance, revocation,
+//! and CA management operations.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FMT_SMF.1**: Security management functions - gRPC endpoints for CA operations
+//! - **FDP_ACC.1**: Access control - gRPC authentication and authorization
+//! - **FIA_AFL.1**: Authentication failure handling - Rate limiting, lockout
+//! - **FTP_ITC.1**: Inter-TSF trusted channel - mTLS for gRPC transport
+//!
+//! ## RFC Compliance
+//! - RFC 5280: X.509 Public Key Infrastructure
+//!
+//! ## NIST 800-53 Controls
+//! - SC-8: Transmission confidentiality (mTLS)
+//! - SC-12: Cryptographic key establishment and management
+//! - AC-3: Access enforcement
+//! - AC-17: Remote access (mTLS authentication)
 
 use crate::{CertificateAuthority, Error, IssuanceRequest, Result, RevocationRequest};
 use ostrich_common::types::DistinguishedName;
@@ -21,6 +38,10 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 /// gRPC service wrapper for Certificate Authority
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FMT_SMF.1 - Exposes CA security management functions via gRPC
+/// - NIAP PP-CA: FTP_ITC.1 - Requires mTLS for trusted channel
 pub struct CaGrpcService {
     ca: Arc<CertificateAuthority>,
 }
@@ -109,6 +130,10 @@ impl CaGrpcService {
 
 #[tonic::async_trait]
 impl CertificateAuthorityService for CaGrpcService {
+    /// Issue a new certificate via gRPC
+    ///
+    /// NIAP PP-CA: FMT_SMF.1.1 - Certificate issuance security function
+    /// NIAP PP-CA: FDP_ACC.1.1 - Requires authenticated and authorized caller
     async fn issue_certificate(
         &self,
         request: Request<IssueCertificateRequest>,
@@ -168,6 +193,10 @@ impl CertificateAuthorityService for CaGrpcService {
         Ok(Response::new(response))
     }
 
+    /// Revoke a certificate via gRPC
+    ///
+    /// NIAP PP-CA: FMT_SMF.1.1 - Certificate revocation security function
+    /// NIAP PP-CA: FDP_ACC.1.1 - Requires authenticated and authorized caller
     async fn revoke_certificate(
         &self,
         request: Request<RevokeCertificateRequest>,
@@ -212,6 +241,10 @@ impl CertificateAuthorityService for CaGrpcService {
         Ok(Response::new(response))
     }
 
+    /// Generate a new CRL via gRPC
+    ///
+    /// NIAP PP-CA: FMT_SMF.1.1 - CRL generation security function
+    /// NIAP PP-CA: FDP_ACC.1.1 - Requires authenticated administrator
     async fn generate_crl(
         &self,
         _request: Request<GenerateCrlRequest>,
@@ -237,6 +270,9 @@ impl CertificateAuthorityService for CaGrpcService {
         Ok(Response::new(response))
     }
 
+    /// Check certificate revocation status via gRPC
+    ///
+    /// NIAP PP-CA: FMT_SMF.1.1 - Revocation status query function
     async fn check_revocation_status(
         &self,
         request: Request<CheckRevocationStatusRequest>,

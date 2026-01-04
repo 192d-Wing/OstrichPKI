@@ -1,7 +1,49 @@
 //! ACME challenge validation
 //!
-//! RFC 8555 §8 - Challenge validation methods
-//! NIST 800-53: IA-5 - Authenticator management
+//! This module implements the challenge validation mechanisms for ACME:
+//! HTTP-01, DNS-01, and TLS-ALPN-01. These validators prove domain control
+//! before certificate issuance.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//!
+//! - **FIA_UAU.1**: User authentication before any action
+//!   - Challenge validation authenticates domain control.
+//!   - Key authorization binding proves account ownership.
+//!
+//! - **FTP_ITC.1**: Inter-TSF trusted channel
+//!   - TLS-ALPN-01 uses TLS for challenge validation.
+//!   - HTTPS redirect following for HTTP-01.
+//!
+//! - **FCS_COP.1**: Cryptographic operation
+//!   - SHA-256 for DNS-01 digest computation.
+//!   - TLS handshake for TLS-ALPN-01 validation.
+//!
+//! - **FAU_GEN.1**: Audit data generation
+//!   - Validation attempts logged with domain and outcome.
+//!   - Failures recorded with error details.
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//!
+//! - **IA-5**: Authenticator Management
+//!   - Challenge-response proves domain control.
+//!
+//! - **IA-5(1)**: Password-based / Challenge-Response Authentication
+//!   - HTTP-01: Token-based challenge-response.
+//!   - DNS-01: TXT record verification.
+//!   - TLS-ALPN-01: Certificate extension verification.
+//!
+//! - **SI-10**: Information Input Validation
+//!   - SSRF prevention via private IP blocking.
+//!   - Domain name validation.
+//!
+//! ## RFC Compliance
+//!
+//! - RFC 8555 §8: Challenge validation methods
+//! - RFC 8555 §8.3: HTTP-01 challenge
+//! - RFC 8555 §8.4: DNS-01 challenge
+//! - RFC 8737: TLS-ALPN-01 challenge
 
 use crate::{Error, Result};
 use std::time::Duration;
@@ -10,18 +52,30 @@ use std::time::Duration;
 ///
 /// Validates domain control by fetching a token from a well-known HTTP endpoint.
 ///
-/// Process:
+/// # Process
+///
 /// 1. Construct URL: http://<domain>/.well-known/acme-challenge/<token>
 /// 2. Perform HTTP GET request with 10-second timeout
 /// 3. Verify response body equals: <token>.<account_key_thumbprint>
 /// 4. Follow HTTP redirects (max 10)
 /// 5. Accept response with status 200 OK
 ///
-/// Security considerations:
+/// # Security Considerations
+///
 /// - Prevent SSRF by blocking private IP ranges
 /// - Use DNS resolution to detect private IPs
 /// - Enforce timeout to prevent DoS
 /// - Follow redirects with limit
+///
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UAU.1**: Validates domain control via HTTP challenge-response.
+/// - **FAU_GEN.1**: Validation attempts and results are auditable.
+///
+/// # NIST 800-53 Controls
+///
+/// - **IA-5(1)**: Challenge-response authentication.
+/// - **SI-10**: SSRF prevention via private IP blocking.
 pub struct Http01Validator {
     /// HTTP client with timeout
     client: reqwest::Client,
@@ -52,8 +106,15 @@ impl Http01Validator {
 
     /// Validate HTTP-01 challenge
     ///
-    /// RFC 8555 §8.3 - HTTP challenge validation
-    /// NIST 800-53: IA-5(1) - Challenge-response authentication
+    /// # NIAP PP-CA v2.1 Compliance
+    ///
+    /// - **FIA_UAU.1**: Proves domain control before certificate issuance.
+    /// - **FAU_GEN.1**: Validation outcome recorded for audit.
+    ///
+    /// # NIST 800-53 Controls
+    ///
+    /// - **IA-5(1)**: Challenge-response authentication (RFC 8555 §8.3).
+    /// - **SI-10**: Domain and response validation.
     pub async fn validate(
         &self,
         domain: &str,
@@ -113,21 +174,29 @@ impl Default for Http01Validator {
 ///
 /// Validates domain control by checking for a TXT record at _acme-challenge.<domain>
 ///
-/// Process:
+/// # Process
+///
 /// 1. Construct TXT record name: _acme-challenge.<domain>
 /// 2. Query DNS for TXT records
 /// 3. Compute expected value: Base64URL(SHA256(<token>.<account_key_thumbprint>))
 /// 4. Verify at least one TXT record matches expected value
 /// 5. Use recursive DNS resolver (system default)
 ///
-/// Security considerations:
+/// # Security Considerations
+///
 /// - Use DNSSEC if available
 /// - Query multiple nameservers if possible
 /// - Enforce timeout to prevent DoS
 ///
-/// COMPLIANCE MAPPING:
-/// - NIST 800-53: IA-5(1) - Authenticator management (challenge-response)
-/// - RFC 8555 §8.4 - DNS-01 challenge validation
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UAU.1**: Validates domain control via DNS challenge.
+/// - **FCS_COP.1**: SHA-256 digest of key authorization.
+/// - **FAU_GEN.1**: Validation attempts and results are auditable.
+///
+/// # NIST 800-53 Controls
+///
+/// - **IA-5(1)**: Challenge-response authentication (RFC 8555 §8.4).
 pub struct Dns01Validator {
     /// DNS resolver timeout in seconds
     timeout_secs: u64,
@@ -141,14 +210,22 @@ impl Dns01Validator {
 
     /// Validate DNS-01 challenge
     ///
-    /// RFC 8555 §8.4 - DNS challenge validation
-    /// NIST 800-53: IA-5(1) - Challenge-response authentication
+    /// # Process
     ///
-    /// Process:
     /// 1. Compute expected value: BASE64URL(SHA256(token.account_key_thumbprint))
     /// 2. Query DNS for TXT record at _acme-challenge.<domain>
     /// 3. Verify any TXT record matches the expected value
     /// 4. Retry with delay to allow for DNS propagation
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    ///
+    /// - **FIA_UAU.1**: Proves domain control before certificate issuance.
+    /// - **FCS_COP.1**: SHA-256 digest computation (FIPS 180-4).
+    /// - **FAU_GEN.1**: Validation outcome recorded for audit.
+    ///
+    /// # NIST 800-53 Controls
+    ///
+    /// - **IA-5(1)**: Challenge-response authentication (RFC 8555 §8.4).
     pub async fn validate(
         &self,
         domain: &str,
@@ -246,23 +323,33 @@ impl Default for Dns01Validator {
 /// Validates domain control by checking for a special ALPN protocol and certificate extension
 /// during TLS handshake.
 ///
-/// Process:
+/// # Process
+///
 /// 1. Connect to <domain>:443 with TLS
 /// 2. Send ALPN extension with protocol "acme-tls/1"
 /// 3. Verify server responds with "acme-tls/1" protocol
 /// 4. Verify certificate has acmeIdentifier extension with SHA256 hash
 /// 5. Hash = SHA256(<token>.<account_key_thumbprint>)
 ///
-/// Security considerations:
+/// # Security Considerations
+///
 /// - Verify certificate chain
 /// - Check for proper ALPN protocol
 /// - Enforce timeout to prevent DoS
 /// - Prevent SSRF by blocking private IPs
 ///
-/// COMPLIANCE MAPPING:
-/// - NIST 800-53: IA-5(1) - Authenticator management (challenge-response)
-/// - RFC 8737 - TLS-ALPN-01 challenge validation
-/// - RFC 8555 §8.1 - Key authorization
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UAU.1**: Validates domain control via TLS-ALPN challenge.
+/// - **FTP_ITC.1**: Uses TLS trusted channel for validation.
+/// - **FCS_COP.1**: SHA-256 hash of key authorization in certificate.
+/// - **FAU_GEN.1**: Validation attempts and results are auditable.
+///
+/// # NIST 800-53 Controls
+///
+/// - **IA-5(1)**: Challenge-response authentication (RFC 8737).
+/// - **SC-8**: Transmission confidentiality via TLS.
+/// - **SI-10**: SSRF prevention via private IP blocking.
 pub struct TlsAlpn01Validator {
     /// TLS connection timeout in seconds
     timeout_secs: u64,
@@ -276,8 +363,17 @@ impl TlsAlpn01Validator {
 
     /// Validate TLS-ALPN-01 challenge
     ///
-    /// RFC 8737 - TLS-ALPN challenge validation
-    /// NIST 800-53: IA-5(1) - Challenge-response authentication
+    /// # NIAP PP-CA v2.1 Compliance
+    ///
+    /// - **FIA_UAU.1**: Proves domain control before certificate issuance.
+    /// - **FTP_ITC.1**: TLS handshake establishes trusted channel.
+    /// - **FCS_COP.1**: Verifies SHA-256 hash in certificate extension.
+    /// - **FAU_GEN.1**: Validation outcome recorded for audit.
+    ///
+    /// # NIST 800-53 Controls
+    ///
+    /// - **IA-5(1)**: Challenge-response authentication (RFC 8737).
+    /// - **SC-8**: TLS transmission confidentiality.
     pub async fn validate(
         &self,
         domain: &str,

@@ -1,6 +1,38 @@
 //! Key escrow functionality
 //!
-//! NIST 800-57: Key escrow and recovery procedures
+//! Provides secure key escrow capabilities for private keys that require
+//! backup and potential recovery. Keys are wrapped and split using Shamir's
+//! Secret Sharing for M-of-N threshold recovery.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//!
+//! - **FCS_CKM.2**: Cryptographic Key Distribution
+//!   - [`KeyEscrow::escrow_key`]: Wraps private key with KEK and distributes
+//!     shares to authorized recovery agents
+//!   - Implements threshold distribution (M-of-N) for split knowledge
+//!
+//! - **FCS_COP.1**: Cryptographic Operations
+//!   - Key wrapping uses approved algorithms (AES-256-KW planned)
+//!   - Shamir splitting over GF(256) for share generation
+//!
+//! - **FDP_ACC.1**: Access Control for Key Escrow
+//!   - Only authorized requestors can initiate key escrow
+//!   - Justification required for all escrow operations
+//!
+//! - **FAU_GEN.1**: Audit Data Generation
+//!   - All escrow operations generate audit events
+//!   - Share distribution is individually audited
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//!
+//! - **SC-12**: Cryptographic Key Establishment and Management
+//! - **SC-12(1)**: Availability of Information (key backup)
+//!
+//! ## NIST SP 800-57
+//!
+//! - Key escrow and recovery procedures per Part 2
 
 use crate::{Error, Result, ShamirSecretSharing};
 use chrono::{DateTime, Utc};
@@ -97,6 +129,18 @@ impl KeyEscrow {
     /// 1. Wrap private key with storage key
     /// 2. Split storage key into M-of-N shares using Shamir
     /// 3. Store encrypted key and distribute shares to agents
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    ///
+    /// - **FCS_CKM.2**: Implements key distribution by splitting KEK into shares
+    ///   and distributing to authorized recovery agents.
+    /// - **FDP_ACC.1**: Validates requestor authorization and requires justification.
+    /// - **FAU_GEN.1**: Generates audit events for escrow request and each share distribution.
+    ///
+    /// # NIST 800-53 Compliance
+    ///
+    /// - **SC-12**: Cryptographic key establishment for key escrow.
+    /// - **AU-3**: Audit record contains who, what, when, where, outcome.
     pub async fn escrow_key(&self, request: KeyEscrowRequest) -> Result<EscrowedKey> {
         // Validate request
         if request.threshold > request.num_agents {

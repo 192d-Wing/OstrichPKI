@@ -2,10 +2,40 @@
 //!
 //! RFC 7030 - EST enrollment via CA service
 //!
-//! COMPLIANCE MAPPING:
-//! - NIST 800-53: SC-8 - Transmission confidentiality (gRPC with mTLS)
-//! - NIST 800-53: AU-3 - Audit record content (requestor tracking)
-//! - RFC 7030 §4.2 - Simple Enroll and Re-enroll
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//!
+//! - **FTP_ITC.1**: Inter-TSF trusted channel
+//!   - gRPC communication with CA service uses mTLS
+//!   - Mutual authentication between EST and CA services
+//!
+//! - **FCS_COP.1**: Cryptographic operations
+//!   - CSR parsing and signature verification
+//!   - Certificate encoding (DER/PKCS#7)
+//!
+//! - **FAU_GEN.1**: Audit data generation
+//!   - Enrollment requests logged with requestor identity
+//!   - Certificate issuance events tracked
+//!
+//! - **FMT_SMF.1**: Security management functions
+//!   - Certificate enrollment workflow management
+//!   - Enrollment status tracking
+//!
+//! - **FDP_ITC.1**: Import of user data without security attributes
+//!   - CSR data imported from EST client
+//!   - Subject information extracted for certificate issuance
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//!
+//! - **SC-8**: Transmission confidentiality (gRPC with mTLS)
+//! - **SC-12**: Cryptographic key establishment and management
+//! - **AU-3**: Audit record content (requestor tracking)
+//!
+//! ## RFC Compliance
+//!
+//! - **RFC 7030 S4.2**: Simple Enroll and Re-enroll
+//! - **RFC 5280**: X.509 certificate profile
 
 use crate::{Error, Result};
 use der::Encode;
@@ -20,8 +50,10 @@ use x509_cert::request::CertReq;
 /// CA client for EST service
 ///
 /// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FTP_ITC.1 - Inter-TSF trusted channel (mTLS to CA)
+/// - NIAP PP-CA: FMT_SMF.1 - Security management (enrollment workflow)
 /// - NIST 800-53: SC-12 - Cryptographic key management via CA
-/// - RFC 7030 §4.2 - Certificate enrollment operations
+/// - RFC 7030 S4.2 - Certificate enrollment operations
 pub struct EstCaClient {
     grpc_client: CaGrpcClient,
     db_pool: DatabasePool,
@@ -30,7 +62,11 @@ pub struct EstCaClient {
 impl EstCaClient {
     /// Create a new EST CA client
     ///
-    /// NIST 800-53: SC-8(1) - Establish mTLS connection to CA
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA: FTP_ITC.1.1 - Initiate trusted channel to CA service
+    /// - NIAP PP-CA: FTP_ITC.1.2 - Establish mTLS mutual authentication
+    /// - NIST 800-53: SC-8(1) - Establish mTLS connection to CA
+    /// - NIST 800-53: SC-23 - Session authenticity
     pub async fn new(config: GrpcClientConfig, db_pool: DatabasePool) -> Result<Self> {
         let grpc_client = CaGrpcClient::new(config)
             .await
@@ -44,11 +80,15 @@ impl EstCaClient {
 
     /// Enroll a new certificate via EST
     ///
-    /// RFC 7030 §4.2.1 - Simple Enroll
+    /// RFC 7030 S4.2.1 - Simple Enroll
     ///
     /// COMPLIANCE MAPPING:
-    /// - RFC 7030 §4.2.1 - CSR validation and certificate issuance
+    /// - NIAP PP-CA: FCS_COP.1 - Cryptographic operation (CSR parsing)
+    /// - NIAP PP-CA: FDP_ITC.1 - Import user data (CSR subject info)
+    /// - NIAP PP-CA: FAU_GEN.1 - Audit data generation (enrollment event)
+    /// - NIAP PP-CA: FMT_SMF.1.1 - Security management function (enrollment)
     /// - NIST 800-53: AU-2 - Auditable event (certificate issuance)
+    /// - RFC 7030 S4.2.1 - CSR validation and certificate issuance
     ///
     /// # Arguments
     /// * `enrollment_id` - EST enrollment UUID
@@ -138,7 +178,10 @@ impl EstCaClient {
 
     /// Convert X.509 Name to proto DistinguishedName
     ///
-    /// RFC 5280 §4.1.2.4 - Issuer/Subject name conversion
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA: FDP_ITC.1 - Import user data (subject DN extraction)
+    /// - RFC 5280 S4.1.2.4 - Issuer/Subject name conversion
+    /// - RFC 4514 - LDAP Distinguished Name string representation
     fn convert_subject_to_proto(name: &x509_cert::name::Name) -> Result<ProtoDistinguishedName> {
         // Convert Name to string (RFC 4514 format)
         // For now, we'll do a simple conversion
@@ -159,13 +202,17 @@ impl EstCaClient {
 
     /// Get issued certificate from CA
     ///
-    /// RFC 7030 §4.2.3 - Certificate retrieval
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA: FCS_COP.1 - Cryptographic operation (certificate encoding)
+    /// - NIAP PP-CA: FDP_ETC.1 - Export of user data (certificate retrieval)
+    /// - RFC 7030 S4.2.3 - Certificate retrieval
+    /// - RFC 7030 S4.1.3 - PKCS#7/CMS response format
     ///
     /// # Arguments
     /// * `certificate_id` - Certificate ID from CA
     ///
     /// # Returns
-    /// PKCS#7 (CMS) encoded certificate (RFC 7030 §4.1.3)
+    /// PKCS#7 (CMS) encoded certificate (RFC 7030 S4.1.3)
     pub async fn get_certificate(&self, certificate_id: Uuid) -> Result<Vec<u8>> {
         // Fetch certificate from database
         let cert_repo = ostrich_db::repository::CertificateRepository::new(self.db_pool.clone());

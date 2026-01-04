@@ -6,6 +6,33 @@
 //!
 //! Based on Shamir's Secret Sharing algorithm using polynomial interpolation
 //! over finite field GF(256).
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//!
+//! - **FCS_CKM.2**: Cryptographic Key Distribution
+//!   - [`ShamirSecretSharing::split`]: Splits secret into N shares with M threshold
+//!   - Enables distributed key storage across multiple recovery agents
+//!   - No single agent can recover the key; requires M-of-N cooperation
+//!
+//! - **FCS_COP.1**: Cryptographic Operations
+//!   - Uses polynomial interpolation over GF(256) finite field
+//!   - Mathematically proven information-theoretic security
+//!   - Any M-1 shares reveal no information about the secret
+//!
+//! - **FDP_IFC.1**: Information Flow Control
+//!   - Secret is only reconstructable with threshold number of shares
+//!   - Enforces split-knowledge principle for sensitive key material
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//!
+//! - **SC-12(3)**: Asymmetric Keys - Supports key splitting for protection
+//! - **SC-28(1)**: Protection of Cryptographic Keys
+//!
+//! ## Algorithm Reference
+//!
+//! - Adi Shamir, "How to Share a Secret", Communications of the ACM, 1979
 
 use crate::{Error, Result};
 use rand::{RngCore, thread_rng};
@@ -32,6 +59,17 @@ impl ShamirSecretSharing {
     ///
     /// # Returns
     /// Vector of N shares
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    ///
+    /// - **FCS_CKM.2**: Key distribution via threshold splitting. The secret (typically
+    ///   a key encryption key) is split such that M shares are required to reconstruct.
+    /// - **FCS_COP.1**: Uses random polynomial generation with secure RNG for coefficients.
+    ///
+    /// # Security Properties
+    ///
+    /// - Information-theoretic security: Any M-1 shares reveal zero information
+    /// - Perfect secrecy: All possible secrets are equally likely given M-1 shares
     pub fn split(secret: &[u8], threshold: usize, num_shares: usize) -> Result<Vec<Share>> {
         if threshold > num_shares {
             return Err(Error::InvalidRequest(format!(
@@ -91,6 +129,15 @@ impl ShamirSecretSharing {
     ///
     /// # Returns
     /// The reconstructed secret
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    ///
+    /// - **FCS_CKM.2**: Key reconstruction requires M authorized shares from recovery agents.
+    /// - **FDP_ACC.1**: Threshold enforcement - reconstruction fails if fewer than M shares provided.
+    ///
+    /// # Security Note
+    ///
+    /// The reconstructed secret should be zeroized after use per FCS_CKM.4.
     pub fn reconstruct(shares: &[Share], threshold: usize) -> Result<Vec<u8>> {
         if shares.len() < threshold {
             return Err(Error::InsufficientShares {

@@ -1,6 +1,30 @@
 //! OCSP Responder core logic
 //!
-//! RFC 6960: Online Certificate Status Protocol
+//! This module implements the core OCSP responder functionality for processing
+//! certificate status queries and generating signed OCSP responses.
+//!
+//! # Compliance Mapping
+//!
+//! ## RFC Standards
+//! - **RFC 6960**: Online Certificate Status Protocol (OCSP)
+//!   - Section 4.2.1: BasicOCSPResponse - Response data and signing
+//!   - Section 4.2.2: Mandatory/Optional Extensions
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FCS_COP.1(1)**: Cryptographic Operation - Digital signature generation
+//!   for OCSP responses using approved algorithms
+//! - **FDP_OCSPG_EXT.1**: OCSP Response Generation - Producing properly
+//!   formatted OCSP responses per RFC 6960
+//! - **FDP_IFC.1**: Information Flow Control - Revocation status queries
+//!   allowed without authentication (per PP line 358)
+//! - **FAU_GEN.1**: Audit Data Generation - Logging all OCSP operations
+//! - **FAU_GEN.2**: User Identity Association - Actor tracking in audit records
+//! - **FPT_STM.1**: Reliable Time Stamps - thisUpdate/nextUpdate timestamps
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//! - **AU-2**: Auditable Events - All OCSP operations are logged
+//! - **AU-3**: Content of Audit Records - Serial number, status, outcome
+//! - **SC-13**: Cryptographic Protection - FIPS-validated signature algorithms
 
 use crate::{
     Result,
@@ -48,6 +72,15 @@ impl Default for OcspConfig {
 }
 
 /// OCSP Responder
+///
+/// The main OCSP responder component that processes certificate status requests
+/// and generates signed responses.
+///
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FDP_OCSPG_EXT.1**: This struct implements the OCSP response generation
+///   functionality required by the Protection Profile
+/// - **FCS_COP.1(1)**: Uses CryptoProvider for response signing operations
+/// - **FAU_GEN.1**: All operations emit audit events via AuditSink
 pub struct OcspResponder {
     config: OcspConfig,
     #[allow(dead_code)] // TODO: Use for response caching
@@ -78,6 +111,19 @@ impl OcspResponder {
     }
 
     /// Process an OCSP request
+    ///
+    /// Looks up the certificate status in the database and generates a signed
+    /// OCSP response per RFC 6960.
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    /// - **FDP_OCSPG_EXT.1**: Generates OCSP responses per RFC 6960
+    /// - **FDP_IFC.1**: Allows unauthenticated status queries (per PP line 358)
+    /// - **FAU_GEN.1**: Emits audit events for request processing
+    /// - **FPT_STM.1**: Uses reliable timestamps for thisUpdate/nextUpdate
+    ///
+    /// # RFC 6960 Compliance
+    /// - Section 4.2.1: Response format and signing
+    /// - Section 2.2: Response status (good, revoked, unknown)
     pub async fn process_request(&self, request: OcspRequest) -> Result<OcspResponse> {
         // Log the request
         let mut event = AuditEventBuilder::new(
@@ -169,7 +215,24 @@ impl OcspResponder {
 
     /// Sign an OCSP response
     ///
-    /// RFC 6960 §4.2.1: BasicOCSPResponse signing
+    /// Produces a signed BasicOCSPResponse per RFC 6960 Section 4.2.1.
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    /// - **FCS_COP.1(1)**: Cryptographic signature operation using approved
+    ///   algorithms (RSA-PSS with SHA-256, ECDSA, EdDSA, or ML-DSA)
+    /// - **FDP_OCSPG_EXT.1**: Signed OCSP response generation
+    /// - **FCO_NRO_EXT.2**: Proof of origin via digital signature
+    ///
+    /// # FIPS Compliance
+    /// - FIPS 186-5: RSA-PSS, ECDSA, EdDSA signature algorithms
+    /// - FIPS 204: ML-DSA post-quantum signatures (when enabled)
+    ///
+    /// # RFC 6960 Section 4.2.1
+    /// BasicOCSPResponse ::= SEQUENCE {
+    ///    tbsResponseData      ResponseData,
+    ///    signatureAlgorithm   AlgorithmIdentifier,
+    ///    signature            BIT STRING,
+    ///    certs            [0] EXPLICIT SEQUENCE OF Certificate OPTIONAL }
     async fn sign_response(
         &self,
         responses: Vec<SingleResponse>,
@@ -221,7 +284,19 @@ impl OcspResponder {
 
     /// Encode ResponseData to DER for signing
     ///
-    /// RFC 6960 §4.2.1: ResponseData structure
+    /// Encodes the to-be-signed response data structure per RFC 6960 Section 4.2.1.
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    /// - **FDP_OCSPG_EXT.1**: Proper ASN.1/DER encoding of response data
+    /// - **FPT_STM.1**: producedAt timestamp from reliable time source
+    ///
+    /// # RFC 6960 Section 4.2.1
+    /// ResponseData ::= SEQUENCE {
+    ///    version              [0] EXPLICIT Version DEFAULT v1,
+    ///    responderID              ResponderID,
+    ///    producedAt               GeneralizedTime,
+    ///    responses                SEQUENCE OF SingleResponse,
+    ///    responseExtensions   [1] EXPLICIT Extensions OPTIONAL }
     fn encode_response_data(&self, data: &ResponseData) -> Result<Vec<u8>> {
         use der::asn1::{GeneralizedTime, Int, ObjectIdentifier, OctetString};
         use der::{Encode, Sequence};

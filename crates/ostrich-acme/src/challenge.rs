@@ -1,6 +1,43 @@
 //! ACME challenge types
 //!
-//! RFC 8555 §8: Identifier validation challenges
+//! This module defines ACME challenge types and their lifecycle management
+//! for domain/identifier validation per RFC 8555 Section 8.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//!
+//! - **FIA_UAU.1**: User authentication before any action
+//!   - Challenge validation proves control over identifier.
+//!   - Key authorization binds challenge to account's public key.
+//!
+//! - **FCS_COP.1**: Cryptographic operation
+//!   - Key authorization uses SHA-256 (for DNS-01 digest).
+//!   - Token generation uses cryptographic RNG.
+//!
+//! - **FAU_GEN.1**: Audit data generation
+//!   - Challenge creation, status changes, and validation audited.
+//!   - Validation errors recorded with details.
+//!
+//! - **FPT_STM.1**: Reliable time stamps
+//!   - Challenge validation timestamps from trusted time source.
+//!   - Created/updated timestamps for lifecycle tracking.
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//!
+//! - **IA-5(1)**: Authenticator Management (Challenge-Response)
+//!   - HTTP-01, DNS-01, TLS-ALPN-01 challenge mechanisms.
+//!
+//! - **AU-2/AU-3**: Audit Events
+//!   - Challenge lifecycle events logged.
+//!
+//! ## RFC Compliance
+//!
+//! - RFC 8555 §8: Identifier validation challenges
+//! - RFC 8555 §8.1: Key authorization
+//! - RFC 8555 §8.3: HTTP-01 challenge
+//! - RFC 8555 §8.4: DNS-01 challenge
+//! - RFC 8737: TLS-ALPN-01 challenge
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -124,8 +161,12 @@ impl Challenge {
 
     /// Compute key authorization
     ///
-    /// RFC 8555 §8.1
-    /// key_authorization = token || '.' || base64url(SHA256(JWK))
+    /// RFC 8555 §8.1: key_authorization = token || '.' || base64url(SHA256(JWK))
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    ///
+    /// - **FIA_UAU.1**: Binds challenge to account's cryptographic identity.
+    /// - **FCS_COP.1**: Uses JWK thumbprint (SHA-256 hash of canonical JWK).
     pub fn key_authorization(&self, account_jwk_thumbprint: &str) -> String {
         format!("{}.{}", self.token, account_jwk_thumbprint)
     }

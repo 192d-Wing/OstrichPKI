@@ -1,7 +1,17 @@
 //! Certificate profiles and templates
 //!
-//! RFC 5280 §4.2 - Certificate extensions
-//! NIST 800-53: CM-2 - Baseline configuration
+//! # Compliance Mapping
+//!
+//! ## RFC Standards
+//! - RFC 5280 §4.2: Certificate extensions
+//!
+//! ## NIST 800-53 Rev 5
+//! - CM-2: Baseline configuration
+//! - SC-17: PKI certificates
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - FMT_MSA.1: Management of security attributes
+//! - FDP_IFC.1: Information flow control (certificate policies)
 
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};

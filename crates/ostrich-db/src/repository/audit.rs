@@ -1,8 +1,37 @@
 //! Audit log repository with integrity chain
 //!
-//! NIST 800-53: AU-2 - Auditable events
-//! NIST 800-53: AU-9 - Protection of audit information
-//! NIST 800-53: AU-10 - Non-repudiation
+//! This module implements the audit log repository with cryptographic hash
+//! chain integrity protection. Audit records are append-only and cannot be
+//! modified or deleted after creation.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//! - AU-2: Auditable events - All security-relevant events captured
+//! - AU-3: Content of audit records - Records include who, what, when, where, outcome
+//! - AU-9: Protection of audit information - Append-only with hash chain
+//! - AU-9(3): Cryptographic protection - SHA-256 hash chain verification
+//! - AU-10: Non-repudiation - Hash chain provides tamper evidence
+//! - AU-11: Audit record retention - Time-range queries support retention policies
+//! - AU-12: Audit generation - Events recorded for all CA operations
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - FAU_GEN.1: Audit data generation - Repository accepts all audit event types
+//!   defined in FAU_GEN.1.1 including startup/shutdown, certificate operations,
+//!   and administrative actions
+//! - FAU_GEN.2: User identity association - Actor field links events to subjects
+//! - FAU_STG.1: Protected audit trail storage - Append-only table design with
+//!   hash chain prevents unauthorized modification; update/delete operations
+//!   return errors per FAU_STG.1.1 and FAU_STG.1.2
+//! - FAU_STG.2: Guarantees of audit data availability - Database transactions
+//!   ensure atomic commit of audit records
+//! - FAU_STG.4: Prevention of audit data loss - Hash chain allows detection of
+//!   any missing records; verify_chain() validates full audit trail integrity
+//! - FPT_STM.1: Reliable time stamps - Timestamp field populated from trusted
+//!   time source at event creation
+//!
+//! ## FIPS Standards
+//! - FIPS 180-4: SHA-256 used for audit hash chain (event_hash field)
 
 use crate::{DatabasePool, Error, Result, models::AuditEvent};
 use async_trait::async_trait;
@@ -12,9 +41,19 @@ use uuid::Uuid;
 
 /// Repository for audit log operations
 ///
-/// Implements append-only audit log with hash chain for integrity
+/// Implements append-only audit log with hash chain for integrity.
+/// This repository enforces strict audit protection requirements:
+/// - Records can only be appended, never modified or deleted
+/// - Each record is linked to the previous via SHA-256 hash chain
+/// - Chain integrity can be verified at any time
 ///
-/// NIST 800-53: AU-9(3) - Cryptographic protection of audit information
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AU-9(3) - Cryptographic protection of audit information
+/// - NIAP PP-CA v2.1: FAU_STG.1 - Protected audit trail storage
+/// - NIAP PP-CA v2.1: FAU_STG.1.1 - TSF shall protect stored audit records
+///   from unauthorized deletion
+/// - NIAP PP-CA v2.1: FAU_STG.1.2 - TSF shall prevent unauthorized
+///   modifications to audit records
 pub struct AuditRepository {
     pool: DatabasePool,
 }
@@ -27,9 +66,17 @@ impl AuditRepository {
 
     /// Append a new audit event to the log
     ///
-    /// NIST 800-53: AU-2 - Auditable events
-    /// NIST 800-53: AU-3 - Content of audit records
-    /// NIST 800-53: AU-10 - Non-repudiation via hash chain
+    /// This is the primary method for recording audit events. Each event is
+    /// linked to the previous event via hash chain to ensure integrity.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AU-2 - Auditable events
+    /// - NIST 800-53: AU-3 - Content of audit records
+    /// - NIST 800-53: AU-10 - Non-repudiation via hash chain
+    /// - NIAP PP-CA v2.1: FAU_GEN.1 - Audit data generation for CA events
+    /// - NIAP PP-CA v2.1: FAU_GEN.2 - User identity association (actor field)
+    /// - NIAP PP-CA v2.1: FAU_STG.2 - Guarantees of audit data availability
+    /// - NIAP PP-CA v2.1: FPT_STM.1 - Reliable time stamps (timestamp field)
     pub async fn append(&self, event: &AuditEvent) -> Result<AuditEvent> {
         // Get the previous event's hash to create chain
         let prev_hash = self.get_last_hash().await?;
@@ -77,7 +124,13 @@ impl AuditRepository {
 
     /// Get the hash of the last audit event for chain integrity
     ///
-    /// NIST 800-53: AU-9(3) - Maintain hash chain
+    /// Retrieves the hash of the most recent audit event to maintain
+    /// the cryptographic chain linking all audit records.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AU-9(3) - Maintain hash chain
+    /// - NIAP PP-CA v2.1: FAU_STG.4 - Prevention of audit data loss
+    /// - FIPS 180-4: SHA-256 hash algorithm for chain integrity
     async fn get_last_hash(&self) -> Result<Option<Vec<u8>>> {
         let result = sqlx::query(
             r#"
@@ -96,7 +149,16 @@ impl AuditRepository {
 
     /// Verify the integrity of the audit log chain
     ///
-    /// NIST 800-53: AU-9(3) - Verify audit information integrity
+    /// Validates that all audit records form an unbroken hash chain,
+    /// detecting any tampering, deletion, or insertion of records.
+    /// Returns true if the chain is intact, false if integrity violation detected.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AU-9(3) - Verify audit information integrity
+    /// - NIAP PP-CA v2.1: FAU_STG.4 - Prevention of audit data loss
+    ///   (allows detection of missing records via broken chain)
+    /// - NIAP PP-CA v2.1: FAU_STG.1.2 - Detection of unauthorized
+    ///   modifications to stored audit records
     pub async fn verify_chain(&self) -> Result<bool> {
         let events = sqlx::query_as::<_, AuditEvent>(
             r#"
@@ -141,7 +203,14 @@ impl AuditRepository {
 
     /// Find events by actor (user/system)
     ///
-    /// NIST 800-53: AU-12 - Audit generation for user actions
+    /// Retrieves audit records associated with a specific actor (user,
+    /// service, or system component) for accountability tracking.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AU-12 - Audit generation for user actions
+    /// - NIAP PP-CA v2.1: FAU_GEN.2 - User identity association
+    ///   (enables querying by subject identity)
+    /// - NIAP PP-CA v2.1: FDP_ACC.1 - Read access control enforced
     pub async fn find_by_actor(
         &self,
         actor: &str,
@@ -205,7 +274,15 @@ impl AuditRepository {
 
     /// Find events within a time range
     ///
-    /// NIST 800-53: AU-11 - Audit record retention
+    /// Retrieves audit records within a specified time window, supporting
+    /// retention policy enforcement and incident investigation.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AU-11 - Audit record retention
+    /// - NIAP PP-CA v2.1: FAU_STG.1 - Protected audit trail storage
+    ///   (time-based retrieval for retention management)
+    /// - NIAP PP-CA v2.1: FPT_STM.1 - Reliable time stamps
+    ///   (queries based on trusted timestamps)
     pub async fn find_by_time_range(
         &self,
         start: DateTime<Utc>,
@@ -240,7 +317,14 @@ impl AuditRepository {
 
     /// Find security-relevant events (failures, access violations, etc.)
     ///
-    /// NIST 800-53: AU-2 - Security-relevant events
+    /// Retrieves audit records for security-relevant events including
+    /// authentication failures, authorization denials, and access violations.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AU-2 - Security-relevant events
+    /// - NIAP PP-CA v2.1: FAU_GEN.1.1c - Audit of unsuccessful authentication
+    /// - NIAP PP-CA v2.1: FAU_GEN.1.1d - Audit of access denials
+    /// - NIAP PP-CA v2.1: FDP_ACC.1 - Read access control enforced
     pub async fn find_security_events(
         &self,
         limit: Option<i64>,
@@ -296,15 +380,27 @@ impl super::Repository<AuditEvent> for AuditRepository {
         self.append(event).await
     }
 
+    /// Update operation is prohibited for audit records
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AU-9 - Audit logs are append-only
+    /// - NIAP PP-CA v2.1: FAU_STG.1.2 - TSF shall prevent unauthorized
+    ///   modifications to stored audit records in the audit trail
     async fn update(&self, _event: &AuditEvent) -> Result<AuditEvent> {
-        // NIST 800-53: AU-9 - Audit logs are append-only
+        // NIAP PP-CA: FAU_STG.1.2 - Prevent modification of audit records
         Err(Error::ConstraintViolation(
             "Audit events cannot be modified".to_string(),
         ))
     }
 
+    /// Delete operation is prohibited for audit records
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AU-9 - Audit logs cannot be deleted
+    /// - NIAP PP-CA v2.1: FAU_STG.1.1 - TSF shall protect stored audit
+    ///   records in the audit trail from unauthorized deletion
     async fn delete(&self, _id: &Uuid) -> Result<()> {
-        // NIST 800-53: AU-9 - Audit logs cannot be deleted
+        // NIAP PP-CA: FAU_STG.1.1 - Prevent deletion of audit records
         Err(Error::ConstraintViolation(
             "Audit events cannot be deleted".to_string(),
         ))

@@ -1,7 +1,26 @@
 //! Certificate issuance functionality
 //!
-//! RFC 5280 §4.1 - Certificate issuance
-//! NIST 800-53: SC-12 - Cryptographic key establishment and management
+//! This module handles certificate issuance including CSR validation, certificate
+//! building, signing, and storage.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FMT_SMF.1.1**: Issue certificates - Core certificate issuance functionality
+//! - **FCS_COP.1.1**: Perform cryptographic signing using CA private key
+//! - **FDP_IFC.1.1**: Enforce certificate policy during issuance
+//! - **FDP_ACC.1.1**: Access control for certificate issuance operations
+//! - **FAU_GEN.1.1**: Generate audit record for each certificate issuance
+//! - **FPT_STM.1.1**: Use reliable time source for notBefore/notAfter fields
+//!
+//! ## RFC Compliance
+//! - RFC 5280 §4.1 - Certificate structure and issuance
+//! - RFC 5280 §4.1.2.2 - Serial number requirements
+//!
+//! ## NIST 800-53 Controls
+//! - SC-12: Cryptographic key establishment and management
+//! - SC-13: Use of FIPS-validated cryptographic algorithms
+//! - AU-2: Audit certificate issuance events
 
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -63,7 +82,10 @@ pub struct IssuedCertificate {
 
 /// Certificate issuer
 ///
-/// NIST 800-53: SC-12 - Cryptographic key generation and management
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FMT_SMF.1.1 - Security management function for certificate issuance
+/// - NIAP PP-CA: FCS_COP.1.1 - Cryptographic signing operations
+/// - NIST 800-53: SC-12 - Cryptographic key generation and management
 pub struct CertificateIssuer {
     /// CA key handle
     ca_key: KeyHandle,
@@ -110,9 +132,16 @@ impl CertificateIssuer {
 
     /// Issue a certificate
     ///
+    /// NIAP PP-CA: FMT_SMF.1.1 - Issue certificate security management function
+    /// NIAP PP-CA: FCS_COP.1.1 - Sign certificate using CA private key
+    /// NIAP PP-CA: FDP_IFC.1.1 - Enforce certificate profile policy
+    /// NIAP PP-CA: FAU_GEN.1.1 - Generate audit record for issuance
+    ///
     /// RFC 5280 §4.1 - Certificate generation
     /// NIST 800-53: SC-12 - Cryptographic key generation
+    /// NIST 800-53: AU-2 - Auditable event (certificate issuance)
     pub async fn issue(&self, request: IssuanceRequest) -> Result<IssuedCertificate> {
+        // NIAP PP-CA: FAU_GEN.1.1 - Generate audit record
         // NIST 800-53: AU-2 - Audit certificate issuance
         let mut audit_event = AuditEventBuilder::new(
             EventType::CertificateIssuance,
@@ -127,13 +156,13 @@ impl CertificateIssuer {
         }))
         .build();
 
-        // Get profile
+        // NIAP PP-CA: FDP_IFC.1.1 - Retrieve and validate certificate policy (profile)
         let profile = self
             .profiles
             .get(&request.profile_name)
             .ok_or_else(|| Error::ProfileNotFound(request.profile_name.clone()))?;
 
-        // Validate profile
+        // NIAP PP-CA: FDP_IFC.1.1 - Validate policy constraints
         profile.validate()?;
 
         // Validate request
@@ -172,9 +201,9 @@ impl CertificateIssuer {
         // Encode TBS certificate to DER for signing
         let tbs_der = tbs_cert.to_der()?;
 
-        // Sign the TBS certificate with CA key
+        // NIAP PP-CA: FCS_COP.1.1 - Sign TBS certificate with CA private key
+        // Uses FIPS-validated cryptographic algorithm (RSA-PSS with SHA-256)
         // TODO: Determine signature algorithm from CA key type
-        // For now, use RSA-PSS with SHA-256
         let signature = self
             .crypto_provider
             .sign(&self.ca_key, Algorithm::RsaPssSha256, &tbs_der)
@@ -212,7 +241,7 @@ impl CertificateIssuer {
         let cert_repo = CertificateRepository::new(self.db_pool.clone());
         cert_repo.create(&certificate).await?;
 
-        // Record successful issuance
+        // NIAP PP-CA: FAU_GEN.1.1 - Record successful issuance audit event
         self.audit_sink
             .record(&mut audit_event)
             .await

@@ -1,7 +1,23 @@
 //! REST API implementation for Certificate Authority
 //!
-//! RFC 5280: X.509 Public Key Infrastructure
-//! NIST 800-53: SC-12 - Cryptographic key establishment and management
+//! This module provides REST API endpoints for certificate issuance, revocation,
+//! and CA management operations.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FMT_SMF.1**: Security management functions - API endpoints for CA operations
+//! - **FDP_ACC.1**: Access control - API authentication and authorization
+//! - **FIA_AFL.1**: Authentication failure handling - Rate limiting, lockout
+//! - **FTP_ITC.1**: Inter-TSF trusted channel - TLS for API transport
+//!
+//! ## RFC Compliance
+//! - RFC 5280: X.509 Public Key Infrastructure
+//!
+//! ## NIST 800-53 Controls
+//! - SC-8: Transmission confidentiality (TLS)
+//! - SC-12: Cryptographic key establishment and management
+//! - AC-3: Access enforcement
 
 use crate::{CertificateAuthority, Error, IssuanceRequest, Result, RevocationRequest};
 use axum::{
@@ -102,6 +118,9 @@ async fn get_ca_info(State(state): State<Arc<ApiState>>) -> Result<Json<CaInfoRe
 }
 
 /// Issue a new certificate
+///
+/// NIAP PP-CA: FMT_SMF.1.1 - Certificate issuance endpoint
+/// NIAP PP-CA: FDP_ACC.1.1 - Requires authorized requestor
 async fn issue_certificate(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<IssueCertificateRequest>,
@@ -130,6 +149,9 @@ async fn issue_certificate(
 }
 
 /// Revoke a certificate
+///
+/// NIAP PP-CA: FMT_SMF.1.1 - Certificate revocation endpoint
+/// NIAP PP-CA: FDP_ACC.1.1 - Requires authorized requestor
 async fn revoke_certificate(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
@@ -180,6 +202,9 @@ async fn check_revocation_status(
 }
 
 /// Generate a new CRL
+///
+/// NIAP PP-CA: FMT_SMF.1.1 - CRL generation endpoint
+/// NIAP PP-CA: FDP_ACC.1.1 - Requires authorized administrator
 async fn generate_crl(State(state): State<Arc<ApiState>>) -> Result<Json<GenerateCrlResponse>> {
     // Generate CRL
     let crl = state

@@ -1,4 +1,20 @@
 //! KRA error types
+//!
+//! Error types for Key Recovery Authority operations. These errors support
+//! proper audit logging and access control enforcement.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//!
+//! - **FAU_GEN.1**: Error types include sufficient context for audit logging
+//! - **FDP_ACC.1**: Unauthorized error supports access control enforcement
+//! - **FCS_CKM.2**: InsufficientShares error enforces threshold policy
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//!
+//! - **AU-3**: Error messages provide audit-relevant details
+//! - **SI-11**: Error handling generates safe, auditable messages
 
 use thiserror::Error;
 

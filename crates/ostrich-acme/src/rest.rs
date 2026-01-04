@@ -1,6 +1,48 @@
 //! ACME REST API
 //!
-//! RFC 8555: ACME protocol HTTP endpoints
+//! This module implements the ACME protocol HTTP endpoints per RFC 8555.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//!
+//! - **FIA_UAU.1**: User authentication before any action
+//!   - All mutating endpoints require JWS authentication.
+//!   - Account creation requires signed request with JWK.
+//!   - Subsequent requests authenticated via JWS with kid.
+//!
+//! - **FIA_UID.1**: User identification before any action
+//!   - Accounts identified by JWK thumbprint (RFC 7638).
+//!   - Account URL (kid) used for subsequent identification.
+//!
+//! - **FTP_ITC.1**: Inter-TSF trusted channel
+//!   - All endpoints MUST be served over HTTPS (TLS 1.2+).
+//!   - Replay-Nonce header provides replay protection.
+//!
+//! - **FDP_ACC.1**: Subset access control
+//!   - Account-scoped access to orders, authorizations, certificates.
+//!   - JWS kid validated against resource ownership.
+//!
+//! - **FAU_GEN.1**: Audit data generation
+//!   - All account and order operations emit audit events.
+//!   - Challenge responses trigger audit logging.
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//!
+//! - **SC-23**: Session Authenticity
+//!   - Nonce-based replay protection (RFC 8555 Section 6.5).
+//!   - URL binding prevents request forwarding attacks.
+//!
+//! - **IA-2**: Identification and Authentication
+//!   - JWS signature verification for all authenticated endpoints.
+//!
+//! - **SI-10**: Information Input Validation
+//!   - JWS envelope validation.
+//!   - CSR parsing and signature verification.
+//!
+//! ## RFC Compliance
+//!
+//! - RFC 8555: ACME protocol HTTP endpoints
 
 use crate::{
     account::{Account, AccountStatus},
@@ -73,6 +115,13 @@ struct ValidatedJwsRequest<T> {
 /// the request in a JWS object, signed using the account's key pair.
 ///
 /// For new-account, the JWK must be in the protected header.
+///
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UAU.1**: Authenticates request via JWS signature before processing.
+/// - **FIA_UID.1**: Identifies account via JWK thumbprint (RFC 7638).
+/// - **FCS_COP.1**: Cryptographic signature verification (RS256, ES256, etc.).
+/// - **SC-23 (NIST)**: Nonce and URL binding for replay/redirect protection.
 async fn validate_jws_new_account<T: serde::de::DeserializeOwned>(
     body: &[u8],
     expected_url: &str,
@@ -133,6 +182,14 @@ async fn validate_jws_new_account<T: serde::de::DeserializeOwned>(
 ///
 /// RFC 8555 §6.2: For requests from an existing account, the JWS MUST be
 /// signed with the account's key pair, and the "kid" field MUST be present.
+///
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UAU.1**: Authenticates request via JWS signature verification.
+/// - **FIA_UID.1**: Identifies account via kid URL (account identifier).
+/// - **FDP_ACC.1**: Validates account owns the requested resource.
+/// - **FCS_COP.1**: Cryptographic signature verification using account's key.
+/// - **SC-23 (NIST)**: Nonce consumption prevents replay attacks.
 async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
     body: &[u8],
     expected_url: &str,
@@ -355,7 +412,18 @@ async fn get_new_nonce(State(state): State<AcmeState>) -> Response {
 
 /// Create new account (RFC 8555 §7.3)
 ///
-/// NIST 800-53: IA-2 - Identification and Authentication
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UAU.1**: Authenticates request via JWS with embedded JWK.
+/// - **FIA_UID.1**: Creates unique account identity from JWK thumbprint.
+/// - **FAU_GEN.1**: Audit event emitted for account creation.
+/// - **FDP_ACC.1**: New account created with appropriate access controls.
+///
+/// # NIST 800-53 Controls
+///
+/// - **IA-2**: Identification and Authentication (Organizational Users)
+/// - **IA-5**: Authenticator Management - Public key registration.
+/// - **AU-2/AU-3**: Audit Events - Account creation logged.
 async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Response> {
     // Validate JWS and extract payload
     let validated = validate_jws_new_account::<NewAccountRequest>(
@@ -431,6 +499,18 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
 }
 
 /// Create new order (RFC 8555 §7.4)
+///
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UAU.1**: Request authenticated via JWS with kid.
+/// - **FDP_ACC.1**: Order created with account-scoped access control.
+/// - **FAU_GEN.1**: Order creation audited with identifiers.
+/// - **FPT_STM.1**: Order expiration timestamp set from reliable source.
+///
+/// # NIST 800-53 Controls
+///
+/// - **SI-10**: Input validation on domain identifiers.
+/// - **AU-2/AU-3**: Order lifecycle events logged.
 async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Response> {
     // Validate JWS and extract payload
     let validated = validate_jws_with_account::<NewOrderRequest>(
@@ -522,6 +602,13 @@ async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Respon
 }
 
 /// Update account (RFC 8555 §7.3.2)
+///
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UAU.1**: Request authenticated via JWS with kid.
+/// - **FDP_ACC.1**: Only account owner can update their account.
+/// - **FDP_ACF.1**: Account status changes (deactivation) enforced.
+/// - **FAU_GEN.1**: Account updates audited.
 async fn update_account(
     State(state): State<AcmeState>,
     Path(id): Path<String>,
@@ -591,6 +678,17 @@ async fn get_authorization(
 }
 
 /// Respond to challenge (RFC 8555 §7.5.1)
+///
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UAU.1**: Request authenticated via JWS with kid.
+/// - **FDP_ACC.1**: Challenge owned by account's authorization.
+/// - **FAU_GEN.1**: Challenge response attempt audited.
+/// - **FCS_COP.1**: Key authorization computed using SHA-256.
+///
+/// # NIST 800-53 Controls
+///
+/// - **IA-5(1)**: Challenge-response authentication mechanism.
 async fn respond_to_challenge(
     State(state): State<AcmeState>,
     Path(id): Path<String>,
@@ -657,6 +755,19 @@ async fn get_order(State(state): State<AcmeState>, Path(id): Path<String>) -> Re
 }
 
 /// Finalize order with CSR (RFC 8555 §7.4)
+///
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UAU.1**: Request authenticated via JWS with kid.
+/// - **FDP_ACC.1**: Order ownership verified before finalization.
+/// - **FDP_ACF.1**: Order must be in "ready" state (all authorizations valid).
+/// - **FAU_GEN.1**: Finalization request and outcome audited.
+/// - **FCS_COP.1**: CSR signature verification (proof of possession).
+///
+/// # NIST 800-53 Controls
+///
+/// - **SI-10**: CSR parsing and validation.
+/// - **SC-17**: PKI certificate request processing.
 async fn finalize_order(
     State(state): State<AcmeState>,
     Path(id): Path<String>,

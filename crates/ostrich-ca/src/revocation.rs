@@ -1,7 +1,25 @@
 //! Certificate revocation functionality
 //!
-//! RFC 5280 §5 - Certificate revocation lists
-//! NIST 800-53: SC-12 - Key revocation
+//! This module handles certificate revocation including CRL generation and
+//! revocation status checking.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FMT_SMF.1.1**: Revoke certificates - Security management function for revocation
+//! - **FCS_COP.1.1**: Cryptographic operations - CRL signing using CA private key
+//! - **FDP_IFC.1.1**: Information flow control - Revocation policy enforcement
+//! - **FAU_GEN.1.1**: Audit data generation - Revocation and CRL generation events
+//! - **FPT_STM.1.1**: Reliable time stamps - Revocation time, thisUpdate, nextUpdate
+//!
+//! ## RFC Compliance
+//! - RFC 5280 §5 - Certificate Revocation Lists
+//! - RFC 5280 §5.3.1 - Revocation reasons
+//! - RFC 6960 §2.2 - OCSP response (revocation status)
+//!
+//! ## NIST 800-53 Controls
+//! - SC-12: Key revocation management
+//! - AU-2: Audit revocation events
 
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -34,7 +52,11 @@ pub struct RevocationRequest {
 
 /// Revocation manager
 ///
-/// NIST 800-53: SC-12 - Cryptographic key revocation
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FMT_SMF.1.1 - Security management function for certificate revocation
+/// - NIAP PP-CA: FCS_COP.1.1 - Cryptographic operations for CRL signing
+/// - NIAP PP-CA: FAU_GEN.1.1 - Audit generation for revocation events
+/// - NIST 800-53: SC-12 - Cryptographic key revocation
 pub struct RevocationManager {
     /// CA key handle
     ca_key: KeyHandle,
@@ -81,6 +103,10 @@ impl RevocationManager {
 
     /// Revoke a certificate
     ///
+    /// NIAP PP-CA: FMT_SMF.1.1 - Revoke certificate security management function
+    /// NIAP PP-CA: FAU_GEN.1.1 - Generate audit record for revocation
+    /// NIAP PP-CA: FPT_STM.1.1 - Record reliable revocation timestamp
+    ///
     /// RFC 5280 §5 - Certificate revocation
     /// NIST 800-53: AU-2 - Audit certificate revocation
     pub async fn revoke(&self, request: RevocationRequest) -> Result<()> {
@@ -92,7 +118,7 @@ impl RevocationManager {
             .await?
             .ok_or_else(|| Error::InvalidRequest("Certificate not found".to_string()))?;
 
-        // Create audit event
+        // NIAP PP-CA: FAU_GEN.1.1 - Create audit event for revocation
         let mut audit_event = AuditEventBuilder::new(
             EventType::CertificateRevocation,
             &request.requestor,
@@ -123,7 +149,7 @@ impl RevocationManager {
             .revoke(&request.certificate_id, request.reason.as_i32())
             .await?;
 
-        // Record audit event
+        // NIAP PP-CA: FAU_GEN.1.1 - Record successful revocation audit event
         self.audit_sink
             .record(&mut audit_event)
             .await
@@ -140,6 +166,11 @@ impl RevocationManager {
 
     /// Generate a new CRL
     ///
+    /// NIAP PP-CA: FMT_SMF.1.1 - Generate CRL security management function
+    /// NIAP PP-CA: FCS_COP.1.1 - Sign CRL using CA private key
+    /// NIAP PP-CA: FAU_GEN.1.1 - Generate audit record for CRL generation
+    /// NIAP PP-CA: FPT_STM.1.1 - Use reliable time for thisUpdate/nextUpdate
+    ///
     /// RFC 5280 §5.1 - CRL generation
     /// NIST 800-53: AU-2 - Audit CRL generation
     pub async fn generate_crl(
@@ -148,7 +179,7 @@ impl RevocationManager {
     ) -> Result<GeneratedCrl> {
         let cert_repo = CertificateRepository::new(self.db_pool.clone());
 
-        // Create audit event
+        // NIAP PP-CA: FAU_GEN.1.1 - Create audit event for CRL generation
         let mut audit_event = AuditEventBuilder::new(
             EventType::CrlGeneration,
             "system",
@@ -194,7 +225,8 @@ impl RevocationManager {
         // Encode TBS CRL to DER for signing
         let tbs_der = tbs_crl.to_der()?;
 
-        // Sign the TBS CRL with CA key
+        // NIAP PP-CA: FCS_COP.1.1 - Sign TBS CRL with CA private key
+        // Uses FIPS-validated cryptographic algorithm (RSA-PSS with SHA-256)
         let signature = self
             .crypto_provider
             .sign(&self.ca_key, Algorithm::RsaPssSha256, &tbs_der)
@@ -206,7 +238,7 @@ impl RevocationManager {
         // Convert DER to PEM
         let pem_encoded = self.crl_der_to_pem(&der_encoded)?;
 
-        // Record audit event
+        // NIAP PP-CA: FAU_GEN.1.1 - Record CRL generation audit event
         audit_event.details = Some(serde_json::json!({
             "crl_number": current_crl_number,
             "revoked_count": revoked_count,

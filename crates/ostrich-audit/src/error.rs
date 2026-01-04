@@ -1,11 +1,24 @@
 //! Audit logging error types
+//!
+//! This module defines error types for audit logging operations.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FAU_STG.4**: Error types support detection and reporting of audit failures
+//!   - HashComputation errors indicate potential integrity issues
+//!   - Database errors may indicate storage protection failures
 
 use thiserror::Error;
 
 /// Audit logging errors
+///
+/// NIAP PP-CA: FAU_STG.4 - Error conditions that may indicate audit trail issues
 #[derive(Debug, Error)]
 pub enum Error {
     /// Database error
+    ///
+    /// NIAP PP-CA: FAU_STG.1 - May indicate protected storage failure
     #[error("Database error: {0}")]
     Database(#[from] ostrich_db::Error),
 
@@ -14,6 +27,8 @@ pub enum Error {
     Serialization(String),
 
     /// Hash computation error
+    ///
+    /// NIAP PP-CA: FAU_STG.4 - Hash errors may indicate integrity issues
     #[error("Hash computation error: {0}")]
     HashComputation(String),
 

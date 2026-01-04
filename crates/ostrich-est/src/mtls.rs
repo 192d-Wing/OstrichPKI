@@ -1,7 +1,37 @@
 //! mTLS client certificate handling for EST
 //!
-//! RFC 7030 §3.2 - Mutual TLS authentication
-//! NIST 800-53: IA-2 - Identification and authentication
+//! RFC 7030 S3.2 - Mutual TLS authentication
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//!
+//! - **FIA_UAU.1**: User authentication before action
+//!   - Client certificate required for EST enrollment operations
+//!   - Certificate validity checked (not expired, not revoked)
+//!   - Implementation: [`MtlsClientCert::from_der`], [`validate_client`]
+//!
+//! - **FIA_UID.1**: User identification before action
+//!   - Client identified by certificate subject DN and serial
+//!   - Unique client_id computed from certificate hash
+//!   - Implementation: [`MtlsClientCert`] fields
+//!
+//! - **FTP_ITC.1**: Inter-TSF trusted channel
+//!   - TLS 1.3 with mutual authentication
+//!   - Server and client certificates verified
+//!   - Implementation: TLS configuration (rustls)
+//!
+//! - **FDP_ACC.1**: Access control policy
+//!   - Only authorized clients may enroll
+//!   - Client authorization checked against database
+//!   - Implementation: [`validate_client`]
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//!
+//! - **IA-2**: Identification and authentication (organizational users)
+//! - **IA-5(2)**: PKI-based authentication
+//! - **SC-8**: Transmission confidentiality and integrity
+//! - **SI-10**: Information input validation
 
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -10,7 +40,10 @@ use x509_parser::prelude::*;
 
 /// Client certificate extracted from TLS connection
 ///
-/// RFC 7030 §3.2.3 - EST server authenticates client via certificate
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FIA_UID.1 - User identification (certificate attributes)
+/// - NIAP PP-CA: FIA_UAU.1 - Authentication data (certificate for verification)
+/// - RFC 7030 S3.2.3 - EST server authenticates client via certificate
 #[derive(Debug, Clone)]
 pub struct MtlsClientCert {
     /// DER-encoded client certificate
@@ -32,8 +65,11 @@ pub struct MtlsClientCert {
 impl MtlsClientCert {
     /// Parse client certificate from DER bytes
     ///
-    /// RFC 5280 §4.1 - Basic certificate fields
-    /// NIST 800-53: SI-10 - Information input validation
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA: FIA_UAU.1.1 - Verify authentication data (certificate validity)
+    /// - NIAP PP-CA: FIA_UID.1.1 - Extract user identity (subject DN, serial)
+    /// - NIST 800-53: SI-10 - Information input validation
+    /// - RFC 5280 S4.1 - Basic certificate fields
     pub fn from_der(certificate_der: Vec<u8>) -> Result<Self> {
         // Parse certificate
         let (_, cert) = X509Certificate::from_der(&certificate_der)
@@ -206,8 +242,12 @@ impl ClientCertExtractor {
 
 /// Validate client certificate against authorized clients database
 ///
-/// RFC 7030 §3.2.3 - EST server should maintain list of authorized clients
-/// NIST 800-53: AC-3 - Access enforcement
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FDP_ACC.1 - Access control policy enforcement
+/// - NIAP PP-CA: FDP_ACF.1 - Access control function (authorized client check)
+/// - NIAP PP-CA: FIA_UAU.1.2 - Verify client is authenticated before action
+/// - NIST 800-53: AC-3 - Access enforcement
+/// - RFC 7030 S3.2.3 - EST server should maintain list of authorized clients
 pub async fn validate_client(client_cert: &MtlsClientCert, db_pool: &DatabasePool) -> Result<()> {
     let repo = ostrich_db::repository::EstRepository::new(db_pool.clone());
 

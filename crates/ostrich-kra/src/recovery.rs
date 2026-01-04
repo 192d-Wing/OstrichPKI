@@ -1,6 +1,45 @@
 //! Key recovery functionality
 //!
-//! NIST 800-57: Key recovery procedures with M-of-N threshold
+//! Provides secure key recovery capabilities using M-of-N threshold secret sharing.
+//! Recovery agents must cooperate to reconstruct escrowed keys.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//!
+//! - **FCS_CKM.2**: Cryptographic Key Distribution
+//!   - Recovery agents receive and store key shares
+//!   - Share submission requires agent authentication
+//!   - See [`KeyRecovery::submit_share`]
+//!
+//! - **FCS_CKM.4**: Cryptographic Key Destruction
+//!   - Reconstructed keys are zeroized after use
+//!   - Session data is cleared after recovery completion
+//!   - See [`KeyRecovery::complete_recovery`]
+//!
+//! - **FDP_ACC.1 / FDP_ACF.1**: Access Control Policy / Functions
+//!   - Only authorized agents can submit recovery shares
+//!   - Recovery requests require approval authority
+//!   - Threshold enforcement for key reconstruction
+//!   - See [`RecoveryRequest`] and [`RecoveryAgent`]
+//!
+//! - **FAU_GEN.1**: Audit Data Generation
+//!   - All recovery operations are audited (initiation, share submission, completion)
+//!   - Audit includes actor identity, action, outcome, timestamp
+//!
+//! - **FIA_UID.1**: User Identification Before Action
+//!   - Recovery agents must be identified before share submission
+//!   - Requestor identity recorded for all recovery requests
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//!
+//! - **SC-12**: Cryptographic Key Establishment and Management
+//! - **SC-12(1)**: Availability of Information (key recovery for availability)
+//! - **AU-2**: Auditable Events (key recovery operations)
+//!
+//! ## NIST SP 800-57
+//!
+//! - Key recovery procedures per Part 2
 
 use crate::{Error, Result, ShamirSecretSharing};
 use chrono::{DateTime, Utc};
@@ -134,6 +173,17 @@ impl KeyRecovery {
     }
 
     /// Initiate a key recovery request
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    ///
+    /// - **FDP_ACC.1**: Validates requestor identity and requires justification for recovery.
+    /// - **FAU_GEN.1**: Generates audit event for recovery initiation with full context.
+    /// - **FIA_UID.1**: Requestor must be identified before initiating recovery.
+    ///
+    /// # NIST 800-53 Compliance
+    ///
+    /// - **AU-3**: Audit record includes who, what, when, where, outcome.
+    /// - **SC-12**: Initiates key recovery procedure.
     pub async fn initiate_recovery(&self, request: RecoveryRequest) -> Result<RecoverySession> {
         // Audit the recovery request
         let mut event = AuditEventBuilder::new(
@@ -193,6 +243,18 @@ impl KeyRecovery {
     }
 
     /// Submit a recovery share from an agent
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    ///
+    /// - **FCS_CKM.2**: Recovery agent submits their key share for reconstruction.
+    /// - **FDP_ACC.1**: Validates agent is authorized to submit shares for this recovery.
+    /// - **FAU_GEN.1**: Generates audit event for each share submission.
+    /// - **FIA_UID.1**: Agent must be identified by agent_id before submission.
+    ///
+    /// # NIST 800-53 Compliance
+    ///
+    /// - **AU-3**: Audit record includes agent identity, session, share index, outcome.
+    /// - **AC-3**: Access enforcement for share submission authorization.
     pub async fn submit_share(
         &self,
         session_id: Uuid,
@@ -262,6 +324,23 @@ impl KeyRecovery {
     }
 
     /// Complete recovery and reconstruct the private key
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    ///
+    /// - **FCS_CKM.2**: Reconstructs key from M submitted shares using Lagrange interpolation.
+    /// - **FCS_CKM.4**: Caller must zeroize returned key material after use.
+    /// - **FDP_ACC.1**: Enforces threshold requirement - fails if fewer than M shares.
+    /// - **FAU_GEN.1**: Generates audit event for successful key reconstruction.
+    ///
+    /// # NIST 800-53 Compliance
+    ///
+    /// - **SC-12**: Cryptographic key establishment - key recovery.
+    /// - **AU-3**: Audit record includes session, shares used, outcome.
+    ///
+    /// # Security Note
+    ///
+    /// The returned key material MUST be zeroized after use to comply with FCS_CKM.4.
+    /// Consider using `zeroize::Zeroizing<Vec<u8>>` wrapper for automatic cleanup.
     pub async fn complete_recovery(
         &self,
         session_id: Uuid,

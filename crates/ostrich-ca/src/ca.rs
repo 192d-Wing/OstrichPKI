@@ -1,7 +1,23 @@
 //! Certificate Authority main struct
 //!
-//! RFC 5280: X.509 Public Key Infrastructure
-//! NIST 800-53: SC-12 - Cryptographic key establishment and management
+//! This module contains the main CertificateAuthority struct that coordinates
+//! certificate issuance, revocation, and profile management.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FMT_SMF.1**: Security management functions - Central coordinator for all CA operations
+//! - **FCS_CKM.1**: Cryptographic key generation - CA key pair management
+//! - **FCS_COP.1**: Cryptographic operations - Delegate to issuer/revocation manager
+//! - **FDP_ACC.1**: Access control policy - Enforce role-based access to CA functions
+//! - **FMT_MOF.1**: Management of security functions behavior - Profile configuration
+//!
+//! ## RFC Compliance
+//! - RFC 5280: X.509 Public Key Infrastructure
+//!
+//! ## NIST 800-53 Controls
+//! - SC-12: Cryptographic key establishment and management
+//! - SC-13: Cryptographic protection
 
 use crate::{issuance::CertificateIssuer, revocation::RevocationManager};
 use ostrich_audit::AuditSink;
@@ -13,9 +29,13 @@ use uuid::Uuid;
 
 /// Certificate Authority
 ///
-/// Main service for certificate issuance and management
+/// Main service for certificate issuance and management.
 ///
-/// NIST 800-53: SC-12 - CA key management
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FMT_SMF.1 - Central security management function for CA operations
+/// - NIAP PP-CA: FCS_CKM.1 - Manages CA cryptographic keys
+/// - NIAP PP-CA: FDP_ACC.1 - Enforces access control for CA operations
+/// - NIST 800-53: SC-12 - CA key management
 pub struct CertificateAuthority {
     /// CA identifier
     pub ca_id: Uuid,
@@ -33,6 +53,8 @@ pub struct CertificateAuthority {
 impl CertificateAuthority {
     /// Create a new Certificate Authority
     ///
+    /// NIAP PP-CA: FMT_SMF.1.1 - Initialize CA security management functions
+    /// NIAP PP-CA: FCS_CKM.1.1 - Load CA cryptographic key material
     /// NIST 800-53: SC-12 - CA initialization
     pub fn new(
         ca_certificate: Certificate,
@@ -79,16 +101,23 @@ impl CertificateAuthority {
     }
 
     /// Add a certificate profile
+    ///
+    /// NIAP PP-CA: FMT_MOF.1.1 - Configure certificate issuance behavior
+    /// NIAP PP-CA: FDP_IFC.1.1 - Define information flow policy for certificates
     pub fn add_profile(&mut self, profile: CertificateProfile) {
         self.issuer.add_profile(profile);
     }
 
     /// Get the certificate issuer
+    ///
+    /// NIAP PP-CA: FMT_SMF.1.1 - Access certificate issuance security function
     pub fn issuer(&self) -> &CertificateIssuer {
         &self.issuer
     }
 
     /// Get the revocation manager
+    ///
+    /// NIAP PP-CA: FMT_SMF.1.1 - Access certificate revocation security function
     pub fn revocation_manager(&self) -> &RevocationManager {
         &self.revocation_manager
     }

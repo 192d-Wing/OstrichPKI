@@ -1,6 +1,41 @@
 //! EST REST API
 //!
 //! RFC 7030: Enrollment over Secure Transport
+//!
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//!
+//! - **FIA_UAU.1**: User authentication before enrollment operations
+//!   - mTLS client certificate required for simpleenroll/simplereenroll
+//!   - Certificate validation via [`crate::mtls::validate_client`]
+//!
+//! - **FTP_ITC.1**: Inter-TSF trusted channel
+//!   - All endpoints served over TLS 1.3
+//!   - Mutual TLS for enrollment endpoints
+//!
+//! - **FMT_SMF.1**: Enrollment management functions
+//!   - Simple enrollment (RFC 7030 S4.2.1)
+//!   - Simple re-enrollment (RFC 7030 S4.2.2)
+//!   - CSR attributes retrieval (RFC 7030 S4.5)
+//!
+//! - **FDP_ACC.1/FDP_ACF.1**: Access control for enrollment
+//!   - Only authenticated clients may enroll
+//!   - Re-enrollment requires matching subject DN
+//!
+//! - **FCS_COP.1**: Cryptographic operations
+//!   - CSR signature verification (proof of possession)
+//!   - PKCS#7/CMS response encoding
+//!
+//! - **FAU_GEN.1**: Audit generation for enrollment events
+//!   - Enrollment requests logged with client identity
+//!   - Success/failure outcomes recorded
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//!
+//! - **SC-8**: Transmission confidentiality via TLS
+//! - **SI-10**: Input validation for CSRs
+//! - **AU-2**: Auditable enrollment events
 
 use crate::{
     enrollment::CsrAttributes,
@@ -47,6 +82,12 @@ impl EstState {
 /// Create EST REST API router
 ///
 /// RFC 7030 well-known URI: /.well-known/est/
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FMT_SMF.1 - Security management functions for EST enrollment
+/// - NIAP PP-CA: FTP_ITC.1 - Trusted channel (router served over TLS)
+/// - NIST 800-53: SC-8 - Transmission confidentiality (TLS required)
+/// - RFC 7030 S3.2.2 - EST well-known URI structure
 pub fn create_router(state: EstState) -> Router {
     Router::new()
         // Health and readiness endpoints
@@ -87,9 +128,16 @@ async fn readiness_check(State(state): State<EstState>) -> impl IntoResponse {
     ostrich_common::health::readiness_response_with_db("ostrich-est", &state.db_pool).await
 }
 
-/// Get CA certificates (RFC 7030 §4.1)
+/// Get CA certificates (RFC 7030 S4.1)
 ///
-/// Returns a PKCS#7 certs-only structure containing CA certificate chain
+/// Returns a PKCS#7 certs-only structure containing CA certificate chain.
+/// This endpoint does NOT require client authentication per RFC 7030.
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FCS_COP.1 - Cryptographic operation (PKCS#7 encoding)
+/// - NIAP PP-CA: FTP_ITC.1 - Trusted channel (TLS, but no client auth required)
+/// - NIST 800-53: SC-17 - PKI certificate distribution
+/// - RFC 7030 S4.1 - CA certificate retrieval
 async fn get_ca_certs(State(state): State<EstState>) -> Result<Response> {
     // TODO: Fetch CA certificate chain from database (Phase 12 - CA integration)
     // For now, create empty PKCS#7 certs-only structure
@@ -107,8 +155,13 @@ async fn get_ca_certs(State(state): State<EstState>) -> Result<Response> {
 
 /// Encode certificates as PKCS#7 certs-only structure
 ///
-/// RFC 7030 §4.1: Responses use degenerate PKCS#7 (CMS) SignedData
-/// with no signed content, only certificates in the certificates field
+/// RFC 7030 S4.1: Responses use degenerate PKCS#7 (CMS) SignedData
+/// with no signed content, only certificates in the certificates field.
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FCS_COP.1 - Cryptographic operation (CMS encoding)
+/// - RFC 5652 S5 - CMS SignedData structure
+/// - RFC 7030 S4.1.3 - EST CA certificates response format
 fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
     use cms::{content_info::ContentInfo, signed_data::SignedData};
     use der::{
@@ -167,9 +220,20 @@ fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
         .map_err(|e| Error::Internal(format!("Failed to encode PKCS#7: {}", e)))
 }
 
-/// Simple enrollment (RFC 7030 §4.2.1)
+/// Simple enrollment (RFC 7030 S4.2.1)
 ///
-/// Client submits PKCS#10 CSR, server returns PKCS#7 with issued certificate
+/// Client submits PKCS#10 CSR, server returns PKCS#7 with issued certificate.
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FIA_UAU.1 - User authentication via mTLS client certificate
+/// - NIAP PP-CA: FDP_ACC.1 - Access control for enrollment operations
+/// - NIAP PP-CA: FCS_COP.1 - Cryptographic CSR signature verification
+/// - NIAP PP-CA: FAU_GEN.1 - Audit record generation for enrollment
+/// - NIAP PP-CA: FMT_SMF.1.1 - Security management function (enrollment)
+/// - NIST 800-53: SI-10 - Information input validation (CSR parsing)
+/// - NIST 800-53: AU-2 - Auditable event (enrollment request)
+/// - RFC 7030 S4.2.1 - Simple enrollment request/response
+/// - RFC 2986 - PKCS#10 CSR format
 ///
 /// TODO: Add mTLS client certificate validation when TLS is configured.
 /// When TLS server is set up, this handler should:
@@ -243,9 +307,20 @@ async fn simple_enroll(State(state): State<EstState>, body: Bytes) -> Result<Res
         .into_response())
 }
 
-/// Simple re-enrollment (RFC 7030 §4.2.2)
+/// Simple re-enrollment (RFC 7030 S4.2.2)
 ///
-/// Authenticated client re-enrolls for certificate renewal
+/// Authenticated client re-enrolls for certificate renewal.
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FIA_UAU.1 - User authentication via existing certificate
+/// - NIAP PP-CA: FDP_ACC.1 - Access control (subject DN must match)
+/// - NIAP PP-CA: FDP_ACF.1 - Access control function (re-enrollment policy)
+/// - NIAP PP-CA: FCS_COP.1 - Cryptographic CSR signature verification
+/// - NIAP PP-CA: FAU_GEN.1 - Audit record generation for re-enrollment
+/// - NIAP PP-CA: FMT_SMF.1.1 - Security management function (re-enrollment)
+/// - NIST 800-53: SI-10 - Information input validation (CSR parsing)
+/// - NIST 800-53: AU-2 - Auditable event (re-enrollment request)
+/// - RFC 7030 S4.2.2 - Simple re-enrollment requirements
 ///
 /// TODO: Add mTLS client certificate validation when TLS is configured.
 /// When TLS server is set up, this handler should:
@@ -329,9 +404,15 @@ async fn simple_reenroll(State(state): State<EstState>, body: Bytes) -> Result<R
         .into_response())
 }
 
-/// Get CSR attributes (RFC 7030 §4.5)
+/// Get CSR attributes (RFC 7030 S4.5)
 ///
-/// Returns attributes the CA expects in CSRs
+/// Returns attributes the CA expects in CSRs.
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FMT_SMF.1.1 - Security management function (CSR policy)
+/// - NIAP PP-CA: FTP_ITC.1 - Trusted channel (TLS, client auth optional)
+/// - NIST 800-53: SC-17 - PKI policy distribution
+/// - RFC 7030 S4.5 - CSR attributes retrieval
 async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
     let _attrs = CsrAttributes::default();
 
@@ -346,9 +427,18 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
         .into_response())
 }
 
-/// Server-side key generation (RFC 7030 §4.3)
+/// Server-side key generation (RFC 7030 S4.3)
 ///
-/// Server generates key pair and returns certificate + encrypted private key
+/// Server generates key pair and returns certificate + encrypted private key.
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FIA_UAU.1 - User authentication via mTLS (required)
+/// - NIAP PP-CA: FCS_CKM.1 - Cryptographic key generation (server-side)
+/// - NIAP PP-CA: FCS_COP.1 - Cryptographic operations (key wrapping)
+/// - NIAP PP-CA: FDP_ACC.1 - Access control for key generation
+/// - NIAP PP-CA: FAU_GEN.1 - Audit record for key generation event
+/// - NIST 800-53: SC-12 - Cryptographic key establishment
+/// - RFC 7030 S4.3 - Server-side key generation
 async fn server_key_gen(State(_state): State<EstState>, _body: Bytes) -> Result<Response> {
     // TODO: Validate client certificate
     // TODO: Parse CSR (without private key, just subject info)

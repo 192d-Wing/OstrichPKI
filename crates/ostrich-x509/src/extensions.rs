@@ -1,6 +1,17 @@
 //! X.509 certificate extensions
 //!
-//! RFC 5280 §4.2 - Standard extensions
+//! # Compliance Mapping
+//!
+//! ## RFC Standards
+//! - RFC 5280 §4.2: Standard extensions
+//! - RFC 5280 §4.2.1.3: Key Usage
+//! - RFC 5280 §4.2.1.6: Subject Alternative Name
+//! - RFC 5280 §4.2.1.9: Basic Constraints
+//! - RFC 5280 §4.2.1.12: Extended Key Usage
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - FMT_MSA.1: Security attribute management (extensions)
+//! - FDP_IFC.1: Certificate policy enforcement via extensions
 
 /// Subject Alternative Name types
 ///

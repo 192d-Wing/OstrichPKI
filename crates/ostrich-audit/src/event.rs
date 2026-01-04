@@ -1,7 +1,25 @@
 //! Audit event types and builders
 //!
-//! NIST 800-53: AU-2 - Auditable events
-//! NIST 800-53: AU-3 - Content of audit records
+//! This module defines the core audit event structures and builder patterns for
+//! constructing audit records with all required compliance fields.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//! - **AU-2**: Auditable events - Event type enumeration covers all security-relevant events
+//! - **AU-3**: Content of audit records - AuditEvent structure contains all required fields
+//! - **AU-9(3)**: Cryptographic protection - SHA-256 hash computation for integrity
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FAU_GEN.1.1**: The TSF shall generate an audit record for auditable events
+//!   - Startup/shutdown, certificate operations, key operations, auth events
+//! - **FAU_GEN.1.2**: Audit records include date/time, event type, subject identity, outcome
+//! - **FAU_GEN.2.1**: Associate user identity with auditable events
+//!   - Implemented via the `actor` field in AuditEvent
+//!
+//! ## Related Standards
+//! - RFC 5280: Certificate lifecycle events (issuance, revocation)
+//! - FIPS 180-4: SHA-256 for event hash computation
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -12,12 +30,20 @@ use uuid::Uuid;
 /// Audit event type categories
 ///
 /// NIST 800-53: AU-2 - Event categories to be audited
+/// NIAP PP-CA: FAU_GEN.1.1 - Auditable event types for CA operations
+///
+/// This enumeration defines all auditable event types as required by FAU_GEN.1.1:
+/// - Startup and shutdown of audit functions
+/// - Certificate generation, revocation, and renewal
+/// - Key generation, destruction, and recovery
+/// - Authentication and authorization events
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
     /// Authentication events (login, logout, failed authentication)
     ///
     /// NIST 800-53: AC-7 - Unsuccessful login attempts
+    /// NIAP PP-CA: FAU_GEN.1.1 - Authentication-related audit events
     Authentication,
 
     /// Authorization events (access granted/denied)
@@ -28,11 +54,13 @@ pub enum EventType {
     /// Certificate issuance
     ///
     /// RFC 5280 - Certificate lifecycle
+    /// NIAP PP-CA: FAU_GEN.1.1 - Certificate generation and issuance events
     CertificateIssuance,
 
     /// Certificate revocation
     ///
     /// RFC 5280 §5 - Certificate revocation
+    /// NIAP PP-CA: FAU_GEN.1.1 - Certificate revocation events
     CertificateRevocation,
 
     /// CRL generation
@@ -43,21 +71,25 @@ pub enum EventType {
     /// Key generation
     ///
     /// NIST 800-53: SC-12 - Key generation events
+    /// NIAP PP-CA: FAU_GEN.1.1 - Cryptographic key generation events
     KeyGeneration,
 
     /// Key escrow (KRA)
     ///
     /// NIST 800-53: SC-12 - Key escrow events
+    /// NIAP PP-CA: FAU_GEN.1.1 - Key escrow and archival events
     KeyEscrow,
 
     /// Key recovery (KRA)
     ///
     /// NIST 800-53: SC-12 - Key recovery events
+    /// NIAP PP-CA: FAU_GEN.1.1 - Key recovery operations
     KeyRecovery,
 
     /// Key destruction
     ///
     /// NIST 800-53: SC-12 - Key destruction events
+    /// NIAP PP-CA: FAU_GEN.1.1 - Key destruction/zeroization events
     KeyDestruction,
 
     /// Configuration change
@@ -83,6 +115,8 @@ pub enum EventType {
     OcspProtocol,
 
     /// System event (startup, shutdown, etc.)
+    ///
+    /// NIAP PP-CA: FAU_GEN.1.1 - Startup and shutdown of audit functions
     System,
 
     /// Database event
@@ -96,6 +130,7 @@ impl EventType {
     /// Check if this event type is security-relevant
     ///
     /// NIST 800-53: AU-2 - Security-relevant events
+    /// NIAP PP-CA: FAU_GEN.1.1 - Determines if event requires mandatory auditing
     pub fn is_security_relevant(&self) -> bool {
         matches!(
             self,
@@ -138,6 +173,7 @@ impl EventType {
 /// Audit event outcome
 ///
 /// NIST 800-53: AU-3 - Event outcome indication
+/// NIAP PP-CA: FAU_GEN.1.2 - Outcome (success or failure) of the event
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EventOutcome {
@@ -170,6 +206,14 @@ impl EventOutcome {
 /// - Outcome (success/failure)
 /// - User identity
 /// - Location/source
+///
+/// NIAP PP-CA: FAU_GEN.1.2 - Each audit record contains:
+/// - Date and time of the event (timestamp field)
+/// - Type of event (event_type field)
+/// - Subject identity (actor field)
+/// - Outcome (success or failure) of the event (outcome field)
+///
+/// NIAP PP-CA: FAU_GEN.2.1 - User identity association via actor field
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
     /// Unique event identifier
@@ -183,6 +227,7 @@ pub struct AuditEvent {
     /// Actor (user, system, or service) that triggered the event
     ///
     /// NIST 800-53: AU-3(1) - User identity
+    /// NIAP PP-CA: FAU_GEN.2.1 - Identity of the user associated with the event
     pub actor: String,
 
     /// Target resource (certificate ID, key ID, etc.)
@@ -215,23 +260,30 @@ pub struct AuditEvent {
     /// Hash of previous audit event (for chain integrity)
     ///
     /// NIST 800-53: AU-9(3) - Cryptographic protection
+    /// NIAP PP-CA: FAU_STG.4 - Prevention of audit data loss through chain verification
     pub previous_hash: Option<Vec<u8>>,
 
     /// Hash of this event (for chain integrity)
     ///
     /// NIST 800-53: AU-9(3) - Cryptographic protection
+    /// NIAP PP-CA: FAU_STG.4 - Tamper-evident hash chain
     pub event_hash: Vec<u8>,
 
     /// Timestamp of the event
     ///
     /// NIST 800-53: AU-3 - Date and time of event
+    /// NIAP PP-CA: FAU_GEN.1.2 - Date and time of the event
     pub timestamp: DateTime<Utc>,
 }
 
 impl AuditEvent {
+    // NIAP PP-CA: FAU_STG.4 - Hash chain computation for tamper detection
+
     /// Compute the hash of this event for chain integrity
     ///
     /// NIST 800-53: AU-9(3) - Use SHA-256 for event hashing
+    /// NIAP PP-CA: FAU_STG.4 - Cryptographic hash for audit trail integrity
+    /// FIPS 180-4: SHA-256 compliant hash algorithm
     pub fn compute_hash(&self) -> Vec<u8> {
         let mut hasher = Sha256::new();
 
@@ -295,6 +347,8 @@ impl AuditEvent {
 /// Builder for constructing audit events
 ///
 /// NIST 800-53: AU-3 - Ensures all required fields are populated
+/// NIAP PP-CA: FAU_GEN.1.2 - Builder ensures all required audit record fields are present
+/// NIAP PP-CA: FAU_GEN.2.1 - Requires actor (user identity) to be specified
 pub struct AuditEventBuilder {
     event_type: EventType,
     actor: String,
@@ -308,7 +362,11 @@ pub struct AuditEventBuilder {
 }
 
 impl AuditEventBuilder {
+    // NIAP PP-CA: FAU_GEN.1.1 - Generate audit record for auditable events
+
     /// Create a new audit event builder
+    ///
+    /// NIAP PP-CA: FAU_GEN.2.1 - Actor (user identity) is required parameter
     pub fn new(
         event_type: EventType,
         actor: impl Into<String>,
@@ -354,6 +412,8 @@ impl AuditEventBuilder {
     }
 
     /// Build the audit event (without hash - will be computed by sink)
+    ///
+    /// NIAP PP-CA: FAU_GEN.1.2 - Generates complete audit record with all required fields
     pub fn build(self) -> AuditEvent {
         AuditEvent {
             id: Uuid::new_v4(),

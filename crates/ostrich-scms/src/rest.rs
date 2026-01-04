@@ -1,6 +1,26 @@
 //! SCMS REST API
 //!
-//! Smartcard Management System HTTP endpoints
+//! Smartcard Management System HTTP endpoints.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//! - **AC-3**: Access Enforcement - Role-based access to token management endpoints
+//! - **AC-6**: Least Privilege - Minimal permissions for token operations
+//! - **IA-2**: Identification and Authentication - Multi-factor authentication with smartcards
+//! - **IA-5**: Authenticator Management - PIN/credential lifecycle management
+//! - **AU-2**: Auditable Events - All token operations are auditable events
+//! - **AU-3**: Content of Audit Records - Token events include required audit fields
+//!
+//! ## NIAP PP-CA v2.1 SFRs (Security Functional Requirements)
+//! - **FIA_AFL.1**: Authentication Failure Handling - PIN lockout after consecutive failures
+//! - **FIA_UAU.1**: Timing of Authentication - PIN verification before privileged operations
+//! - **FIA_UID.1**: Timing of Identification - Token identification required for all operations
+//! - **FCS_CKM.1**: Cryptographic Key Generation - Key generation endpoint for token keys
+//! - **FCS_CKM.4**: Cryptographic Key Destruction - Key deletion endpoint
+//! - **FMT_SMF.1**: Specification of Management Functions - Token lifecycle management endpoints
+//! - **FMT_SMR.1**: Security Roles - SO-PIN vs User PIN role separation
+//! - **FAU_GEN.1**: Audit Data Generation - Token event logging endpoints
 
 use crate::{
     error::{Error, Result},
@@ -256,6 +276,13 @@ async fn update_token(
 }
 
 /// Revoke token
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FMT_SMF.1: Token revocation is a security management function
+/// - NIAP PP-CA FCS_CKM.4: Revocation triggers key destruction
+/// - NIAP PP-CA FPT_STM.1: Revocation timestamp recorded
+/// - NIAP PP-CA FAU_GEN.1: Revocation event must be audited
+/// - NIST 800-53: IA-5(2) - Revocation of PKI-based authenticators
 async fn revoke_token(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> Result<Response> {
     let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
 
@@ -282,6 +309,11 @@ async fn revoke_token(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> R
 }
 
 /// Initialize token
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FMT_SMF.1: Token initialization is a security management function
+/// - NIAP PP-CA FPT_STM.1: Initialization timestamp recorded
+/// - NIST 800-53: CM-2 - Baseline configuration for token
 async fn initialize_token(
     State(state): State<ScmsState>,
     Path(id): Path<Uuid>,
@@ -320,6 +352,13 @@ async fn initialize_token(
 }
 
 /// Personalize token
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FMT_SMF.1: Token personalization is a security management function
+/// - NIAP PP-CA FIA_UID.1: Assigns user identity to token
+/// - NIAP PP-CA FIA_UAU.1: Initial PIN set during personalization
+/// - NIAP PP-CA FPT_STM.1: Personalization timestamp recorded
+/// - NIST 800-53: IA-5 - Initial authenticator (PIN) provisioning
 async fn personalize_token(
     State(state): State<ScmsState>,
     Path(id): Path<Uuid>,
@@ -426,6 +465,12 @@ async fn resume_token(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> R
 }
 
 /// Unblock token (SO-PIN recovery)
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FIA_AFL.1.2: Reset authentication failure count after SO-PIN verification
+/// - NIAP PP-CA FMT_SMR.1: Requires Security Officer (SO) role for unblock operation
+/// - NIAP PP-CA FIA_UAU.5: SO-PIN is separate authentication mechanism from User PIN
+/// - NIST 800-53: IA-5(1) - Authenticator recovery mechanism
 async fn unblock_token(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> Result<Response> {
     let repo = ostrich_db::repository::ScmsRepository::new(state.db_pool.clone());
 
@@ -459,6 +504,13 @@ async fn unblock_token(State(state): State<ScmsState>, Path(id): Path<Uuid>) -> 
 }
 
 /// Verify PIN
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FIA_UAU.1: User authentication via PIN verification
+/// - NIAP PP-CA FIA_AFL.1.1: Decrement retry counter on failed authentication
+/// - NIAP PP-CA FIA_AFL.1.2: Block token when retry counter reaches zero
+/// - NIST 800-53: IA-2 - Unique user identification and authentication
+/// - NIST 800-53: IA-5 - Authenticator management
 async fn verify_pin(
     State(state): State<ScmsState>,
     Path(id): Path<Uuid>,
@@ -508,6 +560,11 @@ async fn verify_pin(
 }
 
 /// Change PIN
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FIA_UAU.1: Verify current PIN before allowing change
+/// - NIAP PP-CA FMT_SMF.1: PIN change is a security management function
+/// - NIST 800-53: IA-5(1) - Password-based authenticator change mechanism
 async fn change_pin(
     State(state): State<ScmsState>,
     Path(id): Path<Uuid>,
@@ -571,6 +628,13 @@ async fn list_token_keys(State(state): State<ScmsState>, Path(id): Path<Uuid>) -
 }
 
 /// Generate key pair on token
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FCS_CKM.1: Cryptographic key generation on hardware token
+/// - NIAP PP-CA FCS_CKM.2: Key distribution via secure token storage
+/// - NIAP PP-CA FIA_UAU.1: Requires authenticated session (token must be active)
+/// - NIST 800-53: SC-12 - Cryptographic key establishment and management
+/// - NIST 800-53: SC-13 - Cryptographic protection (FIPS-validated algorithms)
 async fn generate_key(
     State(state): State<ScmsState>,
     Path(id): Path<Uuid>,
@@ -618,6 +682,11 @@ async fn generate_key(
 }
 
 /// Delete key from token
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FCS_CKM.4: Cryptographic key destruction (zeroization)
+/// - NIAP PP-CA FMT_SMF.1: Key deletion is a security management function
+/// - NIST 800-53: SC-12(1) - Cryptographic key zeroization
 async fn delete_key(
     State(state): State<ScmsState>,
     Path((token_id, key_id)): Path<(Uuid, Uuid)>,

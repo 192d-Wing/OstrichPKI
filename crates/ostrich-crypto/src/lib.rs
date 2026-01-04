@@ -1,10 +1,23 @@
 //! Cryptographic abstraction layer for OstrichPKI
 //!
-//! NIST 800-53: SC-12 - Cryptographic key establishment and management
-//! NIST 800-53: SC-13 - Cryptographic protection
-//! FIPS 186-5: Digital Signature Standard
-//! FIPS 203/204/205: Post-Quantum Cryptography standards
-//! NIAP PP-CA: FPT_TST_EXT.1 - TSF Testing (self-tests)
+//! # Compliance Mapping
+//!
+//! ## NIST 800-53 Rev 5
+//! - SC-12: Cryptographic key establishment and management
+//! - SC-13: Cryptographic protection
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - FCS_CKM.1: Cryptographic key generation
+//! - FCS_CKM.2: Cryptographic key distribution
+//! - FCS_CKM.4: Cryptographic key destruction
+//! - FCS_COP.1: Cryptographic operation (signing, verification)
+//! - FPT_TST_EXT.1: TSF self-testing
+//!
+//! ## FIPS Standards
+//! - FIPS 186-5: Digital Signature Standard
+//! - FIPS 203: ML-KEM (Post-Quantum Key Encapsulation)
+//! - FIPS 204: ML-DSA (Post-Quantum Digital Signatures)
+//! - FIPS 205: SLH-DSA (Hash-Based Digital Signatures)
 
 pub mod algorithm;
 pub mod error;

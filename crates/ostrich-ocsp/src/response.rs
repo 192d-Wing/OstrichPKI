@@ -1,13 +1,46 @@
 //! OCSP response generation
 //!
-//! RFC 6960 §4.2: Response Syntax
+//! This module implements OCSP response structures and DER encoding
+//! per RFC 6960 Section 4.2.
+//!
+//! # Compliance Mapping
+//!
+//! ## RFC Standards
+//! - **RFC 6960**: Online Certificate Status Protocol (OCSP)
+//!   - Section 4.2: Response Syntax
+//!   - Section 4.2.1: BasicOCSPResponse
+//!   - Section 4.2.2: Response Extensions
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FDP_OCSPG_EXT.1**: OCSP Response Generation - Response structure and
+//!   encoding per RFC 6960 requirements
+//! - **FDP_CSI_EXT.1**: Certificate Status Information - Proper status codes
+//!   (good, revoked, unknown) with revocation reasons
+//! - **FCS_COP.1(1)**: Cryptographic Operation - Response signature structure
+//! - **FPT_STM.1**: Reliable Time Stamps - thisUpdate, nextUpdate, producedAt
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//! - **SC-13**: Cryptographic Protection - Signed response structure
+//! - **AU-10**: Non-repudiation - Digitally signed responses
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// OCSP Response Status
 ///
-/// RFC 6960 §4.2.1
+/// Indicates the processing status of an OCSP request per RFC 6960 Section 4.2.1.
+///
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FDP_OCSPG_EXT.1**: Response status codes per RFC 6960
+///
+/// # RFC 6960 Section 4.2.1
+/// OCSPResponseStatus ::= ENUMERATED {
+///     successful            (0),  -- Response has valid confirmations
+///     malformedRequest      (1),  -- Illegal confirmation request
+///     internalError         (2),  -- Internal error in issuer
+///     tryLater              (3),  -- Try again later
+///     sigRequired           (5),  -- Must sign the request
+///     unauthorized          (6)   -- Request unauthorized }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ResponseStatus {
@@ -27,7 +60,17 @@ pub enum ResponseStatus {
 
 /// Certificate Status
 ///
-/// RFC 6960 §4.2.1
+/// Indicates the revocation status of a certificate per RFC 6960 Section 4.2.1.
+///
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FDP_CSI_EXT.1**: Certificate status information per RFC 6960
+/// - **FDP_OCSPG_EXT.1**: Proper status encoding in OCSP responses
+///
+/// # RFC 6960 Section 4.2.1
+/// CertStatus ::= CHOICE {
+///     good        [0]     IMPLICIT NULL,
+///     revoked     [1]     IMPLICIT RevokedInfo,
+///     unknown     [2]     IMPLICIT UnknownInfo }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CertStatus {
     /// Certificate is not revoked
@@ -42,6 +85,20 @@ pub enum CertStatus {
 }
 
 /// Single OCSP response for one certificate
+///
+/// Contains the status information for a single certificate query.
+///
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FDP_OCSPG_EXT.1**: Single response structure per RFC 6960
+/// - **FPT_STM.1**: thisUpdate and nextUpdate timestamps from reliable source
+///
+/// # RFC 6960 Section 4.2.1
+/// SingleResponse ::= SEQUENCE {
+///    certID                       CertID,
+///    certStatus                   CertStatus,
+///    thisUpdate                   GeneralizedTime,
+///    nextUpdate         [0]       EXPLICIT GeneralizedTime OPTIONAL,
+///    singleExtensions   [1]       EXPLICIT Extensions OPTIONAL }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SingleResponse {
     /// Certificate serial number
@@ -58,6 +115,19 @@ pub struct SingleResponse {
 }
 
 /// OCSP Response
+///
+/// Complete OCSP response containing status information and digital signature.
+///
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FDP_OCSPG_EXT.1**: Complete OCSP response per RFC 6960
+/// - **FCS_COP.1(1)**: Contains cryptographic signature for authentication
+/// - **FCO_NRO_EXT.2**: Provides proof of origin via digital signature
+/// - **FPT_STM.1**: producedAt timestamp from reliable time source
+///
+/// # RFC 6960 Section 4.2.1
+/// OCSPResponse ::= SEQUENCE {
+///    responseStatus         OCSPResponseStatus,
+///    responseBytes          [0] EXPLICIT ResponseBytes OPTIONAL }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OcspResponse {
     /// Response status
@@ -81,6 +151,13 @@ pub struct OcspResponse {
 
 impl OcspResponse {
     /// Create a successful OCSP response
+    ///
+    /// Constructs a signed OCSP response with status information.
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    /// - **FDP_OCSPG_EXT.1**: Successful response construction
+    /// - **FCS_COP.1(1)**: Includes signature from signing operation
+    /// - **FPT_STM.1**: Sets producedAt to current UTC time
     pub fn successful(
         responses: Vec<SingleResponse>,
         signature: Vec<u8>,
@@ -98,6 +175,11 @@ impl OcspResponse {
     }
 
     /// Create an error response
+    ///
+    /// Constructs an OCSP error response without status information.
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    /// - **FDP_OCSPG_EXT.1**: Error response per RFC 6960 Section 4.2.1
     pub fn error(status: ResponseStatus) -> Self {
         Self {
             response_status: status,
@@ -111,7 +193,28 @@ impl OcspResponse {
 
     /// Encode response to DER format
     ///
-    /// RFC 6960 §4.2.1: OCSPResponse structure
+    /// Encodes the complete OCSP response to DER format per RFC 6960 Section 4.2.1.
+    ///
+    /// # NIAP PP-CA v2.1 Compliance
+    /// - **FDP_OCSPG_EXT.1**: Proper DER encoding of OCSP response
+    /// - **FCS_COP.1(1)**: Signature included in encoded response
+    ///
+    /// # RFC 6960 Section 4.2.1 ASN.1 Structure
+    /// ```text
+    /// OCSPResponse ::= SEQUENCE {
+    ///    responseStatus         OCSPResponseStatus,
+    ///    responseBytes          [0] EXPLICIT ResponseBytes OPTIONAL }
+    ///
+    /// ResponseBytes ::= SEQUENCE {
+    ///    responseType   OBJECT IDENTIFIER,
+    ///    response       OCTET STRING }
+    ///
+    /// BasicOCSPResponse ::= SEQUENCE {
+    ///    tbsResponseData      ResponseData,
+    ///    signatureAlgorithm   AlgorithmIdentifier,
+    ///    signature            BIT STRING,
+    ///    certs                [0] EXPLICIT SEQUENCE OF Certificate OPTIONAL }
+    /// ```
     pub fn to_der(&self) -> Result<Vec<u8>, der::Error> {
         use der::asn1::{BitString, GeneralizedTime, Int, ObjectIdentifier, OctetString};
         use der::{Encode, Sequence};

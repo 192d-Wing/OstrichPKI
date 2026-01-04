@@ -1,6 +1,26 @@
 //! REST API for OCSP Responder
 //!
-//! RFC 6960 §A.1: OCSP over HTTP
+//! This module implements the HTTP transport for OCSP per RFC 6960 Appendix A.
+//!
+//! # Compliance Mapping
+//!
+//! ## RFC Standards
+//! - **RFC 6960**: Online Certificate Status Protocol (OCSP)
+//!   - Appendix A.1: OCSP over HTTP
+//!   - A.1.1: Request (GET and POST methods)
+//!   - A.1.2: Response (application/ocsp-response content type)
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FTP_ITC.1**: Inter-TSF Trusted Channel - HTTPS transport for OCSP
+//! - **FDP_IFC.1**: Information Flow Control - Unauthenticated OCSP access
+//!   permitted per PP line 358
+//! - **FCS_HTTPS_EXT.1**: HTTPS Protocol - TLS-protected OCSP transport
+//! - **FAU_GEN.1**: Audit Data Generation - HTTP request/response logging
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//! - **SC-8**: Transmission Confidentiality - HTTPS/TLS transport
+//! - **SI-10**: Information Input Validation - Request parsing and validation
+//! - **SI-17**: Fail-safe Procedures - Health and readiness checks
 
 use crate::{Error, OcspResponder, ResponseStatus, request::OcspRequest};
 use axum::{
@@ -28,6 +48,19 @@ impl OcspApiState {
 }
 
 /// Create OCSP REST API router
+///
+/// Creates an Axum router with OCSP endpoints per RFC 6960 Appendix A.
+///
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FTP_ITC.1**: Router supports HTTPS when configured
+/// - **FDP_IFC.1**: OCSP endpoints allow unauthenticated access per PP
+/// - **FCS_HTTPS_EXT.1**: TLS configuration delegated to deployment
+///
+/// # Endpoints
+/// - `POST /` - OCSP request via POST (RFC 6960 A.1.1)
+/// - `GET /` - OCSP request via GET with base64 encoding (RFC 6960 A.1.1)
+/// - `GET /health` - Liveness probe (NIST 800-53 SI-17)
+/// - `GET /ready` - Readiness probe (NIST 800-53 SI-17)
 pub fn create_router(responder: Arc<OcspResponder>) -> Router {
     let state = Arc::new(OcspApiState::new(responder));
 
@@ -41,8 +74,11 @@ pub fn create_router(responder: Arc<OcspResponder>) -> Router {
 
 /// Health check endpoint (liveness probe)
 ///
-/// COMPLIANCE MAPPING:
-/// - NIST 800-53: SI-17 (Fail-safe response)
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FPT_FLS.1**: Fail-safe state indication
+///
+/// # NIST 800-53 Rev 5 Controls
+/// - **SI-17**: Fail-safe Procedures - Service health indication
 ///
 /// Returns 200 OK if the service process is running.
 async fn health_check() -> impl IntoResponse {
@@ -55,9 +91,15 @@ async fn health_check() -> impl IntoResponse {
 
 /// Readiness check endpoint (readiness probe)
 ///
-/// COMPLIANCE MAPPING:
-/// - NIST 800-53: SI-17 (Fail-safe response)
-/// - RFC 6960: OCSP responder availability
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FPT_FLS.1**: Fail-safe state indication
+/// - **FDP_OCSPG_EXT.1**: OCSP responder availability verification
+///
+/// # NIST 800-53 Rev 5 Controls
+/// - **SI-17**: Fail-safe Procedures - Service readiness indication
+///
+/// # RFC 6960 Compliance
+/// Verifies OCSP responder availability per RFC 6960 requirements.
 ///
 /// Returns 200 OK if the OCSP responder is ready to handle requests.
 /// Verifies that the responder is properly initialized with signing capability.
@@ -78,7 +120,16 @@ async fn readiness_check(State(state): State<Arc<OcspApiState>>) -> impl IntoRes
 
 /// OCSP POST request handler
 ///
-/// RFC 6960 §A.1.1: POST method
+/// Handles OCSP requests submitted via HTTP POST with DER-encoded body.
+///
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FDP_IFC.1**: Processes unauthenticated OCSP queries
+/// - **FDP_OCSPG_EXT.1**: Generates OCSP responses per RFC 6960
+/// - **SI-10**: Validates DER-encoded request input
+///
+/// # RFC 6960 Appendix A.1.1
+/// An OCSP request using the POST method is submitted to the OCSP responder
+/// with Content-Type: application/ocsp-request.
 async fn ocsp_post(State(state): State<Arc<OcspApiState>>, body: Bytes) -> Result<Response, Error> {
     // Parse OCSP request from DER
     let request = OcspRequest::from_der(&body)?;
@@ -102,7 +153,16 @@ async fn ocsp_post(State(state): State<Arc<OcspApiState>>, body: Bytes) -> Resul
 
 /// OCSP GET request handler
 ///
-/// RFC 6960 §A.1.1: GET method with base64-encoded request
+/// Handles OCSP requests submitted via HTTP GET with base64url-encoded request.
+///
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FDP_IFC.1**: Processes unauthenticated OCSP queries
+/// - **FDP_OCSPG_EXT.1**: Generates OCSP responses per RFC 6960
+/// - **SI-10**: Validates base64-decoded DER request input
+///
+/// # RFC 6960 Appendix A.1.1
+/// An OCSP request using the GET method is constructed by base64 encoding
+/// the DER encoding of the OCSPRequest and appending it to the URI.
 #[derive(Deserialize)]
 struct OcspGetParams {
     #[serde(rename = "req")]

@@ -1,8 +1,22 @@
 //! Cryptographic provider trait and factory
 //!
-//! NIST 800-53: SC-12 - Cryptographic key establishment and management
-//! NIST 800-53: SC-13 - Cryptographic protection
-//! FIPS 186-5: Digital Signature Standard
+//! # Compliance Mapping
+//!
+//! ## NIST 800-53 Rev 5
+//! - SC-12: Cryptographic key establishment and management
+//! - SC-13: Cryptographic protection
+//! - IA-7: Cryptographic module authentication
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - FCS_CKM.1: Cryptographic key generation
+//! - FCS_CKM.2: Cryptographic key distribution
+//! - FCS_CKM.4: Cryptographic key destruction
+//! - FCS_COP.1(1): Cryptographic operation - signing
+//! - FCS_COP.1(2): Cryptographic operation - verification
+//! - FCS_COP.1(3): Cryptographic operation - hashing
+//!
+//! ## FIPS Standards
+//! - FIPS 186-5: Digital Signature Standard
 
 use crate::{Algorithm, Error, KeyHandle, KeyType, Result};
 use async_trait::async_trait;
@@ -18,6 +32,12 @@ use zeroize::Zeroizing;
 /// - Signature verification
 /// - Key wrapping/unwrapping (for KRA)
 ///
+/// # NIAP PP-CA Compliance
+/// - FCS_CKM.1: Key generation via `generate_key_pair()`
+/// - FCS_CKM.4: Key destruction via `destroy_key()`
+/// - FCS_COP.1(1): Signing via `sign()`
+/// - FCS_COP.1(2): Verification via `verify()`
+///
 /// NIST 800-53: SC-13 - All crypto operations go through this abstraction
 #[async_trait]
 pub trait CryptoProvider: Send + Sync {
@@ -32,6 +52,7 @@ pub trait CryptoProvider: Send + Sync {
     /// An opaque handle to the generated key
     ///
     /// NIST 800-53: SC-12 - Cryptographic key generation
+    /// NIAP PP-CA: FCS_CKM.1 - Cryptographic key generation
     async fn generate_key_pair(
         &self,
         key_type: KeyType,
@@ -51,6 +72,7 @@ pub trait CryptoProvider: Send + Sync {
     ///
     /// FIPS 186-5: Digital signature generation
     /// RFC 5280 §4.1.1.2 - Signature algorithms
+    /// NIAP PP-CA: FCS_COP.1(1) - Cryptographic operation (signing)
     async fn sign(&self, key: &KeyHandle, algorithm: Algorithm, data: &[u8]) -> Result<Vec<u8>>;
 
     /// Verify a signature with a public key
@@ -65,6 +87,7 @@ pub trait CryptoProvider: Send + Sync {
     /// `Ok(true)` if signature is valid, `Ok(false)` if invalid
     ///
     /// FIPS 186-5: Digital signature verification
+    /// NIAP PP-CA: FCS_COP.1(2) - Cryptographic operation (verification)
     async fn verify(
         &self,
         key: &KeyHandle,
@@ -109,6 +132,7 @@ pub trait CryptoProvider: Send + Sync {
     /// * `key` - Handle to the key to destroy
     ///
     /// NIST 800-53: SC-12 - Cryptographic key destruction
+    /// NIAP PP-CA: FCS_CKM.4 - Cryptographic key destruction
     async fn destroy_key(&self, key: &KeyHandle) -> Result<()>;
 
     /// Wrap (encrypt) a key for transport
@@ -124,6 +148,7 @@ pub trait CryptoProvider: Send + Sync {
     ///
     /// NIST 800-53: SC-12 - Cryptographic key transport
     /// FIPS 203: ML-KEM for post-quantum key wrapping
+    /// NIAP PP-CA: FCS_CKM.2 - Cryptographic key distribution
     async fn wrap_key(&self, key_to_wrap: &KeyHandle, wrapping_key: &KeyHandle) -> Result<Vec<u8>>;
 
     /// Unwrap (decrypt) a transported key
@@ -210,6 +235,7 @@ impl CryptoProviderFactory {
     /// A boxed CryptoProvider backed by the HSM
     ///
     /// NIST 800-53: IA-7 - Cryptographic module authentication
+    /// NIAP PP-CA: FCS_CKM.1 - Key generation in FIPS 140-3 validated module
     pub async fn create_pkcs11_provider(
         library_path: &Path,
         slot_id: u64,

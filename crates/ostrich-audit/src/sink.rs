@@ -1,7 +1,26 @@
 //! Audit event sinks for persistence
 //!
-//! NIST 800-53: AU-9 - Protection of audit information
-//! NIST 800-53: AU-10 - Non-repudiation
+//! This module provides audit sink implementations for persisting audit records
+//! with integrity protection through cryptographic hash chains.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//! - **AU-9**: Protection of audit information - Secure storage with hash chain
+//! - **AU-9(3)**: Cryptographic protection - SHA-256 hash chain for integrity
+//! - **AU-10**: Non-repudiation - Tamper-evident audit trail
+//! - **AU-4**: Audit storage capacity - Database-backed persistent storage
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - **FAU_STG.1**: Protected audit trail storage
+//!   - Audit trail stored in protected database
+//!   - Unauthorized modification prevented through access controls
+//! - **FAU_STG.4**: Prevention of audit data loss
+//!   - Hash chain enables detection of missing/modified records
+//!   - Integrity verification via verify_integrity() method
+//!
+//! ## Related Standards
+//! - FIPS 180-4: SHA-256 for hash chain computation
 
 use crate::{AuditEvent, Error, Result};
 use async_trait::async_trait;
@@ -10,20 +29,25 @@ use ostrich_db::{DatabasePool, repository::AuditRepository};
 /// Trait for audit event sinks
 ///
 /// NIST 800-53: AU-4 - Audit storage capacity
+/// NIAP PP-CA: FAU_STG.1 - Protected audit trail storage interface
 #[async_trait]
 pub trait AuditSink: Send + Sync {
     /// Record an audit event
     ///
     /// NIST 800-53: AU-2 - Auditable events
     /// NIST 800-53: AU-9(3) - Cryptographic protection via hash chain
+    /// NIAP PP-CA: FAU_GEN.1.1 - Store generated audit record
     async fn record(&self, event: &mut AuditEvent) -> Result<()>;
 
     /// Verify the integrity of the audit log
     ///
     /// NIST 800-53: AU-9(3) - Verify audit information integrity
+    /// NIAP PP-CA: FAU_STG.4 - Detect potential audit data loss or modification
     async fn verify_integrity(&self) -> Result<bool>;
 
     /// Query events by various criteria
+    ///
+    /// NIAP PP-CA: FAU_STG.1 - Retrieve audit records from protected storage
     async fn query_events(&self, criteria: QueryCriteria) -> Result<Vec<AuditEvent>>;
 }
 
@@ -64,6 +88,8 @@ impl Default for QueryCriteria {
 ///
 /// NIST 800-53: AU-9 - Audit information stored in database
 /// NIST 800-53: AU-9(3) - Hash chain for integrity protection
+/// NIAP PP-CA: FAU_STG.1 - Protected audit trail storage in database
+/// NIAP PP-CA: FAU_STG.4 - Hash chain prevents undetected modification
 pub struct DatabaseAuditSink {
     repository: AuditRepository,
 }
@@ -128,7 +154,10 @@ impl DatabaseAuditSink {
 
 #[async_trait]
 impl AuditSink for DatabaseAuditSink {
+    // NIAP PP-CA: FAU_STG.1 - Protected audit trail storage implementation
+
     async fn record(&self, event: &mut AuditEvent) -> Result<()> {
+        // NIAP PP-CA: FAU_STG.4 - Compute hash for tamper detection
         // Compute event hash with chain integrity
         event.event_hash = event.compute_hash();
 
@@ -162,6 +191,7 @@ impl AuditSink for DatabaseAuditSink {
     }
 
     async fn verify_integrity(&self) -> Result<bool> {
+        // NIAP PP-CA: FAU_STG.4 - Verify hash chain to detect tampering or loss
         self.repository
             .verify_chain()
             .await
@@ -199,6 +229,7 @@ impl AuditSink for DatabaseAuditSink {
 /// In-memory audit sink for testing
 ///
 /// WARNING: Not suitable for production use - no persistence
+/// NOTE: Does not satisfy FAU_STG.1 (protected storage) for production
 #[cfg(any(test, feature = "testing"))]
 pub struct MemoryAuditSink {
     events: tokio::sync::RwLock<Vec<AuditEvent>>,
@@ -224,8 +255,10 @@ impl MemoryAuditSink {
 #[async_trait]
 impl AuditSink for MemoryAuditSink {
     async fn record(&self, event: &mut AuditEvent) -> Result<()> {
+        // NIAP PP-CA: FAU_GEN.1.1 - Store audit record (test implementation)
         let mut events = self.events.write().await;
 
+        // NIAP PP-CA: FAU_STG.4 - Link to previous event for chain integrity
         // Get previous hash
         event.previous_hash = events.last().map(|e| e.event_hash.clone());
 
@@ -237,6 +270,7 @@ impl AuditSink for MemoryAuditSink {
     }
 
     async fn verify_integrity(&self) -> Result<bool> {
+        // NIAP PP-CA: FAU_STG.4 - Verify audit trail integrity
         let events = self.events.read().await;
 
         if events.is_empty() {
@@ -246,10 +280,12 @@ impl AuditSink for MemoryAuditSink {
         let mut prev_hash: Option<Vec<u8>> = None;
 
         for event in events.iter() {
+            // NIAP PP-CA: FAU_STG.4 - Check chain continuity
             if event.previous_hash != prev_hash {
                 return Ok(false);
             }
 
+            // NIAP PP-CA: FAU_STG.4 - Verify hash computation matches stored hash
             // Verify hash computation
             let computed_hash = event.compute_hash();
             if computed_hash != event.event_hash {

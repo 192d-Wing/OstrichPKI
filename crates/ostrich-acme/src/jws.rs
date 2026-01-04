@@ -1,13 +1,53 @@
 //! JWS (JSON Web Signature) validation for ACME
 //!
-//! RFC 8555 §6.2: All ACME requests with a non-empty body MUST encapsulate
-//! their payload in a JWS object, signed using the account's key pair.
+//! This module implements JWS validation per RFC 7515 for ACME protocol
+//! authentication. All ACME requests with non-empty bodies must be signed
+//! using the account's key pair.
 //!
-//! RFC 7515: JSON Web Signature (JWS) specification
-//! RFC 7517: JSON Web Key (JWK) specification
-//! RFC 7638: JSON Web Key (JWK) Thumbprint
+//! # Compliance Mapping
 //!
-//! NIST 800-53: IA-5 - Authenticator management
+//! ## NIAP PP-CA v2.1 SFRs
+//!
+//! - **FIA_UAU.1**: User authentication before any action
+//!   - JWS signature verification provides cryptographic authentication.
+//!   - All requests (except directory/nonce) must be JWS-signed.
+//!   - Signature validates account holds the private key.
+//!
+//! - **FIA_UID.1**: User identification before any action
+//!   - JWK thumbprint (RFC 7638) provides unique account identifier.
+//!   - kid URL identifies existing accounts.
+//!
+//! - **FCS_COP.1**: Cryptographic operation
+//!   - RS256, RS384, RS512: RSASSA-PKCS1-v1_5 with SHA-2.
+//!   - PS256, PS384, PS512: RSASSA-PSS with SHA-2.
+//!   - ES256, ES384, ES512: ECDSA with P-256/P-384/P-521.
+//!   - EdDSA: Ed25519 digital signatures.
+//!   - SHA-256 for JWK thumbprint computation.
+//!
+//! - **FCS_CKM.1**: Cryptographic key generation
+//!   - Public keys imported from JWK format for verification.
+//!   - Support for RSA, EC (P-256, P-384, P-521), and Ed25519 keys.
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//!
+//! - **IA-5**: Authenticator Management
+//!   - JWK public key serves as authenticator.
+//!   - Key binding via cryptographic signature.
+//!
+//! - **SC-13**: Cryptographic Protection
+//!   - FIPS-approved algorithms for signature verification.
+//!
+//! - **SC-23**: Session Authenticity
+//!   - Nonce binding prevents replay attacks.
+//!   - URL binding prevents cross-endpoint attacks.
+//!
+//! ## RFC Compliance
+//!
+//! - RFC 8555 §6.2: JWS encapsulation for ACME requests
+//! - RFC 7515: JSON Web Signature (JWS) specification
+//! - RFC 7517: JSON Web Key (JWK) specification
+//! - RFC 7518: JSON Web Algorithms (JWA)
+//! - RFC 7638: JSON Web Key (JWK) Thumbprint
 
 use crate::{Error, Result};
 use ostrich_common::util::encoding::{decode_base64url, encode_base64url};
@@ -164,6 +204,11 @@ pub fn decode_protected_header(protected: &str) -> Result<ProtectedHeader> {
 /// 2. UTF-8 encoding the JSON
 /// 3. SHA-256 hashing
 /// 4. Base64url encoding the hash
+///
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UID.1**: Thumbprint provides unique account identifier.
+/// - **FCS_COP.1**: SHA-256 hash operation (FIPS 180-4).
 pub fn compute_jwk_thumbprint(jwk: &Jwk) -> Result<String> {
     use sha2::{Digest, Sha256};
 
@@ -233,6 +278,17 @@ pub fn compute_jwk_thumbprint(jwk: &Jwk) -> Result<String> {
 /// 3. Constructs signing input (protected + "." + payload)
 /// 4. Decodes signature from base64url
 /// 5. Verifies signature
+///
+/// # NIAP PP-CA v2.1 Compliance
+///
+/// - **FIA_UAU.1**: Core authentication mechanism - signature verification.
+/// - **FCS_COP.1**: Cryptographic signature verification operation.
+/// - **FCS_CKM.1**: Public key import from JWK format.
+///
+/// # NIST 800-53 Controls
+///
+/// - **SC-13**: FIPS-approved signature algorithms.
+/// - **IA-5**: Authenticator (public key) verification.
 pub async fn verify_jws_with_jwk(
     jws: &JwsEnvelope,
     header: &ProtectedHeader,

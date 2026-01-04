@@ -1,14 +1,23 @@
 //! Cryptographic algorithm definitions
 //!
-//! FIPS 186-5: Digital Signature Standard
-//! FIPS 203: ML-KEM (Module-Lattice-Based Key-Encapsulation Mechanism)
-//! FIPS 204: ML-DSA (Module-Lattice-Based Digital Signature Algorithm)
-//! FIPS 205: SLH-DSA (Stateless Hash-Based Digital Signature Algorithm)
+//! # Compliance Mapping
+//!
+//! ## NIAP PP-CA v2.1 SFRs
+//! - FCS_CKM.1: Cryptographic key generation algorithms
+//! - FCS_COP.1: Cryptographic operations using these algorithms
+//!
+//! ## FIPS Standards
+//! - FIPS 186-5: Digital Signature Standard (RSA, ECDSA, EdDSA)
+//! - FIPS 203: ML-KEM (Module-Lattice-Based Key-Encapsulation Mechanism)
+//! - FIPS 204: ML-DSA (Module-Lattice-Based Digital Signature Algorithm)
+//! - FIPS 205: SLH-DSA (Stateless Hash-Based Digital Signature Algorithm)
 
 use serde::{Deserialize, Serialize};
 
 /// Key types supported by the cryptographic provider
+///
 /// NIST 800-53: SC-12 - Cryptographic key establishment
+/// NIAP PP-CA: FCS_CKM.1 - Asymmetric cryptographic key generation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyType {
     // Classical RSA
@@ -97,7 +106,9 @@ impl KeyType {
 }
 
 /// Signature and hash algorithms
+///
 /// FIPS 186-5: Digital Signature Standard
+/// NIAP PP-CA: FCS_COP.1 - Cryptographic operation algorithms
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Algorithm {
     // RSA with PKCS#1 v1.5 padding

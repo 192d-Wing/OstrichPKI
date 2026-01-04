@@ -1,12 +1,46 @@
 //! Smartcard token management
 //!
-//! Token lifecycle, inventory, and operations
+//! Token lifecycle, inventory, and operations.
+//!
+//! # Compliance Mapping
+//!
+//! ## NIST 800-53 Rev 5 Controls
+//! - **IA-2**: Identification and Authentication - Token-based multi-factor authentication
+//! - **IA-5**: Authenticator Management - PIN retry counter and credential management
+//! - **IA-5(1)**: Password-Based Authentication - PIN complexity and retry limits
+//! - **SC-12**: Cryptographic Key Establishment and Management - Token key lifecycle
+//!
+//! ## NIAP PP-CA v2.1 SFRs (Security Functional Requirements)
+//! - **FIA_AFL.1**: Authentication Failure Handling
+//!   - FIA_AFL.1.1: PIN retry counter with configurable max attempts
+//!   - FIA_AFL.1.2: Token blocking after retry exhaustion
+//! - **FIA_UAU.1**: Timing of Authentication
+//!   - FIA_UAU.1.1: PIN verification required before privileged operations
+//!   - FIA_UAU.1.2: Authentication state tracked per token
+//! - **FIA_UAU.5**: Multiple Authentication Mechanisms
+//!   - User PIN for normal operations
+//!   - SO-PIN (Security Officer PIN) for administrative operations
+//! - **FIA_UID.1**: Timing of Identification
+//!   - FIA_UID.1.1: Token serial number identifies the token
+//!   - FIA_UID.1.2: Assigned user identifies the token holder
+//! - **FCS_CKM.1**: Cryptographic Key Generation - TokenKey represents generated keys
+//! - **FCS_CKM.4**: Cryptographic Key Destruction - Token revocation destroys keys
+//! - **FMT_SMF.1**: Specification of Management Functions
+//!   - Token lifecycle state transitions (initialize, personalize, suspend, resume, revoke)
+//!   - PIN management (change, unblock)
+//! - **FMT_SMR.1**: Security Roles - SO role for unblock, User role for normal ops
+//! - **FPT_STM.1**: Reliable Time Stamps - All lifecycle events timestamped
+//! - **FAU_GEN.1**: Audit Data Generation - TokenEvent captures audit trail
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Token status in lifecycle
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FMT_SMF.1: Token lifecycle states are security-relevant
+/// - NIAP PP-CA FIA_AFL.1.2: Blocked state indicates authentication lockout
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TokenStatus {
@@ -58,6 +92,12 @@ pub struct TokenModel {
 }
 
 /// Smartcard token
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FIA_UID.1: serial_number and assigned_to provide identification
+/// - NIAP PP-CA FIA_AFL.1: pin_retry_count implements authentication failure tracking
+/// - NIAP PP-CA FIA_UAU.5: Supports both User PIN and SO-PIN authentication
+/// - NIAP PP-CA FPT_STM.1: Lifecycle timestamps for audit trail
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Token {
     /// Token ID
@@ -168,12 +208,20 @@ impl Token {
     }
 
     /// Block token (e.g., PIN blocked)
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA FIA_AFL.1.2: Block access after authentication failure threshold
     pub fn block(&mut self) {
         self.status = TokenStatus::Blocked;
         self.updated_at = Utc::now();
     }
 
     /// Unblock token (SO-PIN recovery)
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA FIA_AFL.1.2: Administrator action to reset authentication state
+    /// - NIAP PP-CA FMT_SMR.1: Requires Security Officer (SO) role
+    /// - NIAP PP-CA FIA_UAU.5: SO-PIN verification required (via PKCS#11)
     pub fn unblock(&mut self) {
         if self.status == TokenStatus::Blocked {
             self.status = TokenStatus::Active;
@@ -190,6 +238,10 @@ impl Token {
     }
 
     /// Decrement PIN retry counter
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA FIA_AFL.1.1: Decrement counter on authentication failure
+    /// - NIAP PP-CA FIA_AFL.1.2: Block token when counter reaches zero
     pub fn decrement_pin_retries(&mut self) -> bool {
         if self.pin_retry_count > 0 {
             self.pin_retry_count -= 1;
@@ -206,6 +258,9 @@ impl Token {
     }
 
     /// Reset PIN retry counter on successful auth
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA FIA_AFL.1.2: Reset counter after successful authentication
     pub fn reset_pin_retries(&mut self) {
         self.pin_retry_count = self.max_pin_retries;
         self.updated_at = Utc::now();
@@ -213,6 +268,11 @@ impl Token {
 }
 
 /// Token key object
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FCS_CKM.1: Represents a key generated on hardware token
+/// - NIAP PP-CA FCS_CKM.2: Key distribution is bound to physical token
+/// - NIAP PP-CA FCS_COP.1: Key usage for cryptographic operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenKey {
     /// Key ID
@@ -244,6 +304,13 @@ pub struct TokenKey {
 }
 
 /// Token event for audit trail
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA FAU_GEN.1: Audit data generation for token operations
+/// - NIAP PP-CA FAU_GEN.2: User identity association with audit events
+/// - NIAP PP-CA FPT_STM.1: Reliable timestamps for audit events
+/// - NIST 800-53: AU-2 - Auditable events
+/// - NIST 800-53: AU-3 - Content of audit records (who, what, when, where)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenEvent {
     /// Event ID
