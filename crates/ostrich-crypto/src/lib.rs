@@ -20,6 +20,7 @@
 //! - FIPS 205: SLH-DSA (Hash-Based Digital Signatures)
 
 pub mod algorithm;
+pub mod drbg;
 pub mod error;
 pub mod key;
 pub mod pkcs11;

@@ -173,6 +173,24 @@ pub trait CryptoProvider: Send + Sync {
         label: &str,
     ) -> Result<KeyHandle>;
 
+    /// Generate cryptographically secure random bytes
+    ///
+    /// # Arguments
+    /// * `len` - Number of random bytes to generate
+    ///
+    /// # Returns
+    /// Vector of cryptographically secure random bytes
+    ///
+    /// # NIST SP 800-90A
+    /// Uses NIST SP 800-90A compliant DRBG for random bit generation
+    ///
+    /// # NIAP PP-CA
+    /// - FCS_RBG_EXT.1: Random Bit Generation using approved DRBG
+    ///
+    /// # NIST 800-53
+    /// - SC-13: Cryptographic Protection - FIPS-validated random number generation
+    async fn generate_random_bytes(&self, len: usize) -> Result<Vec<u8>>;
+
     /// Get the provider ID for this provider
     fn provider_id(&self) -> crate::key::ProviderId;
 

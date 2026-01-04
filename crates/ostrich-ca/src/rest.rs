@@ -133,6 +133,7 @@ async fn issue_certificate(
         public_key: req.public_key,
         requestor: req.requestor,
         metadata: req.metadata,
+        csr_der: None, // REST API doesn't currently accept CSR
     };
 
     // Issue certificate

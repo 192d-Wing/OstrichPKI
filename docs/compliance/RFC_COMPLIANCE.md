@@ -1,10 +1,10 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 1.4
+**Document Version:** 1.5
 **Date:** 2026-01-04
-**OstrichPKI Version:** 0.15.0
+**OstrichPKI Version:** 0.16.0
 **Compliance Status:** Excellent (85%)
-**Last Updated:** RFC 5280 §6 Certificate Path Validation - Complete implementation with 80 tests
+**Last Updated:** Phase 15 completion - Path validation and CSR validation integration
 
 ## Executive Summary
 

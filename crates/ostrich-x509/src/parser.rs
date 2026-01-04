@@ -11,24 +11,199 @@ use x509_parser::prelude::*;
 /// Parse a DER-encoded X.509 certificate
 ///
 /// RFC 5280 §4.1 - Basic certificate fields
+/// RFC 5280 §4.2 - Certificate extensions
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 5280 §4.1: Certificate structure parsing
+/// - RFC 5280 §4.2.1.3: Key Usage extension
+/// - RFC 5280 §4.2.1.6: Subject Alternative Name extension
+/// - RFC 5280 §4.2.1.9: Basic Constraints extension
 pub fn parse_certificate(der: &[u8]) -> Result<ParsedCertificate> {
-    // TODO: Implement full certificate parsing using x509-parser
-    // For now, this is a stub that will be expanded
-
     if der.is_empty() {
         return Err(Error::Parse("Empty DER data".to_string()));
     }
 
+    // Parse the X.509 certificate using x509-parser
+    let (_, cert) = X509Certificate::from_der(der)
+        .map_err(|e| Error::Parse(format!("Failed to parse X.509 certificate: {}", e)))?;
+
+    // Extract serial number
+    let serial_number = cert.serial.to_bytes_be();
+
+    // Extract subject and issuer DNs
+    let subject_dn = cert.subject().to_string();
+    let issuer_dn = cert.issuer().to_string();
+
+    // Extract validity period
+    let not_before = cert.validity().not_before.to_datetime().unix_timestamp();
+    let not_before = chrono::DateTime::from_timestamp(not_before, 0)
+        .ok_or_else(|| Error::Parse("Invalid notBefore timestamp".to_string()))?;
+
+    let not_after = cert.validity().not_after.to_datetime().unix_timestamp();
+    let not_after = chrono::DateTime::from_timestamp(not_after, 0)
+        .ok_or_else(|| Error::Parse("Invalid notAfter timestamp".to_string()))?;
+
+    // Extract public key (SubjectPublicKeyInfo) - already in DER format
+    let public_key = cert.public_key().raw.to_vec();
+
+    // Extract signature
+    let signature = cert.signature_value.data.to_vec();
+
+    // Extract signature algorithm OID
+    let signature_algorithm = cert.signature_algorithm.algorithm.to_id_string();
+
+    // Extract TBS (To Be Signed) certificate
+    // Note: For now, store empty vec as signature verification is not yet enabled
+    // When implementing signature verification, we'll need to extract the exact DER bytes
+    // of the TBS certificate from the original encoding
+    let tbs_certificate = vec![];
+
+    // Parse extensions
+    let (basic_constraints, key_usage, subject_alt_names) = parse_certificate_extensions(&cert)?;
+
     Ok(ParsedCertificate {
-        serial_number: Vec::new(),
-        subject_dn: String::new(),
-        issuer_dn: String::new(),
-        not_before: chrono::Utc::now(),
-        not_after: chrono::Utc::now(),
-        public_key: Vec::new(),
-        signature: Vec::new(),
+        serial_number,
+        subject_dn,
+        issuer_dn,
+        not_before,
+        not_after,
+        public_key,
+        signature,
+        signature_algorithm,
+        tbs_certificate,
         der_encoded: der.to_vec(),
+        basic_constraints,
+        key_usage,
+        subject_alt_names,
     })
+}
+
+/// Certificate extension parsing result type
+type ExtensionsResult = (
+    Option<(bool, Option<u32>)>, // BasicConstraints (ca, pathLen)
+    Option<Vec<String>>,         // KeyUsage flags
+    Vec<String>,                 // SubjectAltNames
+);
+
+/// Parse certificate extensions
+///
+/// RFC 5280 §4.2 - Standard Extensions
+fn parse_certificate_extensions(cert: &X509Certificate) -> Result<ExtensionsResult> {
+    let mut basic_constraints = None;
+    let mut key_usage = None;
+    let mut subject_alt_names = Vec::new();
+
+    // Get extensions - x509-parser returns a slice, not Option
+    let extensions = cert.extensions();
+
+    if !extensions.is_empty() {
+        for ext in extensions {
+            let oid = ext.oid.to_id_string();
+
+            match oid.as_str() {
+                "2.5.29.19" => {
+                    // Basic Constraints (RFC 5280 §4.2.1.9)
+                    let parsed = ext.parsed_extension();
+                    if let ParsedExtension::BasicConstraints(bc_ext) = parsed {
+                        basic_constraints = Some((bc_ext.ca, bc_ext.path_len_constraint));
+                    }
+                }
+                "2.5.29.15" => {
+                    // Key Usage (RFC 5280 §4.2.1.3)
+                    let parsed = ext.parsed_extension();
+                    if let ParsedExtension::KeyUsage(ku_ext) = parsed {
+                        let mut usages = Vec::new();
+                        if ku_ext.digital_signature() {
+                            usages.push("digitalSignature".to_string());
+                        }
+                        if ku_ext.non_repudiation() {
+                            usages.push("nonRepudiation".to_string());
+                        }
+                        if ku_ext.key_encipherment() {
+                            usages.push("keyEncipherment".to_string());
+                        }
+                        if ku_ext.data_encipherment() {
+                            usages.push("dataEncipherment".to_string());
+                        }
+                        if ku_ext.key_agreement() {
+                            usages.push("keyAgreement".to_string());
+                        }
+                        if ku_ext.key_cert_sign() {
+                            usages.push("keyCertSign".to_string());
+                        }
+                        if ku_ext.crl_sign() {
+                            usages.push("cRLSign".to_string());
+                        }
+                        if ku_ext.encipher_only() {
+                            usages.push("encipherOnly".to_string());
+                        }
+                        if ku_ext.decipher_only() {
+                            usages.push("decipherOnly".to_string());
+                        }
+                        key_usage = Some(usages);
+                    }
+                }
+                "2.5.29.17" => {
+                    // Subject Alternative Name (RFC 5280 §4.2.1.6)
+                    let parsed = ext.parsed_extension();
+                    if let ParsedExtension::SubjectAlternativeName(san_ext) = parsed {
+                        for gn in &san_ext.general_names {
+                            match gn {
+                                GeneralName::DNSName(dns) => {
+                                    subject_alt_names.push(format!("DNS:{}", dns));
+                                }
+                                GeneralName::RFC822Name(email) => {
+                                    subject_alt_names.push(format!("email:{}", email));
+                                }
+                                GeneralName::URI(uri) => {
+                                    subject_alt_names.push(format!("URI:{}", uri));
+                                }
+                                GeneralName::IPAddress(ip) => {
+                                    let ip_str = if ip.len() == 4 {
+                                        format!("IP:{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
+                                    } else if ip.len() == 16 {
+                                        format!(
+                                            "IP:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
+                                            ip[0],
+                                            ip[1],
+                                            ip[2],
+                                            ip[3],
+                                            ip[4],
+                                            ip[5],
+                                            ip[6],
+                                            ip[7],
+                                            ip[8],
+                                            ip[9],
+                                            ip[10],
+                                            ip[11],
+                                            ip[12],
+                                            ip[13],
+                                            ip[14],
+                                            ip[15]
+                                        )
+                                    } else {
+                                        continue;
+                                    };
+                                    subject_alt_names.push(ip_str);
+                                }
+                                GeneralName::DirectoryName(dn) => {
+                                    subject_alt_names.push(format!("DirName:{}", dn));
+                                }
+                                _ => {
+                                    // Other GeneralName types not yet supported in parsed form
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Unknown or unsupported extension, skip
+                }
+            }
+        }
+    }
+
+    Ok((basic_constraints, key_usage, subject_alt_names))
 }
 
 /// Parse a PEM-encoded X.509 certificate
@@ -514,8 +689,25 @@ pub struct ParsedCertificate {
     pub public_key: Vec<u8>,
     /// Signature
     pub signature: Vec<u8>,
+    /// Signature algorithm OID
+    pub signature_algorithm: String,
+    /// TBS (To Be Signed) certificate DER encoding
+    pub tbs_certificate: Vec<u8>,
     /// Original DER encoding
     pub der_encoded: Vec<u8>,
+
+    // Parsed extensions
+    /// Basic Constraints: (ca, pathLenConstraint)
+    /// RFC 5280 §4.2.1.9
+    pub basic_constraints: Option<(bool, Option<u32>)>,
+
+    /// Key Usage flags
+    /// RFC 5280 §4.2.1.3
+    pub key_usage: Option<Vec<String>>,
+
+    /// Subject Alternative Names
+    /// RFC 5280 §4.2.1.6
+    pub subject_alt_names: Vec<String>,
 }
 
 /// Parsed Certificate Signing Request
@@ -954,7 +1146,7 @@ mod tests {
 
         // Validate format structure
         assert!(expected_format.starts_with("otherName:"));
-        assert!(expected_format.contains(&expected_oid));
+        assert!(expected_format.contains(expected_oid));
         assert!(expected_format.ends_with(&expected_value));
 
         // Format should have exactly 2 colons (after prefix and after OID)

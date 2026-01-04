@@ -91,6 +91,9 @@ sha2 = "0.10"
 sha3 = "0.10"
 hmac = "0.12"
 digest = "0.10"
+getrandom = "0.2"
+aes = "0.8"
+cipher = "0.4"
 
 # Post-Quantum Cryptography
 # Note: These are placeholders - RustCrypto PQC crates are still in development

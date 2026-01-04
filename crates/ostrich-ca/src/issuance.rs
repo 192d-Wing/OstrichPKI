@@ -39,6 +39,7 @@ use uuid::Uuid;
 /// Certificate issuance request
 ///
 /// RFC 5280 §4.1 - Certificate fields
+/// RFC 2986 - PKCS#10 CSR format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssuanceRequest {
     /// Profile to use for issuance
@@ -58,6 +59,12 @@ pub struct IssuanceRequest {
 
     /// Additional metadata
     pub metadata: Option<serde_json::Value>,
+
+    /// Optional PKCS#10 CSR (DER-encoded)
+    /// If provided, the CSR signature will be verified before issuance
+    /// to ensure proof-of-possession of the private key
+    #[serde(default)]
+    pub csr_der: Option<Vec<u8>>,
 }
 
 /// Issued certificate response
@@ -93,8 +100,8 @@ pub struct CertificateIssuer {
     /// CA certificate
     ca_certificate: Certificate,
 
-    /// Crypto provider
-    crypto_provider: Box<dyn CryptoProvider>,
+    /// Crypto provider (Arc for sharing with validation functions)
+    crypto_provider: std::sync::Arc<dyn CryptoProvider>,
 
     /// Database pool
     db_pool: DatabasePool,
@@ -111,7 +118,7 @@ impl CertificateIssuer {
     pub fn new(
         ca_key: KeyHandle,
         ca_certificate: Certificate,
-        crypto_provider: Box<dyn CryptoProvider>,
+        crypto_provider: std::sync::Arc<dyn CryptoProvider>,
         db_pool: DatabasePool,
         audit_sink: Box<dyn AuditSink>,
     ) -> Self {
@@ -176,6 +183,58 @@ impl CertificateIssuer {
             return Err(Error::InvalidRequest(
                 "Subject alternative names are required for this profile".to_string(),
             ));
+        }
+
+        // COMPLIANCE MAPPING:
+        // - RFC 2986 §4.2 - CSR signature verification
+        // - NIST 800-53 SI-10 - Input validation (CSR signature verification)
+        // - NIAP PP-CA FDP_ITC.1.1 - Validate imported user data (CSR)
+        // - NIST 800-53 SC-8(1) - Cryptographic protection (proof of possession)
+        //
+        // If CSR is provided, verify signature to ensure proof-of-possession
+        // of the private key corresponding to the public key in the request
+        if let Some(csr_der) = &request.csr_der {
+            // Parse CSR
+            let parsed_csr = ostrich_x509::parser::parse_csr(csr_der)
+                .map_err(|e| Error::InvalidRequest(format!("Failed to parse CSR: {}", e)))?;
+
+            // Verify CSR signature (proof of possession)
+            let signature_valid =
+                ostrich_x509::parser::verify_csr_signature(&parsed_csr, &self.crypto_provider)
+                    .await
+                    .map_err(|e| {
+                        Error::InvalidRequest(format!("CSR signature verification failed: {}", e))
+                    })?;
+
+            if !signature_valid {
+                audit_event.outcome = EventOutcome::Failure;
+                self.audit_sink
+                    .record(&mut audit_event)
+                    .await
+                    .map_err(Error::Audit)?;
+
+                return Err(Error::InvalidRequest(
+                    "Invalid CSR signature - proof of possession failed".to_string(),
+                ));
+            }
+
+            // Verify that the public key in the CSR matches the public key in the request
+            if parsed_csr.public_key != request.public_key {
+                audit_event.outcome = EventOutcome::Failure;
+                self.audit_sink
+                    .record(&mut audit_event)
+                    .await
+                    .map_err(Error::Audit)?;
+
+                return Err(Error::InvalidRequest(
+                    "CSR public key does not match request public key".to_string(),
+                ));
+            }
+
+            tracing::debug!(
+                "CSR signature verified for subject: {}",
+                request.subject.to_string_rfc4514()
+            );
         }
 
         // Generate serial number
@@ -335,6 +394,7 @@ mod tests {
             public_key: vec![1, 2, 3],
             requestor: "admin@example.com".to_string(),
             metadata: None,
+            csr_der: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -342,5 +402,6 @@ mod tests {
 
         assert_eq!(deserialized.profile_name, "tls_server");
         assert_eq!(deserialized.requestor, "admin@example.com");
+        assert!(deserialized.csr_der.is_none());
     }
 }

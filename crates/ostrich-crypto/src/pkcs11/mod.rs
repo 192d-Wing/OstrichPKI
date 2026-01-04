@@ -1146,6 +1146,31 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
         ))
     }
 
+    async fn generate_random_bytes(&self, len: usize) -> Result<Vec<u8>> {
+        // NIAP PP-CA: FCS_RBG_EXT.1 - Use HSM's FIPS-validated RNG if available
+        // NIST 800-53: SC-13 - Cryptographic protection using HSM RNG
+
+        // Try to use HSM's RNG first
+        let session = self.open_session()?;
+        let mut buffer = vec![0u8; len];
+        match session.generate_random_slice(&mut buffer) {
+            Ok(()) => {
+                tracing::debug!(len = %len, "Generated random bytes using HSM RNG");
+                Ok(buffer)
+            }
+            Err(e) => {
+                // Fallback to software DRBG if HSM RNG unavailable
+                tracing::warn!(
+                    error = %e,
+                    "HSM RNG unavailable, falling back to software DRBG"
+                );
+                use crate::drbg::SecureRng;
+                let rng = SecureRng::new()?;
+                rng.fill_bytes(len)
+            }
+        }
+    }
+
     fn provider_id(&self) -> ProviderId {
         ProviderId::Pkcs11 {
             slot_id: self.slot_id,

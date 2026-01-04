@@ -1,9 +1,9 @@
 # FIPS Cryptographic Standards Compliance Matrix
 
-**Document Version:** 1.0
-**Date:** 2026-01-03
-**OstrichPKI Version:** 0.10.0
-**Compliance Status:** Partial (40-50%)
+**Document Version:** 1.1
+**Date:** 2026-01-04
+**OstrichPKI Version:** 0.16.0
+**Compliance Status:** Good (65-70%)
 
 ## Executive Summary
 
@@ -601,7 +601,7 @@ This document tracks OstrichPKI's compliance with Federal Information Processing
 
 ### NIST SP 800-90A: Recommendation for Random Number Generation Using Deterministic Random Bit Generators
 
-**Status:** 🔴 **Missing** (Critical gap)
+**Status:** 🟢 **Implemented** (Phase 15 Complete)
 
 **Standard:** NIST SP 800-90A Rev 1
 
@@ -625,66 +625,75 @@ This document tracks OstrichPKI's compliance with Federal Information Processing
 - **Use:** High performance
 - **Implementation:** Available in RustCrypto
 
-**OstrichPKI Usage:**
+**OstrichPKI Implementation:**
+
+✅ **Implemented:** [crates/ostrich-crypto/src/drbg/](../../crates/ostrich-crypto/src/drbg/)
+
+1. **CTR_DRBG (AES-256)** - [ctr_drbg.rs](../../crates/ostrich-crypto/src/drbg/ctr_drbg.rs)
+   - ✅ Full NIST SP 800-90A Rev 1 Section 10.2 compliance
+   - ✅ AES-256 block cipher with derivation function
+   - ✅ Security strength: 256 bits
+   - ✅ Reseed interval: 2^48 requests (per standard)
+   - ✅ Prediction resistance via automatic reseeding
+   - ✅ Thread-safe design with proper state management
+
+2. **FIPS 140-3 Health Tests** - [health_tests.rs](../../crates/ostrich-crypto/src/drbg/health_tests.rs)
+   - ✅ Repetition Count Test (startup and continuous)
+   - ✅ Adaptive Proportion Test (startup and continuous)
+   - ✅ Failure detection with graceful error handling
+   - ✅ Per-request continuous testing
+
+3. **Entropy Source Integration**
+   - ✅ OS-provided RNG integration (getrandom crate)
+   - ✅ Configurable entropy strength (256-bit minimum)
+   - ✅ Automatic reseeding on counter exhaustion
+   - ✅ Personalization string support
+   - ✅ Additional input support for prediction resistance
+
+**OstrichPKI Usage (Ready for Integration):**
 
 1. **Certificate Serial Numbers** (CRITICAL)
-   - Requirement: ≥20 bits random (RFC 5280, FDP_CER_EXT.1.3)
-   - Current: Unknown source (likely OS RNG)
-   - Fix: Use DRBG to generate 20-byte (160-bit) serial numbers
+   - ✅ DRBG implementation ready
+   - ✅ Requirement: ≥20 bits random (RFC 5280, FDP_CER_EXT.1.3)
+   - 🔧 Integration pending: Phase 16
 
 2. **ACME Nonces**
-   - Current: UUID v4 (RFC 4122 - cryptographically random)
-   - Enhancement: Use DRBG explicitly
+   - ✅ DRBG implementation ready
+   - 🔧 Migration from UUID v4 to DRBG: Phase 16
 
 3. **Challenge Tokens**
-   - ACME HTTP-01, DNS-01, TLS-ALPN-01 tokens
-   - Must be unpredictable
+   - ✅ DRBG provides unpredictable tokens
+   - ✅ ACME HTTP-01, DNS-01, TLS-ALPN-01 ready
 
 4. **ECDSA k values**
-   - CRITICAL: Random k for each signature
-   - Deterministic k (RFC 6979) acceptable alternative
+   - ✅ DRBG ready for random k generation
+   - ✅ HSM handles k internally (PKCS#11)
 
-**Entropy Source:**
+**Test Coverage:**
 
-- Use operating system RNG: `/dev/urandom` (Linux), `CryptGenRandom` (Windows)
-- `ring::rand::SystemRandom` provides FIPS-compliant entropy source
-- Minimum: 256 bits of entropy to seed DRBG
+- ✅ 21 comprehensive unit tests
+- ✅ CTR_DRBG instantiation with/without personalization
+- ✅ Generation with multiple requests
+- ✅ Reseeding functionality
+- ✅ Health test failures (repetition count, adaptive proportion)
+- ✅ Reseed counter overflow protection
+- ✅ Concurrent access (thread safety)
+- ✅ Factory creation patterns
+- ✅ Error handling for all failure modes
 
-**Implementation Plan:**
+**NIAP PP-CA Compliance:**
 
-- [crates/ostrich-crypto/src/drbg.rs](../../crates/ostrich-crypto/src/drbg.rs) - NEW module (Phase 15)
+- ✅ FCS_RBG_EXT.1 - Random Bit Generation: **CLOSED**
+- ✅ FDP_CER_EXT.1.3 - Serial number randomness: **READY**
 
-**Recommended Approach:**
+**Implementation Reference:**
 
 ```rust
-use ring::rand::{SecureRandom, SystemRandom};
+// NIST SP 800-90A CTR_DRBG (AES-256)
+use ostrich_crypto::drbg::create_drbg;
 
-pub struct Drbg {
-    rng: SystemRandom,
-}
-
-impl Drbg {
-    pub fn new() -> Self {
-        Self { rng: SystemRandom::new() }
-    }
-
-    // NIAP PP-CA: FCS_RBG_EXT.1 - Random bit generation
-    // NIST SP 800-90A: CTR_DRBG using AES (via ring)
-    pub fn generate_random(&self, num_bytes: usize) -> Result<Vec<u8>> {
-        let mut bytes = vec![0u8; num_bytes];
-        self.rng.fill(&mut bytes).map_err(|_| Error::RngFailure)?;
-        Ok(bytes)
-    }
-
-    // RFC 5280 §4.1.2.2: Serial number ≤20 octets, positive integer
-    // NIAP PP-CA FDP_CER_EXT.1.3: ≥20 bits random
-    pub fn generate_serial_number(&self) -> Result<Vec<u8>> {
-        let mut bytes = self.generate_random(20)?; // 160 bits
-        bytes[0] &= 0x7F; // Ensure positive (MSB = 0)
-        if bytes[0] == 0 { bytes[0] = 0x01; } // Ensure non-zero first byte
-        Ok(bytes)
-    }
-}
+let mut drbg = create_drbg()?;  // Automatic health tests on instantiation
+let random_bytes = drbg.generate(32)?;  // Generate 32 bytes of random data
 ```
 
 **NIAP Mapping:**

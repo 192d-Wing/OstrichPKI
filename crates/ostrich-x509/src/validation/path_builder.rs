@@ -106,7 +106,12 @@ mod tests {
             not_after: Utc::now(),
             public_key: vec![0x30, 0x82, 0x01, 0x22],
             signature: vec![0x00, 0x01, 0x02],
+            signature_algorithm: "1.2.840.10045.4.3.2".to_string(),
+            tbs_certificate: vec![],
             der_encoded: vec![],
+            basic_constraints: None,
+            key_usage: None,
+            subject_alt_names: vec![],
         }
     }
 

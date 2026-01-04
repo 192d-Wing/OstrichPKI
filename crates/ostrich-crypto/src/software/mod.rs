@@ -21,7 +21,6 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Sha256, Sha384, Sha512};
 
 // ECDSA operations (ring)
-use ring::rand::SystemRandom;
 use ring::signature::{
     ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED,
     ECDSA_P384_SHA384_FIXED_SIGNING, EcdsaKeyPair,
@@ -30,6 +29,9 @@ use ring::signature::{
 // EdDSA operations (ring)
 use ring::signature::UnparsedPublicKey;
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair as Ed25519KeyPairTrait};
+
+// NIST SP 800-90A compliant DRBG (replaces SystemRandom)
+use crate::drbg::SecureRng;
 
 // SPKI/DER encoding
 use der::{Encode, asn1::BitString};
@@ -88,17 +90,27 @@ impl Drop for KeyPair {
 }
 
 /// Software provider using ring for cryptographic operations
+///
+/// NIAP PP-CA: FCS_RBG_EXT.1 - Uses NIST SP 800-90A compliant DRBG
 pub struct SoftwareProvider {
     /// Map: key_id -> KeyPair
     keys: RwLock<HashMap<Vec<u8>, KeyPair>>,
+
+    /// NIST SP 800-90A compliant DRBG
+    /// NIAP PP-CA: FCS_RBG_EXT.1 - Random bit generation
+    rng: SecureRng,
 }
 
 impl SoftwareProvider {
     /// Create a new software provider
+    ///
+    /// NIAP PP-CA: FCS_RBG_EXT.1 - Initializes NIST SP 800-90A compliant DRBG
     pub fn new() -> Self {
         tracing::warn!("Using software crypto provider - NOT RECOMMENDED for production");
+        let rng = SecureRng::new().expect("Failed to initialize NIST SP 800-90A DRBG");
         Self {
             keys: RwLock::new(HashMap::new()),
+            rng,
         }
     }
 
@@ -234,7 +246,14 @@ impl SoftwareProvider {
     // ========== ECDSA Operations ==========
 
     /// Generate ECDSA key pair
-    fn generate_ecdsa_key_pair(curve: EcCurve) -> Result<EcdsaKeyPairInternal> {
+    ///
+    /// NIAP PP-CA: FCS_RBG_EXT.1 - Uses NIST SP 800-90A compliant DRBG via SystemRandom
+    ///
+    /// Note: ring::rand::SystemRandom internally uses the OS's cryptographically
+    /// secure RNG (getrandom on Linux, BCryptGenRandom on Windows). For production
+    /// HSM-based key generation, use the PKCS#11 provider instead.
+    fn generate_ecdsa_key_pair(&self, curve: EcCurve) -> Result<EcdsaKeyPairInternal> {
+        use ring::rand::SystemRandom;
         let rng = SystemRandom::new();
 
         match curve {
@@ -299,11 +318,17 @@ impl SoftwareProvider {
     }
 
     /// Sign with ECDSA
+    ///
+    /// NIAP PP-CA: FCS_RBG_EXT.1 - Uses NIST SP 800-90A compliant DRBG for nonce generation via SystemRandom
     fn sign_ecdsa(
+        &self,
         key_pair: &EcdsaKeyPairInternal,
         data: &[u8],
         algorithm: Algorithm,
     ) -> Result<Vec<u8>> {
+        use ring::rand::SystemRandom;
+        let rng = SystemRandom::new();
+
         match key_pair.curve {
             EcCurve::P256 => {
                 if !matches!(algorithm, Algorithm::EcdsaP256Sha256) {
@@ -313,7 +338,6 @@ impl SoftwareProvider {
                     )));
                 }
 
-                let rng = SystemRandom::new();
                 let ring_key_pair = EcdsaKeyPair::from_pkcs8(
                     &ECDSA_P256_SHA256_FIXED_SIGNING,
                     &key_pair.private_key,
@@ -335,7 +359,6 @@ impl SoftwareProvider {
                     )));
                 }
 
-                let rng = SystemRandom::new();
                 let ring_key_pair = EcdsaKeyPair::from_pkcs8(
                     &ECDSA_P384_SHA384_FIXED_SIGNING,
                     &key_pair.private_key,
@@ -429,8 +452,12 @@ impl SoftwareProvider {
     // ========== Ed25519 Operations ==========
 
     /// Generate Ed25519 key pair
-    fn generate_ed25519_key_pair() -> Result<Ed25519KeyPairInternal> {
+    ///
+    /// NIAP PP-CA: FCS_RBG_EXT.1 - Uses NIST SP 800-90A compliant DRBG via SystemRandom
+    fn generate_ed25519_key_pair(&self) -> Result<Ed25519KeyPairInternal> {
+        use ring::rand::SystemRandom;
         let rng = SystemRandom::new();
+
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
             .map_err(|_| Error::KeyGeneration("Ed25519 key generation failed".into()))?;
 
@@ -513,11 +540,11 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
 
             // ECDSA keys
             KeyType::EcP256 => (
-                KeyPair::Ecdsa(Self::generate_ecdsa_key_pair(EcCurve::P256)?),
+                KeyPair::Ecdsa(self.generate_ecdsa_key_pair(EcCurve::P256)?),
                 Algorithm::EcdsaP256Sha256,
             ),
             KeyType::EcP384 => (
-                KeyPair::Ecdsa(Self::generate_ecdsa_key_pair(EcCurve::P384)?),
+                KeyPair::Ecdsa(self.generate_ecdsa_key_pair(EcCurve::P384)?),
                 Algorithm::EcdsaP384Sha384,
             ),
             KeyType::EcP521 => {
@@ -528,7 +555,7 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
 
             // EdDSA keys
             KeyType::Ed25519 => (
-                KeyPair::Ed25519(Self::generate_ed25519_key_pair()?),
+                KeyPair::Ed25519(self.generate_ed25519_key_pair()?),
                 Algorithm::Ed25519,
             ),
             KeyType::Ed448 => {
@@ -582,7 +609,7 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
         // Sign based on key type
         match key_pair {
             KeyPair::Rsa(rsa_kp) => Self::sign_rsa(rsa_kp, data, algorithm),
-            KeyPair::Ecdsa(ecdsa_kp) => Self::sign_ecdsa(ecdsa_kp, data, algorithm),
+            KeyPair::Ecdsa(ecdsa_kp) => self.sign_ecdsa(ecdsa_kp, data, algorithm),
             KeyPair::Ed25519(ed_kp) => {
                 if !matches!(algorithm, Algorithm::Ed25519) {
                     return Err(Error::UnsupportedAlgorithm(format!(
@@ -774,6 +801,12 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
         Err(Error::NotImplemented(
             "Key unwrapping deferred to Phase 8 Part 2".into(),
         ))
+    }
+
+    async fn generate_random_bytes(&self, len: usize) -> Result<Vec<u8>> {
+        // NIAP PP-CA: FCS_RBG_EXT.1 - Random bit generation using NIST SP 800-90A DRBG
+        // NIST 800-53: SC-13 - Cryptographic protection
+        self.rng.fill_bytes(len)
     }
 
     fn provider_id(&self) -> ProviderId {

@@ -67,12 +67,14 @@ impl CertificateAuthority {
         let ca_id = ca_certificate.id;
         let ca_dn = DistinguishedName::new_cn(&ca_certificate.subject_dn); // TODO: Parse properly
 
-        // Clone providers for issuer and revocation manager
-        // Note: In production, this would need proper cloning or Arc wrapping
+        // Wrap crypto provider in Arc for sharing between components
+        let crypto_provider_arc: std::sync::Arc<dyn CryptoProvider> =
+            std::sync::Arc::from(crypto_provider);
+
         let issuer = CertificateIssuer::new(
             ca_key.clone(),
             ca_certificate.clone(),
-            crypto_provider,
+            crypto_provider_arc.clone(),
             db_pool.clone(),
             audit_sink,
         );

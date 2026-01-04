@@ -156,7 +156,12 @@ mod tests {
             not_after: Utc::now(),
             public_key: vec![],
             signature: vec![],
+            signature_algorithm: "1.2.840.10045.4.3.2".to_string(),
+            tbs_certificate: vec![],
             der_encoded: vec![],
+            basic_constraints: None,
+            key_usage: None,
+            subject_alt_names: vec![],
         };
 
         let nc = NameConstraints::new();

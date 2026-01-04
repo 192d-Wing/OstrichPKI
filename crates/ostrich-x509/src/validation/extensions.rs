@@ -61,30 +61,31 @@ pub fn check_unknown_critical_extensions(_cert: &ParsedCertificate) -> Result<()
 /// Extract Basic Constraints from certificate
 ///
 /// RFC 5280 §4.2.1.9
-pub fn get_basic_constraints(_cert: &ParsedCertificate) -> Result<Option<BasicConstraints>> {
-    // TODO: Phase 2 - Parse basicConstraints extension from DER
-    // For now, stub that returns None (no constraints)
-
-    Ok(None)
+pub fn get_basic_constraints(cert: &ParsedCertificate) -> Result<Option<BasicConstraints>> {
+    // Return parsed basic constraints from the certificate
+    Ok(cert
+        .basic_constraints
+        .map(|(ca, path_len_constraint)| BasicConstraints {
+            ca,
+            path_len_constraint,
+        }))
 }
 
 /// Extract Key Usage from certificate
 ///
 /// RFC 5280 §4.2.1.3
-pub fn get_key_usage(_cert: &ParsedCertificate) -> Result<Option<KeyUsage>> {
-    // TODO: Phase 2 - Parse keyUsage extension from DER
-    // For now, stub that returns all usages enabled
-
-    Ok(Some(KeyUsage {
-        digital_signature: true,
-        non_repudiation: true,
-        key_encipherment: true,
-        data_encipherment: true,
-        key_agreement: true,
-        key_cert_sign: true,
-        crl_sign: true,
-        encipher_only: false,
-        decipher_only: false,
+pub fn get_key_usage(cert: &ParsedCertificate) -> Result<Option<KeyUsage>> {
+    // Return parsed key usage from the certificate
+    Ok(cert.key_usage.as_ref().map(|usages| KeyUsage {
+        digital_signature: usages.contains(&"digitalSignature".to_string()),
+        non_repudiation: usages.contains(&"nonRepudiation".to_string()),
+        key_encipherment: usages.contains(&"keyEncipherment".to_string()),
+        data_encipherment: usages.contains(&"dataEncipherment".to_string()),
+        key_agreement: usages.contains(&"keyAgreement".to_string()),
+        key_cert_sign: usages.contains(&"keyCertSign".to_string()),
+        crl_sign: usages.contains(&"cRLSign".to_string()),
+        encipher_only: usages.contains(&"encipherOnly".to_string()),
+        decipher_only: usages.contains(&"decipherOnly".to_string()),
     }))
 }
 
@@ -102,7 +103,12 @@ mod tests {
             not_after: Utc::now(),
             public_key: vec![0x30, 0x82],
             signature: vec![0x00, 0x01],
+            signature_algorithm: "1.2.840.10045.4.3.2".to_string(),
+            tbs_certificate: vec![],
             der_encoded: vec![],
+            basic_constraints: None,
+            key_usage: None,
+            subject_alt_names: vec![],
         }
     }
 
@@ -125,7 +131,8 @@ mod tests {
         let cert = create_test_cert();
         let result = get_key_usage(&cert);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_some());
+        // Test cert has no key usage extension, so should return None
+        assert!(result.unwrap().is_none());
     }
 
     #[test]

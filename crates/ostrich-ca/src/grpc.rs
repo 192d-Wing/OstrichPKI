@@ -170,6 +170,7 @@ impl CertificateAuthorityService for CaGrpcService {
             public_key: req.public_key,
             requestor: req.requestor,
             metadata,
+            csr_der: None, // gRPC API doesn't currently accept CSR
         };
 
         // Issue certificate

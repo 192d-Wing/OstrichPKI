@@ -20,6 +20,9 @@ ring = { workspace = true }
 rsa = { workspace = true }
 sha2 = { workspace = true }
 digest = { workspace = true }
+getrandom = { workspace = true }
+aes = { workspace = true }
+cipher = { workspace = true }
 
 # Encoding
 spki = { workspace = true }

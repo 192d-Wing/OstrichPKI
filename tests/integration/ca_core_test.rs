@@ -15,7 +15,7 @@ async fn test_ca_health() {
     let client = create_test_client();
 
     let response = client
-        .get(&format!("{}/health", config.ca_http_base_url))
+        .get(format!("{}/health", config.ca_http_base_url))
         .send()
         .await
         .expect("Failed to fetch CA health");
@@ -39,7 +39,7 @@ async fn test_ca_readiness() {
     let client = create_test_client();
 
     let response = client
-        .get(&format!("{}/ready", config.ca_http_base_url))
+        .get(format!("{}/ready", config.ca_http_base_url))
         .send()
         .await
         .expect("Failed to fetch CA readiness");

@@ -2474,12 +2474,15 @@ dependencies = [
 name = "ostrich-crypto"
 version = "0.14.0"
 dependencies = [
+ "aes",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "cipher",
  "cryptoki",
  "der",
  "digest",
+ "getrandom 0.2.16",
  "hex",
  "ostrich-common",
  "pkcs8",

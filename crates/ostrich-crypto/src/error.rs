@@ -41,6 +41,18 @@ pub enum Error {
     #[error("Decoding error: {0}")]
     Decoding(String),
 
+    #[error("Entropy source error: {0}")]
+    Entropy(String),
+
+    #[error("Cryptographic operation failed: {0}")]
+    Cryptographic(String),
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    #[error("Health test failure: {0}")]
+    HealthTestFailure(String),
+
     #[error("HSM slot not found: {0}")]
     SlotNotFound(u64),
 
@@ -70,6 +82,8 @@ impl Error {
                 | Error::KeyNotFound(_)
                 | Error::SessionError(_)
                 | Error::Verification(_)
+                | Error::HealthTestFailure(_)
+                | Error::Entropy(_)
         )
     }
 }

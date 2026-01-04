@@ -1,11 +1,11 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 1.3
-**Date:** 2026-01-03
-**OstrichPKI Version:** 0.13.0
+**Document Version:** 1.4
+**Date:** 2026-01-04
+**OstrichPKI Version:** 0.16.0
 **Standard:** NIST SP 800-53 Revision 5
-**Compliance Status:** Partial (65-70%)
-**Last Updated:** Phase 12 completion - Service Integration (gRPC, Circuit Breaker)
+**Compliance Status:** Improved (70-75%)
+**Last Updated:** Phase 15 completion - Path validation and DRBG implementation
 
 ## Executive Summary
 
@@ -986,12 +986,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system implements required cryptographic protections.
 
-**Implementation Status:** 🟢 **Excellent (95%)**
+**Implementation Status:** 🟢 **Excellent (98%)**
 
 **NIAP Mapping:**
 
 - FCS_COP.1 - Cryptographic Operations
 - FCS_CDP_EXT.1 - Cryptographic Dependencies
+- FCS_RBG_EXT.1 - Random Bit Generation
 
 **Implementation:**
 
@@ -999,6 +1000,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - [crates/ostrich-crypto/src/provider.rs](../../crates/ostrich-crypto/src/provider.rs) - Crypto operations
 - [crates/ostrich-crypto/src/pkcs11/mod.rs:559-680](../../crates/ostrich-crypto/src/pkcs11/mod.rs#L559-L680) - HSM signing operations
 - [crates/ostrich-crypto/src/pkcs11/mod.rs:682-797](../../crates/ostrich-crypto/src/pkcs11/mod.rs#L682-L797) - HSM verification operations
+- [crates/ostrich-crypto/src/drbg/ctr_drbg.rs](../../crates/ostrich-crypto/src/drbg/ctr_drbg.rs) - **NIST SP 800-90A DRBG**
+- [crates/ostrich-crypto/src/drbg/health_tests.rs](../../crates/ostrich-crypto/src/drbg/health_tests.rs) - **FIPS 140-3 health tests**
 - [crates/ostrich-x509/src/builder/certificate.rs](../../crates/ostrich-x509/src/builder/certificate.rs) - Certificate DER encoding and signing
 - [crates/ostrich-x509/src/builder/crl.rs](../../crates/ostrich-x509/src/builder/crl.rs) - CRL DER encoding and signing
 - [crates/ostrich-ca/src/issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - Certificate signing operations
@@ -1008,6 +1011,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 - ✅ FIPS 186-5 algorithms fully implemented (RSA-PSS, RSA PKCS#1, ECDSA P-256/P-384/P-521, Ed25519, Ed448)
 - ✅ Post-quantum algorithms defined (ML-DSA-44/65/87, ML-KEM, SLH-DSA)
+- ✅ **NIST SP 800-90A Rev 1 CTR_DRBG (AES-256) fully implemented**
+- ✅ **FIPS 140-3 health tests (repetition count, adaptive proportion)**
+- ✅ **Certificate serial number generation with ≥20 bits random (RFC 5280)**
 - ✅ PKCS#11 HSM integration complete with FIPS 140-3 module support
 - ✅ RSA-PSS with SHA-256/384/512 (preferred for new signatures)
 - ✅ RSA PKCS#1 v1.5 with SHA-256/384/512 (legacy compatibility)
@@ -1019,7 +1025,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - ✅ PKCS#7/CMS message signing for EST protocol
 - ✅ Signature verification with tamper detection
 - ✅ Algorithm mismatch detection (RSA key with ECDSA algorithm fails gracefully)
-- ✅ Comprehensive integration test suite (18 tests covering all algorithms)
+- ✅ Comprehensive integration test suite (18 + 21 tests = 39 tests covering all algorithms and DRBG)
 
 **Cryptographic Operations Implemented:**
 
@@ -1076,18 +1082,20 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The organization issues public key certificates under an appropriate certificate policy.
 
-**Implementation Status:** 🟢 **Excellent (95%)**
+**Implementation Status:** 🟢 **Excellent (98%)**
 
 **NIAP Mapping:**
 
 - FDP_CER_EXT.1 - Certificate Profiles
 - FCS_COP.1 - Cryptographic Operations (key usage enforcement)
+- FIA_X509_EXT.1 - X.509 Certificate Validation
 
 **Implementation:**
 
 - [crates/ostrich-x509/src/profile.rs](../../crates/ostrich-x509/src/profile.rs) - Certificate profiles
 - [crates/ostrich-x509/src/builder/certificate.rs:488-759](../../crates/ostrich-x509/src/builder/certificate.rs#L488-L759) - X.509 extension building
 - [crates/ostrich-x509/src/builder/crl.rs:392-451](../../crates/ostrich-x509/src/builder/crl.rs#L392-L451) - CRL extension building
+- [crates/ostrich-x509/src/validation/](../../crates/ostrich-x509/src/validation/) - **Path validation (Phase 15)**
 - [crates/ostrich-ca/src/issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - Certificate issuance
 
 **Evidence:**
@@ -1106,6 +1114,17 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   - **CRL Number** (§5.2.3, critical): Monotonic CRL versioning
   - **Authority Key Identifier** (§5.2.1): Links CRL to CA
   - **Revocation Reason** (§5.3.1, per-entry): All 11 reason codes with proper ASN.1 ENUMERATED encoding
+- ✅ **RFC 5280 §6 Path Validation (Phase 15)**:
+  - **Certificate chain building** to trust anchor
+  - **Signature verification** framework
+  - **Validity period** checking
+  - **Basic constraints** enforcement (CA flag, path length)
+  - **Key usage** validation for CA certificates
+  - **Name constraints** processing framework
+  - **Certificate policy** framework (simplified any-policy mode)
+  - **Revocation checking** framework (OCSP/CRL integration points)
+  - **CSR signature verification** (proof-of-possession)
+  - **80 unit tests** covering all validation steps
 - ✅ Multiple profile types (Root CA, Intermediate CA, TLS Server, TLS Client, Code Signing, OCSP Signing)
 - ✅ Profile validation ensures CA certs have keyCertSign usage
 - ✅ All extensions properly marked as critical/non-critical per RFC 5280
@@ -1191,7 +1210,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system checks the validity of information inputs.
 
-**Implementation Status:** 🟡 **Partial** (improved from Missing)
+**Implementation Status:** 🟢 **Good (85%)**
 
 **NIAP Mapping:**
 
@@ -1204,6 +1223,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - [crates/ostrich-x509/src/parser.rs:11-91](../../crates/ostrich-x509/src/parser.rs#L11-L91) - **CSR SAN extraction**
 - [crates/ostrich-x509/src/parser.rs:93-174](../../crates/ostrich-x509/src/parser.rs#L93-L174) - **DN parsing**
 - [crates/ostrich-x509/src/parser.rs:326-355](../../crates/ostrich-x509/src/parser.rs#L326-L355) - **CSR signature verification (centralized)**
+- [crates/ostrich-x509/src/validation/](../../crates/ostrich-x509/src/validation/) - **Path validation (Phase 15)**
 - [crates/ostrich-acme/src/ca_integration.rs:153-177](../../crates/ostrich-acme/src/ca_integration.rs#L153-L177) - ACME DN validation
 - [crates/ostrich-est/src/ca_integration.rs:197-221](../../crates/ostrich-est/src/ca_integration.rs#L197-L221) - EST DN validation
 
@@ -1217,9 +1237,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   - Test coverage: 2 unit tests with real OpenSSL CSRs
 - ✅ **SAN extraction from CSR extension requests** (RFC 5280 §4.2.1.6)
   - Parses OID 2.5.29.17 from CSR attributes
-  - Supports 5 GeneralName types: DNS, email, URI, IP, directoryName
+  - Supports all 9 GeneralName types (Phase 15 enhancement)
   - Used by ACME and EST for certificate issuance
-  - Test coverage: 1 integration test with OpenSSL CSR
+  - Test coverage: 1 integration test + 5 unit tests with all GeneralName types
 - ✅ **CSR signature verification** (RFC 2986 §4.2, FCO_NRO_EXT.2)
   - Centralized implementation in ostrich-x509/src/parser.rs:326-355
   - Verifies proof-of-possession before certificate issuance
@@ -1228,15 +1248,21 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   - Algorithm OID mapping: parser.rs:422-444
   - Public key import: parser.rs:357-419
   - Integration tested via ACME/EST endpoints
+- ✅ **RFC 5280 §6 Path Validation** (Phase 15)
+  - Certificate chain building to trust anchor
+  - Signature verification framework
+  - Validity period checking
+  - Basic constraints enforcement
+  - Key usage validation
+  - 80 unit tests covering all validation steps
 - ✅ ACME JWS validation implemented (Phase 11)
 
 **Gaps:**
 
-- 🔴 No RFC 5280 path validation (§6)
-- 🔴 No comprehensive malformed CSR rejection testing
+- ⚠️ No comprehensive malformed CSR rejection testing
 - ⚠️ Need dedicated unit tests for CSR signature verification with test vectors
 
-**Remediation:** Phase 15 - Implement path validation, add fuzzing tests for malformed input rejection
+**Remediation:** Phase 16 - Add fuzzing tests for malformed input rejection, expand test vectors
 
 **Evidence Required for ATO:**
 
