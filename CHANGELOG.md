@@ -648,7 +648,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - NIST 800-57: Key management best practices
 - Cryptographically secure secret splitting and reconstruction
 
-
 ## [0.3.0] - 2026-01-02
 
 ### Added
@@ -778,6 +777,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive test coverage (6 passing tests)
 
 #### NIST 800-53 Rev 5 Compliance
+
 - AU-2: Auditable events identification
 - AU-3: Content of audit records
 - AU-9: Protection of audit information
@@ -792,12 +792,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SI-11: Error handling and message sanitization
 
 #### RFC Compliance
+
 - RFC 5280: X.509 certificate and CRL format support
 - RFC 6960: OCSP response preparation
 - RFC 8555: ACME protocol database schema
 - RFC 7030: EST enrollment schema
 
 ### Changed
+
 - Upgraded to Rust 2024 edition
 - Set minimum Rust version to 1.92
 - Updated to latest dependencies:
@@ -809,6 +811,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - base64 0.22
 
 ### Technical Details
+
 - Workspace with 13 crates + 2 tools configured
 - All foundation crates compile without errors
 - Full test suite passing
@@ -819,6 +822,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-01-02
 
 ### Added
+
 - Initial repository setup
 - Project architecture documentation
 - Workspace structure with all crate stubs

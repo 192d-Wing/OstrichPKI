@@ -68,6 +68,7 @@ journalctl -u 'ostrich-*' --since "1 hour ago" -p err --no-pager | tail -10
 ```
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: CA-7 (Continuous Monitoring)
 - NIST 800-53: AU-6 (Audit Review)
 
@@ -128,6 +129,7 @@ ostrich-cli cert status --serial 0x1234567890ABCDEF
 | 9 | privilegeWithdrawn | Authorization revoked |
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: SC-17 (PKI Certificates)
 - RFC 5280 §5.3.1 (CRL Reason Codes)
 
@@ -183,6 +185,7 @@ curl -s http://crl.example.com/root.crl | openssl crl -inform DER -text -noout
 | Emergency | Immediate | 24 hours |
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: SC-17 (PKI Certificates)
 - RFC 5280 §5 (CRL Profile)
 
@@ -229,6 +232,7 @@ ostrich-cli hsm backup \
 ```
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: SC-12 (Cryptographic Key Management)
 - NIAP PP-CA: FCS_CKM.4 (Cryptographic Key Destruction)
 
@@ -286,6 +290,7 @@ This is the most severe incident. Follow the CA Key Compromise Procedure:
 2. **See**: [INCIDENT_RESPONSE.md](./INCIDENT_RESPONSE.md) for full procedure
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: IR-4 (Incident Handling)
 - NIST 800-53: IR-6 (Incident Reporting)
 
@@ -359,6 +364,7 @@ sudo systemctl start ostrich-acme ostrich-est ostrich-ocsp
 ```
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: CM-3 (Configuration Change Control)
 - NIST 800-53: SI-7 (Software, Firmware, and Information Integrity)
 

@@ -416,6 +416,7 @@ The following items are documented for future phases:
 ### Files Modified
 
 #### New Files (6)
+
 1. `crates/ostrich-common/src/grpc_client.rs` - gRPC client infrastructure
 2. `crates/ostrich-acme/src/ca_integration.rs` - ACME → CA integration
 3. `crates/ostrich-est/src/ca_integration.rs` - EST → CA integration
@@ -423,6 +424,7 @@ The following items are documented for future phases:
 5. `PHASE_12_SUMMARY.md` - This document
 
 #### Modified Files (9)
+
 1. `Cargo.toml` - Added tonic TLS features
 2. `crates/ostrich-common/Cargo.toml` - Added tokio, tonic
 3. `crates/ostrich-common/src/lib.rs` - Exported gRPC client

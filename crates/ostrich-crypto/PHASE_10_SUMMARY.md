@@ -164,11 +164,13 @@ All core cryptographic operations have been successfully implemented and tested.
 ## Architecture Highlights
 
 ### Thread Safety
+
 - On-demand session creation per operation
 - No shared session state
 - Safe for concurrent use across multiple threads
 
 ### Security Features
+
 - Private keys never leave the HSM
 - Non-extractable key support
 - Comprehensive audit logging
@@ -176,6 +178,7 @@ All core cryptographic operations have been successfully implemented and tested.
 - Session auto-logout
 
 ### Error Handling
+
 - Comprehensive error types
 - Security-relevant error classification
 - Graceful degradation
@@ -196,14 +199,17 @@ The implementation is compatible with any PKCS#11 v2.40 compliant HSM, including
 ## Performance Characteristics
 
 ### Key Generation
+
 - RSA-2048: ~100-500ms (HSM-dependent)
 - ECDSA P-256: ~50-200ms (HSM-dependent)
 
 ### Signing Operations
+
 - RSA-PSS 2048: ~10-50ms
 - ECDSA P-256: ~5-20ms
 
 ### Concurrent Operations
+
 - Tested with 10 concurrent key generations
 - Thread-safe session management
 - No lock contention
@@ -274,6 +280,7 @@ cargo test --test pkcs11_integration_test test_rsa2048_key_generation -- --test-
 ## Files Added/Modified
 
 ### New Files
+
 - `crates/ostrich-crypto/src/pkcs11/mod.rs` (1,123 lines)
 - `crates/ostrich-crypto/tests/pkcs11_integration_test.rs` (586 lines)
 - `crates/ostrich-crypto/tests/setup_softhsm.sh` (147 lines)
@@ -281,6 +288,7 @@ cargo test --test pkcs11_integration_test test_rsa2048_key_generation -- --test-
 - `crates/ostrich-crypto/PHASE_10_SUMMARY.md` (this file)
 
 ### Modified Files
+
 - `crates/ostrich-crypto/src/lib.rs` - Exported PKCS#11 module
 - `crates/ostrich-crypto/src/provider.rs` - Updated trait implementations
 - `crates/ostrich-crypto/Cargo.toml` - Added `cryptoki` dependency

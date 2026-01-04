@@ -20,6 +20,7 @@ This document defines incident response procedures for security events affecting
 **This is the most severe incident type. Immediate action required.**
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: IR-4 (Incident Handling)
 - NIST 800-53: IR-5 (Incident Monitoring)
 - NIST 800-53: IR-6 (Incident Reporting)
@@ -186,6 +187,7 @@ grep -E "(ostrich_pki|suspicious_ip)" /var/log/postgresql/*.log
 ```
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: IR-4 (Incident Handling)
 - NIST 800-53: AU-9 (Protection of Audit Information)
 
@@ -225,6 +227,7 @@ ostrich-cli cert issue \
 ```
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: SC-17 (PKI Certificates)
 - RFC 5280 §5.3.1 (Reason Codes)
 
@@ -356,6 +359,7 @@ Storage location: [secure location]
 ```
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: AU-9 (Protection of Audit Information)
 - NIST 800-53: IR-4 (Incident Handling)
 

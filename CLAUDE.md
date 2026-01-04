@@ -9,6 +9,7 @@ OstrichPKI is a Public Key Infrastructure (PKI) system written in Rust. The proj
 ## Development Commands
 
 ### Rust Standard Commands
+
 - `cargo build` - Build the project
 - `cargo build --release` - Build optimized release version
 - `cargo test` - Run all tests
@@ -54,12 +55,14 @@ Common Rust PKI/crypto crates:
 This system is designed for Authority to Operate (ATO) readiness. All code must incorporate NIST 800-53 Rev 5 controls. When implementing features, consider and document the following control families:
 
 ### Access Control (AC)
+
 - **AC-2**: Account management - All services must have account lifecycle management
 - **AC-3**: Access enforcement - Implement RBAC for all API endpoints
 - **AC-6**: Least privilege - Services run with minimum required permissions
 - **AC-17**: Remote access - mTLS required for all inter-service communication
 
 ### Audit and Accountability (AU)
+
 - **AU-2**: Auditable events - Log all security-relevant events (auth, cert issuance, revocation, key operations)
 - **AU-3**: Audit content - Include who, what, when, where, outcome in all audit records
 - **AU-9**: Protection of audit information - Audit logs are append-only with hash chain integrity
@@ -67,11 +70,13 @@ This system is designed for Authority to Operate (ATO) readiness. All code must 
 - **AU-12**: Audit generation - Every service must emit structured audit events to `ostrich-audit`
 
 ### Identification and Authentication (IA)
+
 - **IA-2**: User identification - Unique identifiers for all actors (users, services, ACME accounts)
 - **IA-5**: Authenticator management - Secure PIN/password handling in SCMS, credential rotation
 - **IA-7**: Cryptographic module authentication - PKCS#11/HSM authentication required for CA keys
 
 ### System and Communications Protection (SC)
+
 - **SC-8**: Transmission confidentiality - TLS 1.3 for external, mTLS for internal communication
 - **SC-12**: Cryptographic key management - HSM-protected CA keys, key lifecycle management in KRA
 - **SC-13**: Cryptographic protection - Use FIPS-validated algorithms (via ring or HSM)
@@ -79,16 +84,19 @@ This system is designed for Authority to Operate (ATO) readiness. All code must 
 - **SC-23**: Session authenticity - Nonce-based replay protection in ACME, session binding
 
 ### System and Information Integrity (SI)
+
 - **SI-7**: Software/firmware integrity - Signed releases, SBOM generation
 - **SI-10**: Information input validation - Validate all CSRs, API inputs, certificate requests
 - **SI-12**: Information handling - Zeroize sensitive data in memory after use
 
 ### Configuration Management (CM)
+
 - **CM-2**: Baseline configuration - Document all configuration parameters
 - **CM-3**: Configuration change control - Version control, audit config changes
 - **CM-6**: Configuration settings - Secure defaults, no hardcoded secrets
 
 ### Contingency Planning (CP)
+
 - **CP-9**: System backup - Database backup procedures, HSM key backup via KRA
 - **CP-10**: System recovery - Document recovery procedures for each service
 

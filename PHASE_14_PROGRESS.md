@@ -130,6 +130,7 @@ test result: FAILED. 7 passed; 3 failed; 5 ignored
 **Security Findings**:
 
 #### cargo audit Results:
+
 ```
 2 vulnerabilities found:
 1. RUSTSEC-2024-0421: idna - Punycode label vulnerability (upgrade to >=1.0.0)
@@ -149,6 +150,7 @@ test result: FAILED. 7 passed; 3 failed; 5 ignored
 3. Update `idna` dependency
 
 #### cargo deny Results:
+
 - ✅ License compliance configured
 - ✅ Allowed licenses: MIT, Apache-2.0, BSD-2/3-Clause, ISC, Zlib
 - ⚠️ Unmaintained dependency warnings (trust-dns)
@@ -163,10 +165,12 @@ test result: FAILED. 7 passed; 3 failed; 5 ignored
 ## Workspace Updates
 
 ### Modified Files:
+
 1. `Cargo.toml` - Added `tests` workspace member
 2. `tests/Cargo.toml` - New integration test package (v0.14.0)
 
 ### Compilation Status:
+
 ```bash
 $ cargo check -p ostrich-integration-tests
 Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s

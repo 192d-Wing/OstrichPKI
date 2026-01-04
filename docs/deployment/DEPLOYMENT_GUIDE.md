@@ -37,6 +37,7 @@ This document provides comprehensive deployment procedures for OstrichPKI in pro
 - **HSM**: PKCS#11 compatible (SoftHSM2 for development)
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: CM-2 (Baseline Configuration)
 - NIST 800-53: CM-6 (Configuration Settings)
 
@@ -165,6 +166,7 @@ AUDIT_LOG_PATH=/var/log/ostrich-pki/audit.log
 ```
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: CM-6 (Configuration Settings)
 - NIST 800-53: AC-17 (Remote Access) - mTLS configuration
 
@@ -237,6 +239,7 @@ ostrich-init database --migrate
 ```
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: CP-9 (System Backup)
 - NIST 800-53: SC-28 (Protection of Information at Rest)
 
@@ -267,6 +270,7 @@ See vendor-specific documentation for:
 - Google Cloud HSM
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: SC-12 (Cryptographic Key Management)
 - NIST 800-53: SC-13 (Cryptographic Protection)
 - NIAP PP-CA: FCS_CKM.1 (Cryptographic Key Generation)
@@ -403,6 +407,7 @@ scrape_configs:
 See [monitoring/alerts.yaml](../monitoring/alerts.yaml) for recommended alerting rules.
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: AU-6 (Audit Review, Analysis, and Reporting)
 - NIST 800-53: SI-4 (Information System Monitoring)
 
@@ -439,6 +444,7 @@ See [HSM_KEY_BACKUP.md](./HSM_KEY_BACKUP.md) for HSM-specific key backup procedu
    ```
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: CP-9 (System Backup)
 - NIST 800-53: CP-10 (System Recovery and Reconstitution)
 
@@ -464,6 +470,7 @@ sudo ufw deny 50051/tcp  # CA gRPC (internal only)
 - OCSP stapling: enabled
 
 ### COMPLIANCE MAPPING
+
 - NIST 800-53: SC-8 (Transmission Confidentiality and Integrity)
 - NIST 800-53: SC-23 (Session Authenticity)
 

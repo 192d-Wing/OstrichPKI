@@ -121,6 +121,7 @@ cargo test --test pkcs11_integration_test -- --test-threads=1 --nocapture
 The integration test suite covers:
 
 ### Key Generation (FIPS 186-5)
+
 - ✓ RSA-2048 key pair generation
 - ✓ RSA-3072 key pair generation
 - ✓ RSA-4096 key pair generation
@@ -129,6 +130,7 @@ The integration test suite covers:
 - ✓ ECDSA P-521 key pair generation
 
 ### Digital Signatures (FIPS 186-5)
+
 - ✓ RSA-PSS with SHA-256 signing and verification
 - ✓ RSA PKCS#1 v1.5 with SHA-256/384/512 signing and verification
 - ✓ ECDSA P-256 with SHA-256 signing and verification
@@ -138,20 +140,24 @@ The integration test suite covers:
 - ✓ Non-deterministic RSA-PSS signatures (random salt)
 
 ### Public Key Export
+
 - ✓ RSA public key export in DER format
 - ✓ EC public key export in DER format
 - ✓ Private keys remain non-exportable (NIST 800-53: SC-12)
 
 ### Key Wrapping (NIST SP 800-38F)
+
 - ⚠️ Key wrapping with AES-KW (requires KEK generation)
 - ⚠️ Key unwrapping and recovery (requires KEK generation)
 
 ### Concurrency and Thread Safety
+
 - ✓ Multiple concurrent key generation operations
 - ✓ Multiple keys coexisting in same HSM slot
 - ✓ Thread-safe session management
 
 ### Error Handling
+
 - ✓ Signature verification with wrong algorithm fails gracefully
 - ✓ Algorithm mismatch detection (RSA key with ECDSA algorithm)
 
@@ -252,6 +258,7 @@ Example HSM vendors:
 For CI/CD pipelines, add SoftHSM setup to your workflow:
 
 ### GitHub Actions
+
 ```yaml
 - name: Install SoftHSM
   run: |
@@ -268,6 +275,7 @@ For CI/CD pipelines, add SoftHSM setup to your workflow:
 ```
 
 ### GitLab CI
+
 ```yaml
 test:pkcs11:
   before_script:
