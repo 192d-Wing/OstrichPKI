@@ -34,7 +34,7 @@ variables:
   image: rust:1.92.0-trixie
   before_script:
     - rustup component add rustfmt clippy
-    - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+    - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev protobuf-compiler
 
 stages:
   - lint
