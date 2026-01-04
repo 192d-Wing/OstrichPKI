@@ -24,10 +24,13 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
+    middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use base64::{Engine, prelude::BASE64_STANDARD};
+use ostrich_common::auth::provider::AuthProvider;
+use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy};
 use ostrich_common::types::DistinguishedName;
 use ostrich_x509::{extensions::SubjectAltName, parser::RevocationReason};
 use serde::{Deserialize, Serialize};
@@ -36,31 +39,90 @@ use std::sync::Arc;
 /// REST API state
 pub struct ApiState {
     ca: Arc<CertificateAuthority>,
+    #[allow(dead_code)]
+    auth_provider: Arc<dyn AuthProvider>,
+    #[allow(dead_code)]
+    rbac_policy: Arc<RbacPolicy>,
 }
 
 impl ApiState {
     /// Create new API state
-    pub fn new(ca: Arc<CertificateAuthority>) -> Self {
-        Self { ca }
+    pub fn new(
+        ca: Arc<CertificateAuthority>,
+        auth_provider: Arc<dyn AuthProvider>,
+        rbac_policy: Arc<RbacPolicy>,
+    ) -> Self {
+        Self {
+            ca,
+            auth_provider,
+            rbac_policy,
+        }
     }
 }
 
 /// Create REST API router
-pub fn create_router(ca: Arc<CertificateAuthority>) -> Router {
-    let state = Arc::new(ApiState::new(ca));
+///
+/// # COMPLIANCE MAPPING
+/// - NIAP PP-CA: FIA_UAU.1 - Authentication required for all management endpoints
+/// - NIAP PP-CA: FMT_MTD.1 - Access control for TSF data management
+/// - NIST 800-53: AC-3 - Access enforcement via RBAC middleware
+pub fn create_router(
+    ca: Arc<CertificateAuthority>,
+    auth_provider: Arc<dyn AuthProvider>,
+    rbac_policy: Arc<RbacPolicy>,
+) -> Router {
+    let state = Arc::new(ApiState::new(
+        ca,
+        auth_provider.clone(),
+        rbac_policy.clone(),
+    ));
 
-    Router::new()
+    // Public endpoints (no authentication required)
+    let public_routes = Router::new()
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
         .route("/api/v1/ca/info", get(get_ca_info))
-        .route("/api/v1/certificates", post(issue_certificate))
-        .route("/api/v1/certificates/:id/revoke", post(revoke_certificate))
+        // Revocation status is publicly accessible per RFC 5280
         .route(
             "/api/v1/certificates/:id/status",
             get(check_revocation_status),
         )
+        .route("/api/v1/profiles", get(list_profiles));
+
+    // Protected endpoints requiring authentication and authorization
+    let protected_routes = Router::new()
+        .route("/api/v1/certificates", post(issue_certificate))
+        .route_layer(middleware::from_fn_with_state(
+            (
+                rbac_policy.clone(),
+                Permission::IssueCertificate,
+                None::<String>,
+            ),
+            AuthzLayer::authorize,
+        ))
+        .route("/api/v1/certificates/:id/revoke", post(revoke_certificate))
+        .route_layer(middleware::from_fn_with_state(
+            (
+                rbac_policy.clone(),
+                Permission::RevokeCertificate,
+                None::<String>,
+            ),
+            AuthzLayer::authorize,
+        ))
         .route("/api/v1/crl", post(generate_crl))
-        .route("/api/v1/profiles", get(list_profiles))
+        .route_layer(middleware::from_fn_with_state(
+            (rbac_policy.clone(), Permission::GenerateCrl, None::<String>),
+            AuthzLayer::authorize,
+        ))
+        .layer(middleware::from_fn_with_state(
+            auth_provider.clone(),
+            AuthLayer::authenticate,
+        ));
+
+    // Merge public and protected routes
+    Router::new()
+        .merge(public_routes)
+        .merge(protected_routes)
         .with_state(state)
 }
 
@@ -121,17 +183,22 @@ async fn get_ca_info(State(state): State<Arc<ApiState>>) -> Result<Json<CaInfoRe
 ///
 /// NIAP PP-CA: FMT_SMF.1.1 - Certificate issuance endpoint
 /// NIAP PP-CA: FDP_ACC.1.1 - Requires authorized requestor
+/// NIAP PP-CA: FIA_UAU.1 - Authenticated user required
+/// NIST 800-53: AC-3 - Access enforcement (checked by middleware)
+/// NIST 800-53: AU-2 - Auditable event (actor identity logged)
 async fn issue_certificate(
     State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
     Json(req): Json<IssueCertificateRequest>,
 ) -> Result<Json<IssueCertificateResponse>> {
     // Convert REST request to internal request
+    // Use authenticated user's identity as requestor (override client-provided value)
     let issuance_req = IssuanceRequest {
         profile_name: req.profile_name,
         subject: req.subject,
         subject_alt_names: req.subject_alt_names,
         public_key: req.public_key,
-        requestor: req.requestor,
+        requestor: user.username.clone(), // Use authenticated identity
         metadata: req.metadata,
         csr_der: None, // REST API doesn't currently accept CSR
     };
@@ -153,8 +220,12 @@ async fn issue_certificate(
 ///
 /// NIAP PP-CA: FMT_SMF.1.1 - Certificate revocation endpoint
 /// NIAP PP-CA: FDP_ACC.1.1 - Requires authorized requestor
+/// NIAP PP-CA: FIA_UAU.1 - Authenticated user required
+/// NIST 800-53: AC-3 - Access enforcement (checked by middleware)
+/// NIST 800-53: AU-2 - Auditable event (actor identity logged)
 async fn revoke_certificate(
     State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
     Path(id): Path<String>,
     Json(req): Json<RevokeCertificateRequest>,
 ) -> Result<Json<RevokeCertificateResponse>> {
@@ -163,10 +234,11 @@ async fn revoke_certificate(
         .map_err(|_| Error::InvalidRequest("Invalid certificate ID".to_string()))?;
 
     // Create revocation request
+    // Use authenticated user's identity as requestor (override client-provided value)
     let revocation_req = RevocationRequest {
         certificate_id,
         reason: req.reason,
-        requestor: req.requestor,
+        requestor: user.username.clone(), // Use authenticated identity
         justification: req.justification,
     };
 
@@ -206,7 +278,13 @@ async fn check_revocation_status(
 ///
 /// NIAP PP-CA: FMT_SMF.1.1 - CRL generation endpoint
 /// NIAP PP-CA: FDP_ACC.1.1 - Requires authorized administrator
-async fn generate_crl(State(state): State<Arc<ApiState>>) -> Result<Json<GenerateCrlResponse>> {
+/// NIAP PP-CA: FIA_UAU.1 - Authenticated user required
+/// NIST 800-53: AC-3 - Access enforcement (checked by middleware)
+/// NIST 800-53: AU-2 - Auditable event (actor identity logged)
+async fn generate_crl(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(_user): AuthUser,
+) -> Result<Json<GenerateCrlResponse>> {
     // Generate CRL
     let crl = state
         .ca
