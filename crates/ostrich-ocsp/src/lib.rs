@@ -37,12 +37,14 @@
 //! - **FIPS 186-5**: Digital Signature Standard (RSA, ECDSA, EdDSA)
 //! - **FIPS 204**: ML-DSA for post-quantum OCSP response signing
 
+pub mod cache;
 pub mod error;
 pub mod request;
 pub mod responder;
 pub mod response;
 pub mod rest;
 
+pub use cache::{CacheKey, OcspCache};
 pub use error::{Error, Result};
 pub use request::OcspRequest;
 pub use responder::OcspResponder;
