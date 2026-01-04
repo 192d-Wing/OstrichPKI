@@ -279,12 +279,16 @@ impl ResponseStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     #[test]
     fn test_response_status_values() {
         assert_eq!(ResponseStatus::Successful.as_u8(), 0);
         assert_eq!(ResponseStatus::MalformedRequest.as_u8(), 1);
         assert_eq!(ResponseStatus::InternalError.as_u8(), 2);
+        assert_eq!(ResponseStatus::TryLater.as_u8(), 3);
+        assert_eq!(ResponseStatus::SigRequired.as_u8(), 5);
+        assert_eq!(ResponseStatus::Unauthorized.as_u8(), 6);
     }
 
     #[test]
@@ -301,5 +305,193 @@ mod tests {
             revocation_reason: Some(1),
         };
         assert!(matches!(status, CertStatus::Revoked { .. }));
+    }
+
+    #[test]
+    fn test_cert_status_unknown() {
+        let status = CertStatus::Unknown;
+        assert!(matches!(status, CertStatus::Unknown));
+    }
+
+    #[test]
+    fn test_single_response_structure() {
+        let now = Utc::now();
+        let response = SingleResponse {
+            serial_number: vec![0x01, 0x02, 0x03],
+            cert_status: CertStatus::Good,
+            this_update: now,
+            next_update: Some(now + Duration::hours(1)),
+        };
+
+        assert_eq!(response.serial_number, vec![0x01, 0x02, 0x03]);
+        assert!(matches!(response.cert_status, CertStatus::Good));
+        assert!(response.next_update.is_some());
+    }
+
+    #[test]
+    fn test_single_response_without_next_update() {
+        let now = Utc::now();
+        let response = SingleResponse {
+            serial_number: vec![0x01],
+            cert_status: CertStatus::Unknown,
+            this_update: now,
+            next_update: None,
+        };
+
+        assert!(response.next_update.is_none());
+    }
+
+    #[test]
+    fn test_ocsp_response_successful() {
+        let now = Utc::now();
+        let single_response = SingleResponse {
+            serial_number: vec![0x01],
+            cert_status: CertStatus::Good,
+            this_update: now,
+            next_update: Some(now + Duration::hours(24)),
+        };
+
+        let response = OcspResponse::successful(
+            vec![single_response],
+            vec![0xAA, 0xBB, 0xCC], // signature
+            vec![0xDE, 0xAD],       // signing_cert
+            Some(vec![0x12, 0x34]), // nonce
+        );
+
+        assert_eq!(response.response_status, ResponseStatus::Successful);
+        assert_eq!(response.responses.len(), 1);
+        assert!(!response.signature.is_empty());
+        assert!(!response.signing_cert.is_empty());
+        assert!(response.nonce.is_some());
+    }
+
+    #[test]
+    fn test_ocsp_response_error() {
+        let response = OcspResponse::error(ResponseStatus::MalformedRequest);
+
+        assert_eq!(response.response_status, ResponseStatus::MalformedRequest);
+        assert!(response.responses.is_empty());
+        assert!(response.signature.is_empty());
+        assert!(response.signing_cert.is_empty());
+        assert!(response.nonce.is_none());
+    }
+
+    #[test]
+    fn test_ocsp_response_internal_error() {
+        let response = OcspResponse::error(ResponseStatus::InternalError);
+        assert_eq!(response.response_status, ResponseStatus::InternalError);
+    }
+
+    #[test]
+    fn test_ocsp_response_unauthorized() {
+        let response = OcspResponse::error(ResponseStatus::Unauthorized);
+        assert_eq!(response.response_status, ResponseStatus::Unauthorized);
+    }
+
+    #[test]
+    fn test_cert_status_revoked_reasons() {
+        // RFC 5280 §5.3.1 - Reason codes
+        let reasons = [
+            (0u8, "unspecified"),
+            (1u8, "keyCompromise"),
+            (2u8, "cACompromise"),
+            (3u8, "affiliationChanged"),
+            (4u8, "superseded"),
+            (5u8, "cessationOfOperation"),
+            (6u8, "certificateHold"),
+        ];
+
+        for (code, _name) in reasons {
+            let status = CertStatus::Revoked {
+                revocation_time: Utc::now(),
+                revocation_reason: Some(code),
+            };
+            if let CertStatus::Revoked { revocation_reason, .. } = status {
+                assert_eq!(revocation_reason, Some(code));
+            }
+        }
+    }
+
+    #[test]
+    fn test_cert_status_revoked_without_reason() {
+        let status = CertStatus::Revoked {
+            revocation_time: Utc::now(),
+            revocation_reason: None,
+        };
+        if let CertStatus::Revoked { revocation_reason, .. } = status {
+            assert!(revocation_reason.is_none());
+        }
+    }
+
+    #[test]
+    fn test_ocsp_response_serialization() {
+        let now = Utc::now();
+        let single_response = SingleResponse {
+            serial_number: vec![0x01],
+            cert_status: CertStatus::Good,
+            this_update: now,
+            next_update: None,
+        };
+
+        let response = OcspResponse::successful(
+            vec![single_response],
+            vec![0xAA],
+            vec![0xBB],
+            None,
+        );
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("Successful"));
+
+        let deserialized: OcspResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.response_status, ResponseStatus::Successful);
+    }
+
+    #[test]
+    fn test_response_status_equality() {
+        assert_eq!(ResponseStatus::Successful, ResponseStatus::Successful);
+        assert_ne!(ResponseStatus::Successful, ResponseStatus::InternalError);
+    }
+
+    #[test]
+    fn test_cert_status_equality() {
+        assert_eq!(CertStatus::Good, CertStatus::Good);
+        assert_eq!(CertStatus::Unknown, CertStatus::Unknown);
+        assert_ne!(CertStatus::Good, CertStatus::Unknown);
+    }
+
+    #[test]
+    fn test_multiple_responses() {
+        let now = Utc::now();
+        let responses = vec![
+            SingleResponse {
+                serial_number: vec![0x01],
+                cert_status: CertStatus::Good,
+                this_update: now,
+                next_update: None,
+            },
+            SingleResponse {
+                serial_number: vec![0x02],
+                cert_status: CertStatus::Revoked {
+                    revocation_time: now,
+                    revocation_reason: Some(1),
+                },
+                this_update: now,
+                next_update: None,
+            },
+            SingleResponse {
+                serial_number: vec![0x03],
+                cert_status: CertStatus::Unknown,
+                this_update: now,
+                next_update: None,
+            },
+        ];
+
+        let ocsp_response = OcspResponse::successful(responses, vec![], vec![], None);
+
+        assert_eq!(ocsp_response.responses.len(), 3);
+        assert!(matches!(ocsp_response.responses[0].cert_status, CertStatus::Good));
+        assert!(matches!(ocsp_response.responses[1].cert_status, CertStatus::Revoked { .. }));
+        assert!(matches!(ocsp_response.responses[2].cert_status, CertStatus::Unknown));
     }
 }

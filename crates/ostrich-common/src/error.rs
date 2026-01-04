@@ -142,3 +142,113 @@ impl Error {
         Error::Internal(msg.into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_display() {
+        let err = Error::Config("test config error".to_string());
+        assert_eq!(err.to_string(), "Configuration error: test config error");
+
+        let err = Error::Crypto("crypto failed".to_string());
+        assert_eq!(err.to_string(), "Cryptographic operation failed: crypto failed");
+    }
+
+    #[test]
+    fn test_error_constructors() {
+        let err = Error::config("config issue");
+        assert!(matches!(err, Error::Config(_)));
+
+        let err = Error::crypto("crypto issue");
+        assert!(matches!(err, Error::Crypto(_)));
+
+        let err = Error::validation("invalid input");
+        assert!(matches!(err, Error::Validation(_)));
+
+        let err = Error::internal("internal error");
+        assert!(matches!(err, Error::Internal(_)));
+    }
+
+    #[test]
+    fn test_is_security_relevant() {
+        // Security-relevant errors
+        assert!(Error::Crypto("test".to_string()).is_security_relevant());
+        assert!(Error::SignatureVerification.is_security_relevant());
+        assert!(Error::Validation("test".to_string()).is_security_relevant());
+        assert!(Error::InvalidInput("test".to_string()).is_security_relevant());
+        assert!(Error::Expired("test".to_string()).is_security_relevant());
+
+        // Non-security-relevant errors
+        assert!(!Error::Config("test".to_string()).is_security_relevant());
+        assert!(!Error::Encoding("test".to_string()).is_security_relevant());
+        assert!(!Error::Internal("test".to_string()).is_security_relevant());
+        assert!(!Error::ServiceUnavailable("test".to_string()).is_security_relevant());
+    }
+
+    #[test]
+    fn test_public_message() {
+        // Verify public messages don't leak sensitive details
+        assert_eq!(Error::Config("sensitive details".to_string()).public_message(), "Configuration error");
+        assert_eq!(Error::MissingConfig("DB_PASSWORD".to_string()).public_message(), "Configuration error");
+        assert_eq!(Error::Crypto("private key leak".to_string()).public_message(), "Cryptographic operation failed");
+        assert_eq!(Error::KeyGeneration("HSM error code 0x1234".to_string()).public_message(), "Cryptographic operation failed");
+        assert_eq!(Error::SignatureVerification.public_message(), "Signature verification failed");
+        assert_eq!(Error::InvalidPem("malformed at byte 42".to_string()).public_message(), "Invalid format");
+        assert_eq!(Error::InvalidDer("malformed at byte 42".to_string()).public_message(), "Invalid format");
+        assert_eq!(Error::Validation("SQL injection attempt".to_string()).public_message(), "Validation failed");
+        assert_eq!(Error::Internal("stack trace here".to_string()).public_message(), "Internal error");
+        assert_eq!(Error::GrpcError("connection refused".to_string()).public_message(), "Communication error");
+    }
+
+    #[test]
+    fn test_error_variants() {
+        // Test that all error variants can be created
+        let errors: Vec<Error> = vec![
+            Error::Config("test".to_string()),
+            Error::MissingConfig("test".to_string()),
+            Error::Crypto("test".to_string()),
+            Error::InvalidAlgorithm("test".to_string()),
+            Error::KeyGeneration("test".to_string()),
+            Error::SignatureVerification,
+            Error::Encoding("test".to_string()),
+            Error::Decoding("test".to_string()),
+            Error::InvalidPem("test".to_string()),
+            Error::InvalidDer("test".to_string()),
+            Error::Validation("test".to_string()),
+            Error::InvalidInput("test".to_string()),
+            Error::InvalidTimestamp("test".to_string()),
+            Error::Expired("test".to_string()),
+            Error::Serialization("test".to_string()),
+            Error::Deserialization("test".to_string()),
+            Error::Internal("test".to_string()),
+            Error::ServiceUnavailable("test".to_string()),
+            Error::GrpcError("test".to_string()),
+            Error::InvalidConfiguration("test".to_string()),
+        ];
+
+        for err in errors {
+            // All errors should have a non-empty display message
+            assert!(!err.to_string().is_empty());
+            // All errors should have a public message
+            assert!(!err.public_message().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_io_error_conversion() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err: Error = io_err.into();
+        assert!(matches!(err, Error::Io(_)));
+        assert_eq!(err.public_message(), "I/O error");
+    }
+
+    #[test]
+    fn test_anyhow_error_conversion() {
+        let anyhow_err = anyhow::anyhow!("some error");
+        let err: Error = anyhow_err.into();
+        assert!(matches!(err, Error::Other(_)));
+        assert_eq!(err.public_message(), "Operation failed");
+    }
+}

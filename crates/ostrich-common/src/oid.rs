@@ -119,3 +119,92 @@ pub fn oid_name(oid: &ObjectIdentifier) -> &'static str {
         _ => "Unknown",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rsa_oids() {
+        assert_eq!(oid_name(&RSA_ENCRYPTION), "RSA Encryption");
+        assert_eq!(oid_name(&SHA256_WITH_RSA_ENCRYPTION), "SHA-256 with RSA");
+        assert_eq!(oid_name(&SHA384_WITH_RSA_ENCRYPTION), "SHA-384 with RSA");
+        assert_eq!(oid_name(&SHA512_WITH_RSA_ENCRYPTION), "SHA-512 with RSA");
+    }
+
+    #[test]
+    fn test_ecdsa_oids() {
+        assert_eq!(oid_name(&EC_PUBLIC_KEY), "EC Public Key");
+        assert_eq!(oid_name(&ECDSA_WITH_SHA256), "ECDSA with SHA-256");
+        assert_eq!(oid_name(&ECDSA_WITH_SHA384), "ECDSA with SHA-384");
+        assert_eq!(oid_name(&ECDSA_WITH_SHA512), "ECDSA with SHA-512");
+    }
+
+    #[test]
+    fn test_eddsa_oids() {
+        assert_eq!(oid_name(&ED25519), "Ed25519");
+        assert_eq!(oid_name(&ED448), "Ed448");
+    }
+
+    #[test]
+    fn test_hash_oids() {
+        assert_eq!(oid_name(&SHA256), "SHA-256");
+        assert_eq!(oid_name(&SHA384), "SHA-384");
+        assert_eq!(oid_name(&SHA512), "SHA-512");
+    }
+
+    #[test]
+    fn test_extension_oids() {
+        assert_eq!(oid_name(&SUBJECT_KEY_IDENTIFIER), "Subject Key Identifier");
+        assert_eq!(oid_name(&KEY_USAGE), "Key Usage");
+        assert_eq!(oid_name(&SUBJECT_ALT_NAME), "Subject Alternative Name");
+        assert_eq!(oid_name(&BASIC_CONSTRAINTS), "Basic Constraints");
+        assert_eq!(oid_name(&AUTHORITY_KEY_IDENTIFIER), "Authority Key Identifier");
+        assert_eq!(oid_name(&EXTENDED_KEY_USAGE), "Extended Key Usage");
+    }
+
+    #[test]
+    fn test_pqc_oids() {
+        // ML-DSA (FIPS 204)
+        assert_eq!(oid_name(&ML_DSA_44), "ML-DSA-44");
+        assert_eq!(oid_name(&ML_DSA_65), "ML-DSA-65");
+        assert_eq!(oid_name(&ML_DSA_87), "ML-DSA-87");
+
+        // ML-KEM (FIPS 203)
+        assert_eq!(oid_name(&ML_KEM_512), "ML-KEM-512");
+        assert_eq!(oid_name(&ML_KEM_768), "ML-KEM-768");
+        assert_eq!(oid_name(&ML_KEM_1024), "ML-KEM-1024");
+    }
+
+    #[test]
+    fn test_unknown_oid() {
+        let unknown = ObjectIdentifier::new_unwrap("1.2.3.4.5.6.7.8.9");
+        assert_eq!(oid_name(&unknown), "Unknown");
+    }
+
+    #[test]
+    fn test_eku_oids() {
+        // Extended Key Usage OIDs should exist
+        assert_eq!(EKU_SERVER_AUTH.to_string(), "1.3.6.1.5.5.7.3.1");
+        assert_eq!(EKU_CLIENT_AUTH.to_string(), "1.3.6.1.5.5.7.3.2");
+        assert_eq!(EKU_CODE_SIGNING.to_string(), "1.3.6.1.5.5.7.3.3");
+        assert_eq!(EKU_EMAIL_PROTECTION.to_string(), "1.3.6.1.5.5.7.3.4");
+        assert_eq!(EKU_TIME_STAMPING.to_string(), "1.3.6.1.5.5.7.3.8");
+        assert_eq!(EKU_OCSP_SIGNING.to_string(), "1.3.6.1.5.5.7.3.9");
+    }
+
+    #[test]
+    fn test_dn_attribute_oids() {
+        assert_eq!(COMMON_NAME.to_string(), "2.5.4.3");
+        assert_eq!(COUNTRY_NAME.to_string(), "2.5.4.6");
+        assert_eq!(ORGANIZATION_NAME.to_string(), "2.5.4.10");
+    }
+
+    #[test]
+    fn test_aia_oids() {
+        // Authority Information Access
+        assert_eq!(AUTHORITY_INFO_ACCESS.to_string(), "1.3.6.1.5.5.7.1.1");
+        assert_eq!(AD_OCSP.to_string(), "1.3.6.1.5.5.7.48.1");
+        assert_eq!(AD_CA_ISSUERS.to_string(), "1.3.6.1.5.5.7.48.2");
+    }
+}

@@ -171,3 +171,97 @@ impl HashAlgorithm {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hash_algorithm_oid() {
+        assert_eq!(HashAlgorithm::Sha256.oid(), "2.16.840.1.101.3.4.2.1");
+        assert_eq!(HashAlgorithm::Sha384.oid(), "2.16.840.1.101.3.4.2.2");
+        assert_eq!(HashAlgorithm::Sha512.oid(), "2.16.840.1.101.3.4.2.3");
+    }
+
+    #[test]
+    fn test_ocsp_request_new() {
+        let serial_number = vec![0x01, 0x02, 0x03];
+        let issuer_name = b"CN=Test CA";
+        let issuer_key = b"test_public_key_bytes";
+
+        let req = OcspRequest::new(serial_number.clone(), issuer_name, issuer_key);
+
+        assert_eq!(req.serial_number, serial_number);
+        assert_eq!(req.hash_algorithm, HashAlgorithm::Sha256);
+        assert!(req.nonce.is_none());
+
+        // Verify hashes are SHA-256 (32 bytes)
+        assert_eq!(req.issuer_name_hash.len(), 32);
+        assert_eq!(req.issuer_key_hash.len(), 32);
+    }
+
+    #[test]
+    fn test_ocsp_request_with_nonce() {
+        let serial_number = vec![0x01];
+        let nonce = vec![0xDE, 0xAD, 0xBE, 0xEF];
+
+        let req = OcspRequest::new(serial_number, b"issuer", b"key").with_nonce(nonce.clone());
+
+        assert_eq!(req.nonce, Some(nonce));
+    }
+
+    #[test]
+    fn test_ocsp_request_different_issuers_different_hashes() {
+        let serial_number = vec![0x01];
+
+        let req1 = OcspRequest::new(serial_number.clone(), b"Issuer A", b"Key A");
+        let req2 = OcspRequest::new(serial_number.clone(), b"Issuer B", b"Key B");
+
+        // Different issuers should produce different hashes
+        assert_ne!(req1.issuer_name_hash, req2.issuer_name_hash);
+        assert_ne!(req1.issuer_key_hash, req2.issuer_key_hash);
+    }
+
+    #[test]
+    fn test_ocsp_request_same_issuer_same_hashes() {
+        let serial_number1 = vec![0x01];
+        let serial_number2 = vec![0x02];
+        let issuer_name = b"CN=Same Issuer";
+        let issuer_key = b"same_key";
+
+        let req1 = OcspRequest::new(serial_number1, issuer_name, issuer_key);
+        let req2 = OcspRequest::new(serial_number2, issuer_name, issuer_key);
+
+        // Same issuer should produce same hashes
+        assert_eq!(req1.issuer_name_hash, req2.issuer_name_hash);
+        assert_eq!(req1.issuer_key_hash, req2.issuer_key_hash);
+    }
+
+    #[test]
+    fn test_hash_algorithm_equality() {
+        assert_eq!(HashAlgorithm::Sha256, HashAlgorithm::Sha256);
+        assert_ne!(HashAlgorithm::Sha256, HashAlgorithm::Sha384);
+        assert_ne!(HashAlgorithm::Sha384, HashAlgorithm::Sha512);
+    }
+
+    #[test]
+    fn test_ocsp_request_clone() {
+        let req = OcspRequest::new(vec![0x01, 0x02], b"issuer", b"key").with_nonce(vec![0xAA, 0xBB]);
+
+        let cloned = req.clone();
+
+        assert_eq!(req.serial_number, cloned.serial_number);
+        assert_eq!(req.issuer_name_hash, cloned.issuer_name_hash);
+        assert_eq!(req.issuer_key_hash, cloned.issuer_key_hash);
+        assert_eq!(req.hash_algorithm, cloned.hash_algorithm);
+        assert_eq!(req.nonce, cloned.nonce);
+    }
+
+    #[test]
+    fn test_from_der_malformed() {
+        // Invalid DER data should return error
+        let invalid_der = vec![0x00, 0x01, 0x02];
+        let result = OcspRequest::from_der(&invalid_der);
+        assert!(result.is_err());
+    }
+}
