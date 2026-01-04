@@ -1,6 +1,6 @@
 # OstrichPKI Development Roadmap
 
-> **Last Updated**: January 2026 | **Current Version**: v0.13.0 | **Status**: Active Development
+> **Last Updated**: January 2026 | **Current Version**: v0.14.0 | **Status**: Active Development
 
 ---
 
@@ -28,15 +28,15 @@
 
 **OstrichPKI** is a comprehensive Public Key Infrastructure system written in Rust, designed for **ATO (Authority to Operate) readiness** with full **NIST 800-53 Rev 5** and **NIAP PP-CA v2.1** compliance.
 
-### Current State (v0.13.0)
+### Current State (v0.14.0)
 
 | Metric | Status |
 |--------|--------|
-| **Codebase** | ~14,000 lines of Rust across 15 crates |
+| **Codebase** | ~15,000 lines of Rust across 15 crates |
 | **Services** | 7 microservices (CA, OCSP, KRA, ACME, EST, SCMS, Audit) |
 | **Standards** | RFC 5280, 6960, 7030, 8555 compliance |
-| **Security** | NIST 800-53 controls (AU-2, AU-3, AU-9, SC-8, SC-12, SC-13, IA-2, IA-5, IA-7, SI-17) |
-| **Overall Progress** | **100%** complete (Phase 13 deferred) |
+| **Security** | NIST 800-53 controls (AU-2, AU-3, AU-9, SC-8, SC-12, SC-13, IA-2, IA-5, IA-7, SI-17, FMT_MSA.1, FMT_SMF.1) |
+| **Overall Progress** | **100%** complete (Phase 13 Track 1 complete, remaining tracks deferred) |
 
 ### Critical Gaps
 
@@ -46,7 +46,7 @@
 | ~~**HSM Integration**~~ | ✅ **COMPLETE** (PKCS#11 + Software fallback) | - |
 | ~~**Protocol Validation**~~ | ✅ **COMPLETE** (ACME, EST, mTLS) | - |
 | ~~**Service Integration**~~ | ✅ **COMPLETE** (gRPC with circuit breaker) | - |
-| **Testing & Hardening** | ✅ **COMPLETE** (274 unit tests) | - |
+| **Testing & Hardening** | ✅ **COMPLETE** (292 unit tests) | - |
 | **NIAP Compliance** | ✅ **COMPLETE** (762+ SFR annotations) | - |
 
 ### Estimated Completion
@@ -55,8 +55,8 @@
 
 - All 6 compliance documents complete
 - 762+ NIAP SFR annotations across 57 source files
-- 274 passing unit tests
-- Phase 13 (Advanced Features) deferred as optional enhancements
+- 292 passing unit tests
+- Phase 13 Track 1 (Configuration Management) complete; remaining tracks deferred as optional enhancements
 
 ---
 
@@ -76,7 +76,7 @@
 | **10** | **PKCS#11 HSM** | **✅ COMPLETE** | **100%** | - | ✅ 3 weeks |
 | **11** | **Protocol Validation** | **✅ COMPLETE** | **100%** | - | ✅ 1 week |
 | **12** | **Service Integration** | **✅ COMPLETE** | **100%** | - | ✅ 2 weeks |
-| **13** | **Advanced Features** | ⏸️ DEFERRED | 0% | ⚪ LOW | 2-3 weeks |
+| **13** | **Advanced Features** | **🟡 PARTIAL** | **25%** | ⚪ LOW | 2-3 weeks |
 | **14** | **Testing & Hardening** | **✅ COMPLETE** | **100%** | - | ✅ 1 week |
 | **15** | **NIAP Compliance** | **✅ COMPLETE** | **100%** | - | ✅ Done |
 
@@ -124,12 +124,40 @@
 
 **Database Schema**: Complete migrations for PostgreSQL with proper indexes, foreign keys, and JSONB support
 
-**Deferred to Future Phases**:
+### Phase 13 Track 1: Configuration Management ✅ (v0.14.0)
 
-- Phase 8: Certificate signing, CSR validation, PKCS#7 encoding
-- Phase 10: PKCS#11 operations for real HSM integration
-- Phase 11: JWS validation, mTLS client authentication, ACME challenge validation
-- Phase 12: Service-to-service integration (CA ↔ ACME/EST/SCMS/KRA)
+**Completion**: January 2026 | **Effort**: 1 week
+
+**Achievements**:
+
+- ✅ **JSON Schema validation** using `jsonschema` crate (Draft 2020-12)
+- ✅ **RFC-compliant test constants** module (RFC 5737, RFC 3849, RFC 2606)
+- ✅ **Enhanced configuration module** with:
+  - JSON Schema validation with detailed error messages
+  - Environment variable expansion (`$ENV{VAR}` syntax)
+  - IP literal detection and rejection (security hardening)
+  - Helper methods for listen addresses and database URLs
+  - 14 comprehensive unit tests
+- ✅ **Example configurations** (development.json, production.json)
+- ✅ **ACME service integration** - replaced 6 hardcoded URLs with dynamic configuration
+- ✅ **Test code cleanup** - updated 4 test files to use RFC-compliant IP addresses
+- ✅ **292 library tests passing** (up from 274)
+- ✅ **NIAP compliance**: FMT_MSA.1 (secure defaults), FMT_SMF.1 (configuration management), FTP_ITC.1 (trusted channel config)
+
+**Files**:
+
+- [config/schema/ostrich-config.schema.json](config/schema/ostrich-config.schema.json) - JSON Schema Draft 2020-12
+- [crates/ostrich-common/src/test_constants.rs](crates/ostrich-common/src/test_constants.rs) - RFC test addresses
+- [crates/ostrich-common/src/config.rs](crates/ostrich-common/src/config.rs) - Enhanced configuration (570 lines)
+- [config/development.json](config/development.json), [config/production.json](config/production.json) - Example configs
+- [crates/ostrich-acme/src/rest.rs](crates/ostrich-acme/src/rest.rs) - Dynamic URL configuration
+
+**Remaining Phase 13 Tracks** (deferred as optional):
+
+- Phase 13 Track 2: OCSP response caching
+- Phase 13 Track 3: EST server-side key generation
+- Phase 13 Track 4: Post-quantum OID updates
+- Phase 13 Track 5: Audit hash chain verification
 
 ---
 
@@ -996,9 +1024,9 @@ Comprehensive testing, security hardening, and operational readiness before prod
 - **Health check tests** for all services (ACME, CA, EST, OCSP)
 - **k6 load tests** for ACME (100 TPS), OCSP (1000 TPS), CA services
 - **Penetration testing guide** with 50+ test cases ([docs/security/PENETRATION_TESTING.md](docs/security/PENETRATION_TESTING.md))
-- **Unit test coverage: 274 tests passing** across all crates:
+- **Unit test coverage: 292 tests passing** across all crates:
   - ostrich-db: 49 tests (models: certificate, audit, acme, est, kra, scms)
-  - ostrich-common: 74 tests (error, OID, types, encoding, random, time, auth lockout, session management)
+  - ostrich-common: 88 tests (error, OID, types, encoding, random, time, auth lockout, session management, config validation)
   - ostrich-ocsp: 28 tests (request, response, error, responder)
   - ostrich-crypto: 15 tests (algorithm, key, provider)
   - ostrich-x509: 14 tests (builder, CRL, extensions, profiles)
@@ -1713,7 +1741,7 @@ OstrichPKI has achieved **100% completion** of all planned phases (Phases 1-15, 
 **Compliance Achievements**:
 
 - ✅ **762+ NIAP SFR annotations** across 57 source files
-- ✅ **274 passing unit tests** with comprehensive coverage
+- ✅ **292 passing unit tests** with comprehensive coverage
 - ✅ **6 compliance documents** (Security Target, SFR Matrix, Gap Analysis, Admin Guide, Installation Guide, Test Evidence)
 - ✅ All 10 crates annotated with NIAP PP-CA v2.1 references
 
