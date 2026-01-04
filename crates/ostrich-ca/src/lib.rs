@@ -27,6 +27,7 @@
 //! - SC-13: Cryptographic protection
 //! - AU-2/AU-3: Audit events and content
 
+pub mod approval;
 pub mod ca;
 pub mod error;
 pub mod grpc;
@@ -34,6 +35,7 @@ pub mod issuance;
 pub mod rest;
 pub mod revocation;
 
+pub use approval::{ApprovalEngine, ApprovalRequest, ApprovalStatus, RequestType};
 pub use ca::CertificateAuthority;
 pub use error::{Error, Result};
 pub use grpc::CaGrpcService;

@@ -464,6 +464,26 @@ impl IntoResponse for Error {
                 "CA not initialized".to_string(),
             ),
             Error::KeyNotFound(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            Error::SelfApprovalProhibited => (
+                StatusCode::FORBIDDEN,
+                "Self-approval prohibited: requestor cannot approve their own request".to_string(),
+            ),
+            Error::InsufficientRole { required } => (
+                StatusCode::FORBIDDEN,
+                format!("Insufficient role: {} role required", required),
+            ),
+            Error::InvalidApprovalState { current, expected } => (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid approval state: current={}, expected={}", current, expected),
+            ),
+            Error::ApprovalRequestExpired { expired_at } => (
+                StatusCode::GONE,
+                format!("Approval request expired at {}", expired_at),
+            ),
+            Error::ApprovalRequestNotFound(id) => (
+                StatusCode::NOT_FOUND,
+                format!("Approval request not found: {}", id),
+            ),
         };
 
         let body = Json(serde_json::json!({

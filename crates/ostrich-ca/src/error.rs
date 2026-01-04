@@ -33,6 +33,28 @@ pub enum Error {
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
 
+    /// Self-approval prohibited (FDP_SEPP.1 - Segregation of Duties)
+    #[error("Self-approval prohibited: requestor cannot approve their own request")]
+    SelfApprovalProhibited,
+
+    /// Insufficient role for operation
+    #[error("Insufficient role: {required} role required")]
+    InsufficientRole { required: String },
+
+    /// Invalid approval state transition
+    #[error("Invalid approval state: current={current}, expected={expected}")]
+    InvalidApprovalState { current: String, expected: String },
+
+    /// Approval request expired
+    #[error("Approval request expired at {expired_at}")]
+    ApprovalRequestExpired {
+        expired_at: chrono::DateTime<chrono::Utc>,
+    },
+
+    /// Approval request not found
+    #[error("Approval request not found: {0}")]
+    ApprovalRequestNotFound(uuid::Uuid),
+
     /// Database error
     #[error("Database error: {0}")]
     Database(#[from] ostrich_db::Error),
