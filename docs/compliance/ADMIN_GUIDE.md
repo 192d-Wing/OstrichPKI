@@ -899,8 +899,293 @@ ostrich-admin backup create
 
 ---
 
+## Appendix B: NIAP Compliance Procedures
+
+This appendix documents specific procedures required for NIAP PP-CA v2.1 compliance.
+
+### B.1 Role Separation Enforcement (FMT_SMR.2)
+
+**Requirement:** Security roles must be separated to prevent conflicts of interest.
+
+**Prohibited Role Combinations:**
+
+| Role 1 | Role 2 | Reason |
+|--------|--------|--------|
+| Administrator | Operations Staff | Configuration vs. operations separation |
+| Auditor | Operations Staff | Audit independence |
+| AOR | Operations Staff | Policy vs. execution separation |
+
+**Verification Procedure:**
+
+```bash
+# Check for role conflicts
+ostrich-admin user audit-roles
+
+# Output shows any users with conflicting roles
+# Users with Role Conflicts:
+# - jsmith: administrator + operations (CONFLICT)
+```
+
+**Remediation:**
+
+```bash
+# Remove conflicting role
+ostrich-admin user remove-role --user jsmith --role operations
+```
+
+### B.2 Security Function Authorization (FMT_MOF.1)
+
+**Requirement:** All security functions must be protected by authorization checks.
+
+**Security Function Matrix:**
+
+| Function | Endpoint | Required Role | Audit Event |
+|----------|----------|---------------|-------------|
+| Issue Certificate | `POST /api/ca/certificates` | Operations Staff | CertificateIssued |
+| Revoke Certificate | `POST /api/ca/revoke` | Operations Staff | CertificateRevoked |
+| Generate CRL | `POST /api/ca/crl/generate` | Operations Staff | CrlGenerated |
+| View Audit Logs | `GET /api/audit/events` | Auditor, Admin | AuditAccessed |
+| Change Configuration | `PUT /api/admin/config` | Administrator | ConfigurationChanged |
+| Manage Users | `POST /api/admin/users` | Administrator | UserCreated |
+| Backup CA Key | `POST /api/admin/key/backup` | Administrator | KeyBackupInitiated |
+| Modify Policy | `PUT /api/admin/policy` | AOR | PolicyModified |
+
+**Verification Procedure:**
+
+```bash
+# Test authorization enforcement
+ostrich-admin security verify-authorization
+
+# Expected output:
+# Authorization Matrix Verification
+# ================================
+# Issue Certificate: PROTECTED (Operations Staff only)
+# Revoke Certificate: PROTECTED (Operations Staff only)
+# View Audit Logs: PROTECTED (Auditor, Administrator only)
+# ...
+# All security functions properly protected: YES
+```
+
+### B.3 Self-Test Procedures (FPT_TST_EXT.1)
+
+**Requirement:** The TOE must perform self-tests at startup and on administrator demand.
+
+**Startup Self-Tests:**
+
+1. Cryptographic KAT (Known Answer Tests)
+2. DRBG health tests
+3. HSM connectivity
+4. Database connectivity
+5. Time synchronization verification
+
+**On-Demand Self-Tests:**
+
+```bash
+# Run complete self-test suite
+ostrich-admin self-test run --full
+
+# Output:
+# ============================================
+# OstrichPKI Self-Test Results
+# Test Time: 2026-01-04T15:30:00Z
+# ============================================
+#
+# Cryptographic Tests:
+#   RSA-2048 Sign/Verify KAT: PASS (3ms)
+#   RSA-3072 Sign/Verify KAT: PASS (5ms)
+#   ECDSA P-256 Sign/Verify KAT: PASS (2ms)
+#   ECDSA P-384 Sign/Verify KAT: PASS (2ms)
+#   SHA-256 KAT: PASS (1ms)
+#   SHA-384 KAT: PASS (1ms)
+#   AES-256-GCM KAT: PASS (1ms)
+#   HMAC-SHA-256 KAT: PASS (1ms)
+#
+# DRBG Health Tests:
+#   Startup Health Test: PASS
+#   Continuous Health Test: PASS
+#   Entropy Source Validation: PASS
+#
+# System Tests:
+#   HSM Connectivity: PASS (session established)
+#   Database Connectivity: PASS (query successful)
+#   Time Synchronization: PASS (drift: 0.2s)
+#   Audit System: PASS (write successful)
+#
+# ============================================
+# Overall Result: PASS
+# All 15 tests passed
+# ============================================
+```
+
+**Self-Test Failure Handling:**
+
+If any self-test fails:
+
+1. Service enters maintenance mode
+2. All CA operations are blocked
+3. Alert sent to administrators
+4. Audit event recorded (if possible)
+
+```bash
+# Check self-test status after failure
+ostrich-admin self-test status
+
+# If failed:
+# Self-Test Status: FAILED
+# Failed Tests: ECDSA P-256 KAT
+# Service Mode: MAINTENANCE
+# CA Operations: BLOCKED
+```
+
+### B.4 Audit Overflow Handling (FAU_STG.4)
+
+**Requirement:** The TOE must prevent auditable events when audit storage is full.
+
+**Storage Monitoring:**
+
+```bash
+# Check audit storage status
+ostrich-admin audit storage
+
+# Output:
+# Audit Storage Status
+# ====================
+# Total Capacity: 100 GB
+# Used: 45.2 GB (45.2%)
+# Available: 54.8 GB
+# Alert Threshold: 80%
+# Status: NORMAL
+```
+
+**Alert Thresholds:**
+
+| Threshold | Action |
+|-----------|--------|
+| 80% | Warning alert to administrators |
+| 90% | Critical alert, prepare archival |
+| 95% | Emergency alert, archive required |
+| 100% | Operations blocked, audit preserved |
+
+**When Storage Reaches 100%:**
+
+1. All CA operations are blocked
+2. Error returned: "Audit storage exhausted"
+3. Only audit archival operations permitted
+4. Administrator must archive old logs
+
+**Archival Procedure:**
+
+```bash
+# Archive old audit logs to external storage
+ostrich-admin audit archive \
+  --before "2025-12-31T23:59:59Z" \
+  --destination /archive/audit/2025/ \
+  --verify
+
+# After archival, verify storage freed
+ostrich-admin audit storage
+
+# Resume operations (automatic when storage < 95%)
+```
+
+### B.5 Session Timeout Configuration (FTA_SSL.1)
+
+**Requirement:** Sessions must be terminated after configurable inactivity period.
+
+**Default Configuration:**
+
+| Setting | Default | Range |
+|---------|---------|-------|
+| Session Timeout | 15 minutes | 5-60 minutes |
+| Maximum Session Duration | 8 hours | 1-24 hours |
+| Session Lock Timeout | 5 minutes | 1-30 minutes |
+
+**Configuration:**
+
+```yaml
+# /etc/ostrich-pki/config.yaml
+session:
+  idle_timeout_minutes: 15
+  max_duration_hours: 8
+  lock_timeout_minutes: 5
+  require_reauthentication: true
+```
+
+**Session Management Commands:**
+
+```bash
+# View active sessions
+ostrich-admin session list
+
+# Terminate specific session
+ostrich-admin session terminate --session-id <uuid>
+
+# Terminate all sessions for user
+ostrich-admin session terminate-user --username jsmith
+
+# View session configuration
+ostrich-admin session config
+```
+
+---
+
+## Appendix C: Operational Environment Checklist
+
+Complete this checklist before placing OstrichPKI into production:
+
+### C.1 Hardware Security
+
+- [ ] HSM is FIPS 140-2 Level 2 or higher validated
+- [ ] HSM is physically secured in locked cabinet
+- [ ] Server is in access-controlled facility
+- [ ] Tamper-evident seals applied (if required)
+
+### C.2 Network Security
+
+- [ ] Firewall configured per Section 11.2 (SECURITY_TARGET.md)
+- [ ] Admin interfaces on internal network only
+- [ ] TLS 1.3 enforced for all connections
+- [ ] Network monitoring enabled
+
+### C.3 Time Synchronization
+
+- [ ] NTP configured with at least 2 servers
+- [ ] NTP servers authenticated (if available)
+- [ ] Time drift alert configured (<5 seconds)
+
+### C.4 Backup Configuration
+
+- [ ] Database backup schedule configured
+- [ ] Backup encryption enabled
+- [ ] Backup verification tested
+- [ ] Offsite backup storage configured
+
+### C.5 Monitoring and Alerting
+
+- [ ] Audit storage alerts configured
+- [ ] Self-test failure alerts configured
+- [ ] Authentication failure alerts configured
+- [ ] HSM connectivity alerts configured
+
+### C.6 Access Control
+
+- [ ] Initial administrator created
+- [ ] Role separation verified
+- [ ] No conflicting role assignments
+- [ ] mTLS certificates deployed
+
+### C.7 Documentation
+
+- [ ] Procedures documented for all roles
+- [ ] Emergency contacts documented
+- [ ] Incident response plan available
+- [ ] Backup recovery tested
+
+---
+
 **Document History:**
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | January 2026 | OstrichPKI Team | Initial release |
+| 1.1 | January 2026 | OstrichPKI Team | Added NIAP compliance appendix |
