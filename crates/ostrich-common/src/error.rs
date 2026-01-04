@@ -153,7 +153,10 @@ mod tests {
         assert_eq!(err.to_string(), "Configuration error: test config error");
 
         let err = Error::Crypto("crypto failed".to_string());
-        assert_eq!(err.to_string(), "Cryptographic operation failed: crypto failed");
+        assert_eq!(
+            err.to_string(),
+            "Cryptographic operation failed: crypto failed"
+        );
     }
 
     #[test]
@@ -190,16 +193,46 @@ mod tests {
     #[test]
     fn test_public_message() {
         // Verify public messages don't leak sensitive details
-        assert_eq!(Error::Config("sensitive details".to_string()).public_message(), "Configuration error");
-        assert_eq!(Error::MissingConfig("DB_PASSWORD".to_string()).public_message(), "Configuration error");
-        assert_eq!(Error::Crypto("private key leak".to_string()).public_message(), "Cryptographic operation failed");
-        assert_eq!(Error::KeyGeneration("HSM error code 0x1234".to_string()).public_message(), "Cryptographic operation failed");
-        assert_eq!(Error::SignatureVerification.public_message(), "Signature verification failed");
-        assert_eq!(Error::InvalidPem("malformed at byte 42".to_string()).public_message(), "Invalid format");
-        assert_eq!(Error::InvalidDer("malformed at byte 42".to_string()).public_message(), "Invalid format");
-        assert_eq!(Error::Validation("SQL injection attempt".to_string()).public_message(), "Validation failed");
-        assert_eq!(Error::Internal("stack trace here".to_string()).public_message(), "Internal error");
-        assert_eq!(Error::GrpcError("connection refused".to_string()).public_message(), "Communication error");
+        assert_eq!(
+            Error::Config("sensitive details".to_string()).public_message(),
+            "Configuration error"
+        );
+        assert_eq!(
+            Error::MissingConfig("DB_PASSWORD".to_string()).public_message(),
+            "Configuration error"
+        );
+        assert_eq!(
+            Error::Crypto("private key leak".to_string()).public_message(),
+            "Cryptographic operation failed"
+        );
+        assert_eq!(
+            Error::KeyGeneration("HSM error code 0x1234".to_string()).public_message(),
+            "Cryptographic operation failed"
+        );
+        assert_eq!(
+            Error::SignatureVerification.public_message(),
+            "Signature verification failed"
+        );
+        assert_eq!(
+            Error::InvalidPem("malformed at byte 42".to_string()).public_message(),
+            "Invalid format"
+        );
+        assert_eq!(
+            Error::InvalidDer("malformed at byte 42".to_string()).public_message(),
+            "Invalid format"
+        );
+        assert_eq!(
+            Error::Validation("SQL injection attempt".to_string()).public_message(),
+            "Validation failed"
+        );
+        assert_eq!(
+            Error::Internal("stack trace here".to_string()).public_message(),
+            "Internal error"
+        );
+        assert_eq!(
+            Error::GrpcError("connection refused".to_string()).public_message(),
+            "Communication error"
+        );
     }
 
     #[test]

@@ -235,10 +235,7 @@ mod tests {
                 required,
                 total
             );
-            assert!(
-                request.required_shares > 0,
-                "M should be positive"
-            );
+            assert!(request.required_shares > 0, "M should be positive");
         }
     }
 }

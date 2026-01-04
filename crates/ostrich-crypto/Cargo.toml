@@ -25,6 +25,7 @@ digest = { workspace = true }
 spki = { workspace = true }
 der = { workspace = true }
 pkcs8 = { workspace = true }
+hex = { workspace = true }
 
 # PKCS#11 HSM support
 cryptoki = { workspace = true }

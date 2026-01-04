@@ -406,7 +406,10 @@ mod tests {
                 revocation_time: Utc::now(),
                 revocation_reason: Some(code),
             };
-            if let CertStatus::Revoked { revocation_reason, .. } = status {
+            if let CertStatus::Revoked {
+                revocation_reason, ..
+            } = status
+            {
                 assert_eq!(revocation_reason, Some(code));
             }
         }
@@ -418,7 +421,10 @@ mod tests {
             revocation_time: Utc::now(),
             revocation_reason: None,
         };
-        if let CertStatus::Revoked { revocation_reason, .. } = status {
+        if let CertStatus::Revoked {
+            revocation_reason, ..
+        } = status
+        {
             assert!(revocation_reason.is_none());
         }
     }
@@ -433,12 +439,8 @@ mod tests {
             next_update: None,
         };
 
-        let response = OcspResponse::successful(
-            vec![single_response],
-            vec![0xAA],
-            vec![0xBB],
-            None,
-        );
+        let response =
+            OcspResponse::successful(vec![single_response], vec![0xAA], vec![0xBB], None);
 
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("Successful"));
@@ -490,8 +492,17 @@ mod tests {
         let ocsp_response = OcspResponse::successful(responses, vec![], vec![], None);
 
         assert_eq!(ocsp_response.responses.len(), 3);
-        assert!(matches!(ocsp_response.responses[0].cert_status, CertStatus::Good));
-        assert!(matches!(ocsp_response.responses[1].cert_status, CertStatus::Revoked { .. }));
-        assert!(matches!(ocsp_response.responses[2].cert_status, CertStatus::Unknown));
+        assert!(matches!(
+            ocsp_response.responses[0].cert_status,
+            CertStatus::Good
+        ));
+        assert!(matches!(
+            ocsp_response.responses[1].cert_status,
+            CertStatus::Revoked { .. }
+        ));
+        assert!(matches!(
+            ocsp_response.responses[2].cert_status,
+            CertStatus::Unknown
+        ));
     }
 }

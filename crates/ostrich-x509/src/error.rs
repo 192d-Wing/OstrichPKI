@@ -41,6 +41,11 @@ pub enum Error {
     #[error("Profile validation error: {0}")]
     ProfileValidation(String),
 
+    /// Secure defaults validation error
+    /// NIAP PP-CA: FMT_MSA.1.2 - Security attribute constraint violation
+    #[error("Secure defaults violation: {0}")]
+    SecureDefaults(String),
+
     /// Crypto error
     #[error("Crypto error: {0}")]
     Crypto(#[from] ostrich_crypto::Error),

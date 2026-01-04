@@ -159,7 +159,10 @@ mod tests {
         assert_eq!(oid_name(&KEY_USAGE), "Key Usage");
         assert_eq!(oid_name(&SUBJECT_ALT_NAME), "Subject Alternative Name");
         assert_eq!(oid_name(&BASIC_CONSTRAINTS), "Basic Constraints");
-        assert_eq!(oid_name(&AUTHORITY_KEY_IDENTIFIER), "Authority Key Identifier");
+        assert_eq!(
+            oid_name(&AUTHORITY_KEY_IDENTIFIER),
+            "Authority Key Identifier"
+        );
         assert_eq!(oid_name(&EXTENDED_KEY_USAGE), "Extended Key Usage");
     }
 

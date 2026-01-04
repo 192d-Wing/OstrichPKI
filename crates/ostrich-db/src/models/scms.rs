@@ -103,7 +103,11 @@ mod tests {
             manufacturer: "SoftHSM".to_string(),
             model: "v2".to_string(),
             atr: None,
-            supported_key_types: vec!["RSA2048".to_string(), "RSA4096".to_string(), "EC-P384".to_string()],
+            supported_key_types: vec![
+                "RSA2048".to_string(),
+                "RSA4096".to_string(),
+                "EC-P384".to_string(),
+            ],
             max_pin_length: 64,
             min_pin_length: 4,
             supports_puk: false,

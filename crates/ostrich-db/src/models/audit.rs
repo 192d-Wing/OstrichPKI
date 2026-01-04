@@ -197,10 +197,7 @@ mod tests {
         )
         .with_user_agent("OstrichPKI-Client/1.0".to_string());
 
-        assert_eq!(
-            event.user_agent,
-            Some("OstrichPKI-Client/1.0".to_string())
-        );
+        assert_eq!(event.user_agent, Some("OstrichPKI-Client/1.0".to_string()));
     }
 
     #[test]

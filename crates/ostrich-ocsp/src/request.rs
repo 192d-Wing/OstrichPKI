@@ -246,7 +246,8 @@ mod tests {
 
     #[test]
     fn test_ocsp_request_clone() {
-        let req = OcspRequest::new(vec![0x01, 0x02], b"issuer", b"key").with_nonce(vec![0xAA, 0xBB]);
+        let req =
+            OcspRequest::new(vec![0x01, 0x02], b"issuer", b"key").with_nonce(vec![0xAA, 0xBB]);
 
         let cloned = req.clone();
 
