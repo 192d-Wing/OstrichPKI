@@ -1,0 +1,257 @@
+# OstrichPKI Prometheus Alerting Rules
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SI-4 (Information System Monitoring)
+# - NIST 800-53: AU-6 (Audit Review, Analysis, and Reporting)
+# - NIST 800-53: IR-5 (Incident Monitoring)
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ostrich-pki-alerts
+  namespace: ostrich-pki
+  labels:
+    app.kubernetes.io/name: ostrich-pki
+    prometheus: kube-prometheus
+spec:
+  groups:
+    # ==========================================================================
+    # Service Health Alerts
+    # ==========================================================================
+    - name: ostrich-pki.service-health
+      rules:
+        - alert: OstrichPKIServiceDown
+          expr: up{job=~"ostrich-pki-.*"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            compliance: "NIST-800-53:SI-4"
+          annotations:
+            summary: "OstrichPKI service {{ $labels.job }} is down"
+            description: "The {{ $labels.job }} service has been down for more than 5 minutes."
+            runbook_url: "https://docs.ostrich-pki.io/runbooks/service-down"
+
+        - alert: OstrichPKIHighErrorRate
+          expr: |
+            (
+              sum(rate(http_requests_total{job=~"ostrich-pki-.*", status=~"5.."}[5m])) by (job)
+              /
+              sum(rate(http_requests_total{job=~"ostrich-pki-.*"}[5m])) by (job)
+            ) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            compliance: "NIST-800-53:SI-4"
+          annotations:
+            summary: "High error rate on {{ $labels.job }}"
+            description: "{{ $labels.job }} has error rate above 5% for 5 minutes."
+
+        - alert: OstrichPKISlowResponses
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(http_request_duration_seconds_bucket{job=~"ostrich-pki-.*"}[5m])) by (le, job)
+            ) > 2
+          for: 10m
+          labels:
+            severity: warning
+            compliance: "NIST-800-53:SI-4"
+          annotations:
+            summary: "Slow responses on {{ $labels.job }}"
+            description: "95th percentile response time is above 2 seconds."
+
+    # ==========================================================================
+    # Certificate Authority Alerts
+    # ==========================================================================
+    - name: ostrich-pki.ca-operations
+      rules:
+        - alert: OstrichPKICertificateIssuanceFailure
+          expr: |
+            increase(ostrich_ca_certificate_issuance_failures_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: warning
+            compliance: "NIST-800-53:SC-17"
+          annotations:
+            summary: "Certificate issuance failures detected"
+            description: "{{ $value }} certificate issuance failures in the last 5 minutes."
+
+        - alert: OstrichPKIHighCertificateIssuanceRate
+          expr: |
+            rate(ostrich_ca_certificates_issued_total[5m]) > 100
+          for: 15m
+          labels:
+            severity: info
+            compliance: "NIST-800-53:AU-6"
+          annotations:
+            summary: "Unusually high certificate issuance rate"
+            description: "Certificate issuance rate is {{ $value }}/sec, which may indicate automation issues."
+
+        - alert: OstrichPKICRLGenerationFailure
+          expr: |
+            increase(ostrich_ca_crl_generation_failures_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+            compliance: "NIST-800-53:SC-17"
+          annotations:
+            summary: "CRL generation failed"
+            description: "CRL generation has failed. Certificate revocation status may be outdated."
+
+    # ==========================================================================
+    # OCSP Responder Alerts
+    # ==========================================================================
+    - name: ostrich-pki.ocsp
+      rules:
+        - alert: OstrichPKIOCSPHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(ostrich_ocsp_response_duration_seconds_bucket[5m])) by (le)
+            ) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+            compliance: "RFC-6960"
+          annotations:
+            summary: "OCSP response latency is high"
+            description: "95th percentile OCSP response time is {{ $value }}s, exceeding 500ms threshold."
+
+        - alert: OstrichPKIOCSPSigningFailure
+          expr: |
+            increase(ostrich_ocsp_signing_failures_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+            compliance: "NIST-800-53:SC-17"
+          annotations:
+            summary: "OCSP response signing failures"
+            description: "OCSP responses are failing to sign. Certificate validation may be impacted."
+
+    # ==========================================================================
+    # ACME Protocol Alerts
+    # ==========================================================================
+    - name: ostrich-pki.acme
+      rules:
+        - alert: OstrichPKIACMEChallengeFailureRate
+          expr: |
+            (
+              sum(rate(ostrich_acme_challenge_failures_total[5m]))
+              /
+              sum(rate(ostrich_acme_challenge_attempts_total[5m]))
+            ) > 0.3
+          for: 15m
+          labels:
+            severity: warning
+            compliance: "RFC-8555"
+          annotations:
+            summary: "High ACME challenge failure rate"
+            description: "ACME challenge failure rate is {{ $value | humanizePercentage }}."
+
+        - alert: OstrichPKIACMEOrderBacklog
+          expr: ostrich_acme_pending_orders > 1000
+          for: 30m
+          labels:
+            severity: warning
+            compliance: "RFC-8555"
+          annotations:
+            summary: "Large ACME order backlog"
+            description: "{{ $value }} pending ACME orders. Processing may be delayed."
+
+    # ==========================================================================
+    # Database Alerts
+    # ==========================================================================
+    - name: ostrich-pki.database
+      rules:
+        - alert: OstrichPKIDatabaseConnectionPoolExhausted
+          expr: |
+            ostrich_db_pool_connections_used / ostrich_db_pool_connections_max > 0.9
+          for: 5m
+          labels:
+            severity: warning
+            compliance: "NIST-800-53:SI-4"
+          annotations:
+            summary: "Database connection pool nearly exhausted"
+            description: "Connection pool is {{ $value | humanizePercentage }} utilized."
+
+        - alert: OstrichPKIDatabaseSlowQueries
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(ostrich_db_query_duration_seconds_bucket[5m])) by (le, query_type)
+            ) > 1
+          for: 10m
+          labels:
+            severity: warning
+            compliance: "NIST-800-53:SI-4"
+          annotations:
+            summary: "Slow database queries detected"
+            description: "{{ $labels.query_type }} queries taking longer than 1s at 95th percentile."
+
+    # ==========================================================================
+    # Security Alerts
+    # ==========================================================================
+    - name: ostrich-pki.security
+      rules:
+        - alert: OstrichPKIAuthenticationFailureSpike
+          expr: |
+            increase(ostrich_auth_failures_total[5m]) > 10
+          for: 1m
+          labels:
+            severity: warning
+            compliance: "NIST-800-53:AC-7"
+          annotations:
+            summary: "Spike in authentication failures"
+            description: "{{ $value }} authentication failures in the last 5 minutes. Possible brute force attempt."
+
+        - alert: OstrichPKIUnauthorizedAccessAttempt
+          expr: |
+            increase(ostrich_unauthorized_access_total[5m]) > 5
+          for: 1m
+          labels:
+            severity: critical
+            compliance: "NIST-800-53:AC-7"
+          annotations:
+            summary: "Unauthorized access attempts detected"
+            description: "{{ $value }} unauthorized access attempts. Review audit logs immediately."
+
+        - alert: OstrichPKIAuditLogFailure
+          expr: |
+            increase(ostrich_audit_log_failures_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+            compliance: "NIST-800-53:AU-9"
+          annotations:
+            summary: "Audit logging failure"
+            description: "Audit logs are failing to write. This is a compliance violation."
+
+    # ==========================================================================
+    # Resource Alerts
+    # ==========================================================================
+    - name: ostrich-pki.resources
+      rules:
+        - alert: OstrichPKIHighMemoryUsage
+          expr: |
+            (
+              container_memory_working_set_bytes{container=~"ca|acme|ocsp|est|scms|kra"}
+              /
+              container_spec_memory_limit_bytes{container=~"ca|acme|ocsp|est|scms|kra"}
+            ) > 0.85
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High memory usage on {{ $labels.container }}"
+            description: "{{ $labels.container }} is using {{ $value | humanizePercentage }} of memory limit."
+
+        - alert: OstrichPKIHighCPUUsage
+          expr: |
+            (
+              rate(container_cpu_usage_seconds_total{container=~"ca|acme|ocsp|est|scms|kra"}[5m])
+              /
+              container_spec_cpu_quota{container=~"ca|acme|ocsp|est|scms|kra"} * 100000
+            ) > 0.85
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High CPU usage on {{ $labels.container }}"
+            description: "{{ $labels.container }} is using {{ $value | humanizePercentage }} of CPU limit."

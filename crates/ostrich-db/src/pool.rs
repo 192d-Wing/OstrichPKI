@@ -252,6 +252,12 @@ impl Clone for DatabasePool {
     }
 }
 
+impl AsRef<PgPool> for DatabasePool {
+    fn as_ref(&self) -> &PgPool {
+        &self.pool
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

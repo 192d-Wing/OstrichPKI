@@ -1,0 +1,26 @@
+{{/*
+OstrichPKI OCSP Service
+
+COMPLIANCE MAPPING:
+- RFC 6960: OCSP Protocol
+*/}}
+{{- if .Values.ocsp.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-ocsp
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ocsp
+spec:
+  type: {{ .Values.ocsp.service.type }}
+  ports:
+    - port: {{ .Values.ocsp.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "ostrich-pki.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ocsp
+{{- end }}

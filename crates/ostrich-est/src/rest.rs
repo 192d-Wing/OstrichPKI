@@ -49,6 +49,9 @@ impl EstState {
 /// RFC 7030 well-known URI: /.well-known/est/
 pub fn create_router(state: EstState) -> Router {
     Router::new()
+        // Health and readiness endpoints
+        .route("/health", get(health_check))
+        .route("/ready", get(readiness_check))
         // RFC 7030 §4.1: Distribution of CA certificates
         .route("/.well-known/est/cacerts", get(get_ca_certs))
         // RFC 7030 §4.2: Simple enrollment
@@ -60,6 +63,28 @@ pub fn create_router(state: EstState) -> Router {
         // RFC 7030 §4.3: Server-side key generation (optional)
         .route("/.well-known/est/serverkeygen", post(server_key_gen))
         .with_state(state)
+}
+
+/// Health check endpoint (liveness probe)
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-17 (Fail-safe response)
+///
+/// Returns 200 OK if the service process is running.
+async fn health_check() -> impl IntoResponse {
+    ostrich_common::health::health_response("ostrich-est")
+}
+
+/// Readiness check endpoint (readiness probe)
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-17 (Fail-safe response)
+/// - NIST 800-53: SC-8 (Transmission confidentiality and integrity)
+///
+/// Returns 200 OK if the service is ready to handle EST requests.
+/// Checks database connectivity.
+async fn readiness_check(State(state): State<EstState>) -> impl IntoResponse {
+    ostrich_common::health::readiness_response_with_db("ostrich-est", &state.db_pool).await
 }
 
 /// Get CA certificates (RFC 7030 §4.1)

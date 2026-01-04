@@ -1,0 +1,64 @@
+# OstrichPKI Docker Build Exclusions
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SA-10 (Developer Configuration Management)
+# - Exclude unnecessary files to reduce build time and image size
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Build artifacts
+target/
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Documentation (not needed in runtime image)
+docs/
+*.md
+!README.md
+LICENSE
+
+# Testing fixtures (except what's needed for migrations)
+tests/integration/fixtures/
+tests/fixtures/
+benches/fixtures/
+
+# Local configuration (should use env vars in containers)
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Rust-specific
+Cargo.lock
+!Cargo.lock
+**/*.rs.bk
+
+# Docker-related (avoid recursive copies)
+docker-compose*.yml
+Dockerfile*
+.dockerignore

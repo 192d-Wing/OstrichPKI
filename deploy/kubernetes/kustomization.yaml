@@ -1,0 +1,47 @@
+# OstrichPKI Kustomize Configuration
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: CM-2 (Baseline Configuration)
+# - NIST 800-53: CM-3 (Configuration Change Control)
+#
+# Usage:
+#   kubectl apply -k deploy/kubernetes/
+#
+# For customization, create overlays:
+#   deploy/kubernetes/overlays/production/
+#   deploy/kubernetes/overlays/staging/
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ostrich-pki
+
+resources:
+  - namespace.yaml
+  - secrets.yaml
+  - configmap.yaml
+  - serviceaccount.yaml
+  - ca-deployment.yaml
+  - ca-service.yaml
+  - acme-deployment.yaml
+  - acme-service.yaml
+  - ocsp-deployment.yaml
+  - ocsp-service.yaml
+  - est-deployment.yaml
+  - est-service.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: ostrich-pki
+  app.kubernetes.io/managed-by: kustomize
+
+images:
+  - name: ostrich-pki
+    newName: ghcr.io/ostrich-pki/ostrich-pki
+    newTag: v0.13.0
+
+configMapGenerator:
+  - name: ostrich-pki-env
+    behavior: merge
+    literals:
+      - RUST_LOG=info
+      - LOG_JSON=true

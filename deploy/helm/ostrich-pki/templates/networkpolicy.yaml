@@ -1,0 +1,179 @@
+{{/*
+OstrichPKI Network Policies
+
+COMPLIANCE MAPPING:
+- NIST 800-53: SC-7 (Boundary Protection)
+- NIST 800-53: AC-4 (Information Flow Enforcement)
+*/}}
+{{- if .Values.networkPolicy.enabled -}}
+---
+# CA Service Network Policy
+{{- if .Values.ca.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ca
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ostrich-pki.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ca
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from other OstrichPKI services
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ostrich-pki.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ca.rest.port }}
+        - protocol: TCP
+          port: {{ .Values.ca.grpc.port }}
+    # Allow traffic from ingress namespace if specified
+    {{- if .Values.networkPolicy.ingressNamespaceLabels }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressNamespaceLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ca.rest.port }}
+    {{- end }}
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow database access
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- with .Values.networkPolicy.egressRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+---
+# ACME Service Network Policy
+{{- if .Values.acme.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-acme
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: acme
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ostrich-pki.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: acme
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow external ACME traffic
+    - ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow CA service access
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ostrich-pki.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: ca
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ca.grpc.port }}
+    # Allow database access
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Allow external HTTP for challenge validation
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+{{- end }}
+---
+# OCSP Service Network Policy
+{{- if .Values.ocsp.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-ocsp
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ocsp
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ostrich-pki.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ocsp
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # OCSP should be publicly accessible for certificate validation
+    - ports:
+        - protocol: TCP
+          port: 8081
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow database access
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}
+{{- end }}

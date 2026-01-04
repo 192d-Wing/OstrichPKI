@@ -47,6 +47,9 @@ impl ScmsState {
 /// Create SCMS REST API router
 pub fn create_router(state: ScmsState) -> Router {
     Router::new()
+        // Health and readiness endpoints
+        .route("/health", get(health_check))
+        .route("/ready", get(readiness_check))
         // Token management
         .route("/scms/tokens", get(list_tokens).post(create_token))
         .route(
@@ -136,6 +139,28 @@ pub struct GenerateKeyRequest {
     pub key_size: u32,
     /// Key usage
     pub usage: Vec<String>,
+}
+
+/// Health check endpoint (liveness probe)
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-17 (Fail-safe response)
+///
+/// Returns 200 OK if the service process is running.
+async fn health_check() -> impl IntoResponse {
+    ostrich_common::health::health_response("ostrich-scms")
+}
+
+/// Readiness check endpoint (readiness probe)
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-17 (Fail-safe response)
+/// - NIST 800-53: IA-5 (Authenticator management)
+///
+/// Returns 200 OK if the service is ready to handle SCMS requests.
+/// Checks database connectivity.
+async fn readiness_check(State(state): State<ScmsState>) -> impl IntoResponse {
+    ostrich_common::health::readiness_response_with_db("ostrich-scms", &state.db_pool).await
 }
 
 /// List tokens

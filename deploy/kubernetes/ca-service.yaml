@@ -1,0 +1,42 @@
+# OstrichPKI CA Services
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SC-8 (Transmission Confidentiality)
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: ostrich-pki-ca-rest
+  namespace: ostrich-pki
+  labels:
+    app.kubernetes.io/name: ostrich-pki
+    app.kubernetes.io/component: ca
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: ostrich-pki
+    app.kubernetes.io/component: ca
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ostrich-pki-ca-grpc
+  namespace: ostrich-pki
+  labels:
+    app.kubernetes.io/name: ostrich-pki
+    app.kubernetes.io/component: ca
+spec:
+  type: ClusterIP
+  ports:
+    - port: 50051
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    app.kubernetes.io/name: ostrich-pki
+    app.kubernetes.io/component: ca

@@ -1,0 +1,46 @@
+{{/*
+OstrichPKI CA Service - Kubernetes Services
+
+COMPLIANCE MAPPING:
+- NIST 800-53: SC-8 (Transmission Confidentiality)
+*/}}
+{{- if .Values.ca.enabled -}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-ca-rest
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ca
+spec:
+  type: {{ .Values.ca.rest.service.type }}
+  ports:
+    - port: {{ .Values.ca.rest.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "ostrich-pki.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ca
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-ca-grpc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ca
+spec:
+  type: {{ .Values.ca.grpc.service.type }}
+  ports:
+    - port: {{ .Values.ca.grpc.service.port }}
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "ostrich-pki.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ca
+{{- end }}

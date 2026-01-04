@@ -1,0 +1,119 @@
+{{/*
+OstrichPKI EST Service Deployment
+
+COMPLIANCE MAPPING:
+- RFC 7030: EST Protocol
+- NIST 800-53: SC-8 (Transmission Confidentiality - mTLS)
+- NIST 800-53: SC-17 (PKI Certificates)
+*/}}
+{{- if .Values.est.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-est
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: est
+spec:
+  replicas: {{ .Values.est.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ostrich-pki.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: est
+  template:
+    metadata:
+      labels:
+        {{- include "ostrich-pki.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: est
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "ostrich-pki.serviceAccountName" . }}
+      securityContext:
+        {{- include "ostrich-pki.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: est
+          securityContext:
+            {{- include "ostrich-pki.securityContext" . | nindent 12 }}
+          image: {{ include "ostrich-pki.image" (dict "repository" .Values.est.image.repository "tag" .Values.est.image.tag "Values" .Values "Chart" .Chart) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --target
+            - est-service
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          env:
+            {{- include "ostrich-pki.commonEnv" . | nindent 12 }}
+            - name: EST_BIND_ADDRESS
+              value: "0.0.0.0:8443"
+            {{- if .Values.est.tls.certFile }}
+            - name: TLS_CERT_FILE
+              value: {{ .Values.est.tls.certFile | quote }}
+            {{- end }}
+            {{- if .Values.est.tls.keyFile }}
+            - name: TLS_KEY_FILE
+              value: {{ .Values.est.tls.keyFile | quote }}
+            {{- end }}
+            {{- if .Values.est.tls.caCertFile }}
+            - name: TLS_CA_CERT_FILE
+              value: {{ .Values.est.tls.caCertFile | quote }}
+            {{- end }}
+            {{- with .Values.est.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: https
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.est.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.est.tls.existingSecret }}
+            - name: est-certs
+              mountPath: /app/certs
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.est.tls.existingSecret }}
+        - name: est-certs
+          secret:
+            secretName: {{ .Values.est.tls.existingSecret }}
+        {{- end }}
+      {{- with .Values.est.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.est.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.est.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

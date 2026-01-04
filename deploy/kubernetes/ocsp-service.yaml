@@ -1,0 +1,23 @@
+# OstrichPKI OCSP Service
+#
+# COMPLIANCE MAPPING:
+# - RFC 6960: OCSP Protocol
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: ostrich-pki-ocsp
+  namespace: ostrich-pki
+  labels:
+    app.kubernetes.io/name: ostrich-pki
+    app.kubernetes.io/component: ocsp
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8081
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: ostrich-pki
+    app.kubernetes.io/component: ocsp

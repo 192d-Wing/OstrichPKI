@@ -1,0 +1,17 @@
+{{/*
+OstrichPKI ConfigMap
+
+COMPLIANCE MAPPING:
+- NIST 800-53: CM-6 (Configuration Settings)
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+data:
+  # Logging configuration
+  RUST_LOG: {{ .Values.logging.level | quote }}
+  LOG_JSON: {{ .Values.logging.json | quote }}

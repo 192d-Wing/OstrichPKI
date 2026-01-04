@@ -1,0 +1,121 @@
+{{/*
+OstrichPKI CA Service Deployment
+
+COMPLIANCE MAPPING:
+- NIST 800-53: SC-17 (PKI Certificates)
+- NIST 800-53: SC-12 (Cryptographic Key Establishment)
+- NIST 800-53: AC-6 (Least Privilege)
+*/}}
+{{- if .Values.ca.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ca
+spec:
+  replicas: {{ .Values.ca.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ostrich-pki.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ca
+  template:
+    metadata:
+      labels:
+        {{- include "ostrich-pki.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ca
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "ostrich-pki.serviceAccountName" . }}
+      securityContext:
+        {{- include "ostrich-pki.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: ca
+          securityContext:
+            {{- include "ostrich-pki.securityContext" . | nindent 12 }}
+          image: {{ include "ostrich-pki.image" (dict "repository" .Values.ca.image.repository "tag" .Values.ca.image.tag "Values" .Values "Chart" .Chart) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ca.rest.port }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.ca.grpc.port }}
+              protocol: TCP
+          env:
+            {{- include "ostrich-pki.commonEnv" . | nindent 12 }}
+            - name: CA_REST_ADDRESS
+              value: "0.0.0.0:{{ .Values.ca.rest.port }}"
+            - name: CA_GRPC_ADDRESS
+              value: "0.0.0.0:{{ .Values.ca.grpc.port }}"
+            {{- if .Values.ca.caCert.certFile }}
+            - name: CA_CERT_FILE
+              value: {{ .Values.ca.caCert.certFile | quote }}
+            {{- end }}
+            {{- if .Values.ca.caCert.keyFile }}
+            - name: CA_KEY_FILE
+              value: {{ .Values.ca.caCert.keyFile | quote }}
+            {{- end }}
+            {{- with .Values.ca.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.ca.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.ca.caCert.existingSecret }}
+            - name: ca-certs
+              mountPath: /app/certs
+              readOnly: true
+            {{- end }}
+            {{- with .Values.ca.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.ca.caCert.existingSecret }}
+        - name: ca-certs
+          secret:
+            secretName: {{ .Values.ca.caCert.existingSecret }}
+        {{- end }}
+        {{- with .Values.ca.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.ca.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ca.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ca.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

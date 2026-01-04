@@ -1,0 +1,340 @@
+# OstrichPKI Helm Chart Values
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: CM-6 (Configuration Settings)
+# - NIST 800-53: SC-8 (Transmission Confidentiality)
+# - NIST 800-53: AC-6 (Least Privilege)
+
+# Global settings
+global:
+  # Image registry override
+  imageRegistry: ""
+  # Image pull secrets
+  imagePullSecrets: []
+  # Storage class for persistent volumes
+  storageClass: ""
+
+# Common image settings
+image:
+  repository: ostrich-pki
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to appVersion
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod security context (NIST 800-53: AC-6)
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# Container security context (NIST 800-53: AC-6)
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+      - ALL
+
+# =============================================================================
+# Certificate Authority Service
+# =============================================================================
+ca:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: ""  # Uses global if empty
+    tag: ""         # Uses global if empty
+
+  # REST API
+  rest:
+    port: 8080
+    service:
+      type: ClusterIP
+      port: 8080
+
+  # gRPC API
+  grpc:
+    port: 50051
+    service:
+      type: ClusterIP
+      port: 50051
+
+  # CA certificate and key
+  # NIST 800-53: SC-12 (Cryptographic Key Establishment)
+  caCert:
+    # Use existing secret for CA cert/key
+    existingSecret: ""
+    # Or specify paths (mounted via volumes)
+    certFile: ""
+    keyFile: ""
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Extra environment variables
+  extraEnv: []
+
+  # Extra volumes and mounts
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# =============================================================================
+# ACME Service (RFC 8555)
+# =============================================================================
+acme:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: ""
+    tag: ""
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  # External base URL for ACME directory
+  baseUrl: ""
+
+  # Ingress for external ACME access
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: acme.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+# =============================================================================
+# EST Service (RFC 7030)
+# =============================================================================
+est:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: ""
+    tag: ""
+
+  service:
+    type: ClusterIP
+    port: 8443
+
+  # mTLS configuration (required per RFC 7030)
+  # NIST 800-53: SC-8 (Transmission Confidentiality)
+  tls:
+    existingSecret: ""
+    certFile: ""
+    keyFile: ""
+    caCertFile: ""
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+# =============================================================================
+# OCSP Responder (RFC 6960)
+# =============================================================================
+ocsp:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: ""
+    tag: ""
+
+  service:
+    type: ClusterIP
+    port: 8081
+
+  # OCSP signing certificate
+  signing:
+    existingSecret: ""
+    certFile: ""
+    keyFile: ""
+
+  # Ingress for external OCSP access
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: ocsp.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+# =============================================================================
+# SCMS Service (Smartcard Management)
+# =============================================================================
+scms:
+  enabled: false  # Disabled by default
+  replicaCount: 1
+
+  image:
+    repository: ""
+    tag: ""
+
+  service:
+    type: ClusterIP
+    port: 8082
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+# =============================================================================
+# KRA Service (Key Recovery Authority)
+# =============================================================================
+kra:
+  enabled: false  # Disabled by default
+  replicaCount: 1
+
+  image:
+    repository: ""
+    tag: ""
+
+  service:
+    type: ClusterIP
+    port: 8083
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+# =============================================================================
+# PostgreSQL Database
+# =============================================================================
+postgresql:
+  enabled: true
+  auth:
+    username: ostrich
+    password: ""  # Set this or use existingSecret
+    database: ostrich_pki
+    existingSecret: ""
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+
+# External database (if postgresql.enabled=false)
+externalDatabase:
+  host: ""
+  port: 5432
+  user: ostrich
+  password: ""
+  database: ostrich_pki
+  existingSecret: ""
+  existingSecretPasswordKey: password
+
+# =============================================================================
+# Logging Configuration
+# =============================================================================
+logging:
+  # Log level: trace, debug, info, warn, error
+  level: info
+  # Use JSON format for structured logging
+  json: true
+
+# =============================================================================
+# Monitoring
+# =============================================================================
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: 30s
+    labels: {}
+
+# =============================================================================
+# Network Policies (NIST 800-53: SC-7)
+# =============================================================================
+networkPolicy:
+  enabled: true
+  # Allow ingress from specified namespaces
+  ingressNamespaceLabels: {}
+  # Allow egress to external services
+  egressRules: []

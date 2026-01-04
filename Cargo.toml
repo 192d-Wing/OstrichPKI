@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    # Core crates
     "crates/ostrich-common",
     "crates/ostrich-crypto",
     "crates/ostrich-x509",
@@ -14,8 +15,17 @@ members = [
     "crates/ostrich-scms",
     "crates/ostrich-acme",
     "crates/ostrich-est",
+    # Service binaries
+    "services/ca-server",
+    "services/acme-server",
+    "services/est-server",
+    "services/ocsp-server",
+    "services/scms-server",
+    "services/kra-server",
+    # Tools
     "tools/ostrich-cli",
     "tools/ostrich-init",
+    # Testing
     "tests",
     "benches",
 ]

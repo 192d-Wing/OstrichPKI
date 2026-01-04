@@ -40,3 +40,9 @@ tonic = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
+
+# Web framework (for health check endpoints)
+axum = { workspace = true }
+
+# Database (for health check database connectivity)
+sqlx = { workspace = true }

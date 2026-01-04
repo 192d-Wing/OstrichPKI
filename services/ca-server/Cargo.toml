@@ -1,0 +1,44 @@
+[package]
+name = "ostrich-ca-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OstrichPKI Certificate Authority Server"
+
+[[bin]]
+name = "ostrich-ca-server"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+ostrich-ca = { path = "../../crates/ostrich-ca" }
+ostrich-common = { path = "../../crates/ostrich-common" }
+ostrich-db = { path = "../../crates/ostrich-db" }
+ostrich-crypto = { path = "../../crates/ostrich-crypto" }
+ostrich-audit = { path = "../../crates/ostrich-audit" }
+
+# Web framework
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Configuration
+config = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = { workspace = true }

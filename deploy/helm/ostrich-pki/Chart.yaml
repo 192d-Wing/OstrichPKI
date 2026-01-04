@@ -1,0 +1,44 @@
+# OstrichPKI Helm Chart
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: CM-2 (Baseline Configuration)
+# - NIST 800-53: CM-6 (Configuration Settings)
+# - NIST 800-53: CM-3 (Configuration Change Control)
+
+apiVersion: v2
+name: ostrich-pki
+description: A Helm chart for deploying OstrichPKI Public Key Infrastructure
+type: application
+version: 0.13.0
+appVersion: "0.13.0"
+
+keywords:
+  - pki
+  - certificate-authority
+  - x509
+  - acme
+  - est
+  - ocsp
+  - security
+
+home: https://github.com/ostrich-pki/ostrich-pki
+sources:
+  - https://github.com/ostrich-pki/ostrich-pki
+
+maintainers:
+  - name: OstrichPKI Team
+    email: team@ostrich-pki.io
+
+annotations:
+  # Compliance annotations
+  "nist.gov/800-53/controls": "CM-2,CM-3,CM-6,SC-8,SC-17"
+  # ArtifactHub annotations
+  "artifacthub.io/license": "Apache-2.0"
+  "artifacthub.io/category": "security"
+  "artifacthub.io/containsSecurityUpdates": "true"
+
+dependencies:
+  - name: postgresql
+    version: "14.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled

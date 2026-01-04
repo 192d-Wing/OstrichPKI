@@ -1,0 +1,44 @@
+# OstrichPKI Grafana Dashboard ConfigMap
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SI-4 (Information System Monitoring)
+#
+# This ConfigMap is used to provision the Grafana dashboard when using
+# Grafana's sidecar dashboard provisioning.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ostrich-pki-grafana-dashboard
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: ostrich-pki
+    grafana_dashboard: "true"
+data:
+  ostrich-pki-dashboard.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "description": "OstrichPKI Certificate Authority Infrastructure Dashboard",
+      "editable": false,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "title": "Service Health",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 }
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 38,
+      "style": "dark",
+      "tags": ["ostrich-pki"],
+      "templating": { "list": [] },
+      "time": { "from": "now-6h", "to": "now" },
+      "title": "OstrichPKI Dashboard",
+      "uid": "ostrich-pki-main",
+      "version": 1
+    }

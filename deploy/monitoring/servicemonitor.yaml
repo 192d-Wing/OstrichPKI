@@ -1,0 +1,53 @@
+# OstrichPKI ServiceMonitor for Prometheus Operator
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SI-4 (Information System Monitoring)
+# - NIST 800-53: AU-2 (Audit Events)
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ostrich-pki
+  namespace: ostrich-pki
+  labels:
+    app.kubernetes.io/name: ostrich-pki
+    prometheus: kube-prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ostrich-pki
+  namespaceSelector:
+    matchNames:
+      - ostrich-pki
+  endpoints:
+    # CA REST API metrics
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+          targetLabel: component
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+
+    # ACME service metrics
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+
+    # OCSP responder metrics
+    - port: http
+      path: /metrics
+      interval: 15s  # More frequent for OCSP latency tracking
+      scrapeTimeout: 10s
+
+    # EST service metrics
+    - port: https
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      scheme: http  # Metrics endpoint is HTTP even if service is HTTPS

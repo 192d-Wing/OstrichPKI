@@ -1,0 +1,98 @@
+{{/*
+OstrichPKI ACME Service Deployment
+
+COMPLIANCE MAPPING:
+- RFC 8555: ACME Protocol
+- NIST 800-53: SC-17 (PKI Certificates)
+*/}}
+{{- if .Values.acme.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-acme
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: acme
+spec:
+  replicas: {{ .Values.acme.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ostrich-pki.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: acme
+  template:
+    metadata:
+      labels:
+        {{- include "ostrich-pki.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: acme
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "ostrich-pki.serviceAccountName" . }}
+      securityContext:
+        {{- include "ostrich-pki.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: acme
+          securityContext:
+            {{- include "ostrich-pki.securityContext" . | nindent 12 }}
+          image: {{ include "ostrich-pki.image" (dict "repository" .Values.acme.image.repository "tag" .Values.acme.image.tag "Values" .Values "Chart" .Chart) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --target
+            - acme-service
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            {{- include "ostrich-pki.commonEnv" . | nindent 12 }}
+            - name: ACME_BIND_ADDRESS
+              value: "0.0.0.0:8080"
+            {{- if .Values.acme.baseUrl }}
+            - name: ACME_BASE_URL
+              value: {{ .Values.acme.baseUrl | quote }}
+            {{- end }}
+            {{- with .Values.acme.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.acme.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.acme.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.acme.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.acme.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

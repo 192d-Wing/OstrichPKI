@@ -1,0 +1,63 @@
+OstrichPKI has been deployed!
+
+COMPLIANCE: This deployment follows NIST 800-53 Rev 5 controls for PKI systems.
+
+=============================================================================
+Getting Started
+=============================================================================
+
+1. Get the CA service status:
+   kubectl get pods -l "app.kubernetes.io/component=ca" -n {{ .Release.Namespace }}
+
+{{- if .Values.ca.enabled }}
+
+2. Access the CA REST API:
+   kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-ca-rest 8080:{{ .Values.ca.rest.service.port }} -n {{ .Release.Namespace }}
+   curl http://localhost:8080/health
+
+3. Access the CA gRPC API:
+   kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-ca-grpc 50051:{{ .Values.ca.grpc.service.port }} -n {{ .Release.Namespace }}
+
+{{- end }}
+
+{{- if .Values.acme.enabled }}
+
+ACME Service (RFC 8555):
+   kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-acme 8090:{{ .Values.acme.service.port }} -n {{ .Release.Namespace }}
+   curl http://localhost:8090/directory
+
+{{- if .Values.acme.ingress.enabled }}
+   ACME is exposed via Ingress at:
+   {{- range .Values.acme.ingress.hosts }}
+   - http{{ if $.Values.acme.ingress.tls }}s{{ end }}://{{ .host }}
+   {{- end }}
+{{- end }}
+
+{{- end }}
+
+{{- if .Values.ocsp.enabled }}
+
+OCSP Responder (RFC 6960):
+   kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-ocsp 8081:{{ .Values.ocsp.service.port }} -n {{ .Release.Namespace }}
+   curl http://localhost:8081/health
+
+{{- end }}
+
+{{- if .Values.est.enabled }}
+
+EST Service (RFC 7030):
+   kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-est 8443:{{ .Values.est.service.port }} -n {{ .Release.Namespace }}
+   curl -k https://localhost:8443/health
+
+{{- end }}
+
+=============================================================================
+Security Notes
+=============================================================================
+
+1. Ensure you have configured TLS certificates for production use
+2. Set strong database passwords (never use defaults)
+3. Review Network Policies are enabled for your environment
+4. Configure appropriate RBAC for CA administrative operations
+
+For more information, visit: https://github.com/ostrich-pki/ostrich-pki

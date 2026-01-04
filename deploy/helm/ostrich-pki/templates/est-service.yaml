@@ -1,0 +1,26 @@
+{{/*
+OstrichPKI EST Service
+
+COMPLIANCE MAPPING:
+- RFC 7030: EST Protocol
+*/}}
+{{- if .Values.est.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-est
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: est
+spec:
+  type: {{ .Values.est.service.type }}
+  ports:
+    - port: {{ .Values.est.service.port }}
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    {{- include "ostrich-pki.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: est
+{{- end }}

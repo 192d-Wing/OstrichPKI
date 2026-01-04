@@ -1,0 +1,43 @@
+[package]
+name = "ostrich-scms-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OstrichPKI SCMS (Smartcard Management System) Server"
+
+[[bin]]
+name = "ostrich-scms-server"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+ostrich-scms = { path = "../../crates/ostrich-scms" }
+ostrich-common = { path = "../../crates/ostrich-common" }
+ostrich-db = { path = "../../crates/ostrich-db" }
+ostrich-crypto = { path = "../../crates/ostrich-crypto" }
+ostrich-audit = { path = "../../crates/ostrich-audit" }
+
+# Web framework
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Configuration
+clap = { workspace = true, features = ["derive", "env"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = { workspace = true }
