@@ -36,7 +36,7 @@
 | **Services** | 7 microservices (CA, OCSP, KRA, ACME, EST, SCMS, Audit) |
 | **Standards** | RFC 5280, 6960, 7030, 8555 compliance |
 | **Security** | NIST 800-53 controls (AU-2, AU-3, AU-9, SC-8, SC-12, SC-13, IA-2, IA-5, IA-7, SI-17) |
-| **Overall Progress** | **~85%** complete |
+| **Overall Progress** | **~90%** complete |
 
 ### Critical Gaps
 
@@ -46,7 +46,7 @@
 | ~~**HSM Integration**~~ | ✅ **COMPLETE** (PKCS#11 + Software fallback) | - |
 | ~~**Protocol Validation**~~ | ✅ **COMPLETE** (ACME, EST, mTLS) | - |
 | ~~**Service Integration**~~ | ✅ **COMPLETE** (gRPC with circuit breaker) | - |
-| **Testing & Hardening** | Load testing, penetration testing docs | 🟡 IN PROGRESS (85%) |
+| **Testing & Hardening** | Unit test coverage expansion | 🟡 IN PROGRESS (95%) |
 | **NIAP Compliance** | Protection Profile documentation | 🔴 HIGH |
 
 ### Estimated Completion
@@ -55,7 +55,7 @@
 - **Realistic**: ~~14-16 weeks~~ → **6-8 weeks remaining** (Comprehensive testing + compliance)
 - **Conservative**: ~~20-24 weeks~~ → **10-12 weeks remaining** (Full validation + ATO package)
 
-**Status**: **85% complete** - All core implementation done, most Phase 14 infrastructure complete, NIAP compliance documentation remains
+**Status**: **90% complete** - All core implementation done, Phase 14 nearly complete, NIAP compliance documentation remains
 
 ---
 
@@ -76,7 +76,7 @@
 | **11** | **Protocol Validation** | **✅ COMPLETE** | **100%** | - | ✅ 1 week |
 | **12** | **Service Integration** | **✅ COMPLETE** | **100%** | - | ✅ 2 weeks |
 | **13** | **Advanced Features** | ⏸️ DEFERRED | 0% | ⚪ LOW | 2-3 weeks |
-| **14** | **Testing & Hardening** | 🟡 IN PROGRESS | 85% | 🔴 HIGH | 1 week |
+| **14** | **Testing & Hardening** | 🟡 IN PROGRESS | 95% | 🟡 MEDIUM | Few days |
 | **15** | **NIAP Compliance** | ⏳ PLANNED | 45% | 🔴 HIGH | 3-4 weeks |
 
 ### Critical Path
@@ -973,7 +973,7 @@ These features are **LOW priority** because:
 
 Comprehensive testing, security hardening, and operational readiness before production deployment.
 
-#### Current Status (85% Complete)
+#### Current Status (95% Complete)
 
 ✅ **COMPLETED**:
 
@@ -994,15 +994,12 @@ Comprehensive testing, security hardening, and operational readiness before prod
 - **Operational runbooks** (service-down, certificate-operations, database-recovery, security-incident)
 - **Integration test framework** with JWS signing (RFC 7515), JWK thumbprints (RFC 7638)
 - **Health check tests** for all services (ACME, CA, EST, OCSP)
+- **k6 load tests** for ACME (100 TPS), OCSP (1000 TPS), CA services
+- **Penetration testing guide** with 50+ test cases ([docs/security/PENETRATION_TESTING.md](docs/security/PENETRATION_TESTING.md))
 
 ⏳ **IN PROGRESS**:
 
 - Unit test coverage expansion (~60% → target 80%)
-
-⏳ **REMAINING**:
-
-- Load testing with k6/wrk (TPS targets defined)
-- Penetration testing documentation
 
 #### Scope
 
@@ -1457,7 +1454,7 @@ Achieve **NIAP Protection Profile for Certificate Authority (PP-CA) v2.1** compl
 | **11** | Protocol Validation | ✅ DONE | 100% | - | Phase 8 | 12, 14 |
 | **12** | Service Integration | ✅ DONE | 100% | - | 8, 11 | 14 |
 | **13** | Advanced Features | ⚪ LOW | 0% | 2-3 weeks | 12, 14 | None |
-| **14** | Testing & Hardening | 🔴 HIGH | 85% | 1 week | 8, 10, 11, 12 | Production |
+| **14** | Testing & Hardening | 🟡 MEDIUM | 95% | Few days | 8, 10, 11, 12 | Production |
 | **15** | NIAP Compliance | 🔴 HIGH | 45% | 3-4 weeks | All | ATO |
 
 **Legend**:
