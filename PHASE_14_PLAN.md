@@ -57,6 +57,7 @@ Phase 14 establishes production readiness through comprehensive testing, securit
    - [ ] Test: Multi-domain SAN certificates
 
 **Files to Create**:
+
 - `tests/integration/docker-compose.yml`
 - `tests/integration/fixtures/`
 - `tests/integration/acme_e2e_test.rs`
@@ -102,6 +103,7 @@ Phase 14 establishes production readiness through comprehensive testing, securit
    - [ ] Test: Error scenarios (insufficient shares, invalid agent)
 
 **Files to Create**:
+
 - `tests/integration/est_e2e_test.rs`
 - `tests/integration/ca_core_test.rs`
 - `tests/integration/ocsp_test.rs`
@@ -143,6 +145,7 @@ Phase 14 establishes production readiness through comprehensive testing, securit
    - [ ] Document findings and remediation
 
 **Tools to Install**:
+
 ```bash
 cargo install cargo-audit
 cargo install cargo-deny
@@ -150,6 +153,7 @@ cargo install cargo-fuzz
 ```
 
 **Files to Create**:
+
 - `fuzz/fuzz_targets/fuzz_certificate_parse.rs`
 - `fuzz/fuzz_targets/fuzz_csr_parse.rs`
 - `fuzz/fuzz_targets/fuzz_jws_validate.rs`
@@ -184,12 +188,14 @@ cargo install cargo-fuzz
    - [ ] Document performance baselines
 
 **Tools to Install**:
+
 ```bash
 cargo install cargo-criterion
 # Install k6: https://k6.io/docs/getting-started/installation/
 ```
 
 **Files to Create**:
+
 - `benches/certificate_issuance.rs`
 - `benches/ocsp_response.rs`
 - `benches/signature_operations.rs`
@@ -233,6 +239,7 @@ cargo install cargo-criterion
    - [ ] Create architecture diagrams
 
 **Files to Create**:
+
 - `Dockerfile.ca`, `Dockerfile.acme`, `Dockerfile.est`, etc.
 - `docker-compose.prod.yml`
 - `k8s/deployments/*.yaml`
@@ -483,6 +490,7 @@ cargo install cargo-geiger  # Unsafe code detection
 **Phase 15: NIAP Compliance Documentation** (3-4 weeks)
 
 After Phase 14 completion, focus shifts to:
+
 1. Security Target (ST) document
 2. SFR implementation evidence
 3. ATO evidence package (SSP, SAR, POA&M)

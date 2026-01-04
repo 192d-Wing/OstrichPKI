@@ -11,16 +11,19 @@ The integration tests validate the PKCS#11 provider implementation against a rea
 ### Install SoftHSM
 
 **macOS:**
+
 ```bash
 brew install softhsm
 ```
 
 **Ubuntu/Debian:**
+
 ```bash
 sudo apt-get install softhsm2
 ```
 
 **RHEL/CentOS/Fedora:**
+
 ```bash
 sudo yum install softhsm    # RHEL/CentOS
 sudo dnf install softhsm    # Fedora
@@ -37,6 +40,7 @@ Run the setup script to automatically configure SoftHSM:
 ```
 
 This script will:
+
 - Detect your operating system
 - Locate the SoftHSM library
 - Create SoftHSM configuration file
@@ -56,11 +60,13 @@ export SOFTHSM2_CONF=$HOME/.config/softhsm2/softhsm2.conf
 If you prefer manual setup:
 
 1. **Create SoftHSM configuration directory:**
+
    ```bash
    mkdir -p ~/.config/softhsm2/tokens
    ```
 
 2. **Create SoftHSM configuration file** (`~/.config/softhsm2/softhsm2.conf`):
+
    ```
    directories.tokendir = /Users/youruser/.config/softhsm2/tokens
    objectstore.backend = file
@@ -69,17 +75,20 @@ If you prefer manual setup:
    ```
 
 3. **Set environment variable:**
+
    ```bash
    export SOFTHSM2_CONF=$HOME/.config/softhsm2/softhsm2.conf
    ```
 
 4. **Initialize test token:**
+
    ```bash
    softhsm2-util --init-token --slot 0 --label "OstrichPKI-Test" \
      --so-pin 12345678 --pin 1234
    ```
 
 5. **Set PKCS11_MODULE_PATH:**
+
    ```bash
    # macOS (Homebrew Intel)
    export PKCS11_MODULE_PATH=/usr/local/lib/softhsm/libsofthsm2.so
@@ -187,6 +196,7 @@ These tests validate compliance with:
 ### "SoftHSM library not found"
 
 Ensure PKCS11_MODULE_PATH is set correctly:
+
 ```bash
 # Find SoftHSM library
 find /usr -name "libsofthsm2.so" 2>/dev/null
@@ -198,11 +208,13 @@ export PKCS11_MODULE_PATH=/path/to/libsofthsm2.so
 ### "Token not found" or "Slot not found"
 
 Verify token is initialized:
+
 ```bash
 softhsm2-util --show-slots
 ```
 
 You should see:
+
 ```
 Slot 0
     Slot info:
@@ -218,6 +230,7 @@ If not, run the setup script again.
 ### "CKR_PIN_INCORRECT"
 
 The test uses PIN `1234`. If you initialized the token with a different PIN, either:
+
 1. Re-initialize the token with PIN `1234`
 2. Modify the `init_test_provider()` function in the test file
 
@@ -228,6 +241,7 @@ This usually indicates a session leak. Ensure you're running with `--test-thread
 ### "CKR_SESSION_COUNT" or "CKR_SESSION_EXISTS"
 
 Too many open sessions. Restart SoftHSM:
+
 ```bash
 # Delete and reinitialize token
 softhsm2-util --delete-token --token "OstrichPKI-Test"
@@ -241,13 +255,16 @@ To test with a real FIPS 140-3 validated HSM instead of SoftHSM:
 1. Install HSM vendor's PKCS#11 library
 2. Initialize HSM token with appropriate SO-PIN and user PIN
 3. Set PKCS11_MODULE_PATH to vendor library:
+
    ```bash
    export PKCS11_MODULE_PATH=/path/to/vendor/pkcs11.so
    ```
+
 4. Update `init_test_provider()` in test file with correct slot ID and PIN
 5. Run tests
 
 Example HSM vendors:
+
 - **Thales Luna HSM:** `/usr/lib/libCryptoki2.so`
 - **Utimaco CryptoServer:** `/opt/utimaco/lib/libcs_pkcs11.so`
 - **YubiHSM 2:** `/usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so`
@@ -292,6 +309,7 @@ test:pkcs11:
 - **Test Keys:** All keys generated during tests are for testing only and have no cryptographic strength guarantees.
 - **Token Isolation:** Tests should run in isolated environments (containers, VMs) to prevent cross-contamination with production keys.
 - **Key Cleanup:** Tests generate many keys in the HSM. Periodically reinitialize the test token to clean up:
+
   ```bash
   ./tests/setup_softhsm.sh
   ```

@@ -526,11 +526,13 @@ cargo tarpaulin --workspace --out Html
 ### 8.2 CI/CD Pipeline
 
 Tests are automatically executed on:
+
 - Every pull request
 - Every merge to main branch
 - Nightly builds
 
 **Pipeline Stages:**
+
 1. Lint (`cargo fmt --check`, `cargo clippy`)
 2. Unit Tests (`cargo test`)
 3. Security Scan (`cargo audit`, `cargo deny`)

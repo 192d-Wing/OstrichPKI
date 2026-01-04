@@ -15,6 +15,7 @@ All core cryptographic operations have been successfully implemented and tested.
 #### [`pkcs11/mod.rs`](src/pkcs11/mod.rs) - Main PKCS#11 Provider (1,123 lines)
 
 **Key Features:**
+
 - Thread-safe session management with on-demand session creation
 - Support for multiple concurrent operations
 - Automatic session cleanup and logout
@@ -92,6 +93,7 @@ All core cryptographic operations have been successfully implemented and tested.
 #### [`tests/setup_softhsm.sh`](tests/setup_softhsm.sh) - Automated Setup Script (147 lines)
 
 **Features:**
+
 - Automatic OS detection (macOS/Linux)
 - SoftHSM installation verification
 - Token directory configuration
@@ -102,6 +104,7 @@ All core cryptographic operations have been successfully implemented and tested.
 #### [`tests/README.md`](tests/README.md) - Comprehensive Documentation
 
 **Contents:**
+
 - Prerequisites and installation instructions
 - Automated and manual setup procedures
 - Test execution commands
@@ -318,6 +321,7 @@ cargo test --test pkcs11_integration_test test_rsa2048_key_generation -- --test-
 ## Acknowledgments
 
 This implementation follows industry best practices from:
+
 - NIST Special Publications (800-53, 800-38F)
 - OASIS PKCS#11 Cryptographic Token Interface Standard
 - NIAP Protection Profile for Certificate Authority v2.1

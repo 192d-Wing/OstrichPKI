@@ -65,6 +65,7 @@ make ci-full
 **Location**: Inline tests and `tests/` directories within each crate.
 
 **Example**:
+
 ```rust
 #[cfg(test)]
 mod tests {
@@ -79,6 +80,7 @@ mod tests {
 ```
 
 **Running**:
+
 ```bash
 # All unit tests
 cargo test --workspace --lib
@@ -97,12 +99,14 @@ cargo test test_certificate_serial_generation
 **Location**: `tests/integration/`
 
 **Coverage**:
+
 - ACME: Account → Order → Challenge → Finalize → Certificate
 - EST: mTLS Auth → Enroll → Certificate
 - CA: CSR → Issuance → Revocation → CRL
 - OCSP: Certificate Status Queries
 
 **Running**:
+
 ```bash
 # All integration tests
 make test-integration
@@ -122,6 +126,7 @@ docker-compose down
 **Purpose**: Ensure code examples in documentation compile and run.
 
 **Running**:
+
 ```bash
 make test-doc
 # or
@@ -133,6 +138,7 @@ cargo test --workspace --doc
 **Purpose**: Test invariants with randomly generated inputs.
 
 **Example**:
+
 ```rust
 use proptest::prelude::*;
 
@@ -208,6 +214,7 @@ export RUST_BACKTRACE="1"
 ### Prerequisites
 
 1. **PostgreSQL Database**:
+
    ```bash
    # Using Docker
    docker run -d \
@@ -222,6 +229,7 @@ export RUST_BACKTRACE="1"
    ```
 
 2. **SoftHSM** (for PKCS#11 tests):
+
    ```bash
    make install-softhsm
    ```

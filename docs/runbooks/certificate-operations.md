@@ -165,7 +165,7 @@ kubectl set env deployment/ostrich-pki-ca \
   -n ostrich-pki
 ```
 
-3. **Post-Rotation:**
+1. **Post-Rotation:**
    - [ ] Verify new CA certificate published
    - [ ] Cross-signed certificate distributed
    - [ ] OCSP responder updated
@@ -216,6 +216,7 @@ curl "http://localhost:8080/api/v1/certificates?expires_within=30d"
 ### Renewal Notifications
 
 The system automatically sends expiration notifications at:
+
 - 60 days before expiry (informational)
 - 30 days before expiry (warning)
 - 7 days before expiry (critical)

@@ -264,6 +264,7 @@ softhsm2-util --show-slots
 ### Hardware HSM (Production)
 
 See vendor-specific documentation for:
+
 - Thales Luna Network HSM
 - AWS CloudHSM
 - Azure Dedicated HSM
@@ -282,6 +283,7 @@ See vendor-specific documentation for:
 ### Systemd Service Files
 
 **CA Service** (`/etc/systemd/system/ostrich-ca.service`):
+
 ```ini
 [Unit]
 Description=OstrichPKI Certificate Authority Service
@@ -309,6 +311,7 @@ WantedBy=multi-user.target
 ```
 
 **ACME Service** (`/etc/systemd/system/ostrich-acme.service`):
+
 ```ini
 [Unit]
 Description=OstrichPKI ACME Service
@@ -434,11 +437,13 @@ See [HSM_KEY_BACKUP.md](./HSM_KEY_BACKUP.md) for HSM-specific key backup procedu
 ### Recovery Procedures
 
 1. **Database Recovery**:
+
    ```bash
    gunzip < backup_YYYYMMDD.sql.gz | psql -U ostrich ostrich_pki
    ```
 
 2. **Service Recovery**:
+
    ```bash
    sudo systemctl restart ostrich-*
    ```
@@ -481,6 +486,7 @@ sudo ufw deny 50051/tcp  # CA gRPC (internal only)
 ### Common Issues
 
 1. **HSM Connection Failure**
+
    ```bash
    # Check PKCS#11 module
    pkcs11-tool --module $HSM_MODULE_PATH --show-info
@@ -490,6 +496,7 @@ sudo ufw deny 50051/tcp  # CA gRPC (internal only)
    ```
 
 2. **Database Connection Issues**
+
    ```bash
    # Test connection
    psql -U ostrich -h localhost -d ostrich_pki -c "SELECT 1;"
@@ -498,6 +505,7 @@ sudo ufw deny 50051/tcp  # CA gRPC (internal only)
    ```
 
 3. **Service Won't Start**
+
    ```bash
    # Check logs
    journalctl -u ostrich-ca -f

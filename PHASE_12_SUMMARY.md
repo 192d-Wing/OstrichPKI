@@ -274,16 +274,19 @@ tonic = { version = "0.12", features = ["tls", "channel"] }
 ### Crate-Specific Dependencies
 
 **ostrich-common**:
+
 - `tokio` - Async runtime for gRPC
 - `tonic` - gRPC client framework
 
 **ostrich-acme**:
+
 - `ostrich-protocol` - CA service protobuf definitions
 - `tonic` - gRPC client
 - `x509-cert` - CSR parsing
 - `der` - DER encoding
 
 **ostrich-est**:
+
 - `ostrich-protocol` - CA service protobuf definitions
 - `tonic` - gRPC client
 - `x509-cert` - CSR parsing
@@ -296,6 +299,7 @@ tonic = { version = "0.12", features = ["tls", "channel"] }
 ### Compilation
 
 ✅ **All crates compile successfully**:
+
 ```bash
 cargo check --workspace
 # Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.21s
@@ -304,12 +308,14 @@ cargo check --workspace
 ### Code Quality
 
 ✅ **Clippy passes** (1 minor warning - unused import):
+
 ```bash
 cargo clippy --workspace
 # warning: unused import: `Repository` (ostrich-ca)
 ```
 
 ✅ **Code formatted**:
+
 ```bash
 cargo fmt --all
 ```
@@ -323,6 +329,7 @@ cargo fmt --all
 ### Integration Tests
 
 ⏳ **Deferred to Phase 14** (Testing & Hardening):
+
 - End-to-end ACME order finalization with real CA service
 - EST enrollment with actual mTLS client authentication
 - Circuit breaker behavior under CA service failures
@@ -335,6 +342,7 @@ cargo fmt --all
 ### mTLS Authentication
 
 All CA communication requires mutual TLS:
+
 - Client certificates validated by CA service
 - CA certificate verified by clients
 - SNI hostname validation
@@ -343,6 +351,7 @@ All CA communication requires mutual TLS:
 ### Circuit Breaker Protection
 
 Prevents cascading failures:
+
 - Tracks consecutive failures (threshold: 5)
 - Blocks requests when open (timeout: 60s)
 - Tests recovery in half-open state
@@ -351,6 +360,7 @@ Prevents cascading failures:
 ### Retry Safety
 
 Only retries safe operations:
+
 - **Retryable**: `Unavailable`, `DeadlineExceeded`, `ResourceExhausted`, `Aborted`
 - **Non-Retryable**: `InvalidArgument`, `NotFound`, `PermissionDenied`, `Unauthenticated`
 - Exponential backoff prevents thundering herd (100ms → 5s)
@@ -358,6 +368,7 @@ Only retries safe operations:
 ### Audit Trails
 
 Complete requestor tracking:
+
 - `issuer_service`: Which service issued the certificate ("ACME", "EST", etc.)
 - `requestor`: Identity of requestor (account ID, client ID, etc.)
 - `metadata`: Service-specific context (order ID, enrollment ID, etc.)
@@ -472,6 +483,7 @@ The following items are documented for future phases:
 **Phase 12 is complete** with core service integration implemented and all code compiling successfully.
 
 The OstrichPKI system now has:
+
 - ✅ **Robust gRPC Infrastructure** with circuit breaker and retry logic
 - ✅ **Complete ACME Integration** for automated certificate issuance
 - ✅ **Complete EST Integration** for enterprise enrollment

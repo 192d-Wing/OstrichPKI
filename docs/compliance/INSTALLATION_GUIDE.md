@@ -86,6 +86,7 @@ This document provides secure installation procedures for OstrichPKI in complian
 ### 2.4 HSM Requirements
 
 Supported HSMs:
+
 - Thales Luna Network HSM 7 (FIPS 140-2 Level 3)
 - AWS CloudHSM (FIPS 140-2 Level 3)
 - Azure Dedicated HSM (FIPS 140-2 Level 3)

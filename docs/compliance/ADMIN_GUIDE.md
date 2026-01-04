@@ -31,6 +31,7 @@ This document provides operational guidance for administrators and operators of 
 ### 1.2 Scope
 
 This guide covers:
+
 - Role-based access control configuration
 - Certificate Authority operations
 - Key management procedures
@@ -41,6 +42,7 @@ This guide covers:
 ### 1.3 Prerequisites
 
 Before using this guide, ensure:
+
 - OstrichPKI is installed per [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md)
 - HSM is initialized and configured
 - Database is operational

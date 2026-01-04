@@ -97,10 +97,13 @@ When fuzzing finds a crash:
 
 1. The crashing input is saved to `artifacts/fuzz_<target>/`
 2. Reproduce the crash:
+
    ```bash
    cargo +nightly fuzz run fuzz_der_certificate artifacts/fuzz_der_certificate/crash-<hash>
    ```
+
 3. Debug with sanitizers:
+
    ```bash
    # Address sanitizer (memory safety)
    cargo +nightly fuzz run fuzz_der_certificate --sanitizer=address
@@ -108,8 +111,10 @@ When fuzzing finds a crash:
    # Undefined behavior sanitizer
    cargo +nightly fuzz run fuzz_der_certificate --sanitizer=undefined
    ```
+
 4. Fix the bug in the source code
 5. Verify the fix:
+
    ```bash
    cargo +nightly fuzz run fuzz_der_certificate artifacts/fuzz_der_certificate/crash-<hash>
    ```

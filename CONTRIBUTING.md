@@ -31,6 +31,7 @@ This project follows [Semantic Versioning 2.0.0](https://semver.org/):
 ### Version Update Process
 
 1. **Update workspace version** in root `Cargo.toml`:
+
    ```toml
    [workspace.package]
    version = "0.X.0"  # Update this line
@@ -43,6 +44,7 @@ This project follows [Semantic Versioning 2.0.0](https://semver.org/):
    - Update version links at bottom of file
 
 3. **Commit with chore: prefix**:
+
    ```bash
    git commit -m "chore: bump version to 0.X.0 and update CHANGELOG"
    ```
@@ -86,6 +88,7 @@ Follow [Keep a Changelog](https://keepachangelog.com/) format:
    - Between sections
 
 3. **Crate documentation:**
+
    ```markdown
    ##### ostrich-ca
 
@@ -120,6 +123,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 ### Scope
 
 Use crate names or service names:
+
 - `feat(ca): add certificate issuance`
 - `fix(ocsp): handle missing certificates`
 - `docs(readme): update installation guide`
@@ -138,11 +142,13 @@ Use /new-endpoint instead.
 ## Development Workflow
 
 1. **Create feature branch**:
+
    ```bash
    git checkout -b feature/my-feature
    ```
 
 2. **Make changes and commit**:
+
    ```bash
    cargo fmt --all
    cargo clippy --all-targets -- -D warnings
@@ -158,6 +164,7 @@ Use /new-endpoint instead.
    - Bump version if adding features
 
 4. **Merge to main**:
+
    ```bash
    git checkout main
    git merge feature/my-feature

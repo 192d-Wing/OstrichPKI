@@ -42,6 +42,7 @@ When implementing this PKI system, key architectural components will likely incl
 ## Dependencies to Consider
 
 Common Rust PKI/crypto crates:
+
 - `rustls` - TLS library
 - `x509-parser` or `x509-cert` - X.509 certificate parsing
 - `ring` or `rust-crypto` - Cryptographic primitives
@@ -105,33 +106,39 @@ This system is designed for Authority to Operate (ATO) readiness. All code must 
 When writing code, ensure:
 
 1. **Audit everything**: Every state change must emit an audit event
+
    ```rust
    audit_log.emit(AuditEvent::CertificateIssued { ... }).await;
    ```
 
 2. **Validate all inputs**: Never trust external data
+
    ```rust
    let csr = Csr::parse(&input).map_err(|e| ValidationError::InvalidCsr(e))?;
    csr.verify_signature()?;
    ```
 
 3. **Protect secrets in memory**: Use zeroize for all sensitive data
+
    ```rust
    use zeroize::Zeroizing;
    let pin = Zeroizing::new(get_pin());
    ```
 
 4. **Enforce authentication**: All endpoints require authentication except OCSP/CRL
+
    ```rust
    async fn handler(auth: MtlsAuth, ...) -> Result<...> { }
    ```
 
 5. **Log with context**: Include request ID, actor, resource in all logs
+
    ```rust
    tracing::info!(request_id = %req_id, actor = %user, "certificate issued");
    ```
 
 6. **Fail secure**: On error, deny access and log the failure
+
    ```rust
    .unwrap_or_else(|e| { audit_log.emit(AccessDenied { ... }); Err(Forbidden) })
    ```
@@ -139,6 +146,7 @@ When writing code, ensure:
 ### ATO Documentation Artifacts
 
 The codebase should support generation of:
+
 - **System Security Plan (SSP)** evidence via code comments and audit logs
 - **Security Assessment Report (SAR)** evidence via test results
 - **Plan of Action and Milestones (POA&M)** tracking via issues/TODO comments marked `// POAM:`
@@ -147,6 +155,7 @@ The codebase should support generation of:
 ### Control Implementation Tracking
 
 Mark control implementations in code with:
+
 ```rust
 // NIST 800-53: AU-3 - Audit record contains required fields
 // NIST 800-53: SC-13 - Using FIPS-validated algorithm via HSM
@@ -288,6 +297,7 @@ All protocol implementations must strictly follow these RFCs:
 ### Compliance Tracking
 
 Mark RFC compliance in code:
+
 ```rust
 // RFC 5280 §4.1.2.2 - Serial number must be positive integer ≤ 20 octets
 // RFC 6960 §4.2.1 - OCSP response must include producedAt

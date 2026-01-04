@@ -212,6 +212,7 @@ webpki-roots = "0.26"
 ### Crate-Specific Dependencies
 
 **ostrich-acme**:
+
 - `trust-dns-resolver` - DNS TXT lookups
 - `tokio-rustls` - TLS client for TLS-ALPN-01
 - `rustls` - TLS configuration
@@ -219,6 +220,7 @@ webpki-roots = "0.26"
 - `webpki-roots` - Root CA certificates
 
 **ostrich-est**:
+
 - `rustls` - TLS server configuration
 - `tokio-rustls` - TLS stream handling
 - `rustls-pemfile` - PEM file parsing
@@ -231,6 +233,7 @@ webpki-roots = "0.26"
 ### Compilation
 
 ✅ **All crates compile successfully**:
+
 ```bash
 cargo check --workspace
 # Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.70s
@@ -239,6 +242,7 @@ cargo check --workspace
 ### Code Quality
 
 ✅ **Clippy passes** (2 minor unrelated warnings):
+
 ```bash
 cargo clippy --workspace
 # warning: using `clone` on type `Slot` which implements the `Copy` trait (ostrich-crypto)
@@ -246,6 +250,7 @@ cargo clippy --workspace
 ```
 
 ✅ **Code formatted**:
+
 ```bash
 cargo fmt --all
 ```
@@ -260,6 +265,7 @@ cargo fmt --all
 ### Integration Tests
 
 ⏳ **Deferred to Phase 14** (Testing & Hardening):
+
 - End-to-end ACME challenge validation with real DNS/TLS servers
 - mTLS authentication with actual TLS server
 - Performance benchmarking for validation operations
@@ -303,6 +309,7 @@ fn is_private_ip_domain(domain: &str) -> bool {
 ### Fail-Secure Design
 
 All validation methods fail securely:
+
 - Invalid signature → Reject request, log security event
 - Challenge validation timeout → Mark challenge as "invalid"
 - mTLS failure → HTTP 401 Unauthorized
@@ -387,6 +394,7 @@ The following items are documented for Phase 12 (Service Integration):
 **Phase 11 is complete** with all protocol validation and security mechanisms implemented according to RFC specifications and NIST compliance requirements.
 
 The OstrichPKI system now has:
+
 - ✅ **Full ACME challenge validation** (HTTP-01, DNS-01, TLS-ALPN-01)
 - ✅ **mTLS authentication framework** for EST enrollment
 - ✅ **Production-ready security** (SSRF protection, timeouts, fail-secure design)

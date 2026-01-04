@@ -18,6 +18,7 @@ All OstrichPKI services expose standardized health and readiness check endpoints
 **Use Case**: Kubernetes uses this to restart pods that become unresponsive.
 
 **Example Response**:
+
 ```json
 {
   "status": "healthy",
@@ -31,12 +32,14 @@ All OstrichPKI services expose standardized health and readiness check endpoints
 **Purpose**: Determine if the service is ready to handle traffic.
 
 **Response**:
+
 - **200 OK**: Service is ready (all dependencies accessible)
 - **503 SERVICE_UNAVAILABLE**: Service is not ready (dependencies unavailable)
 
 **Use Case**: Kubernetes uses this to control traffic routing.
 
 **Example Response (Ready)**:
+
 ```json
 {
   "status": "ready",
@@ -50,6 +53,7 @@ All OstrichPKI services expose standardized health and readiness check endpoints
 ```
 
 **Example Response (Not Ready)**:
+
 ```json
 {
   "status": "not_ready",
@@ -155,6 +159,7 @@ Health check endpoints can be monitored for:
 - **Error rate**: Should be 0% for `/health`, <1% for `/ready`
 
 Alert if:
+
 - `/health` returns non-200 (service crashed)
 - `/ready` returns 503 for >5 minutes (prolonged degradation)
 - Response time >1s (performance issue)

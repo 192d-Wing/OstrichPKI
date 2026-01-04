@@ -12,6 +12,7 @@
 Phase 14 establishes comprehensive testing, security hardening, and operational readiness infrastructure for OstrichPKI. This phase is critical for production deployment and NIAP compliance.
 
 **Key Achievements**:
+
 - ✅ CI/CD pipeline with GitHub Actions (7 stages, multi-OS testing)
 - ✅ Security scanning infrastructure (`cargo audit`, `cargo deny`, Gitleaks)
 - ✅ Fuzzing framework (7 fuzz targets for critical parsers)
@@ -20,6 +21,7 @@ Phase 14 establishes comprehensive testing, security hardening, and operational 
 - ✅ Comprehensive testing documentation ([TESTING.md](TESTING.md))
 
 **Remaining Work**:
+
 - ⏳ Complete integration test implementations
 - ⏳ Add health check endpoints to all services
 - ⏳ Docker/Kubernetes deployment configurations
@@ -48,6 +50,7 @@ Phase 14 establishes comprehensive testing, security hardening, and operational 
 **File**: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
 
 **7-Stage Pipeline**:
+
 1. **Lint**: Code formatting (`cargo fmt`) + Clippy linting
 2. **Security**: Dependency auditing + license checking + secrets scanning
 3. **Build & Test**: Multi-OS (Ubuntu, macOS), multi-Rust (stable, nightly)
@@ -70,6 +73,7 @@ Phase 14 establishes comprehensive testing, security hardening, and operational 
 **File**: [`deny.toml`](../deny.toml)
 
 **Policies Enforced**:
+
 - ❌ **Deny**: Security vulnerabilities (0 tolerance)
 - ❌ **Deny**: Yanked crates
 - ❌ **Deny**: Unlicensed dependencies
@@ -79,6 +83,7 @@ Phase 14 establishes comprehensive testing, security hardening, and operational 
 - ✅ **Allow**: Permissive licenses only (MIT, Apache-2.0, BSD, ISC)
 
 **Checks**:
+
 - `cargo deny check advisories` - Security vulnerabilities
 - `cargo deny check licenses` - License compliance
 - `cargo deny check bans` - Banned crates
@@ -113,6 +118,7 @@ Phase 14 establishes comprehensive testing, security hardening, and operational 
 **CI Integration**: Not yet scheduled (manual runs recommended initially)
 
 **Usage**:
+
 ```bash
 cargo +nightly fuzz run fuzz_der_certificate -- -max_total_time=60
 ```
@@ -136,6 +142,7 @@ cargo +nightly fuzz run fuzz_der_certificate -- -max_total_time=60
 **Baseline Comparison**: Detect performance regressions
 
 **Performance Targets**:
+
 - Certificate signing (HSM): <50ms (p99)
 - Certificate signing (software): <10ms (p99)
 - OCSP response: <100ms (p99)
@@ -148,6 +155,7 @@ cargo +nightly fuzz run fuzz_der_certificate -- -max_total_time=60
 **File**: [`Makefile`](../Makefile)
 
 **50+ Commands** organized into categories:
+
 - **Build**: `build`, `build-release`, `clean`
 - **Test**: `test`, `test-unit`, `test-integration`, `test-doc`
 - **Quality**: `fmt`, `clippy`, `check`
@@ -162,6 +170,7 @@ cargo +nightly fuzz run fuzz_der_certificate -- -max_total_time=60
 - **Pre-commit**: `pre-commit`, `pre-push`
 
 **Example**:
+
 ```bash
 make ci-full  # Run full CI pipeline locally
 make security # Run all security checks
@@ -173,6 +182,7 @@ make setup    # Complete development environment setup
 **File**: [`docs/TESTING.md`](TESTING.md)
 
 **Contents**:
+
 - Quick start guide
 - Test categories (unit, integration, doc, property-based)
 - Running tests (Make, cargo, filters, env vars)
@@ -195,11 +205,13 @@ make setup    # Complete development environment setup
 **Status**: Test structure exists, JWS signing implementation needed
 
 **Files**:
+
 - `tests/integration/acme_e2e_test.rs` - Needs JWS signature implementation
 - `tests/integration/est_e2e_test.rs` - Needs completion
 - `tests/integration/ca_core_test.rs` - Needs completion
 
 **TODO**:
+
 - [ ] Implement proper JWS signing for ACME tests
 - [ ] Complete EST mTLS client authentication tests
 - [ ] Add CA full workflow tests (issuance → revocation → CRL)
@@ -231,6 +243,7 @@ async fn readiness_check(db: Database) -> Result<StatusCode> {
 ```
 
 **Services Needing Health Checks**:
+
 - [ ] CA service (gRPC)
 - [ ] ACME service (HTTP)
 - [ ] EST service (HTTPS)
@@ -246,6 +259,7 @@ async fn readiness_check(db: Database) -> Result<StatusCode> {
 **Missing**: Dockerfiles for each service
 
 **Required**:
+
 - [ ] `Dockerfile.ca` - CA service
 - [ ] `Dockerfile.acme` - ACME service
 - [ ] `Dockerfile.est` - EST service
@@ -256,6 +270,7 @@ async fn readiness_check(db: Database) -> Result<StatusCode> {
 - [ ] `.dockerignore` - Optimize build context
 
 **Multi-stage Build Pattern**:
+
 ```dockerfile
 # Builder stage
 FROM rust:1.92-alpine AS builder
@@ -276,6 +291,7 @@ ENTRYPOINT ["/usr/local/bin/ostrich-ca"]
 ### 4. Kubernetes Manifests (0% Complete)
 
 **Required**:
+
 - [ ] Deployments (one per service)
 - [ ] Services (ClusterIP for internal, LoadBalancer for ACME/EST)
 - [ ] ConfigMaps (configuration files)
@@ -286,6 +302,7 @@ ENTRYPOINT ["/usr/local/bin/ostrich-ca"]
 - [ ] HorizontalPodAutoscalers (auto-scaling)
 
 **Helm Chart** (optional but recommended):
+
 - [ ] `Chart.yaml`
 - [ ] `values.yaml` - Configuration
 - [ ] `templates/` - K8s manifests
@@ -322,6 +339,7 @@ hsm_operations_total{operation}
 ```
 
 **Implementation**:
+
 - [ ] Add `prometheus` crate dependency
 - [ ] Create metrics registry per service
 - [ ] Export `/metrics` endpoint
@@ -342,6 +360,7 @@ hsm_operations_total{operation}
 **Status**: `tracing` infrastructure exists, needs enhancement
 
 **TODO**:
+
 - [ ] Structured JSON logging for production
 - [ ] Request ID propagation across services
 - [ ] Sensitive data redaction (PINs, passwords, private keys)
@@ -349,6 +368,7 @@ hsm_operations_total{operation}
 - [ ] Log rotation policy
 
 **Example**:
+
 ```rust
 #[instrument(skip(password))]
 async fn authenticate(user: &str, password: &str) -> Result<Token> {
@@ -362,6 +382,7 @@ async fn authenticate(user: &str, password: &str) -> Result<Token> {
 ### 7. Operational Runbooks (0% Complete)
 
 **Required Documentation**:
+
 - [ ] Installation guide (Docker, Kubernetes, bare metal)
 - [ ] Configuration reference
 - [ ] Certificate issuance procedures
@@ -441,6 +462,7 @@ async fn authenticate(user: &str, password: &str) -> Result<Token> {
 ### Dependency Security
 
 **Automated Scanning**:
+
 - ✅ `cargo audit` - Known CVEs (runs daily in CI)
 - ✅ `cargo deny` - License + source verification
 - ✅ Gitleaks - Secrets in code/history
@@ -451,22 +473,26 @@ async fn authenticate(user: &str, password: &str) -> Result<Token> {
 ### Static Analysis
 
 **Linters**:
+
 - ✅ `cargo clippy` - Enforced in CI (`-D warnings`)
 - ✅ `rustfmt` - Code formatting enforced
 
 **Additional Tooling** (recommended):
+
 - ⏳ `cargo-semver-checks` - API compatibility
 - ⏳ SonarQube/Semgrep - Advanced SAST
 
 ### Runtime Security
 
 **Sandboxing** (production deployment):
+
 - ⏳ Run services as non-root user (`USER nobody` in Docker)
 - ⏳ Read-only root filesystem where possible
 - ⏳ Drop unnecessary Linux capabilities
 - ⏳ Seccomp/AppArmor profiles
 
 **Secrets Management**:
+
 - ⏳ HashiCorp Vault integration
 - ⏳ Kubernetes Secrets with encryption at rest
 - ⏳ Rotate database credentials regularly
@@ -550,6 +576,7 @@ async fn authenticate(user: &str, password: &str) -> Result<Token> {
 ### Evidence for ATO Package
 
 **Generated Artifacts**:
+
 - ✅ CI/CD pipeline configuration
 - ✅ Test execution logs (from CI runs)
 - ✅ Security scan reports (`cargo audit`, `cargo deny`)
@@ -559,6 +586,7 @@ async fn authenticate(user: &str, password: &str) -> Result<Token> {
 - ⏳ Vulnerability assessment report
 
 **Documentation**:
+
 - ✅ Testing strategy ([TESTING.md](TESTING.md))
 - ✅ Security controls ([deny.toml](../deny.toml))
 - ⏳ Operational procedures (Phase 14 remaining work)
@@ -591,32 +619,32 @@ async fn authenticate(user: &str, password: &str) -> Result<Token> {
 
 ### Medium-Term (Weeks 3-4)
 
-6. **Operational Documentation** (4 days)
+1. **Operational Documentation** (4 days)
    - Installation guide
    - Runbooks for common operations
    - Disaster recovery procedures
 
-7. **Load Testing** (2 days)
+2. **Load Testing** (2 days)
    - `wrk` or `k6` for HTTP endpoints
    - `ghz` for gRPC endpoints
    - Verify performance targets
 
-8. **Security Hardening** (3 days)
+3. **Security Hardening** (3 days)
    - Container security (non-root, read-only FS)
    - Network policies
    - Secrets management (Vault integration)
 
 ### Long-Term (Post-Phase 14)
 
-9. **Continuous Fuzzing** (ongoing)
+1. **Continuous Fuzzing** (ongoing)
    - Set up OSS-Fuzz integration
    - 24/7 fuzzing in cloud
 
-10. **Performance Regression Detection** (ongoing)
+2. **Performance Regression Detection** (ongoing)
     - Benchmark comparison in CI
     - Alert on >10% regression
 
-11. **Chaos Engineering** (Phase 15+)
+3. **Chaos Engineering** (Phase 15+)
     - Simulate service failures
     - Test circuit breakers, retry logic
 

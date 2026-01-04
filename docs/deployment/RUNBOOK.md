@@ -245,6 +245,7 @@ ostrich-cli hsm backup \
 **Severity: CRITICAL**
 
 1. **Immediate Actions (< 15 minutes)**
+
    ```bash
    # Revoke compromised certificate immediately
    ostrich-cli cert revoke \

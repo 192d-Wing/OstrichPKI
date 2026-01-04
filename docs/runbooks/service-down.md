@@ -72,22 +72,26 @@ kubectl get pods -n ostrich-pki -l app.kubernetes.io/name=postgresql
 ### Issue: Pod CrashLoopBackOff
 
 **Symptoms:**
+
 - Pod status shows `CrashLoopBackOff`
 - Logs show application startup failures
 
 **Resolution:**
 
 1. Check for configuration errors:
+
 ```bash
 kubectl describe pod -n ostrich-pki <pod-name> | grep -A5 "Environment"
 ```
 
-2. Verify secrets are mounted:
+1. Verify secrets are mounted:
+
 ```bash
 kubectl get secret -n ostrich-pki ostrich-pki-db -o yaml
 ```
 
-3. Check for missing dependencies:
+1. Check for missing dependencies:
+
 ```bash
 kubectl logs -n ostrich-pki <pod-name> --previous | grep -i "error\|panic\|fatal"
 ```
@@ -95,22 +99,26 @@ kubectl logs -n ostrich-pki <pod-name> --previous | grep -i "error\|panic\|fatal
 ### Issue: Database Connection Failed
 
 **Symptoms:**
+
 - Logs show `database connection refused` or `connection timeout`
 - Pod stuck in initialization
 
 **Resolution:**
 
 1. Verify PostgreSQL is running:
+
 ```bash
 kubectl get pods -n ostrich-pki -l app.kubernetes.io/name=postgresql
 ```
 
-2. Check database credentials:
+1. Check database credentials:
+
 ```bash
 kubectl get secret -n ostrich-pki ostrich-pki-db -o jsonpath='{.data.password}' | base64 -d
 ```
 
-3. Test connectivity:
+1. Test connectivity:
+
 ```bash
 kubectl run -n ostrich-pki psql-test --rm -it --image=postgres:16 -- psql "postgresql://ostrich:<password>@ostrich-pki-postgresql:5432/ostrich_pki"
 ```
@@ -118,19 +126,22 @@ kubectl run -n ostrich-pki psql-test --rm -it --image=postgres:16 -- psql "postg
 ### Issue: Out of Memory (OOMKilled)
 
 **Symptoms:**
+
 - Pod terminated with reason `OOMKilled`
 - `kubectl describe pod` shows memory limit exceeded
 
 **Resolution:**
 
 1. Increase memory limits in deployment:
+
 ```yaml
 resources:
   limits:
     memory: 1Gi  # Increase from default 512Mi
 ```
 
-2. Apply changes:
+1. Apply changes:
+
 ```bash
 kubectl apply -f deploy/kubernetes/ca-deployment.yaml
 ```
@@ -138,22 +149,25 @@ kubectl apply -f deploy/kubernetes/ca-deployment.yaml
 ### Issue: Certificate/TLS Errors
 
 **Symptoms:**
+
 - Logs show TLS handshake failures
 - Certificate validation errors
 
 **Resolution:**
 
 1. Check certificate secrets:
+
 ```bash
 kubectl get secret -n ostrich-pki ostrich-pki-ca-certs -o yaml
 ```
 
-2. Verify certificate validity:
+1. Verify certificate validity:
+
 ```bash
 kubectl get secret -n ostrich-pki ostrich-pki-ca-certs -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -text -noout
 ```
 
-3. Regenerate certificates if expired (see certificate rotation runbook)
+1. Regenerate certificates if expired (see certificate rotation runbook)
 
 ## Recovery Procedures
 
@@ -182,17 +196,20 @@ kubectl get pods -n ostrich-pki -l app.kubernetes.io/component=<component>
 If a service cannot be recovered through restarts:
 
 1. Check persistent data:
+
 ```bash
 kubectl get pvc -n ostrich-pki
 ```
 
-2. Verify database integrity:
+1. Verify database integrity:
+
 ```bash
 # Connect to database pod
 kubectl exec -n ostrich-pki ostrich-pki-postgresql-0 -- psql -U ostrich ostrich_pki -c "SELECT count(*) FROM certificates;"
 ```
 
-3. Redeploy if necessary:
+1. Redeploy if necessary:
+
 ```bash
 helm upgrade --install ostrich-pki deploy/helm/ostrich-pki -n ostrich-pki
 ```

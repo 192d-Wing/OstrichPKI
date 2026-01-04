@@ -81,6 +81,7 @@ echo "=== SERVICES STOPPED - AWAIT SECURITY TEAM ==="
    - Preserve HSM audit logs
 
 2. **Forensic Analysis**
+
    ```bash
    # Export all audit logs
    ostrich-cli audit export --all --output /forensics/audit.json
@@ -100,6 +101,7 @@ echo "=== SERVICES STOPPED - AWAIT SECURITY TEAM ==="
 ### Revocation Phase
 
 1. **Revoke Compromised CA**
+
    ```bash
    # This requires offline root CA access
    # Must be performed with Security Officer present
@@ -119,6 +121,7 @@ echo "=== SERVICES STOPPED - AWAIT SECURITY TEAM ==="
    - Contact major relying parties directly
 
 3. **Notify Certificate Holders**
+
    ```bash
    # Generate list of affected certificates
    ostrich-cli cert list --issuer $COMPROMISED_CA --format csv > affected.csv
@@ -244,6 +247,7 @@ ostrich-cli cert issue \
 ### Response Procedure
 
 1. **Identify Affected Service**
+
    ```bash
    # Check all services
    for svc in ostrich-ca ostrich-acme ostrich-est ostrich-ocsp; do
@@ -254,6 +258,7 @@ ostrich-cli cert issue \
    ```
 
 2. **Common Fixes**
+
    ```bash
    # Restart service
    sudo systemctl restart ostrich-$SERVICE

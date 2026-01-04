@@ -86,6 +86,7 @@ Based on ROADMAP.md requirements:
 3. **Ramp-down**: 100 → 0 VUs over 30 seconds
 
 Tests:
+
 - `GET /health` - Health check
 - `GET /directory` - ACME directory (RFC 8555 §7.1.1)
 - `HEAD {newNonce}` - Nonce generation (RFC 8555 §7.2)
@@ -96,6 +97,7 @@ Tests:
 2. **Spike test**: 100 → 500 → 2000 → 500 → 100 requests/second
 
 Tests:
+
 - `GET /health` - Health check
 - `GET /{base64-request}` - OCSP GET (RFC 6960 Appendix A.1)
 - `POST /` - OCSP POST (RFC 6960 Appendix A.1)
@@ -107,6 +109,7 @@ Tests:
 3. **Ramp-down**: 50 → 0 VUs over 30 seconds
 
 Tests:
+
 - `GET /health` - Health check
 - `GET /ready` - Readiness check (includes HSM connectivity)
 
@@ -151,9 +154,11 @@ Then import the k6 dashboard in Grafana (ID: 2587).
 ## Compliance
 
 NIST 800-53 Controls:
+
 - **SA-11**: Developer Security Testing
 - **SC-5**: Denial of Service Protection
 
 RFC Compliance:
+
 - **RFC 8555**: ACME protocol endpoints
 - **RFC 6960**: OCSP response timing

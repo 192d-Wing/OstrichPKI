@@ -736,6 +736,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Foundation Layer (Phase 1)
 
 **ostrich-common**
+
 - Error handling with security-relevant event flagging and public message sanitization
 - Configuration loading from TOML with environment variable support
 - OID definitions for X.509 including Post-Quantum Cryptography algorithms (ML-DSA, ML-KEM, SLH-DSA)
@@ -743,6 +744,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Utility modules: Base64/PEM/DER encoding, secure random generation, time helpers
 
 **ostrich-crypto**
+
 - CryptoProvider trait - unified interface for HSM and software cryptographic operations
 - Support for classical algorithms: RSA, ECDSA, EdDSA
 - Support for Post-Quantum algorithms: ML-DSA, SLH-DSA, ML-KEM (FIPS 203/204/205)
@@ -753,6 +755,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Factory pattern with auto-detection and fallback capabilities
 
 **ostrich-db**
+
 - PostgreSQL connection pooling with TLS enforcement and health checks
 - Repository pattern with generic CRUD operations
 - CertificateRepository for certificate storage, revocation, and validity checks
@@ -768,6 +771,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Audit tables (events with hash chain)
 
 **ostrich-audit**
+
 - Audit event types covering all security-relevant operations
 - Hash chain integrity using SHA-256 for non-repudiation (NIST 800-53: AU-9(3))
 - AuditSink trait for pluggable backends

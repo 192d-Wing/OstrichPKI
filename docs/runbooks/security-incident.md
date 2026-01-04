@@ -24,12 +24,14 @@ This runbook covers security incident response procedures for OstrichPKI infrast
 #### Immediate Actions (First 15 minutes)
 
 1. **Acknowledge the alert**
+
 ```bash
 # Document initial observations
 echo "$(date): Incident detected - $(description)" >> /tmp/incident-log.txt
 ```
 
-2. **Assess scope and severity**
+1. **Assess scope and severity**
+
 ```bash
 # Check for active threats
 kubectl logs -n ostrich-pki -l app.kubernetes.io/name=ostrich-pki --since=1h | \
@@ -39,7 +41,7 @@ kubectl logs -n ostrich-pki -l app.kubernetes.io/name=ostrich-pki --since=1h | \
 curl "http://localhost:8080/api/v1/certificates?issued_after=$(date -d '1 hour ago' -Iseconds)"
 ```
 
-3. **Notify incident response team**
+1. **Notify incident response team**
    - Security: security@example.com
    - On-call: +1-555-0100
    - Management: pkiadmin@example.com
@@ -51,6 +53,7 @@ curl "http://localhost:8080/api/v1/certificates?issued_after=$(date -d '1 hour a
 **CRITICAL: This is the most severe incident type**
 
 1. **Immediately revoke compromised CA certificate:**
+
 ```bash
 # Stop all CA operations
 kubectl scale deployment ostrich-pki-ca -n ostrich-pki --replicas=0
@@ -61,7 +64,8 @@ kubectl exec -n ostrich-pki ostrich-pki-postgresql-0 -- \
   "UPDATE ca_certificates SET status='COMPROMISED', compromise_date=NOW() WHERE id='<ca-id>';"
 ```
 
-2. **Generate emergency CRL:**
+1. **Generate emergency CRL:**
+
 ```bash
 # Start CA in emergency mode (CRL generation only)
 kubectl set env deployment/ostrich-pki-ca EMERGENCY_MODE=true -n ostrich-pki
@@ -71,7 +75,7 @@ kubectl scale deployment ostrich-pki-ca -n ostrich-pki --replicas=1
 curl -X POST http://localhost:8080/api/v1/crl/emergency-generate
 ```
 
-3. **Notify relying parties:**
+1. **Notify relying parties:**
    - Publish CA compromise notice
    - Update trust stores (remove compromised CA)
    - Activate backup/disaster recovery CA if available
@@ -79,13 +83,15 @@ curl -X POST http://localhost:8080/api/v1/crl/emergency-generate
 #### Unauthorized Certificate Issuance
 
 1. **Identify unauthorized certificates:**
+
 ```bash
 # Review recent issuance
 curl "http://localhost:8080/api/v1/certificates?status=valid" | \
   jq '.certificates[] | select(.issued_at > "2024-01-15T00:00:00Z")'
 ```
 
-2. **Revoke suspicious certificates:**
+1. **Revoke suspicious certificates:**
+
 ```bash
 # Revoke with key_compromise reason
 curl -X POST http://localhost:8080/api/v1/certificates/revoke \
@@ -97,7 +103,8 @@ curl -X POST http://localhost:8080/api/v1/certificates/revoke \
   }'
 ```
 
-3. **Block the attack vector:**
+1. **Block the attack vector:**
+
 ```bash
 # Rotate compromised credentials
 kubectl delete secret ostrich-pki-admin-creds -n ostrich-pki
@@ -111,6 +118,7 @@ kubectl rollout restart deployment -n ostrich-pki
 #### Authentication Bypass
 
 1. **Disable affected authentication method:**
+
 ```bash
 kubectl set env deployment/ostrich-pki-ca \
   MTLS_REQUIRED=true \
@@ -118,14 +126,16 @@ kubectl set env deployment/ostrich-pki-ca \
   -n ostrich-pki
 ```
 
-2. **Review all recent authentications:**
+1. **Review all recent authentications:**
+
 ```bash
 # Query audit logs
 curl "http://localhost:8080/api/v1/audit?event_type=authentication&since=24h" | \
   jq '.events[] | select(.outcome == "success")'
 ```
 
-3. **Revoke all sessions:**
+1. **Revoke all sessions:**
+
 ```bash
 kubectl exec -n ostrich-pki ostrich-pki-postgresql-0 -- \
   psql -U ostrich ostrich_pki -c "TRUNCATE sessions;"
@@ -134,6 +144,7 @@ kubectl exec -n ostrich-pki ostrich-pki-postgresql-0 -- \
 ### Phase 3: Eradication
 
 1. **Remove malicious artifacts:**
+
 ```bash
 # Check for unauthorized changes
 kubectl diff -f deploy/kubernetes/
@@ -142,7 +153,8 @@ kubectl diff -f deploy/kubernetes/
 kubectl apply -f deploy/kubernetes/
 ```
 
-2. **Patch vulnerabilities:**
+1. **Patch vulnerabilities:**
+
 ```bash
 # Update to patched version
 helm upgrade ostrich-pki deploy/helm/ostrich-pki \
@@ -150,7 +162,8 @@ helm upgrade ostrich-pki deploy/helm/ostrich-pki \
   -n ostrich-pki
 ```
 
-3. **Harden configuration:**
+1. **Harden configuration:**
+
 ```bash
 # Apply security hardening
 kubectl apply -f deploy/kubernetes/networkpolicy-strict.yaml
@@ -160,13 +173,15 @@ kubectl apply -f deploy/kubernetes/podsecuritypolicy.yaml
 ### Phase 4: Recovery
 
 1. **Restore normal operations:**
+
 ```bash
 # Scale services back to normal
 kubectl scale deployment ostrich-pki-ca -n ostrich-pki --replicas=1
 kubectl scale deployment ostrich-pki-acme -n ostrich-pki --replicas=2
 ```
 
-2. **Verify system integrity:**
+1. **Verify system integrity:**
+
 ```bash
 # Run integrity checks
 kubectl exec -n ostrich-pki ostrich-pki-ca-xxxx -- \
@@ -176,7 +191,8 @@ kubectl exec -n ostrich-pki ostrich-pki-ca-xxxx -- \
 curl http://localhost:8080/api/v1/ca/verify-chain
 ```
 
-3. **Resume monitoring:**
+1. **Resume monitoring:**
+
 ```bash
 # Check all alerts cleared
 kubectl get prometheusrule -n ostrich-pki -o yaml | grep "alertname"
@@ -191,6 +207,7 @@ kubectl get prometheusrule -n ostrich-pki -o yaml | grep "alertname"
    - Lessons learned
 
 2. **Preserve evidence:**
+
 ```bash
 # Export audit logs
 curl "http://localhost:8080/api/v1/audit/export?incident=INC-12345" > incident-audit.json
@@ -199,7 +216,7 @@ curl "http://localhost:8080/api/v1/audit/export?incident=INC-12345" > incident-a
 kubectl logs -n ostrich-pki -l app.kubernetes.io/name=ostrich-pki --since=24h > incident-logs.txt
 ```
 
-3. **Update procedures:**
+1. **Update procedures:**
    - Revise runbooks based on lessons learned
    - Update detection rules
    - Improve preventive controls

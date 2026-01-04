@@ -104,6 +104,7 @@ kubectl delete pod ostrich-pki-postgresql-0 -n ostrich-pki
 #### Complete Cluster Loss
 
 1. **Provision new infrastructure:**
+
 ```bash
 # Apply Terraform/CloudFormation for infrastructure
 terraform apply
@@ -112,7 +113,8 @@ terraform apply
 helm install ostrich-pki deploy/helm/ostrich-pki -n ostrich-pki
 ```
 
-2. **Restore database:**
+1. **Restore database:**
+
 ```bash
 # Wait for PostgreSQL to be ready
 kubectl wait --for=condition=ready pod/ostrich-pki-postgresql-0 -n ostrich-pki --timeout=300s
@@ -123,13 +125,15 @@ aws s3 cp s3://ostrich-pki-backups/latest.sql.gz - | gunzip | \
   psql -U ostrich ostrich_pki
 ```
 
-3. **Restore CA keys from HSM backup:**
+1. **Restore CA keys from HSM backup:**
+
 ```bash
 # This depends on your HSM vendor
 # Typically involves importing PKCS#11 backup
 ```
 
-4. **Verify recovery:**
+1. **Verify recovery:**
+
 ```bash
 # Check certificate count
 kubectl exec -n ostrich-pki ostrich-pki-postgresql-0 -- \
@@ -142,6 +146,7 @@ curl http://localhost:8080/health
 #### Database Corruption Recovery
 
 1. **Detect corruption:**
+
 ```bash
 # Run PostgreSQL consistency check
 kubectl exec -n ostrich-pki ostrich-pki-postgresql-0 -- \
@@ -149,7 +154,8 @@ kubectl exec -n ostrich-pki ostrich-pki-postgresql-0 -- \
 # If this fails, database is corrupt
 ```
 
-2. **Recover from corruption:**
+1. **Recover from corruption:**
+
 ```bash
 # Option 1: Restore from backup (preferred)
 # See "From Latest Backup" above
