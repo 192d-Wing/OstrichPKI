@@ -43,7 +43,7 @@ sha2 = { workspace = true }
 # TLS (for mTLS client authentication)
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
-rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
 
 # Utilities
 thiserror = { workspace = true }

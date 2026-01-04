@@ -106,25 +106,25 @@ impl MtlsClientCert {
 ///
 /// ```ignore
 /// use rustls::{ServerConfig, RootCertStore};
-/// use rustls_pemfile::{certs, private_key};
+/// use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 /// use tokio_rustls::TlsAcceptor;
 /// use std::sync::Arc;
 ///
-/// // Load CA certificate for client validation
-/// let ca_cert_pem = std::fs::read("ca.pem")?;
-/// let ca_certs = certs(&mut ca_cert_pem.as_slice())?;
+/// // Load CA certificate for client validation (PEM format)
+/// let ca_certs: Vec<CertificateDer> = CertificateDer::pem_file_iter("ca.pem")?
+///     .collect::<Result<Vec<_>, _>>()?;
 ///
 /// let mut root_store = RootCertStore::empty();
 /// for cert in ca_certs {
 ///     root_store.add(cert)?;
 /// }
 ///
-/// // Load server certificate and private key
-/// let server_cert_pem = std::fs::read("server.pem")?;
-/// let server_certs = certs(&mut server_cert_pem.as_slice())?;
+/// // Load server certificate chain (PEM format)
+/// let server_certs: Vec<CertificateDer> = CertificateDer::pem_file_iter("server.pem")?
+///     .collect::<Result<Vec<_>, _>>()?;
 ///
-/// let server_key_pem = std::fs::read("server-key.pem")?;
-/// let server_key = private_key(&mut server_key_pem.as_slice())?;
+/// // Load server private key (PEM format)
+/// let server_key = PrivateKeyDer::from_pem_file("server-key.pem")?;
 ///
 /// // Create TLS config with client authentication
 /// let client_verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))

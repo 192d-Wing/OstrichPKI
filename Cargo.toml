@@ -130,7 +130,7 @@ hickory-proto = "0.25"
 # TLS (for ACME TLS-ALPN-01 challenge and mTLS)
 rustls = "0.23"
 tokio-rustls = "0.26"
-rustls-pemfile = "2.2"
+rustls-pki-types = "1.13"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
