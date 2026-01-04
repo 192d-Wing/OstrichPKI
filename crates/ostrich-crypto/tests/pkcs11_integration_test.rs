@@ -54,13 +54,42 @@ fn get_softhsm_path() -> String {
     })
 }
 
+/// Find slot index by token label using PKCS#11
+/// Returns the index into the slots array, not the actual slot ID
+fn find_slot_index_by_label(module_path: &str, label: &str) -> Option<u64> {
+    use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
+
+    let ctx = Pkcs11::new(module_path).ok()?;
+    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
+        .ok()?;
+
+    // Get slots with tokens (same as Pkcs11Provider::new uses)
+    let slots = ctx.get_slots_with_token().ok()?;
+    for (index, slot) in slots.iter().enumerate() {
+        if let Ok(info) = ctx.get_token_info(*slot) {
+            let token_label = info.label().trim();
+            if token_label == label {
+                return Some(index as u64);
+            }
+        }
+    }
+    None
+}
+
 /// Initialize SoftHSM provider for testing
 async fn init_test_provider() -> Pkcs11Provider {
     let module_path = get_softhsm_path();
-    let slot_id = 0; // SoftHSM default slot
     let pin = "1234"; // Test PIN
 
-    Pkcs11Provider::new(Path::new(&module_path), slot_id, pin)
+    // Find the slot index by token label (Pkcs11Provider uses index, not slot ID)
+    let slot_index = find_slot_index_by_label(&module_path, "OstrichPKI-Test")
+        .or_else(|| {
+            // Fallback: try to find any initialized token
+            find_slot_index_by_label(&module_path, "ostrich-test")
+        })
+        .unwrap_or(0); // Last resort: try index 0
+
+    Pkcs11Provider::new(Path::new(&module_path), slot_index, pin)
         .await
         .expect("Failed to initialize PKCS#11 provider")
 }
@@ -70,9 +99,9 @@ async fn test_pkcs11_provider_initialization() {
     // NIST 800-53: IA-7 - Cryptographic module authentication
     let provider = init_test_provider().await;
 
-    // Verify provider is ready
+    // Verify provider is ready (slot_id varies based on SoftHSM initialization)
     let provider_id = provider.provider_id();
-    assert!(matches!(provider_id, ProviderId::Pkcs11 { slot_id: 0 }));
+    assert!(matches!(provider_id, ProviderId::Pkcs11 { .. }));
 }
 
 #[tokio::test]
