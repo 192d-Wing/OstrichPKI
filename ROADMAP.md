@@ -46,7 +46,7 @@
 | ~~**HSM Integration**~~ | ✅ **COMPLETE** (PKCS#11 + Software fallback) | - |
 | ~~**Protocol Validation**~~ | ✅ **COMPLETE** (ACME, EST, mTLS) | - |
 | ~~**Service Integration**~~ | ✅ **COMPLETE** (gRPC with circuit breaker) | - |
-| **Testing & Hardening** | Integration tests, security audits | 🔴 HIGH |
+| **Testing & Hardening** | Integration tests, Docker/K8s deployment, monitoring | 🟡 IN PROGRESS (40%) |
 | **NIAP Compliance** | Protection Profile documentation | 🔴 HIGH |
 
 ### Estimated Completion
@@ -76,7 +76,7 @@
 | **11** | **Protocol Validation** | **✅ COMPLETE** | **100%** | - | ✅ 1 week |
 | **12** | **Service Integration** | **✅ COMPLETE** | **100%** | - | ✅ 2 weeks |
 | **13** | **Advanced Features** | ⏸️ DEFERRED | 0% | ⚪ LOW | 2-3 weeks |
-| **14** | **Testing & Hardening** | ⏳ PLANNED | 10% | 🔴 HIGH | 2-3 weeks |
+| **14** | **Testing & Hardening** | 🟡 IN PROGRESS | 40% | 🔴 HIGH | 2-3 weeks |
 | **15** | **NIAP Compliance** | ⏳ PLANNED | 45% | 🔴 HIGH | 3-4 weeks |
 
 ### Critical Path
@@ -965,20 +965,38 @@ These features are **LOW priority** because:
 
 ### Phase 14: Testing & Hardening
 
-**Status**: ⏳ PLANNED (10% complete) | **Priority**: 🔴 HIGH | **Effort**: 2-3 weeks
+**Status**: 🟡 IN PROGRESS (40% complete) | **Priority**: 🔴 HIGH | **Effort**: 2-3 weeks
 **Dependencies**: Phases 8, 11, 12 | **Blocks**: Production deployment
+**Latest Update**: January 2026
 
 #### Overview
 
 Comprehensive testing, security hardening, and operational readiness before production deployment.
 
-#### Current Status
+#### Current Status (40% Complete)
 
-- ✅ Unit tests for core libraries (~60% coverage)
-- ⏳ Integration tests (incomplete)
-- ⏳ Security testing (not started)
-- ⏳ Performance testing (not started)
-- ⏳ Documentation (partial)
+✅ **COMPLETED**:
+
+- CI/CD pipeline with GitHub Actions (7 stages, multi-OS testing)
+- Security scanning infrastructure (cargo audit, cargo deny, Gitleaks)
+- Fuzzing framework (7 fuzz targets for critical parsers)
+- Performance benchmarking (existing, documented)
+- Makefile with 50+ development commands
+- Comprehensive testing documentation ([docs/TESTING.md](docs/TESTING.md))
+- Phase 14 summary document ([docs/PHASE_14_SUMMARY.md](docs/PHASE_14_SUMMARY.md))
+
+⏳ **IN PROGRESS**:
+
+- Integration tests (structure exists, JWS signing needed)
+- Unit test coverage expansion (~60% → target 80%)
+
+⏳ **NOT STARTED**:
+
+- Health check endpoints for all services
+- Docker deployment configurations
+- Kubernetes manifests
+- Monitoring setup (Prometheus/Grafana)
+- Operational runbooks
 
 #### Scope
 
@@ -1433,7 +1451,7 @@ Achieve **NIAP Protection Profile for Certificate Authority (PP-CA) v2.1** compl
 | **11** | Protocol Validation | ✅ DONE | 100% | - | Phase 8 | 12, 14 |
 | **12** | Service Integration | ✅ DONE | 100% | - | 8, 11 | 14 |
 | **13** | Advanced Features | ⚪ LOW | 0% | 2-3 weeks | 12, 14 | None |
-| **14** | Testing & Hardening | 🔴 HIGH | 10% | 2-3 weeks | 8, 10, 11, 12 | Production |
+| **14** | Testing & Hardening | 🔴 HIGH | 40% | 2-3 weeks | 8, 10, 11, 12 | Production |
 | **15** | NIAP Compliance | 🔴 HIGH | 45% | 3-4 weeks | All | ATO |
 
 **Legend**:
