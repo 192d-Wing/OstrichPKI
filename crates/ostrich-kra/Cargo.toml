@@ -33,3 +33,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+ostrich-audit = { workspace = true, features = ["testing"] }

@@ -10,13 +10,15 @@ use uuid::Uuid;
 ///
 /// RFC 8555 §8
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum ChallengeType {
     /// HTTP-01 challenge (RFC 8555 §8.3)
+    #[serde(rename = "http-01")]
     Http01,
     /// DNS-01 challenge (RFC 8555 §8.4)
+    #[serde(rename = "dns-01")]
     Dns01,
     /// TLS-ALPN-01 challenge (RFC 8737)
+    #[serde(rename = "tls-alpn-01")]
     TlsAlpn01,
 }
 

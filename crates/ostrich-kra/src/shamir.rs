@@ -53,32 +53,31 @@ impl ShamirSecretSharing {
             )));
         }
 
-        let mut shares = Vec::with_capacity(num_shares);
+        let mut shares: Vec<Share> = (1..=num_shares)
+            .map(|i| Share {
+                index: i as u8,
+                value: Vec::with_capacity(secret.len()),
+            })
+            .collect();
+
         let mut rng = thread_rng();
 
-        // For each byte in the secret, create a polynomial
-        // Process all bytes together to create complete shares
-        for i in 1..=num_shares {
-            let mut share_value = Vec::with_capacity(secret.len());
-
-            for &secret_byte in secret {
-                // Generate random coefficients for polynomial of degree (threshold - 1)
-                let mut coefficients = vec![secret_byte];
-                for _ in 1..threshold {
-                    let mut coef = [0u8; 1];
-                    rng.fill_bytes(&mut coef);
-                    coefficients.push(coef[0]);
-                }
-
-                // Evaluate polynomial at x = i
-                let y = Self::evaluate_polynomial(&coefficients, i as u8);
-                share_value.push(y);
+        // For each byte in the secret, create a polynomial and evaluate at all share indices
+        for &secret_byte in secret {
+            // Generate random coefficients for polynomial of degree (threshold - 1)
+            // The secret byte is the constant term (coefficient for x^0)
+            let mut coefficients = vec![secret_byte];
+            for _ in 1..threshold {
+                let mut coef = [0u8; 1];
+                rng.fill_bytes(&mut coef);
+                coefficients.push(coef[0]);
             }
 
-            shares.push(Share {
-                index: i as u8,
-                value: share_value,
-            });
+            // Evaluate polynomial at each share index x = 1, 2, ..., num_shares
+            for share in shares.iter_mut() {
+                let y = Self::evaluate_polynomial(&coefficients, share.index);
+                share.value.push(y);
+            }
         }
 
         Ok(shares)

@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Enable test utilities like MemoryAuditSink
+testing = []
+
 [dependencies]
 # Internal
 ostrich-common = { workspace = true }

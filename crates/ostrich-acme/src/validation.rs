@@ -491,21 +491,15 @@ mod tests {
         assert_eq!(validator.timeout_secs, 10);
     }
 
-    #[tokio::test]
-    async fn test_dns01_validator_not_implemented() {
+    #[test]
+    fn test_dns01_validator_creation() {
         let validator = Dns01Validator::new();
-        let result = validator
-            .validate("example.com", "test-token", "test-thumbprint")
-            .await;
-        assert!(result.is_err());
+        assert_eq!(validator.timeout_secs, 30);
     }
 
-    #[tokio::test]
-    async fn test_tls_alpn_validator_not_implemented() {
+    #[test]
+    fn test_tls_alpn_validator_creation() {
         let validator = TlsAlpn01Validator::new();
-        let result = validator
-            .validate("example.com", "test-token", "test-thumbprint")
-            .await;
-        assert!(result.is_err());
+        assert_eq!(validator.timeout_secs, 10);
     }
 }

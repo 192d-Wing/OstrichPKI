@@ -110,3 +110,97 @@ impl AsRef<[u8]> for SensitiveBytes {
         &self.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_provider_id_serialization() {
+        // Test Software provider serialization
+        let software = ProviderId::Software;
+        let json = serde_json::to_string(&software).unwrap();
+        let deserialized: ProviderId = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, ProviderId::Software);
+
+        // Test PKCS#11 provider serialization
+        let pkcs11 = ProviderId::Pkcs11 { slot_id: 42 };
+        let json = serde_json::to_string(&pkcs11).unwrap();
+        assert!(json.contains("42"));
+        let deserialized: ProviderId = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, ProviderId::Pkcs11 { slot_id: 42 });
+    }
+
+    #[test]
+    fn test_key_handle_creation() {
+        let handle = KeyHandle::new(
+            ProviderId::Software,
+            vec![1, 2, 3, 4],
+            KeyType::EcP256,
+            Algorithm::EcdsaP256Sha256,
+            "test-key".to_string(),
+        );
+
+        assert!(matches!(handle.provider_id, ProviderId::Software));
+        assert_eq!(handle.key_id, vec![1, 2, 3, 4]);
+        assert_eq!(handle.key_type, KeyType::EcP256);
+        assert_eq!(handle.algorithm, Algorithm::EcdsaP256Sha256);
+        assert_eq!(handle.label, "test-key");
+    }
+
+    #[test]
+    fn test_key_handle_serialization() {
+        let handle = KeyHandle::new(
+            ProviderId::Software,
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            KeyType::Rsa2048,
+            Algorithm::RsaPkcs1Sha256,
+            "ca-signing-key".to_string(),
+        );
+
+        let json = serde_json::to_string(&handle).unwrap();
+
+        // Verify base64 encoding of key_id
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let expected_key_id_b64 = STANDARD.encode(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(json.contains(&expected_key_id_b64));
+
+        // Deserialize and verify
+        let deserialized: KeyHandle = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.key_id, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(deserialized.label, "ca-signing-key");
+    }
+
+    #[test]
+    fn test_sensitive_bytes_creation() {
+        let data = vec![0x01, 0x02, 0x03, 0x04];
+        let sensitive = SensitiveBytes::new(data.clone());
+
+        assert_eq!(sensitive.as_bytes(), &data);
+        assert_eq!(sensitive.as_ref(), &data[..]);
+    }
+
+    #[test]
+    fn test_sensitive_bytes_from_vec() {
+        let data = vec![0xAB, 0xCD, 0xEF];
+        let sensitive: SensitiveBytes = data.clone().into();
+
+        assert_eq!(sensitive.as_bytes(), &data);
+    }
+
+    #[test]
+    fn test_key_handle_with_pkcs11_provider() {
+        let handle = KeyHandle::new(
+            ProviderId::Pkcs11 { slot_id: 1 },
+            vec![0x01, 0x23, 0x45, 0x67],
+            KeyType::EcP384,
+            Algorithm::EcdsaP384Sha384,
+            "hsm-key".to_string(),
+        );
+
+        match handle.provider_id {
+            ProviderId::Pkcs11 { slot_id } => assert_eq!(slot_id, 1),
+            _ => panic!("Expected PKCS#11 provider"),
+        }
+    }
+}

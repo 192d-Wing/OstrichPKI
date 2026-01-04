@@ -12,3 +12,6 @@ pub mod sink;
 pub use error::{Error, Result};
 pub use event::{AuditEvent, AuditEventBuilder, EventOutcome, EventType};
 pub use sink::{AuditSink, DatabaseAuditSink};
+
+#[cfg(any(test, feature = "testing"))]
+pub use sink::MemoryAuditSink;

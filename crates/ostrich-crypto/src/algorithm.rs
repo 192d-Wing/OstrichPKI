@@ -224,3 +224,156 @@ impl std::fmt::Display for Algorithm {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // NIST 800-53: SC-12 - Cryptographic key establishment tests
+
+    #[test]
+    fn test_key_type_size_bits() {
+        // Test RSA key sizes per NIST SP 800-57
+        assert_eq!(KeyType::Rsa2048.key_size_bits(), 2048);
+        assert_eq!(KeyType::Rsa3072.key_size_bits(), 3072);
+        assert_eq!(KeyType::Rsa4096.key_size_bits(), 4096);
+
+        // Test EC key sizes
+        assert_eq!(KeyType::EcP256.key_size_bits(), 256);
+        assert_eq!(KeyType::EcP384.key_size_bits(), 384);
+        assert_eq!(KeyType::EcP521.key_size_bits(), 521);
+
+        // Test EdDSA key sizes per RFC 8410
+        assert_eq!(KeyType::Ed25519.key_size_bits(), 256);
+        assert_eq!(KeyType::Ed448.key_size_bits(), 448);
+    }
+
+    #[test]
+    fn test_key_type_post_quantum() {
+        // Classical algorithms should not be post-quantum
+        assert!(!KeyType::Rsa2048.is_post_quantum());
+        assert!(!KeyType::EcP256.is_post_quantum());
+        assert!(!KeyType::Ed25519.is_post_quantum());
+
+        // FIPS 203 ML-KEM should be post-quantum
+        assert!(KeyType::MlKem512.is_post_quantum());
+        assert!(KeyType::MlKem768.is_post_quantum());
+        assert!(KeyType::MlKem1024.is_post_quantum());
+
+        // FIPS 204 ML-DSA should be post-quantum
+        assert!(KeyType::MlDsa44.is_post_quantum());
+        assert!(KeyType::MlDsa65.is_post_quantum());
+        assert!(KeyType::MlDsa87.is_post_quantum());
+
+        // FIPS 205 SLH-DSA should be post-quantum
+        assert!(KeyType::SlhDsaSha2_128s.is_post_quantum());
+        assert!(KeyType::SlhDsaSha2_256f.is_post_quantum());
+    }
+
+    #[test]
+    fn test_key_type_signature_algorithm() {
+        // RSA, EC, and EdDSA are signature algorithms
+        assert!(KeyType::Rsa2048.is_signature_algorithm());
+        assert!(KeyType::EcP256.is_signature_algorithm());
+        assert!(KeyType::Ed25519.is_signature_algorithm());
+
+        // ML-KEM is for key encapsulation, not signatures
+        assert!(!KeyType::MlKem512.is_signature_algorithm());
+        assert!(!KeyType::MlKem768.is_signature_algorithm());
+        assert!(!KeyType::MlKem1024.is_signature_algorithm());
+
+        // ML-DSA and SLH-DSA are signature algorithms
+        assert!(KeyType::MlDsa44.is_signature_algorithm());
+        assert!(KeyType::SlhDsaSha2_128s.is_signature_algorithm());
+    }
+
+    #[test]
+    fn test_algorithm_compatible_key_types() {
+        // RSA algorithms should support RSA key types
+        let rsa_algs = [Algorithm::RsaPkcs1Sha256, Algorithm::RsaPssSha256];
+        for alg in rsa_algs {
+            let types = alg.compatible_key_types();
+            assert!(types.contains(&KeyType::Rsa2048));
+            assert!(types.contains(&KeyType::Rsa3072));
+            assert!(types.contains(&KeyType::Rsa4096));
+        }
+
+        // ECDSA-P256 should only support EcP256
+        let p256_types = Algorithm::EcdsaP256Sha256.compatible_key_types();
+        assert_eq!(p256_types.len(), 1);
+        assert!(p256_types.contains(&KeyType::EcP256));
+
+        // Ed25519 should only support Ed25519
+        let ed_types = Algorithm::Ed25519.compatible_key_types();
+        assert_eq!(ed_types.len(), 1);
+        assert!(ed_types.contains(&KeyType::Ed25519));
+    }
+
+    #[test]
+    fn test_algorithm_post_quantum() {
+        // Classical algorithms
+        assert!(!Algorithm::RsaPkcs1Sha256.is_post_quantum());
+        assert!(!Algorithm::EcdsaP256Sha256.is_post_quantum());
+        assert!(!Algorithm::Ed25519.is_post_quantum());
+
+        // Post-quantum algorithms per FIPS 204/205
+        assert!(Algorithm::MlDsa44.is_post_quantum());
+        assert!(Algorithm::MlDsa65.is_post_quantum());
+        assert!(Algorithm::SlhDsaSha2_128s.is_post_quantum());
+
+        // Hybrid algorithms are not pure post-quantum
+        assert!(!Algorithm::EcdsaP256MlDsa44.is_post_quantum());
+    }
+
+    #[test]
+    fn test_algorithm_hybrid() {
+        // Classical and post-quantum algorithms are not hybrid
+        assert!(!Algorithm::RsaPkcs1Sha256.is_hybrid());
+        assert!(!Algorithm::EcdsaP256Sha256.is_hybrid());
+        assert!(!Algorithm::MlDsa44.is_hybrid());
+
+        // Hybrid algorithms combine classical + PQC
+        assert!(Algorithm::EcdsaP256MlDsa44.is_hybrid());
+        assert!(Algorithm::EcdsaP384MlDsa65.is_hybrid());
+        assert!(Algorithm::Ed25519MlDsa44.is_hybrid());
+    }
+
+    #[test]
+    fn test_algorithm_display() {
+        // Test Display trait for key algorithm formats
+        assert_eq!(format!("{}", Algorithm::RsaPkcs1Sha256), "RSA-PKCS1-SHA256");
+        assert_eq!(format!("{}", Algorithm::RsaPssSha256), "RSA-PSS-SHA256");
+        assert_eq!(
+            format!("{}", Algorithm::EcdsaP256Sha256),
+            "ECDSA-P256-SHA256"
+        );
+        assert_eq!(format!("{}", Algorithm::Ed25519), "Ed25519");
+        assert_eq!(format!("{}", Algorithm::MlDsa44), "ML-DSA-44");
+        assert_eq!(
+            format!("{}", Algorithm::EcdsaP256MlDsa44),
+            "ECDSA-P256+ML-DSA-44"
+        );
+    }
+
+    #[test]
+    fn test_key_type_serialization() {
+        // Test serde serialization for KeyType
+        let key_type = KeyType::Rsa2048;
+        let json = serde_json::to_string(&key_type).unwrap();
+        assert_eq!(json, r#""Rsa2048""#);
+
+        let deserialized: KeyType = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, KeyType::Rsa2048);
+    }
+
+    #[test]
+    fn test_algorithm_serialization() {
+        // Test serde serialization for Algorithm
+        let algorithm = Algorithm::EcdsaP256Sha256;
+        let json = serde_json::to_string(&algorithm).unwrap();
+        assert_eq!(json, r#""EcdsaP256Sha256""#);
+
+        let deserialized: Algorithm = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, Algorithm::EcdsaP256Sha256);
+    }
+}

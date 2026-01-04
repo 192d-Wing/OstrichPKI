@@ -9,7 +9,7 @@ use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
 use ostrich_crypto::{Algorithm, CryptoProvider, KeyHandle};
 use ostrich_db::{
     DatabasePool, Uuid,
-    repository::{CertificateRepository, Repository},
+    repository::CertificateRepository,
 };
 use ostrich_x509::{
     crl::{CrlGenerator, RevokedCertificateInfo},

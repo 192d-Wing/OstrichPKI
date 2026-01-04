@@ -199,12 +199,12 @@ impl AuditSink for DatabaseAuditSink {
 /// In-memory audit sink for testing
 ///
 /// WARNING: Not suitable for production use - no persistence
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub struct MemoryAuditSink {
     events: tokio::sync::RwLock<Vec<AuditEvent>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 impl Default for MemoryAuditSink {
     fn default() -> Self {
         Self {
@@ -213,14 +213,14 @@ impl Default for MemoryAuditSink {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 impl MemoryAuditSink {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 #[async_trait]
 impl AuditSink for MemoryAuditSink {
     async fn record(&self, event: &mut AuditEvent) -> Result<()> {

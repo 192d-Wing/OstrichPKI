@@ -2350,6 +2350,7 @@ dependencies = [
  "rsa",
  "secrecy",
  "serde",
+ "serde_json",
  "sha2",
  "spki",
  "thiserror 2.0.17",
