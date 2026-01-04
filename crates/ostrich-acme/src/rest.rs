@@ -431,12 +431,7 @@ async fn get_new_nonce(State(state): State<AcmeState>) -> Response {
 async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Response> {
     // Validate JWS and extract payload
     let url = format!("{}/acme/new-account", state.base_url);
-    let validated = validate_jws_new_account::<NewAccountRequest>(
-        &body,
-        &url,
-        &state,
-    )
-    .await?;
+    let validated = validate_jws_new_account::<NewAccountRequest>(&body, &url, &state).await?;
 
     let request = validated.payload;
     let jwk_thumbprint = validated.jwk_thumbprint;
@@ -519,12 +514,7 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
 async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Response> {
     // Validate JWS and extract payload
     let url = format!("{}/acme/new-order", state.base_url);
-    let validated = validate_jws_with_account::<NewOrderRequest>(
-        &body,
-        &url,
-        &state,
-    )
-    .await?;
+    let validated = validate_jws_with_account::<NewOrderRequest>(&body, &url, &state).await?;
 
     let request = validated.payload;
     let account_id = validated.account_id;
@@ -622,12 +612,7 @@ async fn update_account(
 ) -> Result<Response> {
     // Validate JWS and extract payload
     let url = format!("{}/acme/account/{}", state.base_url, id);
-    let validated = validate_jws_with_account::<UpdateAccountRequest>(
-        &body,
-        &url,
-        &state,
-    )
-    .await?;
+    let validated = validate_jws_with_account::<UpdateAccountRequest>(&body, &url, &state).await?;
 
     let request = validated.payload;
 
@@ -703,12 +688,7 @@ async fn respond_to_challenge(
 ) -> Result<Response> {
     // Validate JWS (payload is typically empty object {})
     let url = format!("{}/acme/challenge/{}", state.base_url, id);
-    let _validated = validate_jws_with_account::<ChallengeResponse>(
-        &body,
-        &url,
-        &state,
-    )
-    .await?;
+    let _validated = validate_jws_with_account::<ChallengeResponse>(&body, &url, &state).await?;
 
     // TODO: Validate key authorization (Phase 11)
     // TODO: Trigger actual validation (HTTP-01, DNS-01, or TLS-ALPN-01) (Phase 11)
@@ -783,12 +763,7 @@ async fn finalize_order(
 ) -> Result<Response> {
     // Validate JWS and extract payload
     let url = format!("{}/acme/order/{}/finalize", state.base_url, id);
-    let validated = validate_jws_with_account::<FinalizeRequest>(
-        &body,
-        &url,
-        &state,
-    )
-    .await?;
+    let validated = validate_jws_with_account::<FinalizeRequest>(&body, &url, &state).await?;
 
     let request = validated.payload;
 

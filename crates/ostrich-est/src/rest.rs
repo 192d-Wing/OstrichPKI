@@ -162,7 +162,7 @@ async fn get_ca_certs(State(state): State<EstState>) -> Result<Response> {
 /// - NIAP PP-CA: FCS_COP.1 - Cryptographic operation (CMS encoding)
 /// - RFC 5652 S5 - CMS SignedData structure
 /// - RFC 7030 S4.1.3 - EST CA certificates response format
-fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
+pub(crate) fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
     use cms::{content_info::ContentInfo, signed_data::SignedData};
     use der::{
         Decode, Encode,
@@ -481,7 +481,7 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
 /// let client_identifier = &client_cert.client_id;
 /// ```
 async fn server_key_gen(State(state): State<EstState>, body: Bytes) -> Result<Response> {
-    use crate::serverkeygen::{generate_key_pair_for_client, ServerKeyGenRequest};
+    use crate::serverkeygen::{ServerKeyGenRequest, generate_key_pair_for_client};
     use ostrich_crypto::KeyType;
     use zeroize::Zeroizing;
 
@@ -574,5 +574,28 @@ mod tests {
         // Test Content-Type header for PKCS#7 responses
         let content_type = "application/pkcs7-mime";
         assert!(content_type.contains("pkcs7"));
+    }
+
+    #[test]
+    fn test_pkcs7_certs_only_empty() {
+        // Test PKCS#7 encoding with empty certificate list
+        // RFC 7030 §4.1.3 - Degenerate SignedData (certs-only)
+        // RFC 5652 §5 - CMS SignedData structure
+        let result = encode_certs_only_pkcs7(&[]);
+        assert!(result.is_ok());
+
+        let pkcs7_der = result.unwrap();
+        // Verify it's valid DER (basic length check)
+        assert!(!pkcs7_der.is_empty());
+
+        // Verify it starts with SEQUENCE tag (0x30) per DER encoding rules
+        assert_eq!(pkcs7_der[0], 0x30);
+
+        // Verify minimum PKCS#7 ContentInfo structure size
+        // ContentInfo ::= SEQUENCE {
+        //   contentType OBJECT IDENTIFIER,
+        //   content [0] EXPLICIT ANY DEFINED BY contentType
+        // }
+        assert!(pkcs7_der.len() > 10);
     }
 }

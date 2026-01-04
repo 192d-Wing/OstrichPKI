@@ -280,10 +280,10 @@ impl AuditRepository {
         hasher.update(event.outcome.as_bytes());
 
         // Optional fields
-        if let Some(ref details) = event.details {
-            if let Ok(json_str) = serde_json::to_string(details) {
-                hasher.update(json_str.as_bytes());
-            }
+        if let Some(ref details) = event.details
+            && let Ok(json_str) = serde_json::to_string(details)
+        {
+            hasher.update(json_str.as_bytes());
         }
 
         if let Some(ref ip) = event.ip_address {

@@ -27,10 +27,10 @@
 //! - **SC-13**: Cryptographic Protection - FIPS-validated signature algorithms
 
 use crate::{
+    Result,
     cache::{CacheKey, OcspCache},
     request::OcspRequest,
     response::{CertStatus, OcspResponse, SingleResponse},
-    Result,
 };
 use chrono::{DateTime, Duration, Utc};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
@@ -91,6 +91,7 @@ impl Default for OcspConfig {
 /// - **FAU_GEN.1**: All operations emit audit events via AuditSink
 pub struct OcspResponder {
     config: OcspConfig,
+    #[allow(dead_code)]
     db: DatabasePool,
     crypto: Arc<dyn CryptoProvider>,
     audit: Arc<dyn AuditSink>,

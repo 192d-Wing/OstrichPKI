@@ -288,8 +288,16 @@ mod tests {
         assert!(test_ipv6::DOCUMENTATION_HOST_2.parse::<Ipv6Addr>().is_ok());
         assert!(test_ipv6::DOCUMENTATION_HOST_3.parse::<Ipv6Addr>().is_ok());
         assert!(test_ipv6::DOCUMENTATION_FULL.parse::<Ipv6Addr>().is_ok());
-        assert!(test_ipv6::DOCUMENTATION_SUBNET_1.parse::<Ipv6Addr>().is_ok());
-        assert!(test_ipv6::DOCUMENTATION_SUBNET_2.parse::<Ipv6Addr>().is_ok());
+        assert!(
+            test_ipv6::DOCUMENTATION_SUBNET_1
+                .parse::<Ipv6Addr>()
+                .is_ok()
+        );
+        assert!(
+            test_ipv6::DOCUMENTATION_SUBNET_2
+                .parse::<Ipv6Addr>()
+                .is_ok()
+        );
         assert!(test_ipv6::DOCUMENTATION_EUI64.parse::<Ipv6Addr>().is_ok());
         assert!(test_ipv6::LOOPBACK.parse::<Ipv6Addr>().is_ok());
     }
@@ -322,10 +330,7 @@ mod tests {
 
     #[test]
     fn test_url_builders() {
-        assert_eq!(
-            test_urls::https_url("example.com"),
-            "https://example.com"
-        );
+        assert_eq!(test_urls::https_url("example.com"), "https://example.com");
         assert_eq!(
             test_urls::https_url_with_port("example.com", 8443),
             "https://example.com:8443"

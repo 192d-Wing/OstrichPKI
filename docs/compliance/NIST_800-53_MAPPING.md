@@ -1191,36 +1191,60 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system checks the validity of information inputs.
 
-**Implementation Status:** 🔴 **Missing**
+**Implementation Status:** 🟡 **Partial** (improved from Missing)
 
 **NIAP Mapping:**
 
 - FIA_X509_EXT.1 - X.509 Certificate Validation
 - FCO_NRO_EXT.2 - Proof of Origin (CSR validation)
+- FDP_ITC.1 - Import of user data (DN and SAN extraction)
 
 **Implementation:**
 
-- [crates/ostrich-x509/src/parser.rs:96-99](../../crates/ostrich-x509/src/parser.rs#L96-L99) - CSR signature verification stub
+- [crates/ostrich-x509/src/parser.rs:11-91](../../crates/ostrich-x509/src/parser.rs#L11-L91) - **CSR SAN extraction**
+- [crates/ostrich-x509/src/parser.rs:93-174](../../crates/ostrich-x509/src/parser.rs#L93-L174) - **DN parsing**
+- [crates/ostrich-x509/src/parser.rs:326-355](../../crates/ostrich-x509/src/parser.rs#L326-L355) - **CSR signature verification (centralized)**
+- [crates/ostrich-acme/src/ca_integration.rs:153-177](../../crates/ostrich-acme/src/ca_integration.rs#L153-L177) - ACME DN validation
+- [crates/ostrich-est/src/ca_integration.rs:197-221](../../crates/ostrich-est/src/ca_integration.rs#L197-L221) - EST DN validation
 
 **Evidence:**
 
-- 🔴 CSR validation not implemented
-- 🔴 Certificate validation not implemented
+- ✅ **Subject DN parsing from CSRs** (RFC 5280 §4.1.2.4, RFC 4514)
+  - OID-based attribute extraction (CN, O, OU, L, ST, C, serialNumber)
+  - Multi-valued RDN support
+  - ASN.1 string type handling (UTF8String, PrintableString, IA5String, etc.)
+  - Security: Prevents DN spoofing through proper parsing
+  - Test coverage: 2 unit tests with real OpenSSL CSRs
+- ✅ **SAN extraction from CSR extension requests** (RFC 5280 §4.2.1.6)
+  - Parses OID 2.5.29.17 from CSR attributes
+  - Supports 5 GeneralName types: DNS, email, URI, IP, directoryName
+  - Used by ACME and EST for certificate issuance
+  - Test coverage: 1 integration test with OpenSSL CSR
+- ✅ **CSR signature verification** (RFC 2986 §4.2, FCO_NRO_EXT.2)
+  - Centralized implementation in ostrich-x509/src/parser.rs:326-355
+  - Verifies proof-of-possession before certificate issuance
+  - Supports RSA (PKCS#1, PSS), ECDSA (P-256, P-384, P-521), EdDSA (Ed25519)
+  - Used by ACME (rest.rs:806-814), EST simpleenroll (rest.rs:268-276), EST simplereenroll (rest.rs:360-368)
+  - Algorithm OID mapping: parser.rs:422-444
+  - Public key import: parser.rs:357-419
+  - Integration tested via ACME/EST endpoints
 - ✅ ACME JWS validation implemented (Phase 11)
 
 **Gaps:**
 
-- No proof-of-possession verification
-- No RFC 5280 path validation
-- No malformed input rejection testing
+- 🔴 No RFC 5280 path validation (§6)
+- 🔴 No comprehensive malformed CSR rejection testing
+- ⚠️ Need dedicated unit tests for CSR signature verification with test vectors
 
-**Remediation:** Phase 15 - Implement input validation framework
+**Remediation:** Phase 15 - Implement path validation, add fuzzing tests for malformed input rejection
 
 **Evidence Required for ATO:**
 
 - Input validation procedures
 - Fuzzing test results
 - Invalid input rejection tests
+- DN/SAN parsing test results (✅ COMPLETED)
+- CSR signature verification test results (✅ Integration tested via ACME/EST endpoints)
 
 ---
 
@@ -1313,8 +1337,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 | CP (Contingency) | 2 | 0 | 1 | 1 | 25% |
 | IA (Identification/Auth) | 3 | 0 | 2 | 1 | 33% |
 | SC (System Protection) | 7 | 2 | 4 | 1 | 43% |
-| SI (System Integrity) | 3 | 0 | 1 | 2 | 17% |
-| **TOTAL** | **35** | **6** | **17** | **12** | **37%** |
+| SI (System Integrity) | 3 | 0 | 2 | 1 | 33% |
+| **TOTAL** | **35** | **6** | **18** | **11** | **40%** |
 
 ---
 

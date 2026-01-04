@@ -472,8 +472,8 @@ impl OstrichConfig {
 
     /// Validate JSON against schema.
     fn validate_schema(json: &serde_json::Value) -> std::result::Result<(), ConfigError> {
-        let schema: serde_json::Value =
-            serde_json::from_str(CONFIG_SCHEMA).map_err(|e| ConfigError::SchemaError(e.to_string()))?;
+        let schema: serde_json::Value = serde_json::from_str(CONFIG_SCHEMA)
+            .map_err(|e| ConfigError::SchemaError(e.to_string()))?;
 
         let compiled = jsonschema::validator_for(&schema)
             .map_err(|e| ConfigError::SchemaError(e.to_string()))?;
@@ -494,10 +494,10 @@ impl OstrichConfig {
     /// Expand $ENV{VAR} patterns in configuration values.
     fn expand_env_vars(&mut self) -> std::result::Result<(), ConfigError> {
         // Expand database password
-        if let Some(ref password) = self.database.password {
-            if let Some(expanded) = Self::expand_env_var(password)? {
-                self.database.password = Some(expanded);
-            }
+        if let Some(ref password) = self.database.password
+            && let Some(expanded) = Self::expand_env_var(password)?
+        {
+            self.database.password = Some(expanded);
         }
 
         Ok(())
@@ -533,7 +533,8 @@ impl OstrichConfig {
 
         // Check listen host (allow :: and 0.0.0.0)
         let listen_host = &self.service.listen.host;
-        if listen_host != "::" && listen_host != "0.0.0.0" && Self::contains_ip_literal(listen_host) {
+        if listen_host != "::" && listen_host != "0.0.0.0" && Self::contains_ip_literal(listen_host)
+        {
             return Err(ConfigError::IpLiteralNotAllowed {
                 field: "service.listen.host".to_string(),
                 value: listen_host.clone(),
@@ -549,27 +550,25 @@ impl OstrichConfig {
         }
 
         // Check CA gRPC endpoint
-        if let Some(ref ca) = self.ca {
-            if let Some(ref endpoint) = ca.grpc_endpoint {
-                if Self::contains_ip_literal(endpoint) {
-                    return Err(ConfigError::IpLiteralNotAllowed {
-                        field: "ca.grpcEndpoint".to_string(),
-                        value: endpoint.clone(),
-                    });
-                }
-            }
+        if let Some(ref ca) = self.ca
+            && let Some(ref endpoint) = ca.grpc_endpoint
+            && Self::contains_ip_literal(endpoint)
+        {
+            return Err(ConfigError::IpLiteralNotAllowed {
+                field: "ca.grpcEndpoint".to_string(),
+                value: endpoint.clone(),
+            });
         }
 
         // Check ACME directory URL
-        if let Some(ref acme) = self.acme {
-            if let Some(ref dir_url) = acme.directory_url {
-                if Self::contains_ip_literal(dir_url) {
-                    return Err(ConfigError::IpLiteralNotAllowed {
-                        field: "acme.directoryUrl".to_string(),
-                        value: dir_url.clone(),
-                    });
-                }
-            }
+        if let Some(ref acme) = self.acme
+            && let Some(ref dir_url) = acme.directory_url
+            && Self::contains_ip_literal(dir_url)
+        {
+            return Err(ConfigError::IpLiteralNotAllowed {
+                field: "acme.directoryUrl".to_string(),
+                value: dir_url.clone(),
+            });
         }
 
         Ok(())
@@ -647,9 +646,9 @@ pub fn load_config<T: serde::de::DeserializeOwned>(
         .build()
         .map_err(|e| Error::Config(format!("Failed to build config: {}", e)))?;
 
-    config
-        .try_deserialize()
-        .map_err(|e: config::ConfigError| Error::Config(format!("Failed to deserialize config: {}", e)))
+    config.try_deserialize().map_err(|e: config::ConfigError| {
+        Error::Config(format!("Failed to deserialize config: {}", e))
+    })
 }
 
 /// Validate that no secrets are in the config structure itself.
@@ -687,7 +686,9 @@ mod tests {
     #[test]
     fn test_contains_ip_literal_ipv4() {
         assert!(OstrichConfig::contains_ip_literal("192.168.1.1"));
-        assert!(OstrichConfig::contains_ip_literal("http://192.168.1.1:8080"));
+        assert!(OstrichConfig::contains_ip_literal(
+            "http://192.168.1.1:8080"
+        ));
         assert!(OstrichConfig::contains_ip_literal("https://10.0.0.1/api"));
         assert!(!OstrichConfig::contains_ip_literal("example.com"));
         assert!(!OstrichConfig::contains_ip_literal("https://example.com"));
@@ -696,7 +697,9 @@ mod tests {
     #[test]
     fn test_contains_ip_literal_ipv6() {
         assert!(OstrichConfig::contains_ip_literal("http://[::1]:8080"));
-        assert!(OstrichConfig::contains_ip_literal("https://[2001:db8::1]/api"));
+        assert!(OstrichConfig::contains_ip_literal(
+            "https://[2001:db8::1]/api"
+        ));
         assert!(!OstrichConfig::contains_ip_literal("::"));
         assert!(!OstrichConfig::contains_ip_literal("example.com"));
     }

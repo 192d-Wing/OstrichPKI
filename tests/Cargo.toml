@@ -20,11 +20,17 @@ path = "integration/ca_core_test.rs"
 name = "ocsp_e2e_test"
 path = "integration/ocsp_e2e_test.rs"
 
+[[test]]
+name = "csr_parsing_test"
+path = "integration/csr_parsing_test.rs"
+
 [dependencies]
 # OstrichPKI crates
 ostrich-common = { path = "../crates/ostrich-common" }
+ostrich-crypto = { path = "../crates/ostrich-crypto" }
 ostrich-db = { path = "../crates/ostrich-db" }
 ostrich-protocol = { path = "../crates/ostrich-protocol" }
+ostrich-x509 = { path = "../crates/ostrich-x509" }
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
@@ -50,3 +56,5 @@ base64 = "0.22"
 # Utilities
 rand = "0.8"
 uuid = { version = "1.10", features = ["v4", "serde"] }
+hex = "0.4"
+x509-parser = "0.16"

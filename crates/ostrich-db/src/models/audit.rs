@@ -184,7 +184,10 @@ mod tests {
         )
         .with_ip(test_ipv4::TEST_NET_1_HOST_100.to_string()); // RFC 5737 TEST-NET-1
 
-        assert_eq!(event.ip_address, Some(test_ipv4::TEST_NET_1_HOST_100.to_string()));
+        assert_eq!(
+            event.ip_address,
+            Some(test_ipv4::TEST_NET_1_HOST_100.to_string())
+        );
     }
 
     #[test]

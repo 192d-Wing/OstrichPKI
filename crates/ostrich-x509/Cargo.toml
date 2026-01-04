@@ -37,10 +37,12 @@ uuid = { workspace = true }
 # Utilities
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+hex = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+tokio = { workspace = true }
 hex = { workspace = true }

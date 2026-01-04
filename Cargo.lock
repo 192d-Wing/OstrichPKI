@@ -2587,9 +2587,12 @@ version = "0.14.0"
 dependencies = [
  "base64 0.22.1",
  "der",
+ "hex",
  "ostrich-common",
+ "ostrich-crypto",
  "ostrich-db",
  "ostrich-protocol",
+ "ostrich-x509",
  "rand 0.8.5",
  "reqwest",
  "rsa",
@@ -2601,6 +2604,7 @@ dependencies = [
  "tonic 0.12.3",
  "uuid",
  "x509-cert",
+ "x509-parser",
 ]
 
 [[package]]
@@ -2761,6 +2765,7 @@ dependencies = [
  "sha2",
  "spki",
  "thiserror 2.0.17",
+ "tokio",
  "tokio-test",
  "tracing",
  "uuid",

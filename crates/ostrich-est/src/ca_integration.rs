@@ -42,10 +42,14 @@ use der::Encode;
 use ostrich_common::{CaGrpcClient, GrpcClientConfig};
 use ostrich_db::DatabasePool;
 use ostrich_protocol::certificate_authority_service_client::CertificateAuthorityServiceClient;
-use ostrich_protocol::{DistinguishedName as ProtoDistinguishedName, IssueCertificateRequest};
+use ostrich_protocol::{
+    DistinguishedName as ProtoDistinguishedName, IssueCertificateRequest,
+    SubjectAltName as ProtoSubjectAltName,
+};
 use uuid::Uuid;
 use x509_cert::der::Decode;
 use x509_cert::request::CertReq;
+use x509_parser::der_parser::asn1_rs::FromDer;
 
 /// CA client for EST service
 ///
@@ -118,9 +122,12 @@ impl EstCaClient {
         let subject = csr.info.subject;
         let proto_subject = Self::convert_subject_to_proto(&subject)?;
 
-        // Extract SANs from CSR
-        // TODO: Parse SANs from CSR attributes/extensions (Phase 13)
-        let subject_alt_names = vec![];
+        // Parse CSR to extract SANs (using the full parser with extension support)
+        let parsed_csr = ostrich_x509::parser::parse_csr(csr_der)
+            .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR for SANs: {}", e)))?;
+
+        // Convert SANs to proto format
+        let subject_alt_names = Self::convert_sans_to_proto(&parsed_csr.subject_alternative_names)?;
 
         // Extract public key
         let public_key_der = csr
@@ -180,26 +187,84 @@ impl EstCaClient {
 
     /// Convert X.509 Name to proto DistinguishedName
     ///
+    /// RFC 5280 §4.1.2.4 - Issuer/Subject name conversion
+    /// RFC 4514 - LDAP DN string representation
+    ///
     /// COMPLIANCE MAPPING:
-    /// - NIAP PP-CA: FDP_ITC.1 - Import user data (subject DN extraction)
-    /// - RFC 5280 S4.1.2.4 - Issuer/Subject name conversion
-    /// - RFC 4514 - LDAP Distinguished Name string representation
+    /// - NIAP PP-CA FDP_ITC.1: Import user data (subject DN)
+    /// - RFC 5280 §4.1.2.4: Subject/Issuer name field parsing
+    /// - RFC 4514: DN attribute extraction and conversion
     fn convert_subject_to_proto(name: &x509_cert::name::Name) -> Result<ProtoDistinguishedName> {
-        // Convert Name to string (RFC 4514 format)
-        // For now, we'll do a simple conversion
-        // TODO: Proper ASN.1 RDN parsing (Phase 13)
+        // Encode the Name to DER so we can parse it with x509-parser
+        use der::Encode;
+        let name_der = name
+            .to_der()
+            .map_err(|e| Error::InvalidCsr(format!("Failed to encode subject DN: {}", e)))?;
 
-        let name_str = format!("{:?}", name); // Temporary - needs proper implementation
+        // Parse with x509-parser to use our DN parser
+        use x509_parser::x509::X509Name;
+        let (_, parsed_name) = X509Name::from_der(&name_der)
+            .map_err(|e| Error::InvalidCsr(format!("Failed to parse subject DN: {}", e)))?;
+
+        // Use our DN parser
+        let dn = ostrich_x509::parser::parse_distinguished_name(&parsed_name)
+            .map_err(|e| Error::InvalidCsr(format!("Failed to extract DN attributes: {}", e)))?;
 
         Ok(ProtoDistinguishedName {
-            common_name: Some(name_str.clone()),
-            organization: None,
-            organizational_unit: None,
-            locality: None,
-            state_or_province: None,
-            country: None,
-            serial_number: None,
+            common_name: dn.common_name,
+            organization: dn.organization,
+            organizational_unit: dn.organizational_unit,
+            locality: dn.locality,
+            state_or_province: dn.state_or_province,
+            country: dn.country,
+            serial_number: dn.serial_number,
         })
+    }
+
+    /// Convert parsed SANs to proto SubjectAltName format
+    ///
+    /// RFC 5280 §4.2.1.6 - SubjectAltName extension
+    /// RFC 7030 §3.5 - EST enrollment with SANs
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - RFC 5280 §4.2.1.6: SubjectAltName conversion
+    /// - RFC 7030 §3.5: EST CSR attribute processing
+    /// - NIAP PP-CA FDP_ITC.1: Import user data (SAN extraction)
+    fn convert_sans_to_proto(sans: &[String]) -> Result<Vec<ProtoSubjectAltName>> {
+        use ostrich_protocol::subject_alt_name::Name;
+
+        let mut proto_sans = Vec::new();
+
+        for san in sans {
+            let proto_san = if let Some(dns) = san.strip_prefix("DNS:") {
+                ProtoSubjectAltName {
+                    name: Some(Name::DnsName(dns.to_string())),
+                }
+            } else if let Some(email) = san.strip_prefix("email:") {
+                ProtoSubjectAltName {
+                    name: Some(Name::Rfc822Name(email.to_string())),
+                }
+            } else if let Some(uri) = san.strip_prefix("URI:") {
+                ProtoSubjectAltName {
+                    name: Some(Name::Uri(uri.to_string())),
+                }
+            } else if let Some(ip) = san.strip_prefix("IP:") {
+                ProtoSubjectAltName {
+                    name: Some(Name::IpAddress(ip.to_string())),
+                }
+            } else if let Some(dn) = san.strip_prefix("DirName:") {
+                ProtoSubjectAltName {
+                    name: Some(Name::DirectoryName(dn.to_string())),
+                }
+            } else {
+                // Unknown SAN type, skip
+                continue;
+            };
+
+            proto_sans.push(proto_san);
+        }
+
+        Ok(proto_sans)
     }
 
     /// Get issued certificate from CA
@@ -209,6 +274,7 @@ impl EstCaClient {
     /// - NIAP PP-CA: FDP_ETC.1 - Export of user data (certificate retrieval)
     /// - RFC 7030 S4.2.3 - Certificate retrieval
     /// - RFC 7030 S4.1.3 - PKCS#7/CMS response format
+    /// - RFC 5652 S5 - CMS SignedData (degenerate certs-only)
     ///
     /// # Arguments
     /// * `certificate_id` - Certificate ID from CA
@@ -225,9 +291,9 @@ impl EstCaClient {
             .ok_or_else(|| Error::NotFound)?;
 
         // RFC 7030 §4.1.3 - Response is PKCS#7 (CMS) signed-data
-        // TODO: Wrap certificate in PKCS#7/CMS format (Phase 13)
-        // For now, return DER-encoded certificate
-        Ok(certificate.der_encoded)
+        // Wrap certificate in PKCS#7 certs-only structure
+        let certs = vec![certificate.der_encoded];
+        crate::rest::encode_certs_only_pkcs7(&certs)
     }
 }
 

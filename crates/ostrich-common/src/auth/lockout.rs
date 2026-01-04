@@ -542,19 +542,31 @@ mod tests {
 
         // First failure (RFC 5737 TEST-NET-1)
         let status = lockout
-            .record_failure("user1", Some(test_ipv4::TEST_NET_1.to_string()), "invalid password")
+            .record_failure(
+                "user1",
+                Some(test_ipv4::TEST_NET_1.to_string()),
+                "invalid password",
+            )
             .unwrap();
         assert_eq!(status, LockoutStatus::Active);
 
         // Second failure
         let status = lockout
-            .record_failure("user1", Some(test_ipv4::TEST_NET_1.to_string()), "invalid password")
+            .record_failure(
+                "user1",
+                Some(test_ipv4::TEST_NET_1.to_string()),
+                "invalid password",
+            )
             .unwrap();
         assert_eq!(status, LockoutStatus::Active);
 
         // Third failure - should lock
         let status = lockout
-            .record_failure("user1", Some(test_ipv4::TEST_NET_1.to_string()), "invalid password")
+            .record_failure(
+                "user1",
+                Some(test_ipv4::TEST_NET_1.to_string()),
+                "invalid password",
+            )
             .unwrap();
         assert_eq!(status, LockoutStatus::TemporarilyLocked);
     }

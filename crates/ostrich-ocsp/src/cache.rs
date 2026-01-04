@@ -134,13 +134,13 @@ impl OcspCache {
     pub async fn get(&self, key: &CacheKey) -> Option<OcspResponse> {
         let cache = self.cache.read().await;
 
-        if let Some(entry) = cache.get(key) {
-            if entry.is_valid() {
-                // Cache hit - response still valid
-                return Some(entry.response.clone());
-            }
-            // Entry expired - will be removed on next write
+        if let Some(entry) = cache.get(key)
+            && entry.is_valid()
+        {
+            // Cache hit - response still valid
+            return Some(entry.response.clone());
         }
+        // Entry expired - will be removed on next write
 
         None
     }
@@ -293,7 +293,10 @@ mod tests {
 
         let cached_response = cached.unwrap();
         assert_eq!(cached_response.responses.len(), 1);
-        assert_eq!(cached_response.responses[0].serial_number, vec![0x12, 0x34, 0x56]);
+        assert_eq!(
+            cached_response.responses[0].serial_number,
+            vec![0x12, 0x34, 0x56]
+        );
     }
 
     #[tokio::test]

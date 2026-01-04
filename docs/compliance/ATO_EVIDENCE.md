@@ -389,7 +389,7 @@ echo "Test results collected to $OUTPUT_DIR"
 | **Authentication** | Validate mTLS and auth | Certificate validation, invalid cert rejection | IA-2, FIA_X509_EXT.1 |
 | **Authorization** | Validate RBAC enforcement | Role permission checks, unauthorized action denial | AC-3, FMT_SMR.2 |
 | **Audit** | Validate audit logging | Event capture, integrity verification | AU-2, AU-3, FAU_GEN.1 |
-| **Input Validation** | Validate CSR/cert validation | Malformed CSR rejection, field validation | SI-10 |
+| **Input Validation** | Validate CSR/cert validation | Malformed CSR rejection, field validation, DN parsing, SAN extraction | SI-10, FDP_ITC.1 |
 | **Self-Test** | Validate integrity checks | Startup tests, KAT execution | FPT_TST_EXT.1 |
 
 **Expected Test Results:**

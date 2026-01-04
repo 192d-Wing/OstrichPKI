@@ -1,11 +1,11 @@
 # NIAP Protection Profile for Certification Authorities v2.1 Compliance Matrix
 
-**Document Version:** 1.1
-**Date:** 2026-01-03
+**Document Version:** 1.2
+**Date:** 2026-01-04
 **OstrichPKI Version:** 0.10.0
 **Protection Profile:** NIAP PP-CA v2.1
 **Overall Compliance:** 45-55% (Partial)
-**Last Updated:** Phase 8 completion - X.509/CRL extension implementation
+**Last Updated:** CSR parsing enhancements - RFC 4514 DN parsing and RFC 5280 SAN extraction
 
 ## Executive Summary
 
@@ -476,7 +476,9 @@ This document tracks OstrichPKI's compliance with the NIAP Protection Profile fo
   - ✅ **Key Usage** (§4.2.1.3, critical): Digital signature, non-repudiation, key encipherment, data encipherment, key agreement, key cert sign, CRL sign, encipher only, decipher only
   - ✅ **Basic Constraints** (§4.2.1.9, critical): CA flag, path length constraint
   - ✅ **Extended Key Usage** (§4.2.1.12): Server auth, client auth, code signing, email protection, time stamping, OCSP signing, custom OIDs
-  - ✅ **Subject Alternative Name** (§4.2.1.6): DNS names, RFC822 names, URIs, IP addresses
+  - ✅ **Subject Alternative Name** (§4.2.1.6): DNS names, RFC822 names, URIs, IP addresses, directoryName
+    - **NEW**: SAN extraction from CSR extension requests (OID 2.5.29.17)
+    - Code: [parser.rs:11-91](../../crates/ostrich-x509/src/parser.rs#L11-L91)
   - ✅ **Authority Key Identifier** (§4.2.1.1): Links certificate to issuing CA's public key
   - ✅ **Subject Key Identifier** (§4.2.1.2): Unique identifier for certificate's public key
   - ✅ **CRL Distribution Points** (§4.2.1.13): Full name URIs for CRL retrieval
@@ -485,6 +487,15 @@ This document tracks OstrichPKI's compliance with the NIAP Protection Profile fo
 - ✅ Profile validation enforces CA certificates have keyCertSign usage
 - ✅ All extensions properly marked critical/non-critical per RFC 5280
 - ✅ Proper ASN.1 DER encoding for all extension values
+- ✅ **Subject DN Parsing** (RFC 5280 §4.1.2.4, RFC 4514):
+  - **NEW**: Proper Distinguished Name parsing from CSRs
+  - OID-based attribute extraction (CN, O, OU, L, ST, C, serialNumber)
+  - Multi-valued RDN support
+  - ASN.1 string type handling (UTF8String, PrintableString, IA5String, etc.)
+  - Security: Prevents DN spoofing through proper parsing
+  - Code: [parser.rs:93-174](../../crates/ostrich-x509/src/parser.rs#L93-L174)
+  - Integration: [ACME ca_integration.rs:153-177](../../crates/ostrich-acme/src/ca_integration.rs#L153-L177), [EST ca_integration.rs:197-221](../../crates/ostrich-est/src/ca_integration.rs#L197-L221)
+  - Test coverage: 2 unit tests with real OpenSSL CSRs
 
 **Gaps:**
 

@@ -68,6 +68,10 @@ pub const ORGANIZATION_NAME: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.
 pub const ORGANIZATIONAL_UNIT_NAME: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.11");
 pub const SERIAL_NUMBER_ATTR: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.5");
 
+// PKCS#9 Attributes - RFC 2985
+pub const EXTENSION_REQUEST: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.14");
+
 // Post-Quantum Cryptography OIDs
 // Official NIST OID assignments per FIPS 203, 204, 205 (August 2024)
 // See: NIST SP 800-208, draft-ietf-lamps-dilithium-certificates,
