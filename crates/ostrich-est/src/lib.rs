@@ -56,6 +56,7 @@ pub mod enrollment;
 pub mod error;
 pub mod mtls;
 pub mod rest;
+pub mod serverkeygen;
 
 pub use ca_integration::EstCaClient;
 pub use enrollment::{
@@ -64,3 +65,6 @@ pub use enrollment::{
 pub use error::{Error, Result};
 pub use mtls::{ClientCertExtractor, MtlsClientCert, validate_client};
 pub use rest::create_router;
+pub use serverkeygen::{
+    generate_key_pair_for_client, ServerKeyGenRequest, ServerKeyGenResponse,
+};

@@ -48,3 +48,4 @@ rustls-pki-types = { workspace = true }
 # Utilities
 thiserror = { workspace = true }
 hex = { workspace = true }
+zeroize = { workspace = true }

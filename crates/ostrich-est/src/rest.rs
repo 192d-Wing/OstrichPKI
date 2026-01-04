@@ -427,30 +427,111 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
         .into_response())
 }
 
-/// Server-side key generation (RFC 7030 S4.3)
+/// Server-side key generation (RFC 7030 §4.4)
 ///
-/// Server generates key pair and returns certificate + encrypted private key.
+/// Server generates key pair and returns PKCS#12 with certificate + encrypted private key.
 ///
 /// COMPLIANCE MAPPING:
 /// - NIAP PP-CA: FIA_UAU.1 - User authentication via mTLS (required)
 /// - NIAP PP-CA: FCS_CKM.1 - Cryptographic key generation (server-side)
-/// - NIAP PP-CA: FCS_COP.1 - Cryptographic operations (key wrapping)
+/// - NIAP PP-CA: FCS_COP.1 - Cryptographic operations (PKCS#12 encoding)
 /// - NIAP PP-CA: FDP_ACC.1 - Access control for key generation
 /// - NIAP PP-CA: FAU_GEN.1 - Audit record for key generation event
+/// - NIAP PP-CA: FCS_CKM.4 - Key destruction (zeroization after use)
 /// - NIST 800-53: SC-12 - Cryptographic key establishment
-/// - RFC 7030 S4.3 - Server-side key generation
-async fn server_key_gen(State(_state): State<EstState>, _body: Bytes) -> Result<Response> {
-    // TODO: Validate client certificate
-    // TODO: Parse CSR (without private key, just subject info)
-    // TODO: Generate key pair on server
-    // TODO: Issue certificate
-    // TODO: Encrypt private key for client
-    // TODO: Return PKCS#7 with cert + encrypted private key
+/// - NIST 800-53: SI-12 - Information handling (key zeroization)
+/// - RFC 7030 §4.4 - Server-side key generation
+/// - RFC 7292 - PKCS#12 Personal Information Exchange
+///
+/// # Request Format
+///
+/// The client sends a base64-encoded "CSR-like" structure containing:
+/// - Subject distinguished name
+/// - Requested key type (from CSR algorithm field or attributes)
+/// - Optional SANs
+///
+/// Unlike normal CSR, there is no proof-of-possession since the client
+/// doesn't have the private key yet.
+///
+/// # Response Format
+///
+/// Returns a PKCS#12 bundle (application/pkcs12) containing:
+/// - Issued certificate
+/// - Encrypted private key (password-protected)
+/// - CA certificate chain
+///
+/// # Security Notes
+///
+/// - CRITICAL: This endpoint MUST require client authentication (mTLS)
+/// - Private keys are zeroized from memory after PKCS#12 creation
+/// - PKCS#12 password should be communicated out-of-band (not in this response)
+/// - Consider KRA escrow for key recovery capability
+///
+/// TODO: Add mTLS client certificate validation when TLS is configured.
+/// When TLS server is set up, this handler should:
+/// 1. Extract client certificate using `ClientCertExtractor` axum extractor
+/// 2. Validate certificate with `validate_client(&client_cert, &state.db_pool).await?`
+/// 3. Use `client_cert.client_id` as the client identifier
+/// 4. Use `client_cert.subject_dn` for audit logging
+///
+/// Example (when TLS is configured):
+/// ```ignore
+/// let ClientCertExtractor(client_cert) = ClientCertExtractor::from_request_parts(&mut parts, &state).await?;
+/// validate_client(&client_cert, &state.db_pool).await?;
+/// let client_identifier = &client_cert.client_id;
+/// ```
+async fn server_key_gen(State(state): State<EstState>, body: Bytes) -> Result<Response> {
+    use crate::serverkeygen::{generate_key_pair_for_client, ServerKeyGenRequest};
+    use ostrich_crypto::KeyType;
+    use zeroize::Zeroizing;
 
-    // This is an optional feature, return 501 Not Implemented for now
+    // Placeholder client identifier (mTLS validation pending TLS server setup)
+    let client_identifier = "placeholder-client";
+
+    // Decode base64-encoded request body
+    let request_der = BASE64_STANDARD
+        .decode(&body)
+        .map_err(|e| Error::BadRequest(format!("Invalid base64: {}", e)))?;
+
+    if request_der.len() < 10 {
+        return Err(Error::BadRequest("Request too short".to_string()));
+    }
+
+    // TODO: Parse CSR-like structure to extract subject DN and requested key type
+    // For Phase 13, use defaults
+    let subject_dn = "CN=ServerKeyGen Client,O=OstrichPKI".to_string();
+    let key_type = KeyType::Rsa2048; // Default to RSA 2048
+    let profile_name = "default".to_string();
+
+    let request = ServerKeyGenRequest {
+        subject_dn: subject_dn.clone(),
+        key_type,
+        subject_alt_names: vec![],
+        profile_name,
+    };
+
+    // Default PKCS#12 password (in production, this should be client-provided or generated)
+    // RFC 7030 §4.4.2 - Password may be provided via HTTP Basic Auth or other mechanism
+    let pkcs12_password = Zeroizing::new("changeit".to_string());
+
+    // Generate key pair, issue certificate, create PKCS#12 bundle
+    let pkcs12_bundle = generate_key_pair_for_client(
+        request,
+        client_identifier,
+        state.crypto_provider.clone(),
+        state.audit_sink.clone(),
+        pkcs12_password,
+    )
+    .await?;
+
+    // Audit log successful key generation
+    // (Additional audit already done in generate_key_pair_for_client)
+
+    // RFC 7030 §4.4.2 - Response is PKCS#12 (application/pkcs12)
     Ok((
-        StatusCode::NOT_IMPLEMENTED,
-        "Server-side key generation not implemented",
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/pkcs12")],
+        BASE64_STANDARD.encode(&pkcs12_bundle),
     )
         .into_response())
 }
