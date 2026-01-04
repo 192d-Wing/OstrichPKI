@@ -1,399 +1,505 @@
-# OstrichPKI GitLab CI/CD Pipeline
-#
-# COMPLIANCE MAPPING:
-# - NIST 800-53: SA-11 (Developer Security Testing and Evaluation)
-# - NIST 800-53: CA-2 (Security Assessments)
-# - NIST 800-53: SI-7 (Software, Firmware, and Information Integrity)
-
+# You can override the included template(s) by including variable overrides
+# SAST customization: https://docs.gitlab.com/ee/user/application_security/sast/#customizing-the-sast-settings
+# Secret Detection customization: https://docs.gitlab.com/user/application_security/secret_detection/pipeline/configure
+# Dependency Scanning customization: https://docs.gitlab.com/ee/user/application_security/dependency_scanning/#customizing-the-dependency-scanning-settings
+# Container Scanning customization: https://docs.gitlab.com/ee/user/application_security/container_scanning/#customizing-the-container-scanning-settings
+# Note that environment variables can be set in several places
+# See https://docs.gitlab.com/ee/ci/variables/#cicd-variable-precedence
 variables:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: "1"
-  CARGO_HOME: ${CI_PROJECT_DIR}/.cargo
-  # Database for integration tests
+  RUST_BACKTRACE: '1'
+  CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
   POSTGRES_USER: ostrich_test
   POSTGRES_PASSWORD: test_password_insecure
   POSTGRES_DB: ostrich_pki_test
   DATABASE_URL: postgresql://ostrich_test:test_password_insecure@postgres:5432/ostrich_pki_test
-
-# Cache configuration
-.cargo-cache: &cargo-cache
+".cargo-cache":
   cache:
     key:
       files:
-        - Cargo.lock
+      - Cargo.lock
     paths:
-      - .cargo/bin/
-      - .cargo/registry/index/
-      - .cargo/registry/cache/
-      - .cargo/git/db/
-      - target/
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
     policy: pull-push
-
-# Base Rust image
-.rust-base: &rust-base
+".rust-base":
   image: rust:1.92.0-alpine
   before_script:
-    - rustup component add rustfmt clippy
-    - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
-
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
 stages:
-  - lint
-  - security
-  - build
-  - test
-  - integration
-  - benchmark
-  - compliance
-  - sbom
-
-# ===========================================================================
-# STAGE 1: Code Quality & Formatting
-# ===========================================================================
-
+- lint
+- security
+- build
+- test
+- integration
+- benchmark
+- compliance
+- sbom
 lint:format:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: lint
   script:
-    - cargo fmt --all -- --check
+  - cargo fmt --all -- --check
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "develop"
-
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH == "develop"
 lint:clippy:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: lint
   script:
-    - cargo clippy --all-targets --all-features -- -D warnings
+  - cargo clippy --all-targets --all-features -- -D warnings
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "develop"
-
-# ===========================================================================
-# STAGE 2: Security Scanning
-# ===========================================================================
-
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH == "develop"
 security:audit:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: security
   script:
-    - cargo install cargo-audit --locked
-    - cargo audit --deny warnings
+  - cargo install cargo-audit --locked
+  - cargo audit --deny warnings
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "develop"
-    - if: $CI_PIPELINE_SOURCE == "schedule"
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH == "develop"
+  - if: $CI_PIPELINE_SOURCE == "schedule"
   allow_failure: false
-
 security:deny:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: security
   script:
-    - cargo install cargo-deny --locked
-    - cargo deny check
+  - cargo install cargo-deny --locked
+  - cargo deny check
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "develop"
-
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH == "develop"
 security:secrets:
   stage: security
   image: zricethezav/gitleaks:latest
   script:
-    - gitleaks detect --source . --verbose
+  - gitleaks detect --source . --verbose
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "develop"
-
-# SAST scanning (GitLab built-in)
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH == "develop"
 include:
-  - template: Security/SAST.gitlab-ci.yml
-  - template: Security/Dependency-Scanning.gitlab-ci.yml
-  - template: Security/Secret-Detection.gitlab-ci.yml
-
-# ===========================================================================
-# STAGE 3: Build
-# ===========================================================================
-
+- template: Security/SAST.gitlab-ci.yml
+- template: Security/Dependency-Scanning.gitlab-ci.yml
+- template: Security/Secret-Detection.gitlab-ci.yml
 build:linux:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: build
   script:
-    - apt-get install -y softhsm2
-    - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
-    - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin 5678
-    - cargo build --workspace --all-features --verbose
+  - apt-get install -y softhsm2
+  - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
+  - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
+  - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin
+    5678
+  - cargo build --workspace --all-features --verbose
   artifacts:
     paths:
-      - target/debug/
+    - target/debug/
     expire_in: 1 hour
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "develop"
-
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH == "develop"
 build:release:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: build
   script:
-    - apt-get install -y softhsm2
-    - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
-    - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin 5678
-    - cargo build --workspace --all-features --release
+  - apt-get install -y softhsm2
+  - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
+  - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
+  - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin
+    5678
+  - cargo build --workspace --all-features --release
   artifacts:
     paths:
-      - target/release/ostrich-*
+    - target/release/ostrich-*
     expire_in: 1 week
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_TAG
-
-# ===========================================================================
-# STAGE 4: Unit Tests
-# ===========================================================================
-
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: "$CI_COMMIT_TAG"
 test:unit:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: test
   needs:
-    - build:linux
+  - build:linux
   script:
-    - apt-get install -y softhsm2
-    - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
-    - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin 5678
-    - cargo test --workspace --all-features --verbose
+  - apt-get install -y softhsm2
+  - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
+  - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
+  - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin
+    5678
+  - cargo test --workspace --all-features --verbose
   variables:
-    PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
-    PKCS11_SLOT_ID: "0"
-    PKCS11_PIN: "1234"
+    PKCS11_MODULE_PATH: "/usr/lib/softhsm/libsofthsm2.so"
+    PKCS11_SLOT_ID: '0'
+    PKCS11_PIN: '1234'
     CRYPTO_PROVIDER: software
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "develop"
-
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH == "develop"
 test:doc:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: test
   needs:
-    - build:linux
+  - build:linux
   script:
-    - cargo test --workspace --doc --verbose
+  - cargo test --workspace --doc --verbose
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "develop"
-
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH == "develop"
 test:coverage:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: test
   needs:
-    - build:linux
+  - build:linux
   script:
-    - apt-get install -y softhsm2
-    - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
-    - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin 5678
-    - cargo install cargo-tarpaulin
-    - cargo tarpaulin --workspace --all-features --timeout 300 --out Xml --output-dir ./coverage
+  - apt-get install -y softhsm2
+  - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
+  - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
+  - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin
+    5678
+  - cargo install cargo-tarpaulin
+  - cargo tarpaulin --workspace --all-features --timeout 300 --out Xml --output-dir
+    ./coverage
   variables:
-    PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
+    PKCS11_MODULE_PATH: "/usr/lib/softhsm/libsofthsm2.so"
     CRYPTO_PROVIDER: software
   artifacts:
     reports:
       coverage_report:
         coverage_format: cobertura
         path: coverage/cobertura.xml
-  coverage: '/^\d+.\d+% coverage/'
+  coverage: "/^\\d+.\\d+% coverage/"
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "develop"
-
-# ===========================================================================
-# STAGE 5: Integration Tests
-# ===========================================================================
-
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH == "develop"
 test:integration:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: integration
   needs:
-    - test:unit
+  - test:unit
   services:
-    - name: postgres:16-alpine
-      alias: postgres
+  - name: postgres:16-alpine
+    alias: postgres
   script:
-    - apt-get install -y softhsm2
-    - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
-    - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin 5678
-    # Wait for PostgreSQL
-    - apt-get install -y postgresql-client
-    - until pg_isready -h postgres -p 5432; do sleep 2; done
-    # Run migrations
-    - cargo install sqlx-cli --no-default-features --features postgres
-    - sqlx database create || true
-    - sqlx migrate run
-    # Run integration tests
-    - cargo test --test '*' -- --test-threads=1
+  - apt-get install -y softhsm2
+  - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
+  - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
+  - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin
+    5678
+  - apt-get install -y postgresql-client
+  - until pg_isready -h postgres -p 5432; do sleep 2; done
+  - cargo install sqlx-cli --no-default-features --features postgres
+  - sqlx database create || true
+  - sqlx migrate run
+  - cargo test --test '*' -- --test-threads=1
   variables:
-    PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
-    PKCS11_SLOT_ID: "0"
-    PKCS11_PIN: "1234"
+    PKCS11_MODULE_PATH: "/usr/lib/softhsm/libsofthsm2.so"
+    PKCS11_SLOT_ID: '0'
+    PKCS11_PIN: '1234'
     CRYPTO_PROVIDER: software
     RUST_LOG: info
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "develop"
-
-# ===========================================================================
-# STAGE 6: Performance Benchmarks
-# ===========================================================================
-
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH == "develop"
 benchmark:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: benchmark
   needs:
-    - test:unit
+  - test:unit
   script:
-    - apt-get install -y softhsm2
-    - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
-    - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-bench" --pin 1234 --so-pin 5678
-    - cargo bench --workspace -- --noplot
+  - apt-get install -y softhsm2
+  - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
+  - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
+  - softhsm2-util --init-token --slot 0 --label "ostrich-bench" --pin 1234 --so-pin
+    5678
+  - cargo bench --workspace -- --noplot
   variables:
-    PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
+    PKCS11_MODULE_PATH: "/usr/lib/softhsm/libsofthsm2.so"
     CRYPTO_PROVIDER: software
   artifacts:
     paths:
-      - target/criterion/
+    - target/criterion/
     expire_in: 1 week
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-
-# ===========================================================================
-# STAGE 7: Compliance Documentation Check
-# ===========================================================================
-
+  - if: $CI_COMMIT_BRANCH == "main"
 compliance:docs:
   stage: compliance
   image: alpine:latest
   script:
-    - |
-      echo "Checking compliance documentation..."
-      test -f docs/compliance/NIST_800-53_MAPPING.md || exit 1
-      test -f docs/compliance/NIAP_COMPLIANCE.md || exit 1
-      test -f docs/compliance/RFC_COMPLIANCE.md || exit 1
-      test -f docs/compliance/FIPS_COMPLIANCE.md || exit 1
-      test -f docs/compliance/ATO_EVIDENCE.md || exit 1
-      echo "✓ All compliance documentation files present"
+  - |
+    echo "Checking compliance documentation..."
+    test -f docs/compliance/NIST_800-53_MAPPING.md || exit 1
+    test -f docs/compliance/NIAP_COMPLIANCE.md || exit 1
+    test -f docs/compliance/RFC_COMPLIANCE.md || exit 1
+    test -f docs/compliance/FIPS_COMPLIANCE.md || exit 1
+    test -f docs/compliance/ATO_EVIDENCE.md || exit 1
+    echo "✓ All compliance documentation files present"
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "develop"
-
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH == "develop"
 compliance:annotations:
   stage: compliance
   image: alpine:latest
   script:
-    - apk add --no-cache grep
-    - |
-      # Count NIST 800-53 annotations
-      NIST_COUNT=$(grep -r "NIST 800-53:" crates/ | wc -l)
-      echo "Found $NIST_COUNT NIST 800-53 annotations"
+  - apk add --no-cache grep
+  - |
+    # Count NIST 800-53 annotations
+    NIST_COUNT=$(grep -r "NIST 800-53:" crates/ | wc -l)
+    echo "Found $NIST_COUNT NIST 800-53 annotations"
 
-      # Count NIAP PP-CA annotations
-      NIAP_COUNT=$(grep -r "NIAP PP-CA:" crates/ | wc -l)
-      echo "Found $NIAP_COUNT NIAP PP-CA annotations"
+    # Count NIAP PP-CA annotations
+    NIAP_COUNT=$(grep -r "NIAP PP-CA:" crates/ | wc -l)
+    echo "Found $NIAP_COUNT NIAP PP-CA annotations"
 
-      # Require minimum annotations
-      if [ $NIST_COUNT -lt 50 ]; then
-        echo "⚠️  Warning: Low NIST 800-53 annotation count"
-      fi
+    # Require minimum annotations
+    if [ $NIST_COUNT -lt 50 ]; then
+      echo "⚠️  Warning: Low NIST 800-53 annotation count"
+    fi
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-
-# ===========================================================================
-# STAGE 8: SBOM Generation
-# ===========================================================================
-
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "main"
 sbom:generate:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: sbom
   script:
-    - cargo install cargo-sbom
-    - cargo sbom > sbom.spdx.json
+  - cargo install cargo-sbom
+  - cargo sbom > sbom.spdx.json
   artifacts:
     paths:
-      - sbom.spdx.json
+    - sbom.spdx.json
     expire_in: 1 year
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_TAG
-
-# ===========================================================================
-# Docker Build (for releases)
-# ===========================================================================
-
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: "$CI_COMMIT_TAG"
 docker:build:
   stage: build
   image: docker:24
   services:
-    - docker:24-dind
+  - docker:24-dind
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
   script:
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
-    # Build all service images
-    - |
+  - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  - |
+    for service in ca acme est ocsp scms kra; do
+      docker build --target ${service}-service -t $CI_REGISTRY_IMAGE/${service}:$CI_COMMIT_SHA .
+      docker push $CI_REGISTRY_IMAGE/${service}:$CI_COMMIT_SHA
+    done
+  - |
+    if [ "$CI_COMMIT_BRANCH" == "main" ]; then
       for service in ca acme est ocsp scms kra; do
-        docker build --target ${service}-service -t $CI_REGISTRY_IMAGE/${service}:$CI_COMMIT_SHA .
-        docker push $CI_REGISTRY_IMAGE/${service}:$CI_COMMIT_SHA
+        docker tag $CI_REGISTRY_IMAGE/${service}:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/${service}:latest
+        docker push $CI_REGISTRY_IMAGE/${service}:latest
       done
-    # Tag as latest on main
-    - |
-      if [ "$CI_COMMIT_BRANCH" == "main" ]; then
-        for service in ca acme est ocsp scms kra; do
-          docker tag $CI_REGISTRY_IMAGE/${service}:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/${service}:latest
-          docker push $CI_REGISTRY_IMAGE/${service}:latest
-        done
-      fi
+    fi
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_TAG
-
-# ===========================================================================
-# Scheduled Security Scan (Daily)
-# ===========================================================================
-
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: "$CI_COMMIT_TAG"
 scheduled:security-scan:
-  <<: *rust-base
-  <<: *cargo-cache
+  image: rust:1.92.0-alpine
+  before_script:
+  - rustup component add rustfmt clippy
+  - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev
+  cache:
+    key:
+      files:
+      - Cargo.lock
+    paths:
+    - ".cargo/bin/"
+    - ".cargo/registry/index/"
+    - ".cargo/registry/cache/"
+    - ".cargo/git/db/"
+    - target/
+    policy: pull-push
   stage: security
   script:
-    - cargo install cargo-audit --locked
-    - cargo audit --deny warnings
-    - cargo install cargo-deny --locked
-    - cargo deny check
+  - cargo install cargo-audit --locked
+  - cargo audit --deny warnings
+  - cargo install cargo-deny --locked
+  - cargo deny check
   rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule"
+  - if: $CI_PIPELINE_SOURCE == "schedule"
   allow_failure: false
