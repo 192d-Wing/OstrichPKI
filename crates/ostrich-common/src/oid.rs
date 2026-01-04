@@ -69,24 +69,53 @@ pub const ORGANIZATIONAL_UNIT_NAME: ObjectIdentifier = ObjectIdentifier::new_unw
 pub const SERIAL_NUMBER_ATTR: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.5");
 
 // Post-Quantum Cryptography OIDs
-// Note: These are draft/proposed OIDs and may change
-// FIPS 204: ML-DSA (Dilithium)
-// TODO: Update with official NIST OIDs when published
-pub const ML_DSA_44: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.2.267.7.4.4");
-pub const ML_DSA_65: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.2.267.7.6.5");
-pub const ML_DSA_87: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.2.267.7.8.7");
+// Official NIST OID assignments per FIPS 203, 204, 205 (August 2024)
+// See: NIST SP 800-208, draft-ietf-lamps-dilithium-certificates,
+//      draft-ietf-lamps-kyber-certificates
 
-// FIPS 203: ML-KEM (Kyber)
-// TODO: Update with official NIST OIDs when published
-pub const ML_KEM_512: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.22554.5.6.1");
-pub const ML_KEM_768: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.22554.5.6.2");
-pub const ML_KEM_1024: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.22554.5.6.3");
+// FIPS 204: ML-DSA (Module-Lattice-Based Digital Signature Algorithm)
+// Formerly known as CRYSTALS-Dilithium
+// NIST Computer Security Objects Registry: 2.16.840.1.101.3.4.3.*
+pub const ML_DSA_44: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.17");
+pub const ML_DSA_65: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.18");
+pub const ML_DSA_87: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.19");
 
-// FIPS 205: SLH-DSA (SPHINCS+)
-// TODO: Update with official NIST OIDs when published
-pub const SLH_DSA_SHA2_128S: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.9999.6.4.13");
-pub const SLH_DSA_SHA2_128F: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.9999.6.4.16");
-pub const SLH_DSA_SHA2_256S: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.9999.6.7.13");
+// FIPS 203: ML-KEM (Module-Lattice-Based Key-Encapsulation Mechanism)
+// Formerly known as CRYSTALS-Kyber
+// NIST Computer Security Objects Registry: 2.16.840.1.101.3.4.4.*
+pub const ML_KEM_512: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.4.1");
+pub const ML_KEM_768: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.4.2");
+pub const ML_KEM_1024: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.4.3");
+
+// FIPS 205: SLH-DSA (Stateless Hash-Based Digital Signature Algorithm)
+// Formerly known as SPHINCS+
+// NIST Computer Security Objects Registry: 2.16.840.1.101.3.4.3.*
+// SHA2 variants (FIPS 180-4)
+pub const SLH_DSA_SHA2_128S: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.20");
+pub const SLH_DSA_SHA2_128F: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.21");
+pub const SLH_DSA_SHA2_192S: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.22");
+pub const SLH_DSA_SHA2_192F: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.23");
+pub const SLH_DSA_SHA2_256S: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.24");
+pub const SLH_DSA_SHA2_256F: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.25");
+// SHAKE variants (FIPS 202)
+pub const SLH_DSA_SHAKE_128S: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.26");
+pub const SLH_DSA_SHAKE_128F: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.27");
+pub const SLH_DSA_SHAKE_192S: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.28");
+pub const SLH_DSA_SHAKE_192F: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.29");
+pub const SLH_DSA_SHAKE_256S: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.30");
+pub const SLH_DSA_SHAKE_256F: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.31");
 
 /// Helper function to get a human-readable name for an OID
 pub fn oid_name(oid: &ObjectIdentifier) -> &'static str {
@@ -116,6 +145,18 @@ pub fn oid_name(oid: &ObjectIdentifier) -> &'static str {
         ML_KEM_512 => "ML-KEM-512",
         ML_KEM_768 => "ML-KEM-768",
         ML_KEM_1024 => "ML-KEM-1024",
+        SLH_DSA_SHA2_128S => "SLH-DSA-SHA2-128s",
+        SLH_DSA_SHA2_128F => "SLH-DSA-SHA2-128f",
+        SLH_DSA_SHA2_192S => "SLH-DSA-SHA2-192s",
+        SLH_DSA_SHA2_192F => "SLH-DSA-SHA2-192f",
+        SLH_DSA_SHA2_256S => "SLH-DSA-SHA2-256s",
+        SLH_DSA_SHA2_256F => "SLH-DSA-SHA2-256f",
+        SLH_DSA_SHAKE_128S => "SLH-DSA-SHAKE-128s",
+        SLH_DSA_SHAKE_128F => "SLH-DSA-SHAKE-128f",
+        SLH_DSA_SHAKE_192S => "SLH-DSA-SHAKE-192s",
+        SLH_DSA_SHAKE_192F => "SLH-DSA-SHAKE-192f",
+        SLH_DSA_SHAKE_256S => "SLH-DSA-SHAKE-256s",
+        SLH_DSA_SHAKE_256F => "SLH-DSA-SHAKE-256f",
         _ => "Unknown",
     }
 }
@@ -177,6 +218,52 @@ mod tests {
         assert_eq!(oid_name(&ML_KEM_512), "ML-KEM-512");
         assert_eq!(oid_name(&ML_KEM_768), "ML-KEM-768");
         assert_eq!(oid_name(&ML_KEM_1024), "ML-KEM-1024");
+
+        // SLH-DSA SHA2 variants (FIPS 205)
+        assert_eq!(oid_name(&SLH_DSA_SHA2_128S), "SLH-DSA-SHA2-128s");
+        assert_eq!(oid_name(&SLH_DSA_SHA2_128F), "SLH-DSA-SHA2-128f");
+        assert_eq!(oid_name(&SLH_DSA_SHA2_192S), "SLH-DSA-SHA2-192s");
+        assert_eq!(oid_name(&SLH_DSA_SHA2_192F), "SLH-DSA-SHA2-192f");
+        assert_eq!(oid_name(&SLH_DSA_SHA2_256S), "SLH-DSA-SHA2-256s");
+        assert_eq!(oid_name(&SLH_DSA_SHA2_256F), "SLH-DSA-SHA2-256f");
+
+        // SLH-DSA SHAKE variants (FIPS 205)
+        assert_eq!(oid_name(&SLH_DSA_SHAKE_128S), "SLH-DSA-SHAKE-128s");
+        assert_eq!(oid_name(&SLH_DSA_SHAKE_128F), "SLH-DSA-SHAKE-128f");
+        assert_eq!(oid_name(&SLH_DSA_SHAKE_192S), "SLH-DSA-SHAKE-192s");
+        assert_eq!(oid_name(&SLH_DSA_SHAKE_192F), "SLH-DSA-SHAKE-192f");
+        assert_eq!(oid_name(&SLH_DSA_SHAKE_256S), "SLH-DSA-SHAKE-256s");
+        assert_eq!(oid_name(&SLH_DSA_SHAKE_256F), "SLH-DSA-SHAKE-256f");
+    }
+
+    #[test]
+    fn test_pqc_oid_values() {
+        // Verify official NIST OID assignments
+        // FIPS 204: ML-DSA
+        assert_eq!(ML_DSA_44.to_string(), "2.16.840.1.101.3.4.3.17");
+        assert_eq!(ML_DSA_65.to_string(), "2.16.840.1.101.3.4.3.18");
+        assert_eq!(ML_DSA_87.to_string(), "2.16.840.1.101.3.4.3.19");
+
+        // FIPS 203: ML-KEM
+        assert_eq!(ML_KEM_512.to_string(), "2.16.840.1.101.3.4.4.1");
+        assert_eq!(ML_KEM_768.to_string(), "2.16.840.1.101.3.4.4.2");
+        assert_eq!(ML_KEM_1024.to_string(), "2.16.840.1.101.3.4.4.3");
+
+        // FIPS 205: SLH-DSA SHA2 variants
+        assert_eq!(SLH_DSA_SHA2_128S.to_string(), "2.16.840.1.101.3.4.3.20");
+        assert_eq!(SLH_DSA_SHA2_128F.to_string(), "2.16.840.1.101.3.4.3.21");
+        assert_eq!(SLH_DSA_SHA2_192S.to_string(), "2.16.840.1.101.3.4.3.22");
+        assert_eq!(SLH_DSA_SHA2_192F.to_string(), "2.16.840.1.101.3.4.3.23");
+        assert_eq!(SLH_DSA_SHA2_256S.to_string(), "2.16.840.1.101.3.4.3.24");
+        assert_eq!(SLH_DSA_SHA2_256F.to_string(), "2.16.840.1.101.3.4.3.25");
+
+        // FIPS 205: SLH-DSA SHAKE variants
+        assert_eq!(SLH_DSA_SHAKE_128S.to_string(), "2.16.840.1.101.3.4.3.26");
+        assert_eq!(SLH_DSA_SHAKE_128F.to_string(), "2.16.840.1.101.3.4.3.27");
+        assert_eq!(SLH_DSA_SHAKE_192S.to_string(), "2.16.840.1.101.3.4.3.28");
+        assert_eq!(SLH_DSA_SHAKE_192F.to_string(), "2.16.840.1.101.3.4.3.29");
+        assert_eq!(SLH_DSA_SHAKE_256S.to_string(), "2.16.840.1.101.3.4.3.30");
+        assert_eq!(SLH_DSA_SHAKE_256F.to_string(), "2.16.840.1.101.3.4.3.31");
     }
 
     #[test]
