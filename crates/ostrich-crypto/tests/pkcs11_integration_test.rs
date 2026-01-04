@@ -33,9 +33,9 @@ fn get_softhsm_path() -> String {
     env::var("PKCS11_MODULE_PATH").unwrap_or_else(|_| {
         // Try common SoftHSM locations
         let common_paths = vec![
-            "/usr/local/lib/softhsm/libsofthsm2.so",      // macOS Homebrew
-            "/opt/homebrew/lib/softhsm/libsofthsm2.so",   // macOS Apple Silicon
-            "/usr/lib/softhsm/libsofthsm2.so",            // Linux
+            "/usr/local/lib/softhsm/libsofthsm2.so",    // macOS Homebrew
+            "/opt/homebrew/lib/softhsm/libsofthsm2.so", // macOS Apple Silicon
+            "/usr/lib/softhsm/libsofthsm2.so",          // Linux
             "/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so", // Debian/Ubuntu
         ];
 
@@ -72,10 +72,7 @@ async fn test_pkcs11_provider_initialization() {
 
     // Verify provider is ready
     let provider_id = provider.provider_id();
-    assert!(matches!(
-        provider_id,
-        ProviderId::Pkcs11 { slot_id: 0 }
-    ));
+    assert!(matches!(provider_id, ProviderId::Pkcs11 { slot_id: 0 }));
 }
 
 #[tokio::test]
@@ -216,7 +213,10 @@ async fn test_rsa_pss_signing_and_verification() {
         .await
         .expect("Failed to verify signature");
 
-    assert!(!is_valid, "Signature verification should fail for tampered message");
+    assert!(
+        !is_valid,
+        "Signature verification should fail for tampered message"
+    );
 }
 
 #[tokio::test]
@@ -291,11 +291,19 @@ async fn test_ecdsa_p256_signing_and_verification() {
     // Verify with tampered message should fail
     let tampered = b"Tampered message for ECDSA P-256 signature";
     let is_valid = provider
-        .verify(&key_handle, Algorithm::EcdsaP256Sha256, tampered, &signature)
+        .verify(
+            &key_handle,
+            Algorithm::EcdsaP256Sha256,
+            tampered,
+            &signature,
+        )
         .await
         .expect("Failed to verify signature");
 
-    assert!(!is_valid, "Signature verification should fail for tampered message");
+    assert!(
+        !is_valid,
+        "Signature verification should fail for tampered message"
+    );
 }
 
 #[tokio::test]
@@ -511,14 +519,18 @@ async fn test_deterministic_signatures_rsa_pss() {
     assert_ne!(sig1, sig2, "RSA-PSS signatures should be non-deterministic");
 
     // But both should verify
-    assert!(provider
-        .verify(&key_handle, Algorithm::RsaPssSha256, message, &sig1)
-        .await
-        .unwrap());
-    assert!(provider
-        .verify(&key_handle, Algorithm::RsaPssSha256, message, &sig2)
-        .await
-        .unwrap());
+    assert!(
+        provider
+            .verify(&key_handle, Algorithm::RsaPssSha256, message, &sig1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        provider
+            .verify(&key_handle, Algorithm::RsaPssSha256, message, &sig2)
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]

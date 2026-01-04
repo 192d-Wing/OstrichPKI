@@ -198,22 +198,49 @@ impl AcmeRepository {
     /// Update order status
     pub async fn update_order_status(
         &self,
-        order_id: &str,
+        order_id: Uuid,
         status: &str,
-        certificate_id: Option<Uuid>,
     ) -> Result<AcmeOrder> {
         let now = Utc::now();
 
         let order = sqlx::query_as::<_, AcmeOrder>(
             r#"
             UPDATE acme_orders
-            SET status = $1, certificate_id = $2, updated_at = $3
-            WHERE order_id = $4
+            SET status = $1, updated_at = $2
+            WHERE id = $3
             RETURNING *
             "#,
         )
         .bind(status)
+        .bind(now)
+        .bind(order_id)
+        .fetch_one(self.pool.pool())
+        .await?;
+
+        Ok(order)
+    }
+
+    /// Update order with certificate and CSR
+    ///
+    /// RFC 8555 §7.4 - Finalize order with CSR and resulting certificate
+    pub async fn update_order_certificate(
+        &self,
+        order_id: Uuid,
+        certificate_id: Uuid,
+        csr_der: &[u8],
+    ) -> Result<AcmeOrder> {
+        let now = Utc::now();
+
+        let order = sqlx::query_as::<_, AcmeOrder>(
+            r#"
+            UPDATE acme_orders
+            SET certificate_id = $1, csr_der = $2, updated_at = $3
+            WHERE id = $4
+            RETURNING *
+            "#,
+        )
         .bind(certificate_id)
+        .bind(csr_der)
         .bind(now)
         .bind(order_id)
         .fetch_one(self.pool.pool())

@@ -14,6 +14,7 @@ ostrich-db = { workspace = true }
 ostrich-crypto = { workspace = true }
 ostrich-audit = { workspace = true }
 ostrich-x509 = { workspace = true }
+ostrich-protocol = { workspace = true }
 
 # Web
 axum = { workspace = true }
@@ -21,17 +22,21 @@ axum = { workspace = true }
 # Async
 tokio = { workspace = true }
 
+# gRPC (for CA service integration)
+tonic = { workspace = true }
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 
-# Cryptography (for JWS validation)
+# Cryptography (for JWS validation and CSR parsing)
 rsa = { workspace = true }
 sha2 = { workspace = true }
 der = { workspace = true }
 spki = { workspace = true }
+x509-cert = { workspace = true }
 x509-parser = { workspace = true }
 webpki-roots = { workspace = true }
 

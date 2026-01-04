@@ -17,6 +17,8 @@ pub struct EstEnrollment {
     pub csr_der: Vec<u8>,
     pub certificate_id: Option<Uuid>,
     pub status: String,
+    /// Certificate profile used for this enrollment
+    pub profile_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

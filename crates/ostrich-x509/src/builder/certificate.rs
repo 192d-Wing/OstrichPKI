@@ -467,8 +467,8 @@ impl TbsCertificate {
     /// - NIAP PP-CA: FCS_COP.1 - Cryptographic Operations (key usage enforcement)
     fn build_extensions(&self) -> Result<Option<x509_cert::ext::Extensions>> {
         use const_oid::db::rfc5280;
-        use der::asn1::{BitString, OctetString};
         use der::Encode;
+        use der::asn1::{BitString, OctetString};
         use x509_cert::ext::Extension;
 
         let mut extensions = Vec::new();
@@ -495,14 +495,14 @@ impl TbsCertificate {
             let bit_string = BitString::from_bytes(&key_usage_bytes)
                 .map_err(|e| Error::Encoding(format!("Invalid key usage bits: {}", e)))?;
 
-            let ext = Extension {
-                extn_id: rfc5280::ID_CE_KEY_USAGE,
-                critical: true, // RFC 5280: Key Usage SHOULD be critical
-                extn_value: OctetString::new(
-                    bit_string.to_der()
-                        .map_err(|e| Error::Encoding(format!("Failed to encode key usage: {}", e)))?
-                )?,
-            };
+            let ext =
+                Extension {
+                    extn_id: rfc5280::ID_CE_KEY_USAGE,
+                    critical: true, // RFC 5280: Key Usage SHOULD be critical
+                    extn_value: OctetString::new(bit_string.to_der().map_err(|e| {
+                        Error::Encoding(format!("Failed to encode key usage: {}", e))
+                    })?)?,
+                };
             extensions.push(ext);
         }
 
@@ -519,10 +519,9 @@ impl TbsCertificate {
             let ext = Extension {
                 extn_id: rfc5280::ID_CE_BASIC_CONSTRAINTS,
                 critical: self.basic_constraints_ca, // Critical for CA certs
-                extn_value: OctetString::new(
-                    bc.to_der()
-                        .map_err(|e| Error::Encoding(format!("Failed to encode basic constraints: {}", e)))?
-                )?,
+                extn_value: OctetString::new(bc.to_der().map_err(|e| {
+                    Error::Encoding(format!("Failed to encode basic constraints: {}", e))
+                })?)?,
             };
             extensions.push(ext);
         }
@@ -535,21 +534,26 @@ impl TbsCertificate {
             let mut ekus = Vec::new();
             for eku in &self.extended_key_usage {
                 let oid = match eku {
-                    ExtendedKeyUsage::ServerAuth =>
-                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.1").unwrap(),
-                    ExtendedKeyUsage::ClientAuth =>
-                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.2").unwrap(),
-                    ExtendedKeyUsage::CodeSigning =>
-                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.3").unwrap(),
-                    ExtendedKeyUsage::EmailProtection =>
-                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.4").unwrap(),
-                    ExtendedKeyUsage::TimeStamping =>
-                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.8").unwrap(),
-                    ExtendedKeyUsage::OcspSigning =>
-                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.9").unwrap(),
-                    ExtendedKeyUsage::Custom(oid_str) =>
-                        ObjectIdentifier::new(oid_str)
-                            .map_err(|e| Error::Encoding(format!("Invalid custom EKU OID: {}", e)))?,
+                    ExtendedKeyUsage::ServerAuth => {
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.1").unwrap()
+                    }
+                    ExtendedKeyUsage::ClientAuth => {
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.2").unwrap()
+                    }
+                    ExtendedKeyUsage::CodeSigning => {
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.3").unwrap()
+                    }
+                    ExtendedKeyUsage::EmailProtection => {
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.4").unwrap()
+                    }
+                    ExtendedKeyUsage::TimeStamping => {
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.8").unwrap()
+                    }
+                    ExtendedKeyUsage::OcspSigning => {
+                        ObjectIdentifier::new("1.3.6.1.5.5.7.3.9").unwrap()
+                    }
+                    ExtendedKeyUsage::Custom(oid_str) => ObjectIdentifier::new(oid_str)
+                        .map_err(|e| Error::Encoding(format!("Invalid custom EKU OID: {}", e)))?,
                 };
                 ekus.push(oid);
             }
@@ -561,7 +565,9 @@ impl TbsCertificate {
                     SetOfVec::try_from(ekus)
                         .map_err(|e| Error::Encoding(format!("Invalid EKU set: {}", e)))?
                         .to_der()
-                        .map_err(|e| Error::Encoding(format!("Failed to encode extended key usage: {}", e)))?
+                        .map_err(|e| {
+                            Error::Encoding(format!("Failed to encode extended key usage: {}", e))
+                        })?,
                 )?,
             };
             extensions.push(ext);
@@ -569,32 +575,28 @@ impl TbsCertificate {
 
         // RFC 5280 §4.2.1.6 - Subject Alternative Name
         if !self.subject_alt_names.is_empty() {
+            use der::asn1::Ia5StringRef;
             use x509_cert::ext::pkix::SubjectAltName as X509San;
             use x509_cert::ext::pkix::name::GeneralName;
-            use der::asn1::Ia5StringRef;
 
             let mut san_entries = Vec::new();
             for san in &self.subject_alt_names {
                 let general_name = match san {
-                    SubjectAltName::DnsName(dns) => {
-                        GeneralName::DnsName(
-                            Ia5StringRef::new(dns)
-                                .map_err(|e| Error::Encoding(format!("Invalid DNS name: {}", e)))?
-                                .into()
-                        )
-                    }
-                    SubjectAltName::Rfc822Name(email) => {
-                        GeneralName::Rfc822Name(
-                            Ia5StringRef::new(email)
-                                .map_err(|e| Error::Encoding(format!("Invalid email: {}", e)))?
-                                .into()
-                        )
-                    }
+                    SubjectAltName::DnsName(dns) => GeneralName::DnsName(
+                        Ia5StringRef::new(dns)
+                            .map_err(|e| Error::Encoding(format!("Invalid DNS name: {}", e)))?
+                            .into(),
+                    ),
+                    SubjectAltName::Rfc822Name(email) => GeneralName::Rfc822Name(
+                        Ia5StringRef::new(email)
+                            .map_err(|e| Error::Encoding(format!("Invalid email: {}", e)))?
+                            .into(),
+                    ),
                     SubjectAltName::UniformResourceIdentifier(uri) => {
                         GeneralName::UniformResourceIdentifier(
                             Ia5StringRef::new(uri)
                                 .map_err(|e| Error::Encoding(format!("Invalid URI: {}", e)))?
-                                .into()
+                                .into(),
                         )
                     }
                     SubjectAltName::IpAddress(ip) => {
@@ -602,9 +604,7 @@ impl TbsCertificate {
                             std::net::IpAddr::V4(ipv4) => ipv4.octets().to_vec(),
                             std::net::IpAddr::V6(ipv6) => ipv6.octets().to_vec(),
                         };
-                        GeneralName::IpAddress(
-                            OctetString::new(octets)?
-                        )
+                        GeneralName::IpAddress(OctetString::new(octets)?)
                     }
                     SubjectAltName::DirectoryName(_) => {
                         // TODO: Implement directory name parsing
@@ -621,7 +621,7 @@ impl TbsCertificate {
                     critical: false,
                     extn_value: OctetString::new(
                         san.to_der()
-                            .map_err(|e| Error::Encoding(format!("Failed to encode SAN: {}", e)))?
+                            .map_err(|e| Error::Encoding(format!("Failed to encode SAN: {}", e)))?,
                     )?,
                 };
                 extensions.push(ext);
@@ -644,7 +644,7 @@ impl TbsCertificate {
                 critical: false,
                 extn_value: OctetString::new(
                     aki.to_der()
-                        .map_err(|e| Error::Encoding(format!("Failed to encode AKI: {}", e)))?
+                        .map_err(|e| Error::Encoding(format!("Failed to encode AKI: {}", e)))?,
                 )?,
             };
             extensions.push(ext);
@@ -658,7 +658,7 @@ impl TbsCertificate {
                 extn_value: OctetString::new(
                     OctetString::new(subj_key_id.clone())?
                         .to_der()
-                        .map_err(|e| Error::Encoding(format!("Failed to encode SKI: {}", e)))?
+                        .map_err(|e| Error::Encoding(format!("Failed to encode SKI: {}", e)))?,
                 )?,
             };
             extensions.push(ext);
@@ -667,17 +667,17 @@ impl TbsCertificate {
         // RFC 5280 §4.2.1.13 - CRL Distribution Points
         // NIAP PP-CA: FMT_SMF.1 - Certificate revocation distribution
         if !self.crl_distribution_points.is_empty() {
+            use der::asn1::Ia5StringRef;
             use x509_cert::ext::pkix::CrlDistributionPoints;
             use x509_cert::ext::pkix::crl::dp::DistributionPoint;
             use x509_cert::ext::pkix::name::{DistributionPointName, GeneralName};
-            use der::asn1::Ia5StringRef;
 
             let mut dps = Vec::new();
             for cdp in &self.crl_distribution_points {
                 let general_name = GeneralName::UniformResourceIdentifier(
                     Ia5StringRef::new(&cdp.uri)
                         .map_err(|e| Error::Encoding(format!("Invalid CRL URI: {}", e)))?
-                        .into()
+                        .into(),
                 );
 
                 let dp = DistributionPoint {
@@ -689,24 +689,24 @@ impl TbsCertificate {
             }
 
             let crl_dps = CrlDistributionPoints(dps);
-            let ext = Extension {
-                extn_id: rfc5280::ID_CE_CRL_DISTRIBUTION_POINTS,
-                critical: false,
-                extn_value: OctetString::new(
-                    crl_dps.to_der()
-                        .map_err(|e| Error::Encoding(format!("Failed to encode CRL DPs: {}", e)))?
-                )?,
-            };
+            let ext =
+                Extension {
+                    extn_id: rfc5280::ID_CE_CRL_DISTRIBUTION_POINTS,
+                    critical: false,
+                    extn_value: OctetString::new(crl_dps.to_der().map_err(|e| {
+                        Error::Encoding(format!("Failed to encode CRL DPs: {}", e))
+                    })?)?,
+                };
             extensions.push(ext);
         }
 
         // RFC 5280 §4.2.2.1 - Authority Information Access
         // NIAP PP-CA: FMT_SMF.1 - OCSP responder location
         if !self.authority_info_access.is_empty() {
-            use x509_cert::ext::pkix::{AccessDescription, AuthorityInfoAccessSyntax};
-            use x509_cert::ext::pkix::name::GeneralName;
             use const_oid::ObjectIdentifier;
             use der::asn1::Ia5StringRef;
+            use x509_cert::ext::pkix::name::GeneralName;
+            use x509_cert::ext::pkix::{AccessDescription, AuthorityInfoAccessSyntax};
 
             let mut access_descs = Vec::new();
             for aia in &self.authority_info_access {
@@ -722,7 +722,7 @@ impl TbsCertificate {
                 let general_name = GeneralName::UniformResourceIdentifier(
                     Ia5StringRef::new(location)
                         .map_err(|e| Error::Encoding(format!("Invalid AIA URI: {}", e)))?
-                        .into()
+                        .into(),
                 );
 
                 let desc = AccessDescription {
@@ -738,7 +738,7 @@ impl TbsCertificate {
                 critical: false,
                 extn_value: OctetString::new(
                     aia.to_der()
-                        .map_err(|e| Error::Encoding(format!("Failed to encode AIA: {}", e)))?
+                        .map_err(|e| Error::Encoding(format!("Failed to encode AIA: {}", e)))?,
                 )?,
             };
             extensions.push(ext);
@@ -746,9 +746,9 @@ impl TbsCertificate {
 
         // RFC 5280 §4.2.1.4 - Certificate Policies
         if !self.certificate_policies.is_empty() {
+            use const_oid::ObjectIdentifier;
             use x509_cert::ext::pkix::CertificatePolicies;
             use x509_cert::ext::pkix::certpolicy::PolicyInformation;
-            use const_oid::ObjectIdentifier;
 
             let mut policies = Vec::new();
             for policy in &self.certificate_policies {
@@ -764,14 +764,14 @@ impl TbsCertificate {
             }
 
             let cert_policies = CertificatePolicies(policies);
-            let ext = Extension {
-                extn_id: rfc5280::ID_CE_CERTIFICATE_POLICIES,
-                critical: false,
-                extn_value: OctetString::new(
-                    cert_policies.to_der()
-                        .map_err(|e| Error::Encoding(format!("Failed to encode policies: {}", e)))?
-                )?,
-            };
+            let ext =
+                Extension {
+                    extn_id: rfc5280::ID_CE_CERTIFICATE_POLICIES,
+                    critical: false,
+                    extn_value: OctetString::new(cert_policies.to_der().map_err(|e| {
+                        Error::Encoding(format!("Failed to encode policies: {}", e))
+                    })?)?,
+                };
             extensions.push(ext);
         }
 

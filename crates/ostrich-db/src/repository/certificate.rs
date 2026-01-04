@@ -19,6 +19,22 @@ impl CertificateRepository {
         Self { pool }
     }
 
+    /// Find certificate by ID
+    pub async fn find_by_id(&self, id: Uuid) -> Result<Option<Certificate>> {
+        let cert = sqlx::query_as::<_, Certificate>(
+            r#"
+            SELECT *
+            FROM certificates
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(self.pool.pool())
+        .await?;
+
+        Ok(cert)
+    }
+
     /// Find certificate by serial number
     ///
     /// RFC 5280 §4.1.2.2 - Serial number is unique per CA

@@ -89,6 +89,9 @@ pub enum Error {
     #[error("User action required: {0}")]
     UserActionRequired(String),
 
+    #[error("Resource not found")]
+    NotFound,
+
     #[error("Database error: {0}")]
     Database(#[from] ostrich_db::Error),
 
@@ -146,6 +149,7 @@ impl Error {
             Self::UnsupportedContact(_) => "urn:ietf:params:acme:error:unsupportedContact",
             Self::UnsupportedIdentifier(_) => "urn:ietf:params:acme:error:unsupportedIdentifier",
             Self::UserActionRequired(_) => "urn:ietf:params:acme:error:userActionRequired",
+            Self::NotFound => "urn:ietf:params:acme:error:serverInternal",
             Self::Database(_) | Self::Common(_) => "urn:ietf:params:acme:error:serverInternal",
         }
     }
@@ -180,6 +184,7 @@ impl Error {
             Self::UnsupportedContact(_) => StatusCode::BAD_REQUEST,
             Self::UnsupportedIdentifier(_) => StatusCode::BAD_REQUEST,
             Self::UserActionRequired(_) => StatusCode::FORBIDDEN,
+            Self::NotFound => StatusCode::NOT_FOUND,
         }
     }
 }

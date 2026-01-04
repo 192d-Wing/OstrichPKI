@@ -91,7 +91,7 @@ impl RevocationManager {
 
         // Find certificate
         let cert = cert_repo
-            .find_by_id(&request.certificate_id)
+            .find_by_id(request.certificate_id)
             .await?
             .ok_or_else(|| Error::InvalidRequest("Certificate not found".to_string()))?;
 
@@ -285,7 +285,7 @@ impl RevocationManager {
     pub async fn is_revoked(&self, certificate_id: &Uuid) -> Result<bool> {
         let cert_repo = CertificateRepository::new(self.db_pool.clone());
         let cert = cert_repo
-            .find_by_id(certificate_id)
+            .find_by_id(*certificate_id)
             .await?
             .ok_or_else(|| Error::InvalidRequest("Certificate not found".to_string()))?;
 

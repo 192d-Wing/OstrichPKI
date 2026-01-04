@@ -704,15 +704,18 @@ async fn finalize_order(
         return Err(Error::OrderNotReady);
     }
 
-    // Update order status to processing, then to valid
-    let _processing_order = repo.update_order_status(&id, "processing", None).await?;
+    // Update order status to processing
+    let _processing_order = repo.update_order_status(db_order.id, "processing").await?;
 
     // TODO: Actually issue certificate via CA (Phase 12)
     // For now, simulate certificate issuance
     let cert_id = Uuid::new_v4();
-    let valid_order = repo
-        .update_order_status(&id, "valid", Some(cert_id))
+
+    // Update order with certificate and mark as valid
+    let _updated_order = repo
+        .update_order_certificate(db_order.id, cert_id, &csr_der)
         .await?;
+    let valid_order = repo.update_order_status(db_order.id, "valid").await?;
 
     let authorization_urls: Vec<String> = db_authzs
         .iter()

@@ -64,9 +64,8 @@ impl Pkcs11Provider {
 
         // RFC 2119: PKCS#11 library MUST be initialized before use
         // NIST 800-53: SC-13 - Use FIPS-validated cryptographic module
-        let context = Pkcs11::new(library_path).map_err(|e| {
-            Error::Pkcs11(format!("Failed to load PKCS#11 library: {}", e))
-        })?;
+        let context = Pkcs11::new(library_path)
+            .map_err(|e| Error::Pkcs11(format!("Failed to load PKCS#11 library: {}", e)))?;
 
         // Initialize PKCS#11 library with thread-safe settings
         context
@@ -76,18 +75,19 @@ impl Pkcs11Provider {
         tracing::debug!("PKCS#11 library initialized successfully");
 
         // Find the requested slot
-        let all_slots = context.get_slots_with_token().map_err(|e| {
-            Error::Pkcs11(format!("Failed to enumerate slots: {}", e))
-        })?;
+        let all_slots = context
+            .get_slots_with_token()
+            .map_err(|e| Error::Pkcs11(format!("Failed to enumerate slots: {}", e)))?;
 
         // Use the slot at the given index, or error if not found
-        let slot = all_slots.get(slot_id as usize)
+        let slot = all_slots
+            .get(slot_id as usize)
             .ok_or_else(|| Error::SlotNotFound(slot_id))?
             .clone();
 
-        let slot_info = context.get_slot_info(slot).map_err(|e| {
-            Error::Pkcs11(format!("Failed to get slot {} info: {}", slot_id, e))
-        })?;
+        let slot_info = context
+            .get_slot_info(slot)
+            .map_err(|e| Error::Pkcs11(format!("Failed to get slot {} info: {}", slot_id, e)))?;
 
         tracing::debug!(
             slot_id = slot_id,
@@ -96,9 +96,9 @@ impl Pkcs11Provider {
             "HSM slot information retrieved"
         );
 
-        let token_info = context.get_token_info(slot).map_err(|e| {
-            Error::Pkcs11(format!("No token present in slot {}: {}", slot_id, e))
-        })?;
+        let token_info = context
+            .get_token_info(slot)
+            .map_err(|e| Error::Pkcs11(format!("No token present in slot {}: {}", slot_id, e)))?;
 
         tracing::info!(
             token_label = ?token_info.label(),
@@ -117,9 +117,9 @@ impl Pkcs11Provider {
         // NIST 800-53: IA-7 - Cryptographic module authentication
         // FIPS 140-3: User must authenticate before performing cryptographic operations
         let auth_pin = AuthPin::new(pin.to_string());
-        test_session.login(UserType::User, Some(&auth_pin)).map_err(|e| {
-            Error::Pkcs11(format!("Failed to authenticate to HSM: {}", e))
-        })?;
+        test_session
+            .login(UserType::User, Some(&auth_pin))
+            .map_err(|e| Error::Pkcs11(format!("Failed to authenticate to HSM: {}", e)))?;
 
         tracing::info!(slot_id = slot_id, "Successfully authenticated to HSM");
 
@@ -154,19 +154,21 @@ impl Pkcs11Provider {
     /// Returns error if session cannot be created or authentication fails
     fn open_session(&self) -> Result<Session> {
         // Open R/W session
-        let session = self.context
+        let session = self
+            .context
             .open_rw_session(self.slot)
             .map_err(|e| Error::SessionError(format!("Failed to open session: {}", e)))?;
 
         // Authenticate with PIN
-        let pin_guard = self.pin.lock().map_err(|e| {
-            Error::SessionError(format!("Failed to acquire PIN lock: {}", e))
-        })?;
+        let pin_guard = self
+            .pin
+            .lock()
+            .map_err(|e| Error::SessionError(format!("Failed to acquire PIN lock: {}", e)))?;
 
         let auth_pin = AuthPin::new(pin_guard.to_string());
-        session.login(UserType::User, Some(&auth_pin)).map_err(|e| {
-            Error::Pkcs11(format!("Failed to authenticate session: {}", e))
-        })?;
+        session
+            .login(UserType::User, Some(&auth_pin))
+            .map_err(|e| Error::Pkcs11(format!("Failed to authenticate session: {}", e)))?;
 
         Ok(session)
     }
@@ -183,7 +185,10 @@ impl Pkcs11Provider {
         key_id: &[u8],
         label: &str,
         extractable: bool,
-    ) -> Result<(cryptoki::object::ObjectHandle, cryptoki::object::ObjectHandle)> {
+    ) -> Result<(
+        cryptoki::object::ObjectHandle,
+        cryptoki::object::ObjectHandle,
+    )> {
         use cryptoki::mechanism::Mechanism;
         use cryptoki::object::{Attribute, KeyType as CkKeyType, ObjectClass};
 
@@ -220,7 +225,11 @@ impl Pkcs11Provider {
         ];
 
         let (public_handle, private_handle) = session
-            .generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &public_key_template, &private_key_template)
+            .generate_key_pair(
+                &Mechanism::RsaPkcsKeyPairGen,
+                &public_key_template,
+                &private_key_template,
+            )
             .map_err(|e| Error::KeyGeneration(format!("RSA key pair generation failed: {}", e)))?;
 
         tracing::debug!(
@@ -244,14 +253,18 @@ impl Pkcs11Provider {
         key_id: &[u8],
         label: &str,
         extractable: bool,
-    ) -> Result<(cryptoki::object::ObjectHandle, cryptoki::object::ObjectHandle)> {
+    ) -> Result<(
+        cryptoki::object::ObjectHandle,
+        cryptoki::object::ObjectHandle,
+    )> {
         use cryptoki::mechanism::Mechanism;
         use cryptoki::object::{Attribute, KeyType as CkKeyType, ObjectClass};
 
         // DER-encoded OID for the curve
         let ec_params = match curve_name {
             "secp256r1" => vec![
-                0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, // OID 1.2.840.10045.3.1.7
+                0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01,
+                0x07, // OID 1.2.840.10045.3.1.7
             ],
             "secp384r1" => vec![
                 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22, // OID 1.3.132.0.34
@@ -293,7 +306,11 @@ impl Pkcs11Provider {
         ];
 
         let (public_handle, private_handle) = session
-            .generate_key_pair(&Mechanism::EccKeyPairGen, &public_key_template, &private_key_template)
+            .generate_key_pair(
+                &Mechanism::EccKeyPairGen,
+                &public_key_template,
+                &private_key_template,
+            )
             .map_err(|e| Error::KeyGeneration(format!("EC key pair generation failed: {}", e)))?;
 
         tracing::debug!(
@@ -326,7 +343,9 @@ impl Pkcs11Provider {
                 public_key_handle,
                 &[AttributeType::Modulus, AttributeType::PublicExponent],
             )
-            .map_err(|e| Error::Encoding(format!("Failed to get RSA public key attributes: {}", e)))?;
+            .map_err(|e| {
+                Error::Encoding(format!("Failed to get RSA public key attributes: {}", e))
+            })?;
 
         let mut modulus = None;
         let mut public_exponent = None;
@@ -339,7 +358,8 @@ impl Pkcs11Provider {
             }
         }
 
-        let modulus = modulus.ok_or_else(|| Error::Encoding("RSA modulus not found".to_string()))?;
+        let modulus =
+            modulus.ok_or_else(|| Error::Encoding("RSA modulus not found".to_string()))?;
         let public_exponent = public_exponent
             .ok_or_else(|| Error::Encoding("RSA public exponent not found".to_string()))?;
 
@@ -392,7 +412,9 @@ impl Pkcs11Provider {
         // Get EC point (uncompressed format: 0x04 || x || y)
         let attributes = session
             .get_attributes(public_key_handle, &[AttributeType::EcPoint])
-            .map_err(|e| Error::Encoding(format!("Failed to get EC public key attributes: {}", e)))?;
+            .map_err(|e| {
+                Error::Encoding(format!("Failed to get EC public key attributes: {}", e))
+            })?;
 
         let ec_point = attributes
             .iter()
@@ -408,13 +430,13 @@ impl Pkcs11Provider {
         // Determine curve OID
         let curve_oid = match key_type {
             KeyType::EcP256 => ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7"), // secp256r1
-            KeyType::EcP384 => ObjectIdentifier::new_unwrap("1.3.132.0.34"),         // secp384r1
-            KeyType::EcP521 => ObjectIdentifier::new_unwrap("1.3.132.0.35"),         // secp521r1
+            KeyType::EcP384 => ObjectIdentifier::new_unwrap("1.3.132.0.34"),        // secp384r1
+            KeyType::EcP521 => ObjectIdentifier::new_unwrap("1.3.132.0.35"),        // secp521r1
             _ => {
                 return Err(Error::UnsupportedAlgorithm(format!(
                     "Unsupported EC key type: {:?}",
                     key_type
-                )))
+                )));
             }
         };
 
@@ -497,14 +519,26 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
 
         let (_public_handle, _private_handle) = match key_type {
             // FIPS 186-5: RSA key generation
-            KeyType::Rsa2048 => self.generate_rsa_key_pair(&session, 2048, &key_id, label, extractable)?,
-            KeyType::Rsa3072 => self.generate_rsa_key_pair(&session, 3072, &key_id, label, extractable)?,
-            KeyType::Rsa4096 => self.generate_rsa_key_pair(&session, 4096, &key_id, label, extractable)?,
+            KeyType::Rsa2048 => {
+                self.generate_rsa_key_pair(&session, 2048, &key_id, label, extractable)?
+            }
+            KeyType::Rsa3072 => {
+                self.generate_rsa_key_pair(&session, 3072, &key_id, label, extractable)?
+            }
+            KeyType::Rsa4096 => {
+                self.generate_rsa_key_pair(&session, 4096, &key_id, label, extractable)?
+            }
 
             // FIPS 186-5: ECDSA key generation
-            KeyType::EcP256 => self.generate_ec_key_pair(&session, "secp256r1", &key_id, label, extractable)?,
-            KeyType::EcP384 => self.generate_ec_key_pair(&session, "secp384r1", &key_id, label, extractable)?,
-            KeyType::EcP521 => self.generate_ec_key_pair(&session, "secp521r1", &key_id, label, extractable)?,
+            KeyType::EcP256 => {
+                self.generate_ec_key_pair(&session, "secp256r1", &key_id, label, extractable)?
+            }
+            KeyType::EcP384 => {
+                self.generate_ec_key_pair(&session, "secp384r1", &key_id, label, extractable)?
+            }
+            KeyType::EcP521 => {
+                self.generate_ec_key_pair(&session, "secp521r1", &key_id, label, extractable)?
+            }
 
             // EdDSA not universally supported in PKCS#11 HSMs
             KeyType::Ed25519 | KeyType::Ed448 => {
@@ -762,9 +796,9 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
             Algorithm::RsaPkcs1Sha256 => Mechanism::Sha256RsaPkcs,
             Algorithm::RsaPkcs1Sha384 => Mechanism::Sha384RsaPkcs,
             Algorithm::RsaPkcs1Sha512 => Mechanism::Sha512RsaPkcs,
-            Algorithm::EcdsaP256Sha256 | Algorithm::EcdsaP384Sha384 | Algorithm::EcdsaP521Sha512 => {
-                Mechanism::Ecdsa
-            }
+            Algorithm::EcdsaP256Sha256
+            | Algorithm::EcdsaP384Sha384
+            | Algorithm::EcdsaP521Sha512 => Mechanism::Ecdsa,
             Algorithm::Ed25519 | Algorithm::Ed448 => {
                 return Err(Error::UnsupportedAlgorithm(format!(
                     "{:?} not supported by PKCS#11",
@@ -906,11 +940,7 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
     ///
     /// # Use Case
     /// Used by KRA to escrow private keys for recovery purposes
-    async fn wrap_key(
-        &self,
-        key_to_wrap: &KeyHandle,
-        wrapping_key: &KeyHandle,
-    ) -> Result<Vec<u8>> {
+    async fn wrap_key(&self, key_to_wrap: &KeyHandle, wrapping_key: &KeyHandle) -> Result<Vec<u8>> {
         use cryptoki::mechanism::Mechanism;
         use cryptoki::object::{Attribute, ObjectClass};
 
@@ -1086,7 +1116,12 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
 
         // Perform key unwrapping
         let _unwrapped_handle = session
-            .unwrap_key(&mechanism, unwrapping_key_handle, wrapped_key, &unwrap_template)
+            .unwrap_key(
+                &mechanism,
+                unwrapping_key_handle,
+                wrapped_key,
+                &unwrap_template,
+            )
             .map_err(|e| Error::KeyGeneration(format!("Key unwrapping failed: {}", e)))?;
 
         // Logout session

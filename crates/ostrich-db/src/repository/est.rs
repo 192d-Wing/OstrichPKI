@@ -92,20 +92,47 @@ impl EstRepository {
         &self,
         id: Uuid,
         status: &str,
-        certificate_id: Option<Uuid>,
     ) -> Result<EstEnrollment> {
         let now = Utc::now();
 
         let enrollment = sqlx::query_as::<_, EstEnrollment>(
             r#"
             UPDATE est_enrollments
-            SET status = $1, certificate_id = $2, updated_at = $3
-            WHERE id = $4
+            SET status = $1, updated_at = $2
+            WHERE id = $3
             RETURNING *
             "#,
         )
         .bind(status)
+        .bind(now)
+        .bind(id)
+        .fetch_one(self.pool.pool())
+        .await?;
+
+        Ok(enrollment)
+    }
+
+    /// Update enrollment with certificate and profile
+    ///
+    /// RFC 7030 §4.2 - Update enrollment after certificate issuance
+    pub async fn update_enrollment_certificate(
+        &self,
+        id: Uuid,
+        certificate_id: Uuid,
+        profile_name: &str,
+    ) -> Result<EstEnrollment> {
+        let now = Utc::now();
+
+        let enrollment = sqlx::query_as::<_, EstEnrollment>(
+            r#"
+            UPDATE est_enrollments
+            SET certificate_id = $1, profile_name = $2, updated_at = $3
+            WHERE id = $4
+            RETURNING *
+            "#,
+        )
         .bind(certificate_id)
+        .bind(profile_name)
         .bind(now)
         .bind(id)
         .fetch_one(self.pool.pool())

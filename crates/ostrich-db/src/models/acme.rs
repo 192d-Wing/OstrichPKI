@@ -37,6 +37,8 @@ pub struct AcmeOrder {
     pub not_after: Option<DateTime<Utc>>,
     pub expires: DateTime<Utc>,
     pub certificate_id: Option<Uuid>,
+    /// CSR submitted during finalize (RFC 8555 §7.4)
+    pub csr_der: Option<Vec<u8>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

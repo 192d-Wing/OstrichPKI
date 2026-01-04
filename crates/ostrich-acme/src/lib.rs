@@ -5,6 +5,7 @@
 
 pub mod account;
 pub mod authorization;
+pub mod ca_integration;
 pub mod challenge;
 pub mod error;
 pub mod jws;
@@ -14,6 +15,7 @@ pub mod validation;
 
 pub use account::{Account, AccountStatus};
 pub use authorization::{Authorization, AuthorizationStatus};
+pub use ca_integration::AcmeCaClient;
 pub use challenge::{Challenge, ChallengeStatus, ChallengeType};
 pub use error::{Error, Result};
 pub use order::{Order, OrderStatus};

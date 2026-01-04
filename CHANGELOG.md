@@ -7,6 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-01-03
+
+### Added
+
+#### Service Integration (Phase 12 - Complete)
+
+##### ostrich-common
+
+- **gRPC Client Infrastructure** (`src/grpc_client.rs`):
+  - `CaGrpcClient` with mTLS communication to CA service
+  - Circuit breaker pattern for service resilience (Closed → Open → HalfOpen states)
+  - Exponential backoff retry logic (configurable retries, 100ms → 5s backoff)
+  - Connection pooling and channel reuse for efficiency
+  - Retryable error classification (`Unavailable`, `DeadlineExceeded`, `ResourceExhausted`)
+  - **COMPLIANCE**: NIST 800-53 SC-8(1), SC-23, SI-17, SC-5
+
+- **Error Types** (`src/error.rs`):
+  - Added `ServiceUnavailable`, `GrpcError`, `InvalidConfiguration` variants
+  - Public message mapping for external error display
+
+##### ostrich-acme
+
+- **CA Service Integration** (`src/ca_integration.rs`):
+  - `AcmeCaClient` for certificate issuance via gRPC
+  - Order finalization with CSR parsing and validation
+  - Metadata tracking (ACME account ID, order ID) in issued certificates
+  - Certificate retrieval from CA database
+  - **COMPLIANCE**: RFC 8555 §7.4, NIST 800-53 AU-2, SC-12
+
+- **Error Types** (`src/error.rs`):
+  - Added `NotFound` variant for missing resources
+
+##### ostrich-est
+
+- **CA Service Integration** (`src/ca_integration.rs`):
+  - `EstCaClient` for certificate enrollment via gRPC
+  - Simple Enroll (RFC 7030 §4.2.1) implementation
+  - Profile-based certificate issuance
+  - Metadata tracking (EST client ID, enrollment ID) in issued certificates
+  - PKCS#7 response preparation (full implementation deferred to Phase 13)
+  - **COMPLIANCE**: RFC 7030 §4.2.1, NIST 800-53 IA-2(3), SC-12
+
+##### ostrich-db
+
+- **Database Schema** (`migrations/00002_add_certificate_metadata.sql`):
+  - Added `issuer_service`, `requestor`, `profile_name`, `metadata` columns to `certificates` table
+  - Added `csr_der` column to `acme_orders` table
+  - Added `profile_name` column to `est_enrollments` table
+  - Indexes for fast querying by service, requestor, and profile
+  - **COMPLIANCE**: NIST 800-53 AU-3(1), AU-3(b), AC-3
+
+- **Certificate Model** (`src/models/certificate.rs`):
+  - Added metadata fields for audit trails and forensic analysis
+  - New `new_with_metadata()` constructor for complete audit context
+  - Updated existing constructors to initialize new fields
+
+- **ACME Repository** (`src/repository/acme.rs`):
+  - Updated `update_order_status()` - simplified signature (status only)
+  - Added `update_order_certificate()` - stores certificate ID and CSR
+
+- **EST Repository** (`src/repository/est.rs`):
+  - Updated `update_enrollment_status()` - simplified signature (status only)
+  - Added `update_enrollment_certificate()` - stores certificate ID and profile
+
+- **Certificate Repository** (`src/repository/certificate.rs`):
+  - Added `find_by_id()` method for UUID-based certificate lookup
+
+### Changed
+
+- **Workspace Dependencies** (`Cargo.toml`):
+  - Updated `tonic = { version = "0.12", features = ["tls", "channel"] }` for gRPC with TLS
+
+- **ostrich-common** (`Cargo.toml`):
+  - Added `tokio` for async runtime
+  - Added `tonic` for gRPC client framework
+
+- **ostrich-acme** (`Cargo.toml`):
+  - Added `ostrich-protocol` for CA service protobuf definitions
+  - Added `tonic` for gRPC client
+  - Added `x509-cert` for CSR parsing
+  - Added `der` for DER encoding
+
+- **ostrich-est** (`Cargo.toml`):
+  - Added `ostrich-protocol` for CA service protobuf definitions
+  - Added `tonic` for gRPC client
+
+- **ostrich-ca** (`src/issuance.rs`, `src/revocation.rs`):
+  - Updated certificate creation to include service metadata fields
+  - Fixed `find_by_id()` call sites to pass Uuid by value
+
+### Fixed
+
+- **ostrich-ca** (`src/revocation.rs`):
+  - Removed unused `Repository` import (clippy warning)
+
+### Documentation
+
+- Added `PHASE_12_SUMMARY.md` - Comprehensive Phase 12 implementation documentation
+  - gRPC client infrastructure details
+  - Service integration architecture
+  - Circuit breaker and retry logic explanation
+  - Compliance mapping and security considerations
+  - Deferred work for Phase 13+
+
+### Testing
+
+- **Unit Tests**:
+  - Circuit breaker state transitions (Closed → Open → HalfOpen → Closed)
+  - Retryable error classification
+  - Default configuration validation
+
+- **Compilation**: All crates compile successfully (`cargo check --workspace`)
+- **Code Quality**: Clippy clean (1 minor warning fixed)
+- **Formatting**: All code formatted (`cargo fmt --all`)
+
+### Compliance
+
+- **NIST 800-53**: SC-8 (Transmission Confidentiality) - Complete
+- **NIST 800-53**: SC-12 (Cryptographic Key Management) - Complete
+- **NIST 800-53**: AU-3 (Audit Record Content) - Complete
+- **NIST 800-53**: SI-17 (Fail-Secure) - Complete
+- **RFC 8555**: §7.4 (ACME Order Finalization) - Complete
+- **RFC 7030**: §4.2 (EST Enrollment) - Complete
+
+### Notes
+
+- SCMS → CA integration deferred to Phase 13 (not critical path)
+- CSR signature verification deferred to Phase 13
+- Subject Alternative Name extraction from CSR deferred to Phase 13
+- PKCS#7/CMS certificate wrapping for EST deferred to Phase 13
+- Integration tests deferred to Phase 14 (Testing & Hardening)
+
 ## [0.12.0] - 2026-01-03
 
 ### Added

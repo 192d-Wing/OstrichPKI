@@ -14,6 +14,7 @@ ostrich-db = { workspace = true }
 ostrich-crypto = { workspace = true }
 ostrich-audit = { workspace = true }
 ostrich-x509 = { workspace = true }
+ostrich-protocol = { workspace = true }
 
 # Web
 axum = { workspace = true }
@@ -21,6 +22,9 @@ async-trait = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+
+# gRPC (for CA service integration)
+tonic = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

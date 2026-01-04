@@ -9,8 +9,8 @@
 //! - NIST 800-53: SC-17 (PKI Certificates)
 //! - NIAP PP-CA: FDP_CER_EXT.1 (Certificate Profiles)
 
-use ostrich_x509::profile::{CertificateProfile, ExtendedKeyUsage, KeyUsage, ProfileType};
 use ostrich_x509::parser::RevocationReason;
+use ostrich_x509::profile::{CertificateProfile, ExtendedKeyUsage, KeyUsage, ProfileType};
 use std::process::Command;
 
 /// Test that a basic certificate with extensions can be parsed by OpenSSL
@@ -101,7 +101,11 @@ fn test_revocation_reason_codes() {
             RevocationReason::AaCompromise => 10,
         };
 
-        assert_eq!(code, expected_code, "Revocation reason {:?} should map to code {}", reason, expected_code);
+        assert_eq!(
+            code, expected_code,
+            "Revocation reason {:?} should map to code {}",
+            reason, expected_code
+        );
     }
 
     println!("✅ All 11 revocation reason codes validated");
@@ -119,15 +123,24 @@ fn test_certificate_profile_validation() {
     // Test 1: CA certificate must have keyCertSign
     let mut ca_profile = CertificateProfile::root_ca(3650);
     ca_profile.key_usage.clear();
-    assert!(ca_profile.validate().is_err(), "CA without keyCertSign should fail validation");
+    assert!(
+        ca_profile.validate().is_err(),
+        "CA without keyCertSign should fail validation"
+    );
 
     // Test 2: Valid CA profile
     let ca_profile = CertificateProfile::root_ca(3650);
-    assert!(ca_profile.validate().is_ok(), "Valid CA profile should pass");
+    assert!(
+        ca_profile.validate().is_ok(),
+        "Valid CA profile should pass"
+    );
 
     // Test 3: Valid end-entity profile
     let ee_profile = CertificateProfile::tls_server(365);
-    assert!(ee_profile.validate().is_ok(), "Valid end-entity profile should pass");
+    assert!(
+        ee_profile.validate().is_ok(),
+        "Valid end-entity profile should pass"
+    );
 
     // Test 4: Profile with no key usage should fail
     let mut bad_profile = CertificateProfile::new(
@@ -138,7 +151,10 @@ fn test_certificate_profile_validation() {
         "ecdsa_p256_sha256",
     );
     bad_profile.basic_constraints_ca = false;
-    assert!(bad_profile.validate().is_err(), "Profile with no key usage should fail");
+    assert!(
+        bad_profile.validate().is_err(),
+        "Profile with no key usage should fail"
+    );
 
     println!("✅ Certificate profile validation tests passed");
 }
@@ -154,7 +170,10 @@ fn test_standard_certificate_profiles() {
 
     let profiles = vec![
         ("Root CA", CertificateProfile::root_ca(7300)),
-        ("Intermediate CA", CertificateProfile::intermediate_ca(3650, 0)),
+        (
+            "Intermediate CA",
+            CertificateProfile::intermediate_ca(3650, 0),
+        ),
         ("TLS Server", CertificateProfile::tls_server(365)),
         ("TLS Client", CertificateProfile::tls_client(365)),
         ("Code Signing", CertificateProfile::code_signing(1095)),
@@ -162,7 +181,11 @@ fn test_standard_certificate_profiles() {
     ];
 
     for (name, profile) in profiles {
-        assert!(profile.validate().is_ok(), "{} profile should be valid", name);
+        assert!(
+            profile.validate().is_ok(),
+            "{} profile should be valid",
+            name
+        );
         println!("✅ {} profile validated", name);
     }
 
@@ -172,10 +195,7 @@ fn test_standard_certificate_profiles() {
 /// Helper function to check if OpenSSL is available
 #[allow(dead_code)]
 fn is_openssl_available() -> bool {
-    Command::new("openssl")
-        .arg("version")
-        .output()
-        .is_ok()
+    Command::new("openssl").arg("version").output().is_ok()
 }
 
 /// Placeholder for future OpenSSL verification tests

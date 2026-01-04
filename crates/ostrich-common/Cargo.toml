@@ -32,5 +32,11 @@ rand = { workspace = true }
 # Cryptographic types
 const-oid = { workspace = true }
 
+# Async runtime
+tokio = { workspace = true }
+
+# gRPC (for gRPC client infrastructure)
+tonic = { workspace = true }
+
 # Logging
 tracing = { workspace = true }

@@ -396,8 +396,8 @@ impl TbsCrl {
     /// - NIAP PP-CA: FMT_SMF.1 - Certificate revocation list generation
     fn build_extensions(&self) -> Result<Option<x509_cert::ext::Extensions>> {
         use const_oid::db::rfc5280;
-        use der::asn1::OctetString;
         use der::Encode;
+        use der::asn1::OctetString;
         use x509_cert::ext::Extension;
 
         let mut extensions = Vec::new();
@@ -413,10 +413,9 @@ impl TbsCrl {
             let ext = Extension {
                 extn_id: rfc5280::ID_CE_CRL_NUMBER,
                 critical: false, // RFC 5280: CRL number is non-critical
-                extn_value: OctetString::new(
-                    crl_number.to_der()
-                        .map_err(|e| Error::Encoding(format!("Failed to encode CRL number: {}", e)))?
-                )?,
+                extn_value: OctetString::new(crl_number.to_der().map_err(|e| {
+                    Error::Encoding(format!("Failed to encode CRL number: {}", e))
+                })?)?,
             };
             extensions.push(ext);
         }
@@ -437,7 +436,7 @@ impl TbsCrl {
                 critical: false,
                 extn_value: OctetString::new(
                     aki.to_der()
-                        .map_err(|e| Error::Encoding(format!("Failed to encode AKI: {}", e)))?
+                        .map_err(|e| Error::Encoding(format!("Failed to encode AKI: {}", e)))?,
                 )?,
             };
             extensions.push(ext);

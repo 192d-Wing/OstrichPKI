@@ -3,11 +3,13 @@
 //! RFC 7030: Enrollment over Secure Transport
 //! NIST 800-53: SC-12 - Certificate enrollment and renewal
 
+pub mod ca_integration;
 pub mod enrollment;
 pub mod error;
 pub mod mtls;
 pub mod rest;
 
+pub use ca_integration::EstCaClient;
 pub use enrollment::{
     CsrAttributes, Enrollment, EnrollmentRequest, EnrollmentResponse, EnrollmentStatus,
 };

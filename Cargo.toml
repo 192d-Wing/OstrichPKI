@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 authors = ["OstrichPKI Contributors"]
 license = "Apache-2.0"
@@ -50,7 +50,7 @@ hyper = { version = "1.5", features = ["full"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 
 # gRPC
-tonic = "0.12"
+tonic = { version = "0.12", features = ["tls", "channel"] }
 tonic-build = "0.12"
 prost = "0.13"
 prost-types = "0.13"

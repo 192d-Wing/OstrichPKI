@@ -71,6 +71,16 @@ pub enum Error {
     #[error("Internal error: {0}")]
     Internal(String),
 
+    // Service communication errors
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+
+    #[error("gRPC error: {0}")]
+    GrpcError(String),
+
+    #[error("Invalid configuration: {0}")]
+    InvalidConfiguration(String),
+
     // External errors wrapped
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -106,6 +116,9 @@ impl Error {
             Error::Io(_) => "I/O error",
             Error::Serialization(_) | Error::Deserialization(_) => "Serialization error",
             Error::Internal(_) => "Internal error",
+            Error::ServiceUnavailable(_) => "Service unavailable",
+            Error::GrpcError(_) => "Communication error",
+            Error::InvalidConfiguration(_) => "Invalid configuration",
             Error::Other(_) => "Operation failed",
         }
     }

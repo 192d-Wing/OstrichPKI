@@ -201,6 +201,10 @@ impl CertificateIssuer {
             revoked: false,
             revocation_time: None,
             revocation_reason: None,
+            issuer_service: Some("CA".to_string()),
+            requestor: Some(request.requestor.clone()),
+            profile_name: Some(request.profile_name.clone()),
+            metadata: request.metadata.clone(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
