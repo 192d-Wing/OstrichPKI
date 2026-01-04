@@ -48,3 +48,7 @@ axum = { workspace = true }
 
 # Database (for health check database connectivity)
 sqlx = { workspace = true }
+
+# Authentication
+async-trait = { workspace = true }
+secrecy = { workspace = true }

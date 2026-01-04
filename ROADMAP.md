@@ -1,6 +1,6 @@
 # OstrichPKI Development Roadmap
 
-> **Last Updated**: January 2026 | **Current Version**: v0.14.0 | **Status**: Active Development
+> **Last Updated**: January 2026 | **Current Version**: v0.15.0 | **Status**: Active Development
 
 ---
 
@@ -17,6 +17,9 @@
   - [Phase 13: Advanced Features](#phase-13-advanced-features)
   - [Phase 14: Testing & Hardening](#phase-14-testing--hardening)
   - [Phase 15: NIAP Compliance](#phase-15-niap-compliance)
+  - [Phase 17: Authentication & RBAC Foundation](#phase-17-authentication--rbac-foundation)
+  - [Phase 18: Approval Workflow](#phase-18-approval-workflow)
+  - [Phase 19: HSM Enforcement](#phase-19-hsm-enforcement)
 - [Priority Matrix](#priority-matrix)
 - [Timeline & Schedule](#timeline--schedule)
 - [Risk Assessment](#risk-assessment)
@@ -36,7 +39,7 @@
 | **Services** | 7 microservices (CA, OCSP, KRA, ACME, EST, SCMS, Audit) |
 | **Standards** | RFC 5280, 6960, 7030, 8555 compliance |
 | **Security** | NIST 800-53 controls (AU-2, AU-3, AU-9, SC-8, SC-12, SC-13, IA-2, IA-5, IA-7, SI-17, FMT_MSA.1, FMT_SMF.1) |
-| **Overall Progress** | **100%** complete (All 15 phases complete including Phase 13 all 5 tracks) |
+| **Overall Progress** | **91%** NIAP compliance (Phases 17-19 for remaining SFRs) |
 
 ### Critical Gaps
 
@@ -46,17 +49,21 @@
 | ~~**HSM Integration**~~ | ✅ **COMPLETE** (PKCS#11 + Software fallback) | - |
 | ~~**Protocol Validation**~~ | ✅ **COMPLETE** (ACME, EST, mTLS) | - |
 | ~~**Service Integration**~~ | ✅ **COMPLETE** (gRPC with circuit breaker) | - |
-| **Testing & Hardening** | ✅ **COMPLETE** (292 unit tests) | - |
-| **NIAP Compliance** | ✅ **COMPLETE** (762+ SFR annotations) | - |
+| ~~**Testing & Hardening**~~ | ✅ **COMPLETE** (367 unit tests) | - |
+| ~~**NIAP Compliance (Docs)**~~ | ✅ **COMPLETE** (762+ SFR annotations) | - |
+| **Authentication (FIA)** | 🟡 Phase 17 - User auth, RBAC | 🔴 HIGH |
+| **Approval Workflow (FDP)** | ⏳ Phase 18 - Request approval | 🟡 MEDIUM |
+| **HSM Enforcement (FCS)** | ⏳ Phase 19 - Key storage validation | 🟡 MEDIUM |
 
 ### Estimated Completion
 
-**Status**: **100% complete** - All implementation, testing, and NIAP compliance annotations done!
+**Status**: **91% NIAP compliance** - Core implementation complete, authentication/approval phases remaining
 
-- All 6 compliance documents complete
+- All 7 compliance documents complete
 - 762+ NIAP SFR annotations across 57 source files
-- 303 passing unit tests
-- **Phase 13 ALL 5 TRACKS COMPLETE**: Configuration Management, OCSP caching, EST server-side key generation, Post-quantum OID updates, Audit hash chain verification
+- 367 passing unit tests
+- **Phases 1-15 COMPLETE**: Core PKI, HSM, protocols, testing, documentation
+- **Phases 17-19 IN PROGRESS**: Authentication, RBAC, approval workflow, HSM enforcement
 
 ---
 
@@ -79,16 +86,23 @@
 | **13** | **Advanced Features** | **✅ COMPLETE** | **100%** | - | ✅ 1 week |
 | **14** | **Testing & Hardening** | **✅ COMPLETE** | **100%** | - | ✅ 1 week |
 | **15** | **NIAP Compliance** | **✅ COMPLETE** | **100%** | - | ✅ Done |
+| **17** | **Auth & RBAC** | **🟡 IN PROGRESS** | **0%** | 🔴 HIGH | 2 weeks |
+| **18** | **Approval Workflow** | **⏳ PLANNED** | **0%** | 🟡 MEDIUM | 2 weeks |
+| **19** | **HSM Enforcement** | **⏳ PLANNED** | **0%** | 🟡 MEDIUM | 1 week |
 
 ### Critical Path
 
 ```
 ✅ Phase 8 (Crypto) → ✅ Phase 9 (DB) → ✅ Phase 11 (Validation) → ✅ Phase 12 (Integration)
                                     ↓
-                              ✅ Phase 10 (HSM) → ✅ Phase 14 (Testing) → ✅ Phase 15 (NIAP) → Production
+                              ✅ Phase 10 (HSM) → ✅ Phase 14 (Testing) → ✅ Phase 15 (NIAP)
+                                                                              ↓
+                                                   🟡 Phase 17 (Auth) → ⏳ Phase 18 (Approval) → Production
+                                                          ↓
+                                                   ⏳ Phase 19 (HSM Enforce)
 ```
 
-**Current Status**: All phases COMPLETE! NIAP compliance 100% with 762+ SFR annotations across 57 files, 274 passing unit tests, and all 6 compliance documents.
+**Current Status**: Core phases COMPLETE! Now implementing authentication infrastructure (Phase 17) to achieve ~97% NIAP compliance.
 
 ---
 
@@ -1520,6 +1534,300 @@ Achieve **NIAP Protection Profile for Certificate Authority (PP-CA) v2.1** compl
 
 ---
 
+### Phase 17: Authentication & RBAC Foundation
+
+**Status**: 🟡 IN PROGRESS (0%) | **Priority**: 🔴 HIGH | **Effort**: 2 weeks
+**Dependencies**: Phase 15 | **Blocks**: Phase 18
+
+#### Overview
+
+Implement user authentication infrastructure and Role-Based Access Control (RBAC) to achieve full NIAP PP-CA v2.1 compliance for FIA (Identification & Authentication) and FMT (Security Management) SFR families.
+
+#### Scope
+
+**Target SFRs**:
+- FIA_UAU.1: User Authentication (before any TSF-mediated actions)
+- FIA_UID.1: User Identification
+- FIA_AFL.1: Authentication Failure Handling (integration with existing lockout)
+- FMT_SMR.2: Security Roles with separation of duties
+- FMT_MTD.1: Management of TSF Data (access control)
+
+#### Work Items
+
+##### 17.1 Authentication Provider (`crates/ostrich-common/src/auth/provider.rs`)
+
+**New Files**:
+- `provider.rs` - Authentication provider trait abstraction
+- `password.rs` - Password authentication with Argon2id
+- `mtls.rs` - mTLS certificate authentication
+- `user.rs` - User identity and credential types
+
+**Implementation**:
+
+```rust
+#[async_trait]
+pub trait AuthProvider: Send + Sync {
+    async fn authenticate(&self, credentials: &Credentials) -> Result<AuthenticatedUser>;
+    async fn validate_session(&self, token: &str) -> Result<SessionInfo>;
+}
+
+pub enum Credentials {
+    Password { username: String, password: SecretString },
+    Certificate { cert_chain: Vec<Certificate> },
+    ServiceAccount { api_key: SecretString },
+}
+
+pub struct AuthenticatedUser {
+    pub id: Uuid,
+    pub username: String,
+    pub roles: Vec<Role>,
+    pub auth_method: AuthMethod,
+    pub authenticated_at: DateTime<Utc>,
+}
+```
+
+##### 17.2 Role-Based Access Control (`crates/ostrich-common/src/auth/rbac.rs`)
+
+**New Files**:
+- `rbac.rs` - RBAC policy engine
+- `roles.rs` - Role definitions per NIAP PP-CA
+- `permissions.rs` - Permission definitions
+
+**Role Definitions (per NIAP PP-CA)**:
+
+| Role | Description | Incompatible Roles |
+|------|-------------|-------------------|
+| Administrator | System configuration, user management | - |
+| Auditor | Read-only audit access | Administrator, OperationsStaff |
+| OperationsStaff | Certificate issuance, revocation | Auditor |
+| RaStaff | Request approval (RA) | - |
+| Aor | Authorized Organization Representative | - |
+
+**Permission Matrix**:
+
+| Permission | Admin | Auditor | Operations | RA Staff | AOR |
+|------------|-------|---------|------------|----------|-----|
+| IssueCertificate | - | - | ✓ | - | - |
+| RevokeCertificate | - | - | ✓ | - | - |
+| GenerateCRL | - | - | ✓ | - | - |
+| ApproveRequest | - | - | - | ✓ | ✓ |
+| ReadAuditLog | - | ✓ | - | - | - |
+| ModifyConfig | ✓ | - | - | - | - |
+| ManageUsers | ✓ | - | - | - | - |
+| ManageTrustAnchors | ✓ | - | - | - | - |
+
+##### 17.3 Authorization Middleware Integration
+
+**Files to Modify**:
+- `crates/ostrich-ca/src/rest.rs` - Add auth middleware to CA endpoints
+- `crates/ostrich-est/src/rest.rs` - Add auth middleware to EST endpoints
+- `crates/ostrich-acme/src/rest.rs` - Add auth middleware to ACME endpoints
+
+#### Success Criteria
+
+- [ ] Password authentication with Argon2id working
+- [ ] mTLS certificate authentication functional
+- [ ] RBAC policy engine enforcing role-based permissions
+- [ ] Separation of duties enforced (Auditor cannot be Administrator)
+- [ ] All authorization decisions logged to audit trail
+- [ ] Integration with existing SessionManager and AuthLockout
+
+#### Dependencies & Libraries
+
+- `argon2` - Password hashing (Argon2id)
+- `secrecy` - Secret string handling
+- Existing `SessionManager` and `AuthLockout` modules
+
+---
+
+### Phase 18: Approval Workflow
+
+**Status**: ⏳ PLANNED (0%) | **Priority**: 🟡 MEDIUM | **Effort**: 2 weeks
+**Dependencies**: Phase 17 | **Blocks**: None
+
+#### Overview
+
+Implement certificate request approval workflow to achieve NIAP PP-CA compliance for FDP_CER_EXT.2 (Request-Certificate Linkage) and FDP_CER_EXT.3 (Approval Workflow).
+
+#### Scope
+
+**Target SFRs**:
+- FDP_CER_EXT.2: Request-Certificate Linkage
+- FDP_CER_EXT.3: Certificate Request Approval
+
+#### Work Items
+
+##### 18.1 Approval Engine (`crates/ostrich-ca/src/approval.rs`)
+
+**Approval State Machine**:
+
+```
+                    ┌──────────────┐
+                    │   Pending    │
+                    └──────┬───────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+        ┌─────────┐  ┌──────────┐  ┌─────────┐
+        │Approved │  │ Rejected │  │ Expired │
+        └────┬────┘  └──────────┘  └─────────┘
+             │
+             ▼
+       ┌───────────┐
+       │ Completed │ (Certificate Issued)
+       └───────────┘
+```
+
+**Data Model**:
+
+```rust
+pub struct ApprovalRequest {
+    pub id: Uuid,
+    pub request_type: RequestType,  // Issuance, Revocation, Renewal
+    pub csr_id: Option<Uuid>,
+    pub certificate_id: Option<Uuid>,
+    pub requestor_id: Uuid,
+    pub status: ApprovalStatus,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub decisions: Vec<ApprovalDecision>,
+}
+
+pub struct ApprovalDecision {
+    pub id: Uuid,
+    pub request_id: Uuid,
+    pub approver_id: Uuid,
+    pub decision: Decision,  // Approved, Rejected, NeedsInfo
+    pub reason: Option<String>,
+    pub decided_at: DateTime<Utc>,
+}
+```
+
+##### 18.2 Approval API Endpoints
+
+**Endpoints**:
+- `POST /api/ca/requests` - Submit request for approval
+- `GET /api/ca/requests` - List pending requests (RA Staff)
+- `GET /api/ca/requests/{id}` - Get request details
+- `POST /api/ca/requests/{id}/approve` - Approve request
+- `POST /api/ca/requests/{id}/reject` - Reject request
+
+##### 18.3 Request-Certificate Linkage (FDP_CER_EXT.2)
+
+- Link CSR to approval request
+- Link approval request to issued certificate
+- Track full chain: CSR → Request → Decision → Certificate
+- Audit complete workflow with all actors
+
+#### Success Criteria
+
+- [ ] Approval workflow functional for certificate issuance
+- [ ] Separation of duties enforced (requestor cannot approve own request)
+- [ ] Request-certificate linkage tracked in database
+- [ ] Full audit trail for all approval decisions
+- [ ] Expired requests automatically rejected
+
+#### Database Migration
+
+```sql
+CREATE TABLE approval_requests (
+    id UUID PRIMARY KEY,
+    request_type VARCHAR(50) NOT NULL,
+    csr_id UUID REFERENCES certificate_requests(id),
+    certificate_id UUID REFERENCES certificates(id),
+    requestor_id UUID NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ
+);
+
+CREATE TABLE approval_decisions (
+    id UUID PRIMARY KEY,
+    request_id UUID NOT NULL REFERENCES approval_requests(id),
+    approver_id UUID NOT NULL,
+    decision VARCHAR(50) NOT NULL,
+    reason TEXT,
+    decided_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+---
+
+### Phase 19: HSM Enforcement
+
+**Status**: ⏳ PLANNED (0%) | **Priority**: 🟡 MEDIUM | **Effort**: 1 week
+**Dependencies**: Phase 10 | **Blocks**: None
+
+#### Overview
+
+Implement HSM-only mode enforcement for CA signing keys to achieve NIAP PP-CA compliance for FCS_STG_EXT.1 (Key Storage).
+
+#### Scope
+
+**Target SFRs**:
+- FCS_STG_EXT.1: Key Storage in Hardware Security Module
+
+#### Work Items
+
+##### 19.1 HSM-Only Mode Configuration
+
+**Files to Modify**:
+- `crates/ostrich-common/src/config.rs` - Add HSM requirement config
+- `crates/ostrich-crypto/src/provider.rs` - Enforce HSM mode
+
+**Configuration**:
+
+```rust
+pub struct CryptoConfig {
+    /// Require HSM for CA signing keys (NIAP compliance)
+    #[serde(default = "default_require_hsm")]
+    pub require_hsm: bool,
+
+    /// PKCS#11 configuration (required if require_hsm=true)
+    pub pkcs11: Option<Pkcs11Config>,
+}
+
+fn default_require_hsm() -> bool {
+    true  // Default to NIAP-compliant mode
+}
+```
+
+##### 19.2 Key Storage Validation (`crates/ostrich-crypto/src/hsm_validation.rs`)
+
+**Implementation**:
+
+```rust
+pub struct HsmKeyValidator {
+    provider: Arc<dyn CryptoProvider>,
+}
+
+impl HsmKeyValidator {
+    /// Verify key is stored in HSM (not software)
+    pub fn verify_hsm_storage(&self, key: &KeyHandle) -> Result<()> {
+        match key.provider_id {
+            ProviderId::Pkcs11 { .. } => Ok(()),
+            ProviderId::Software => Err(Error::KeyNotInHsm(
+                "CA signing keys must be stored in HSM per FCS_STG_EXT.1"
+            )),
+        }
+    }
+
+    /// Verify key is non-extractable
+    pub async fn verify_non_extractable(&self, key: &KeyHandle) -> Result<()>;
+}
+```
+
+#### Success Criteria
+
+- [ ] HSM-only mode configurable (default: enabled)
+- [ ] Software provider blocked in HSM-only mode
+- [ ] Key storage validation at CA startup
+- [ ] Non-extractable key attribute verified
+- [ ] Clear error messages when HSM unavailable
+
+---
+
 ## Priority Matrix
 
 | Phase | Name | Priority | Completion | Effort | Dependencies | Blocks |
@@ -1532,6 +1840,9 @@ Achieve **NIAP Protection Profile for Certificate Authority (PP-CA) v2.1** compl
 | **13** | Advanced Features | ✅ DONE | 100% | - | 12, 14 | None |
 | **14** | Testing & Hardening | ✅ DONE | 100% | - | 8, 10, 11, 12 | Production |
 | **15** | NIAP Compliance | ✅ DONE | 100% | - | All | ATO |
+| **17** | Auth & RBAC | 🔴 HIGH | 0% | 2 weeks | Phase 15 | Phase 18 |
+| **18** | Approval Workflow | 🟡 MEDIUM | 0% | 2 weeks | Phase 17 | None |
+| **19** | HSM Enforcement | 🟡 MEDIUM | 0% | 1 week | Phase 10 | None |
 
 **Legend**:
 
@@ -1727,7 +2038,7 @@ Achieve **NIAP Protection Profile for Certificate Authority (PP-CA) v2.1** compl
 
 ## Conclusion
 
-OstrichPKI has achieved **100% completion** of all planned phases (Phases 1-15, including all 5 Phase 13 tracks). The system is **production-ready and ATO-ready** with full NIAP PP-CA v2.1 compliance annotations.
+OstrichPKI has achieved **91% NIAP PP-CA v2.1 compliance** with core Phases 1-15 complete. Phases 17-19 are now in progress to implement the remaining authentication, approval workflow, and HSM enforcement SFRs for full compliance.
 
 **Major Milestones Achieved (January 2026)**:
 
@@ -1739,6 +2050,12 @@ OstrichPKI has achieved **100% completion** of all planned phases (Phases 1-15, 
 - ✅ **Phase 13**: Advanced Features (OCSP caching, EST server-keygen, PQC OIDs, audit hash chain)
 - ✅ **Phase 14**: Testing & Hardening (367 unit tests, CI/CD, security scanning)
 - ✅ **Phase 15**: NIAP Compliance (762+ SFR annotations, 7 compliance documents, RFC 5280 §6 path validation)
+
+**Phases In Progress (January 2026)**:
+
+- 🟡 **Phase 17**: Authentication & RBAC Foundation (FIA_UAU.1, FIA_UID.1, FMT_SMR.2, FMT_MTD.1)
+- ⏳ **Phase 18**: Approval Workflow (FDP_CER_EXT.2, FDP_CER_EXT.3)
+- ⏳ **Phase 19**: HSM Enforcement (FCS_STG_EXT.1)
 
 **System Capabilities** (Production-Ready):
 
@@ -1760,7 +2077,7 @@ OstrichPKI has achieved **100% completion** of all planned phases (Phases 1-15, 
 - ✅ All 10 crates annotated with NIAP PP-CA v2.1 references
 - ✅ **Phase 13 complete**: OCSP caching, EST server-keygen, PQC OIDs, audit hash chain verification
 
-**Status**: **COMPLETE** - The system is ready for production deployment and ATO review!
+**Status**: **91% NIAP Compliance** - Core infrastructure complete; authentication/RBAC phases in progress for full compliance.
 
 The roadmap prioritizes **security and compliance** while maintaining **technical excellence** through comprehensive testing and adherence to RFC standards and NIST cryptographic requirements.
 

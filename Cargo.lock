@@ -2450,6 +2450,7 @@ name = "ostrich-common"
 version = "0.14.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum 0.8.8",
  "base64 0.22.1",
  "chrono",
@@ -2459,6 +2460,7 @@ dependencies = [
  "jsonschema",
  "rand 0.8.5",
  "regex",
+ "secrecy",
  "serde",
  "serde_json",
  "sqlx",
