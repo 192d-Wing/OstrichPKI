@@ -16,6 +16,10 @@ path = "integration/est_e2e_test.rs"
 name = "ca_core_test"
 path = "integration/ca_core_test.rs"
 
+[[test]]
+name = "ocsp_e2e_test"
+path = "integration/ocsp_e2e_test.rs"
+
 [dependencies]
 # OstrichPKI crates
 ostrich-common = { path = "../crates/ostrich-common" }
@@ -36,8 +40,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Cryptography
-rsa = "0.9"
+rsa = { version = "0.9", features = ["sha2"] }
 sha2 = "0.10"
+signature = "2.2"
 x509-cert = "0.2"
 der = "0.7"
 base64 = "0.22"

@@ -31,7 +31,7 @@ variables:
 
 # Base Rust image
 .rust-base: &rust-base
-  image: rust:1.83-bookworm
+  image: rust:1.92.0-alpine
   before_script:
     - rustup component add rustfmt clippy
     - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev

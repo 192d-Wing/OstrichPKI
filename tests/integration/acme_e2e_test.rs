@@ -112,20 +112,37 @@ async fn test_acme_account_creation() {
         .to_string();
 
     // Generate JWK for account
-    let _jwk = TestJwk::generate();
+    let jwk = TestJwk::generate();
 
     // Create JWS-signed account creation request
-    let _new_account_url = directory["newAccount"].as_str().unwrap();
-    let _payload = json!({
+    let new_account_url = directory["newAccount"].as_str().unwrap();
+    let payload = json!({
         "termsOfServiceAgreed": true,
         "contact": ["mailto:test@example.com"]
     });
 
-    // TODO: Implement proper JWS signing (Phase 14)
-    // For now, this test will fail until we implement JWS properly
-    // This is expected and helps us track what needs to be done
+    // Create properly signed JWS request
+    let jws = jwk.create_jws(new_account_url, &nonce, &payload, None);
 
-    println!("✓ ACME account creation test structure ready (needs JWS implementation)");
+    // Send account creation request
+    let response = client
+        .post(new_account_url)
+        .header("Content-Type", "application/jose+json")
+        .json(&jws)
+        .send()
+        .await
+        .expect("Failed to create ACME account");
+
+    // Should return 201 Created or 200 OK (if account exists)
+    let status = response.status();
+    assert!(
+        status == reqwest::StatusCode::CREATED || status == reqwest::StatusCode::OK,
+        "Unexpected status: {}. Body: {}",
+        status,
+        response.text().await.unwrap_or_default()
+    );
+
+    println!("✓ ACME account creation working");
 }
 
 /// Test ACME order creation (placeholder)
