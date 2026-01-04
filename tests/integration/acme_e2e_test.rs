@@ -16,6 +16,50 @@ use common::{
 };
 use serde_json::json;
 
+/// Test ACME health endpoint
+#[tokio::test]
+async fn test_acme_health() {
+    let config = TestConfig::default();
+    let client = create_test_client();
+
+    let response = client
+        .get(&format!("{}/health", config.acme_base_url))
+        .send()
+        .await
+        .expect("Failed to fetch ACME health");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let health: serde_json::Value = response.json().await.expect("Failed to parse health response");
+    assert_eq!(health["status"], "healthy");
+    assert_eq!(health["service"], "ostrich-acme");
+
+    println!("✓ ACME health endpoint working");
+}
+
+/// Test ACME readiness endpoint
+#[tokio::test]
+async fn test_acme_readiness() {
+    let config = TestConfig::default();
+    let client = create_test_client();
+
+    let response = client
+        .get(&format!("{}/ready", config.acme_base_url))
+        .send()
+        .await
+        .expect("Failed to fetch ACME readiness");
+
+    // Readiness may fail if CA backend is not available, but endpoint should respond
+    let status = response.status();
+    assert!(
+        status == reqwest::StatusCode::OK || status == reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        "Unexpected status: {}",
+        status
+    );
+
+    println!("✓ ACME readiness endpoint responding");
+}
+
 /// Test ACME directory endpoint
 ///
 /// RFC 8555 §7.1.1 - Directory resource

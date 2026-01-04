@@ -6,7 +6,54 @@
 
 mod common;
 
-use common::TestConfig;
+use common::{
+    http_client::create_test_client,
+    TestConfig,
+};
+
+/// Test CA health endpoint
+#[tokio::test]
+async fn test_ca_health() {
+    let config = TestConfig::default();
+    let client = create_test_client();
+
+    let response = client
+        .get(&format!("{}/health", config.ca_http_base_url))
+        .send()
+        .await
+        .expect("Failed to fetch CA health");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let health: serde_json::Value = response.json().await.expect("Failed to parse health response");
+    assert_eq!(health["status"], "healthy");
+    assert_eq!(health["service"], "ostrich-ca");
+
+    println!("✓ CA health endpoint working");
+}
+
+/// Test CA readiness endpoint
+#[tokio::test]
+async fn test_ca_readiness() {
+    let config = TestConfig::default();
+    let client = create_test_client();
+
+    let response = client
+        .get(&format!("{}/ready", config.ca_http_base_url))
+        .send()
+        .await
+        .expect("Failed to fetch CA readiness");
+
+    // Readiness may fail if HSM/database is not available, but endpoint should respond
+    let status = response.status();
+    assert!(
+        status == reqwest::StatusCode::OK || status == reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        "Unexpected status: {}",
+        status
+    );
+
+    println!("✓ CA readiness endpoint responding");
+}
 
 /// Test certificate issuance with RSA
 #[tokio::test]

@@ -13,6 +13,7 @@ pub struct TestConfig {
     pub acme_base_url: String,
     pub est_base_url: String,
     pub ocsp_base_url: String,
+    pub ca_http_base_url: String,
     pub ca_grpc_endpoint: String,
     pub database_url: String,
 }
@@ -26,6 +27,8 @@ impl Default for TestConfig {
                 .unwrap_or_else(|_| "https://localhost:8443".to_string()),
             ocsp_base_url: std::env::var("OCSP_BASE_URL")
                 .unwrap_or_else(|_| "http://localhost:8081".to_string()),
+            ca_http_base_url: std::env::var("CA_HTTP_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:8082".to_string()),
             ca_grpc_endpoint: std::env::var("CA_GRPC_ENDPOINT")
                 .unwrap_or_else(|_| "https://localhost:50051".to_string()),
             database_url: std::env::var("DATABASE_URL").unwrap_or_else(|_| {
