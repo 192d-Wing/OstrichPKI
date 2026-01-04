@@ -196,11 +196,7 @@ impl AcmeRepository {
     }
 
     /// Update order status
-    pub async fn update_order_status(
-        &self,
-        order_id: Uuid,
-        status: &str,
-    ) -> Result<AcmeOrder> {
+    pub async fn update_order_status(&self, order_id: Uuid, status: &str) -> Result<AcmeOrder> {
         let now = Utc::now();
 
         let order = sqlx::query_as::<_, AcmeOrder>(

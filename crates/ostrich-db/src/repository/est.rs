@@ -88,11 +88,7 @@ impl EstRepository {
     }
 
     /// Update enrollment status
-    pub async fn update_enrollment_status(
-        &self,
-        id: Uuid,
-        status: &str,
-    ) -> Result<EstEnrollment> {
+    pub async fn update_enrollment_status(&self, id: Uuid, status: &str) -> Result<EstEnrollment> {
         let now = Utc::now();
 
         let enrollment = sqlx::query_as::<_, EstEnrollment>(

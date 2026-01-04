@@ -6,12 +6,12 @@
 //! - NIST 800-53: SI-10 (Information input validation)
 
 use crate::{Error, Result};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::Status;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 /// gRPC client configuration
 ///

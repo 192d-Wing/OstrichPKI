@@ -12,7 +12,7 @@ use der::Encode;
 use ostrich_common::{CaGrpcClient, GrpcClientConfig};
 use ostrich_db::DatabasePool;
 use ostrich_protocol::certificate_authority_service_client::CertificateAuthorityServiceClient;
-use ostrich_protocol::{IssueCertificateRequest, DistinguishedName as ProtoDistinguishedName};
+use ostrich_protocol::{DistinguishedName as ProtoDistinguishedName, IssueCertificateRequest};
 use uuid::Uuid;
 use x509_cert::der::Decode;
 use x509_cert::request::CertReq;
@@ -78,7 +78,10 @@ impl AcmeCaClient {
         let subject_alt_names = vec![];
 
         // Extract public key
-        let public_key_der = csr.info.public_key.to_der()
+        let public_key_der = csr
+            .info
+            .public_key
+            .to_der()
             .map_err(|e| Error::BadCsr(format!("Failed to encode public key: {}", e)))?;
 
         // Prepare metadata for audit trail
@@ -103,9 +106,7 @@ impl AcmeCaClient {
             .with_retry(|| {
                 let mut client = CertificateAuthorityServiceClient::new(channel.clone());
                 let req = request.clone();
-                async move {
-                    client.issue_certificate(tonic::Request::new(req)).await
-                }
+                async move { client.issue_certificate(tonic::Request::new(req)).await }
             })
             .await
             .map_err(|e| Error::ServerInternal(format!("CA service call failed: {}", e)))?;
@@ -135,9 +136,7 @@ impl AcmeCaClient {
     /// Convert X.509 Name to proto DistinguishedName
     ///
     /// RFC 5280 §4.1.2.4 - Issuer/Subject name conversion
-    fn convert_subject_to_proto(
-        name: &x509_cert::name::Name,
-    ) -> Result<ProtoDistinguishedName> {
+    fn convert_subject_to_proto(name: &x509_cert::name::Name) -> Result<ProtoDistinguishedName> {
         // Convert Name to string (RFC 4514 format)
         // For now, we'll do a simple conversion
         // TODO: Proper ASN.1 RDN parsing (Phase 13)
