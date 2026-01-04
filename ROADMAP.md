@@ -77,7 +77,7 @@
 | **12** | **Service Integration** | **✅ COMPLETE** | **100%** | - | ✅ 2 weeks |
 | **13** | **Advanced Features** | ⏸️ DEFERRED | 0% | ⚪ LOW | 2-3 weeks |
 | **14** | **Testing & Hardening** | **✅ COMPLETE** | **100%** | - | ✅ 1 week |
-| **15** | **NIAP Compliance** | 🟡 IN PROGRESS | 90% | 🔴 HIGH | 1 week |
+| **15** | **NIAP Compliance** | 🟡 IN PROGRESS | 95% | 🔴 HIGH | 1 week |
 
 ### Critical Path
 
@@ -87,7 +87,7 @@
                               ✅ Phase 10 (HSM) → ✅ Phase 14 (Testing) → 🟡 Phase 15 (NIAP) → Production
 ```
 
-**Current Status**: All implementation and testing complete! NIAP compliance 90% complete (6/6 docs + 3 implementation modules created).
+**Current Status**: All implementation and testing complete! NIAP compliance 95% complete (6/6 docs + all SFR implementation modules created: self-tests, secure defaults, trusted time, account lockout, session management, audit hash chain).
 
 ---
 
@@ -995,9 +995,9 @@ Comprehensive testing, security hardening, and operational readiness before prod
 - **Health check tests** for all services (ACME, CA, EST, OCSP)
 - **k6 load tests** for ACME (100 TPS), OCSP (1000 TPS), CA services
 - **Penetration testing guide** with 50+ test cases ([docs/security/PENETRATION_TESTING.md](docs/security/PENETRATION_TESTING.md))
-- **Unit test coverage: 216 tests passing** across all crates:
+- **Unit test coverage: 274 tests passing** across all crates:
   - ostrich-db: 49 tests (models: certificate, audit, acme, est, kra, scms)
-  - ostrich-common: 40 tests (error, OID, types, encoding, random, time)
+  - ostrich-common: 74 tests (error, OID, types, encoding, random, time, auth lockout, session management)
   - ostrich-ocsp: 28 tests (request, response, error, responder)
   - ostrich-crypto: 15 tests (algorithm, key, provider)
   - ostrich-x509: 14 tests (builder, CRL, extensions, profiles)
@@ -1233,7 +1233,7 @@ stages:
 
 ### Phase 15: NIAP Compliance
 
-**Status**: 🔄 IN PROGRESS (90% complete) | **Priority**: 🔴 HIGH | **Effort**: 1 week remaining
+**Status**: 🔄 IN PROGRESS (95% complete) | **Priority**: 🔴 HIGH | **Effort**: <1 week remaining
 **Dependencies**: All previous phases | **Blocks**: ATO approval
 
 #### Overview
@@ -1242,7 +1242,7 @@ Achieve **NIAP Protection Profile for Certificate Authority (PP-CA) v2.1** compl
 
 #### Current Compliance Status
 
-**Overall**: 90% complete (all documentation and core implementation done)
+**Overall**: 95% complete (all documentation and SFR implementation done)
 
 **Completed** (Phase 15 Progress):
 
@@ -1261,12 +1261,14 @@ Achieve **NIAP Protection Profile for Certificate Authority (PP-CA) v2.1** compl
 - ✅ **Self-tests module** - `crates/ostrich-crypto/src/self_test.rs` (FPT_TST_EXT.1)
 - ✅ **Secure defaults module** - `crates/ostrich-x509/src/secure_defaults.rs` (FMT_MSA.1.2)
 - ✅ **Reliable timestamps** - `crates/ostrich-common/src/util/trusted_time.rs` (FPT_STM_EXT.1)
+- ✅ **Account lockout** - `crates/ostrich-common/src/auth/lockout.rs` (FIA_AFL.1)
+- ✅ **Session management** - `crates/ostrich-common/src/auth/session.rs` (FTA_SSL.1/3/4)
+- ✅ **Audit hash chain** - `crates/ostrich-audit/src/event.rs` + `crates/ostrich-db/src/repository/audit.rs` (FAU_STG.1)
 
-**Remaining**:
+**Remaining** (Optional):
 
-- ⏳ Hash chain for audit tamper evidence (FAU_STG.1)
-- ⏳ Account lockout implementation (FIA_AFL.1)
-- ⏳ Session timeout management (FTA_SSL.1)
+- ⏳ Code annotations with NIAP SFR references (Track 3)
+- ⏳ Test annotations with SFR mappings
 
 #### Scope
 

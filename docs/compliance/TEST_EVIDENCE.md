@@ -572,7 +572,7 @@ cargo build --workspace
 cargo test --workspace
 
 # Expected output:
-# test result: ok. 216 passed; 0 failed; 0 ignored
+# test result: ok. 274 passed; 0 failed; 0 ignored
 ```
 
 ### A.3 Generating Coverage Report

@@ -863,7 +863,7 @@ The following SFRs are marked Not Applicable per the TOE design:
 
 | Category | Tests | Pass | Fail | Coverage |
 |----------|-------|------|------|----------|
-| Unit Tests | 216 | 216 | 0 | See breakdown below |
+| Unit Tests | 274 | 274 | 0 | See breakdown below |
 | Integration Tests | TBD | - | - | Phase 14 |
 | Security Tests | TBD | - | - | Phase 14 |
 
