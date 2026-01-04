@@ -1,0 +1,47 @@
+[package]
+name = "ostrich-integration-tests"
+version = "0.14.0"
+edition = "2021"
+publish = false
+
+[[test]]
+name = "acme_e2e_test"
+path = "integration/acme_e2e_test.rs"
+
+[[test]]
+name = "est_e2e_test"
+path = "integration/est_e2e_test.rs"
+
+[[test]]
+name = "ca_core_test"
+path = "integration/ca_core_test.rs"
+
+[dependencies]
+# OstrichPKI crates
+ostrich-common = { path = "../crates/ostrich-common" }
+ostrich-db = { path = "../crates/ostrich-db" }
+ostrich-protocol = { path = "../crates/ostrich-protocol" }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# gRPC
+tonic = "0.12"
+
+# Async
+tokio = { version = "1.35", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Cryptography
+rsa = "0.9"
+sha2 = "0.10"
+x509-cert = "0.2"
+der = "0.7"
+base64 = "0.22"
+
+# Utilities
+rand = "0.8"
+uuid = { version = "1.10", features = ["v4", "serde"] }

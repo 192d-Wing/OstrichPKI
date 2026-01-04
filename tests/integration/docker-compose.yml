@@ -1,0 +1,179 @@
+# Docker Compose for OstrichPKI Integration Testing
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SA-11 (Developer Security Testing)
+# - NIST 800-53: CA-2 (Security Assessments)
+
+version: "3.8"
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: ostrich-test-db
+    environment:
+      POSTGRES_USER: ostrich_test
+      POSTGRES_PASSWORD: test_password_insecure
+      POSTGRES_DB: ostrich_pki_test
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ostrich_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # CA Service (gRPC)
+  ca-service:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.ca
+    container_name: ostrich-test-ca
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Database
+      DATABASE_URL: postgresql://ostrich_test:test_password_insecure@postgres:5432/ostrich_pki_test
+
+      # gRPC Configuration
+      GRPC_BIND_ADDRESS: 0.0.0.0:50051
+
+      # TLS Configuration (mTLS)
+      TLS_CERT_FILE: /certs/ca-service.pem
+      TLS_KEY_FILE: /certs/ca-service-key.pem
+      TLS_CA_CERT_FILE: /certs/root-ca.pem
+
+      # Crypto Provider
+      CRYPTO_PROVIDER: software # Use software crypto for testing
+
+      # Audit Logging
+      AUDIT_LOG_ENABLED: "true"
+    ports:
+      - "50051:50051"
+    volumes:
+      - ./fixtures/certs:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "grpcurl -plaintext localhost:50051 list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ACME Service (HTTP)
+  acme-service:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.acme
+    container_name: ostrich-test-acme
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ca-service:
+        condition: service_healthy
+    environment:
+      # Database
+      DATABASE_URL: postgresql://ostrich_test:test_password_insecure@postgres:5432/ostrich_pki_test
+
+      # HTTP Configuration
+      HTTP_BIND_ADDRESS: 0.0.0.0:8080
+      HTTP_BASE_URL: http://acme-service:8080
+
+      # CA gRPC Client
+      CA_GRPC_ENDPOINT: https://ca-service:50051
+      CA_CLIENT_CERT: /certs/acme-client.pem
+      CA_CLIENT_KEY: /certs/acme-client-key.pem
+      CA_CA_CERT: /certs/root-ca.pem
+
+      # ACME Configuration
+      ACME_DIRECTORY_URL: http://acme-service:8080/directory
+      ACME_TERMS_OF_SERVICE: http://acme-service:8080/tos
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./fixtures/certs:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/directory || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # EST Service (HTTPS with mTLS)
+  est-service:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.est
+    container_name: ostrich-test-est
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ca-service:
+        condition: service_healthy
+    environment:
+      # Database
+      DATABASE_URL: postgresql://ostrich_test:test_password_insecure@postgres:5432/ostrich_pki_test
+
+      # HTTPS Configuration (mTLS required)
+      HTTPS_BIND_ADDRESS: 0.0.0.0:8443
+      TLS_CERT_FILE: /certs/est-service.pem
+      TLS_KEY_FILE: /certs/est-service-key.pem
+      TLS_CA_CERT_FILE: /certs/root-ca.pem
+      TLS_REQUIRE_CLIENT_CERT: "true"
+
+      # CA gRPC Client
+      CA_GRPC_ENDPOINT: https://ca-service:50051
+      CA_CLIENT_CERT: /certs/est-client.pem
+      CA_CLIENT_KEY: /certs/est-client-key.pem
+      CA_CA_CERT: /certs/root-ca.pem
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./fixtures/certs:/certs:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -k -f https://localhost:8443/.well-known/est/cacerts || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # OCSP Responder (HTTP)
+  ocsp-service:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.ocsp
+    container_name: ostrich-test-ocsp
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Database
+      DATABASE_URL: postgresql://ostrich_test:test_password_insecure@postgres:5432/ostrich_pki_test
+
+      # HTTP Configuration
+      HTTP_BIND_ADDRESS: 0.0.0.0:8081
+
+      # OCSP Configuration
+      OCSP_SIGNING_CERT: /certs/ocsp-signer.pem
+      OCSP_SIGNING_KEY: /certs/ocsp-signer-key.pem
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./fixtures/certs:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  default:
+    name: ostrich-test-network

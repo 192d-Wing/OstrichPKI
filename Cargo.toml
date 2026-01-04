@@ -16,6 +16,7 @@ members = [
     "crates/ostrich-est",
     "tools/ostrich-cli",
     "tools/ostrich-init",
+    "tests",
 ]
 
 [workspace.package]
