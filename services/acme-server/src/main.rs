@@ -67,6 +67,7 @@ async fn main() -> Result<()> {
         db_pool,
         Arc::new(crypto_provider),
         Arc::new(audit_sink),
+        args.base_url.clone(),
     );
 
     // Create REST API router
