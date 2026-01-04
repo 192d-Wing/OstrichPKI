@@ -277,16 +277,14 @@ impl SecureDefaults {
         }
 
         // Validate path length for CA certificates
-        if profile.basic_constraints_ca {
-            if let Some(path_len) = profile.basic_constraints_path_len {
-                if path_len > self.max_path_length && profile.profile_type != ProfileType::RootCa {
+        if profile.basic_constraints_ca
+            && let Some(path_len) = profile.basic_constraints_path_len
+                && path_len > self.max_path_length && profile.profile_type != ProfileType::RootCa {
                     return Err(Error::SecureDefaults(format!(
                         "Path length constraint {} exceeds maximum {}",
                         path_len, self.max_path_length
                     )));
                 }
-            }
-        }
 
         // Validate prohibited EKUs
         for eku in &profile.extended_key_usage {

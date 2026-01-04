@@ -545,9 +545,9 @@ impl SessionManager {
             .map_err(|_| SessionError::LockPoisoned)?;
 
         for session_id in session_ids {
-            if let Some(session) = sessions.get_mut(&session_id) {
-                if session.status == SessionStatus::Active
-                    || session.status == SessionStatus::Locked
+            if let Some(session) = sessions.get_mut(&session_id)
+                && (session.status == SessionStatus::Active
+                    || session.status == SessionStatus::Locked)
                 {
                     if admin_id.is_some() {
                         session.admin_terminate();
@@ -556,7 +556,6 @@ impl SessionManager {
                     }
                     terminated += 1;
                 }
-            }
         }
 
         tracing::info!(
