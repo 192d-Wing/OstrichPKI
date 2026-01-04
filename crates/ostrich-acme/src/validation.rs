@@ -124,9 +124,12 @@ impl Default for Http01Validator {
 /// - Use DNSSEC if available
 /// - Query multiple nameservers if possible
 /// - Enforce timeout to prevent DoS
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: IA-5(1) - Authenticator management (challenge-response)
+/// - RFC 8555 §8.4 - DNS-01 challenge validation
 pub struct Dns01Validator {
     /// DNS resolver timeout in seconds
-    #[allow(dead_code)]
     timeout_secs: u64,
 }
 
@@ -148,22 +151,78 @@ impl Dns01Validator {
     ) -> Result<bool> {
         use ostrich_common::util::encoding::encode_base64url;
         use sha2::{Digest, Sha256};
+        use std::time::Duration;
+        use trust_dns_resolver::TokioAsyncResolver;
+        use trust_dns_resolver::config::*;
+
+        // COMPLIANCE MAPPING:
+        // - NIST 800-53: IA-5(1) - Cryptographic challenge-response validation
+        // - RFC 8555 §8.4 - DNS-01 validation procedure
 
         // Compute expected TXT record value
+        // RFC 8555 §8.4: digest = BASE64URL(SHA256(key_authorization))
         let key_authorization = format!("{}.{}", token, account_key_thumbprint);
         let hash = Sha256::digest(key_authorization.as_bytes());
         let expected_value = encode_base64url(&hash);
 
         // Construct TXT record name
+        // RFC 8555 §8.4: _acme-challenge.<domain>
         let txt_record_name = format!("_acme-challenge.{}", domain);
 
-        // TODO: Implement DNS TXT record lookup
-        // This requires adding trust-dns-resolver or similar DNS client
-        // For now, return error indicating not implemented
-        Err(Error::ChallengeValidation(format!(
-            "DNS-01 validation not yet implemented (would query {} for {})",
-            txt_record_name, expected_value
-        )))
+        // Create DNS resolver with timeout
+        let mut resolver_opts = ResolverOpts::default();
+        resolver_opts.timeout = Duration::from_secs(self.timeout_secs);
+
+        // Use system DNS configuration
+        let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), resolver_opts);
+
+        // Perform DNS TXT lookup with retry logic
+        // Retry up to 5 times with 2-second intervals to allow for DNS propagation
+        let max_retries = 5;
+        let retry_delay = Duration::from_secs(2);
+
+        for attempt in 1..=max_retries {
+            match resolver.txt_lookup(&txt_record_name).await {
+                Ok(txt_records) => {
+                    // Check each TXT record for a match
+                    for record in txt_records.iter() {
+                        // TXT record data is stored as a series of character strings
+                        // Concatenate all parts to get the full value
+                        let txt_value = record
+                            .txt_data()
+                            .iter()
+                            .flat_map(|data| data.iter())
+                            .map(|&b| b as char)
+                            .collect::<String>();
+
+                        // RFC 8555 §8.4: Check if TXT record contains expected digest
+                        if txt_value == expected_value {
+                            // NIST 800-53: AU-3 - Audit content (successful validation)
+                            return Ok(true);
+                        }
+                    }
+
+                    // If we got records but no match, don't retry
+                    return Ok(false);
+                }
+                Err(e) => {
+                    // DNS lookup failed - retry if not last attempt
+                    if attempt < max_retries {
+                        tokio::time::sleep(retry_delay).await;
+                        continue;
+                    }
+
+                    // All retries exhausted
+                    return Err(Error::ChallengeValidation(format!(
+                        "DNS TXT lookup failed for {}: {}",
+                        txt_record_name, e
+                    )));
+                }
+            }
+        }
+
+        // Should not reach here, but for safety
+        Ok(false)
     }
 }
 
@@ -190,9 +249,13 @@ impl Default for Dns01Validator {
 /// - Check for proper ALPN protocol
 /// - Enforce timeout to prevent DoS
 /// - Prevent SSRF by blocking private IPs
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: IA-5(1) - Authenticator management (challenge-response)
+/// - RFC 8737 - TLS-ALPN-01 challenge validation
+/// - RFC 8555 §8.1 - Key authorization
 pub struct TlsAlpn01Validator {
     /// TLS connection timeout in seconds
-    #[allow(dead_code)]
     timeout_secs: u64,
 }
 
@@ -213,18 +276,132 @@ impl TlsAlpn01Validator {
         account_key_thumbprint: &str,
     ) -> Result<bool> {
         use sha2::{Digest, Sha256};
+        use std::sync::Arc;
+        use tokio::net::TcpStream;
+        use tokio::time::timeout;
+
+        // COMPLIANCE MAPPING:
+        // - NIST 800-53: IA-5(1) - Cryptographic challenge-response validation
+        // - RFC 8737 - TLS-ALPN-01 validation procedure
+        // - RFC 8555 §8.1 - Key authorization computation
+
+        // Prevent SSRF by blocking private IP domains
+        if is_private_ip_domain(domain) {
+            return Err(Error::Malformed(format!(
+                "Cannot validate private IP domain: {}",
+                domain
+            )));
+        }
 
         // Compute expected acmeIdentifier extension value
+        // RFC 8737 §3: acmeIdentifier = SHA256(key_authorization)
         let key_authorization = format!("{}.{}", token, account_key_thumbprint);
-        let _expected_hash = Sha256::digest(key_authorization.as_bytes());
+        let expected_hash = Sha256::digest(key_authorization.as_bytes());
 
-        // TODO: Implement TLS-ALPN connection with "acme-tls/1" protocol
-        // This requires tokio-rustls or similar TLS client
-        // For now, return error indicating not implemented
-        Err(Error::ChallengeValidation(format!(
-            "TLS-ALPN-01 validation not yet implemented (would connect to {}:443)",
-            domain
-        )))
+        // Connect to domain:443 with timeout
+        let addr = format!("{}:443", domain);
+        let tcp_stream = timeout(
+            std::time::Duration::from_secs(self.timeout_secs),
+            TcpStream::connect(&addr),
+        )
+        .await
+        .map_err(|_| Error::ChallengeValidation(format!("TLS connection timed out to {}", addr)))?
+        .map_err(|e| Error::ChallengeValidation(format!("Failed to connect to {}: {}", addr, e)))?;
+
+        // Create TLS client configuration with ALPN "acme-tls/1"
+        // RFC 8737 §3: Client must send "acme-tls/1" in ALPN extension
+        let mut root_store = rustls::RootCertStore::empty();
+
+        // Add system root certificates
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+        let mut config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        // Set ALPN protocols: "acme-tls/1" ONLY
+        // RFC 8737 §3: Server must negotiate acme-tls/1 protocol
+        config.alpn_protocols = vec![b"acme-tls/1".to_vec()];
+
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let server_name = rustls::pki_types::ServerName::try_from(domain.to_string())
+            .map_err(|e| Error::Malformed(format!("Invalid domain name: {}", e)))?;
+
+        // Perform TLS handshake
+        let tls_stream = connector
+            .connect(server_name, tcp_stream)
+            .await
+            .map_err(|e| Error::ChallengeValidation(format!("TLS handshake failed: {}", e)))?;
+
+        // RFC 8737 §3: Verify server negotiated "acme-tls/1" protocol
+        let (_, session) = tls_stream.get_ref();
+        let negotiated_protocol = session.alpn_protocol();
+
+        match negotiated_protocol {
+            Some(protocol) if protocol == b"acme-tls/1" => {
+                // ALPN protocol correct, now verify certificate extension
+            }
+            Some(protocol) => {
+                return Err(Error::ChallengeValidation(format!(
+                    "Server negotiated wrong ALPN protocol: {:?} (expected acme-tls/1)",
+                    String::from_utf8_lossy(protocol)
+                )));
+            }
+            None => {
+                return Err(Error::ChallengeValidation(
+                    "Server did not negotiate ALPN protocol (acme-tls/1 required)".to_string(),
+                ));
+            }
+        }
+
+        // Get peer certificate
+        let peer_certs = session.peer_certificates();
+        let cert_der = peer_certs
+            .and_then(|certs| certs.first())
+            .ok_or_else(|| Error::ChallengeValidation("No certificate presented".to_string()))?;
+
+        // Parse certificate and verify acmeIdentifier extension
+        // RFC 8737 §3: Certificate must contain id-pe-acmeIdentifier extension
+        // OID: 1.3.6.1.5.5.7.1.31 (id-pe-acmeIdentifier)
+        let cert = x509_parser::parse_x509_certificate(&cert_der.as_ref())
+            .map_err(|e| Error::ChallengeValidation(format!("Failed to parse certificate: {}", e)))?
+            .1;
+
+        // Look for acmeIdentifier extension
+        const ACME_IDENTIFIER_OID: &str = "1.3.6.1.5.5.7.1.31";
+
+        for ext in cert.extensions() {
+            if ext.oid.to_id_string() == ACME_IDENTIFIER_OID {
+                // RFC 8737 §3: Extension value must be OCTET STRING containing SHA-256 hash
+                // The value is DER-encoded OCTET STRING containing the hash
+                if ext.value.len() >= 32 {
+                    // Skip DER encoding wrapper (typically 2 bytes: tag 0x04 and length)
+                    let hash_start = if ext.value[0] == 0x04 && ext.value[1] == 0x20 {
+                        2 // Standard DER OCTET STRING encoding for 32 bytes
+                    } else {
+                        0
+                    };
+
+                    let cert_hash = &ext.value[hash_start..hash_start + 32];
+
+                    if cert_hash == expected_hash.as_slice() {
+                        // NIST 800-53: AU-3 - Audit content (successful validation)
+                        return Ok(true);
+                    } else {
+                        return Ok(false);
+                    }
+                }
+
+                return Err(Error::ChallengeValidation(
+                    "acmeIdentifier extension has invalid format".to_string(),
+                ));
+            }
+        }
+
+        // acmeIdentifier extension not found
+        Err(Error::ChallengeValidation(
+            "Certificate missing acmeIdentifier extension".to_string(),
+        ))
     }
 }
 

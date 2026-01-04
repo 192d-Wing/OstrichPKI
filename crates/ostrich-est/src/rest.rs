@@ -148,14 +148,14 @@ fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
 ///
 /// TODO: Add mTLS client certificate validation when TLS is configured.
 /// When TLS server is set up, this handler should:
-/// 1. Extract client certificate using `extract_client_cert_placeholder()`
+/// 1. Extract client certificate using `ClientCertExtractor` axum extractor
 /// 2. Validate certificate with `validate_client(&client_cert, &state.db_pool).await?`
 /// 3. Use `client_cert.client_id` as the client identifier
 /// 4. Use `client_cert.subject_dn` for audit logging
 ///
 /// Example (when TLS is configured):
 /// ```ignore
-/// let client_cert = extract_client_cert_placeholder()?;
+/// let ClientCertExtractor(client_cert) = ClientCertExtractor::from_request_parts(&mut parts, &state).await?;
 /// validate_client(&client_cert, &state.db_pool).await?;
 /// let client_identifier = &client_cert.client_id;
 /// ```
@@ -224,7 +224,7 @@ async fn simple_enroll(State(state): State<EstState>, body: Bytes) -> Result<Res
 ///
 /// TODO: Add mTLS client certificate validation when TLS is configured.
 /// When TLS server is set up, this handler should:
-/// 1. Extract client certificate using `extract_client_cert_placeholder()`
+/// 1. Extract client certificate using `ClientCertExtractor` axum extractor
 /// 2. Validate certificate with `validate_client(&client_cert, &state.db_pool).await?`
 /// 3. Verify CSR subject matches client certificate subject (re-enrollment requirement)
 /// 4. Use `client_cert.client_id` as the client identifier
@@ -232,7 +232,7 @@ async fn simple_enroll(State(state): State<EstState>, body: Bytes) -> Result<Res
 ///
 /// Example (when TLS is configured):
 /// ```ignore
-/// let client_cert = extract_client_cert_placeholder()?;
+/// let ClientCertExtractor(client_cert) = ClientCertExtractor::from_request_parts(&mut parts, &state).await?;
 /// validate_client(&client_cert, &state.db_pool).await?;
 /// // Verify subject match after parsing CSR
 /// if parsed_csr.subject_dn != client_cert.subject_dn {

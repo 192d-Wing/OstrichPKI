@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 authors = ["OstrichPKI Contributors"]
 license = "Apache-2.0"
@@ -68,6 +68,7 @@ pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
 pkcs1 = { version = "0.7", features = ["pem"] }
 cms = "0.2"
 pem-rfc7468 = { version = "0.7", features = ["alloc"] }
+webpki-roots = "0.26"
 
 # Cryptographic primitives
 ring = "0.17"
@@ -117,6 +118,14 @@ rand_core = "0.6"
 
 # HTTP client (for ACME challenge validation)
 reqwest = { version = "0.12", features = ["json"] }
+
+# DNS resolver (for ACME DNS-01 challenge)
+trust-dns-resolver = "0.23"
+
+# TLS (for ACME TLS-ALPN-01 challenge and mTLS)
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-pemfile = "2.2"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }

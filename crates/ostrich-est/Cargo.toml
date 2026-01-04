@@ -36,5 +36,11 @@ x509-cert = { workspace = true }
 x509-parser = { workspace = true }
 sha2 = { workspace = true }
 
+# TLS (for mTLS client authentication)
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+
 # Utilities
 thiserror = { workspace = true }
+hex = { workspace = true }

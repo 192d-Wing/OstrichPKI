@@ -32,9 +32,18 @@ rsa = { workspace = true }
 sha2 = { workspace = true }
 der = { workspace = true }
 spki = { workspace = true }
+x509-parser = { workspace = true }
+webpki-roots = { workspace = true }
 
 # HTTP client (for challenge validation)
 reqwest = { workspace = true }
+
+# DNS resolver (for DNS-01 challenge validation)
+trust-dns-resolver = { workspace = true }
+
+# TLS (for TLS-ALPN-01 challenge validation)
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
 
 # Utilities
 thiserror = { workspace = true }
