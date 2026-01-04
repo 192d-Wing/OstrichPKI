@@ -143,30 +143,95 @@ impl Dns01Validator {
     ///
     /// RFC 8555 §8.4 - DNS challenge validation
     /// NIST 800-53: IA-5(1) - Challenge-response authentication
+    ///
+    /// Process:
+    /// 1. Compute expected value: BASE64URL(SHA256(token.account_key_thumbprint))
+    /// 2. Query DNS for TXT record at _acme-challenge.<domain>
+    /// 3. Verify any TXT record matches the expected value
+    /// 4. Retry with delay to allow for DNS propagation
     pub async fn validate(
         &self,
-        _domain: &str,
-        _token: &str,
-        _account_key_thumbprint: &str,
+        domain: &str,
+        token: &str,
+        account_key_thumbprint: &str,
     ) -> Result<bool> {
-        // TODO: Complete hickory-resolver migration (Phase 14)
-        // The DNS-01 validation needs to be updated to use hickory-resolver v0.25
-        // instead of trust-dns-resolver. The API has changed significantly.
-        //
+        use hickory_resolver::config::ResolverConfig;
+        use hickory_resolver::name_server::TokioConnectionProvider;
+        use hickory_resolver::Resolver;
+        use ostrich_common::util::encoding::encode_base64url;
+        use sha2::{Digest, Sha256};
+        use std::time::Duration;
+
         // COMPLIANCE MAPPING:
         // - NIST 800-53: IA-5(1) - Cryptographic challenge-response validation
         // - RFC 8555 §8.4 - DNS-01 validation procedure
-        //
-        // Implementation plan:
-        // 1. Use hickory_resolver::TokioAsyncResolver
-        // 2. Perform TXT lookup on _acme-challenge.<domain>
-        // 3. Verify TXT record contains BASE64URL(SHA256(<token>.<key_thumbprint>))
-        // 4. Implement retry logic for DNS propagation delays
-        //
-        // For now, return error until migration is complete
-        Err(Error::ServerInternal(
-            "DNS-01 validation not yet implemented with hickory-resolver".to_string()
-        ))
+
+        // Compute expected TXT record value
+        // RFC 8555 §8.4: digest = BASE64URL(SHA256(key_authorization))
+        let key_authorization = format!("{}.{}", token, account_key_thumbprint);
+        let hash = Sha256::digest(key_authorization.as_bytes());
+        let expected_value = encode_base64url(&hash);
+
+        // Construct TXT record name
+        // RFC 8555 §8.4: _acme-challenge.<domain>
+        let txt_record_name = format!("_acme-challenge.{}", domain);
+
+        // Create DNS resolver using hickory-resolver 0.25 builder pattern
+        // Uses system DNS configuration with Tokio runtime
+        let mut resolver_opts = hickory_resolver::config::ResolverOpts::default();
+        resolver_opts.timeout = Duration::from_secs(self.timeout_secs);
+
+        let resolver = Resolver::builder_with_config(
+            ResolverConfig::default(),
+            TokioConnectionProvider::default(),
+        )
+        .with_options(resolver_opts)
+        .build();
+
+        // Perform DNS TXT lookup with retry logic
+        // Retry up to 5 times with 2-second intervals to allow for DNS propagation
+        let max_retries = 5;
+        let retry_delay = Duration::from_secs(2);
+
+        for attempt in 1..=max_retries {
+            match resolver.txt_lookup(&txt_record_name).await {
+                Ok(txt_lookup) => {
+                    // Check each TXT record for a match
+                    // TxtLookup implements Iterator, yielding TXT records
+                    for txt_record in txt_lookup.iter() {
+                        // txt_data() returns &[Box<[u8]>] - slice of byte arrays
+                        for data in txt_record.txt_data() {
+                            let txt_value = String::from_utf8_lossy(data).to_string();
+
+                            // RFC 8555 §8.4: Check if TXT record contains expected digest
+                            if txt_value == expected_value {
+                                // NIST 800-53: AU-3 - Audit content (successful validation)
+                                return Ok(true);
+                            }
+                        }
+                    }
+
+                    // If we got records but no match, don't retry
+                    return Ok(false);
+                }
+                Err(e) => {
+                    // DNS lookup failed - retry if not last attempt
+                    if attempt < max_retries {
+                        tokio::time::sleep(retry_delay).await;
+                        continue;
+                    }
+
+                    // All retries exhausted
+                    return Err(Error::ChallengeValidation(format!(
+                        "DNS TXT lookup failed for {}: {}",
+                        txt_record_name, e
+                    )));
+                }
+            }
+        }
+
+        // Should not reach here, but for safety
+        Ok(false)
     }
 }
 
