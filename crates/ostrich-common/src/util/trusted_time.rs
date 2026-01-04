@@ -41,8 +41,7 @@ static TIME_SOURCE: RwLock<Option<TimeSourceConfig>> = RwLock::new(None);
 /// Time source types
 ///
 /// NIAP PP-CA: FPT_STM_EXT.1 - Trusted time source selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TimeSourceType {
     /// System clock (default, less trusted)
     #[default]
@@ -58,7 +57,6 @@ pub enum TimeSourceType {
     /// Authenticated NTP (NTS)
     AuthenticatedNtp,
 }
-
 
 impl TimeSourceType {
     /// Get the trust level of this time source (higher is more trusted)
@@ -357,8 +355,7 @@ pub fn validate_timestamp(timestamp: DateTime<Utc>) -> Result<(), TimeError> {
     if timestamp.timestamp() < last_good - MAX_CLOCK_SKEW_SECONDS {
         return Err(TimeError::TimeWentBackward {
             current: timestamp,
-            last_known: DateTime::from_timestamp(last_good, 0)
-                .unwrap_or(DateTime::UNIX_EPOCH),
+            last_known: DateTime::from_timestamp(last_good, 0).unwrap_or(DateTime::UNIX_EPOCH),
         });
     }
 

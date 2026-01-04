@@ -548,14 +548,14 @@ impl SessionManager {
             if let Some(session) = sessions.get_mut(&session_id)
                 && (session.status == SessionStatus::Active
                     || session.status == SessionStatus::Locked)
-                {
-                    if admin_id.is_some() {
-                        session.admin_terminate();
-                    } else {
-                        session.terminate();
-                    }
-                    terminated += 1;
+            {
+                if admin_id.is_some() {
+                    session.admin_terminate();
+                } else {
+                    session.terminate();
                 }
+                terminated += 1;
+            }
         }
 
         tracing::info!(
