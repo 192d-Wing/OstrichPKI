@@ -68,9 +68,48 @@ async fn main() -> Result<()> {
     let crypto_provider = ostrich_crypto::software::SoftwareProvider::new();
     let audit_sink = ostrich_audit::DatabaseAuditSink::new(db_pool.clone());
 
+    // TODO: Initialize actual auth provider and RBAC policy from configuration
+    // For now, use placeholders that deny all auth - production deployment will configure these
+    use ostrich_common::auth::{RbacPolicy, provider::AuthProvider};
+
+    struct DenyAllAuthProvider;
+    #[async_trait::async_trait]
+    impl AuthProvider for DenyAllAuthProvider {
+        async fn authenticate(
+            &self,
+            _credentials: &ostrich_common::auth::provider::Credentials,
+        ) -> ostrich_common::auth::provider::AuthResult<ostrich_common::auth::user::AuthenticatedUser>
+        {
+            Err(ostrich_common::auth::AuthError::InvalidCredentials(
+                "Auth not configured".to_string(),
+            ))
+        }
+        async fn validate_session(
+            &self,
+            _token: &str,
+        ) -> ostrich_common::auth::provider::AuthResult<ostrich_common::auth::provider::SessionInfo>
+        {
+            Err(ostrich_common::auth::AuthError::InvalidSession)
+        }
+        async fn terminate_session(
+            &self,
+            _token: &str,
+        ) -> ostrich_common::auth::provider::AuthResult<()> {
+            Ok(())
+        }
+    }
+
+    let auth_provider: Arc<dyn AuthProvider> = Arc::new(DenyAllAuthProvider);
+    let rbac_policy = Arc::new(RbacPolicy::new());
+
     // Create EST state
-    let state =
-        ostrich_est::rest::EstState::new(db_pool, Arc::new(crypto_provider), Arc::new(audit_sink));
+    let state = ostrich_est::rest::EstState::new(
+        db_pool,
+        Arc::new(crypto_provider),
+        Arc::new(audit_sink),
+        auth_provider,
+        rbac_policy,
+    );
 
     // Create router
     let app = ostrich_est::rest::create_router(state);

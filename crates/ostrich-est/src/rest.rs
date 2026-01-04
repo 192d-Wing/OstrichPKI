@@ -46,11 +46,14 @@ use axum::{
     body::Bytes,
     extract::State,
     http::{StatusCode, header},
+    middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use ostrich_audit::AuditSink;
+use ostrich_common::auth::provider::AuthProvider;
+use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy};
 use ostrich_crypto::CryptoProvider;
 use ostrich_db::DatabasePool;
 use std::sync::Arc;
@@ -61,20 +64,111 @@ pub struct EstState {
     pub db_pool: DatabasePool,
     pub crypto_provider: Arc<dyn CryptoProvider>,
     pub audit_sink: Arc<dyn AuditSink>,
+    #[allow(dead_code)]
+    pub auth_provider: Arc<dyn AuthProvider>,
+    #[allow(dead_code)]
+    pub rbac_policy: Arc<RbacPolicy>,
     // TODO: Add CA client for certificate issuance (Phase 12)
 }
 
 impl EstState {
-    /// Create new EST service state
+    /// Create new EST service state with authentication disabled (for backward compatibility)
+    ///
+    /// TODO: This should be deprecated once all services are updated to use `new_with_auth()`
     pub fn new(
         db_pool: DatabasePool,
         crypto_provider: Arc<dyn CryptoProvider>,
         audit_sink: Arc<dyn AuditSink>,
     ) -> Self {
+        // Create placeholders for auth - endpoints will return 401/403 if auth is required
+        use std::sync::Arc as StdArc;
+        struct NoAuthProvider;
+        #[async_trait::async_trait]
+        impl AuthProvider for NoAuthProvider {
+            async fn authenticate(
+                &self,
+                _: &ostrich_common::auth::provider::Credentials,
+            ) -> ostrich_common::auth::provider::AuthResult<
+                ostrich_common::auth::user::AuthenticatedUser,
+            > {
+                Err(ostrich_common::auth::AuthError::Internal(
+                    "Authentication not configured".to_string(),
+                ))
+            }
+            async fn validate_session(
+                &self,
+                _: &str,
+            ) -> ostrich_common::auth::provider::AuthResult<
+                ostrich_common::auth::provider::SessionInfo,
+            > {
+                Err(ostrich_common::auth::AuthError::InvalidSession)
+            }
+            async fn create_session(
+                &self,
+                _: &ostrich_common::auth::user::AuthenticatedUser,
+            ) -> ostrich_common::auth::provider::AuthResult<
+                ostrich_common::auth::provider::SessionInfo,
+            > {
+                Err(ostrich_common::auth::AuthError::Internal(
+                    "Authentication not configured".to_string(),
+                ))
+            }
+            async fn invalidate_session(
+                &self,
+                _: &str,
+            ) -> ostrich_common::auth::provider::AuthResult<()> {
+                Ok(())
+            }
+            async fn record_failed_attempt(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> ostrich_common::auth::provider::AuthResult<()> {
+                Ok(())
+            }
+            async fn is_account_locked(
+                &self,
+                _: &str,
+            ) -> ostrich_common::auth::provider::AuthResult<bool> {
+                Ok(false)
+            }
+            async fn unlock_account(
+                &self,
+                _: &str,
+            ) -> ostrich_common::auth::provider::AuthResult<()> {
+                Ok(())
+            }
+            fn provider_name(&self) -> &str {
+                "no-auth"
+            }
+            fn supported_methods(&self) -> &[ostrich_common::auth::user::AuthMethod] {
+                &[]
+            }
+        }
+
         Self {
             db_pool,
             crypto_provider,
             audit_sink,
+            auth_provider: StdArc::new(NoAuthProvider),
+            rbac_policy: StdArc::new(RbacPolicy::new()),
+        }
+    }
+
+    /// Create new EST service state with authentication and authorization
+    pub fn new_with_auth(
+        db_pool: DatabasePool,
+        crypto_provider: Arc<dyn CryptoProvider>,
+        audit_sink: Arc<dyn AuditSink>,
+        auth_provider: Arc<dyn AuthProvider>,
+        rbac_policy: Arc<RbacPolicy>,
+    ) -> Self {
+        Self {
+            db_pool,
+            crypto_provider,
+            audit_sink,
+            auth_provider,
+            rbac_policy,
         }
     }
 }
@@ -86,23 +180,66 @@ impl EstState {
 /// COMPLIANCE MAPPING:
 /// - NIAP PP-CA: FMT_SMF.1 - Security management functions for EST enrollment
 /// - NIAP PP-CA: FTP_ITC.1 - Trusted channel (router served over TLS)
+/// - NIAP PP-CA: FIA_UAU.1 - Authentication required for enrollment endpoints
 /// - NIST 800-53: SC-8 - Transmission confidentiality (TLS required)
+/// - NIST 800-53: AC-3 - Access enforcement via RBAC middleware
 /// - RFC 7030 S3.2.2 - EST well-known URI structure
 pub fn create_router(state: EstState) -> Router {
-    Router::new()
+    let auth_provider = state.auth_provider.clone();
+    let rbac_policy = state.rbac_policy.clone();
+
+    // Public endpoints (no authentication required per RFC 7030)
+    let public_routes = Router::new()
         // Health and readiness endpoints
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
-        // RFC 7030 §4.1: Distribution of CA certificates
+        // RFC 7030 §4.1: CA certificates - no client auth required
         .route("/.well-known/est/cacerts", get(get_ca_certs))
-        // RFC 7030 §4.2: Simple enrollment
+        // RFC 7030 §4.5: CSR attributes - optionally requires auth
+        .route("/.well-known/est/csrattrs", get(get_csr_attrs));
+
+    // Protected endpoints requiring mTLS client authentication
+    // RFC 7030 §3.2.3: All enrollment operations require client authentication
+    let protected_routes = Router::new()
+        // RFC 7030 §4.2.1: Simple enrollment (requires client cert)
         .route("/.well-known/est/simpleenroll", post(simple_enroll))
-        // RFC 7030 §4.2: Simple re-enrollment
+        .route_layer(middleware::from_fn_with_state(
+            (
+                rbac_policy.clone(),
+                Permission::SubmitRequest,
+                Some("est-enrollment".to_string()),
+            ),
+            AuthzLayer::authorize,
+        ))
+        // RFC 7030 §4.2.2: Simple re-enrollment (requires existing client cert)
         .route("/.well-known/est/simplereenroll", post(simple_reenroll))
-        // RFC 7030 §4.5: CSR attributes
-        .route("/.well-known/est/csrattrs", get(get_csr_attrs))
-        // RFC 7030 §4.3: Server-side key generation (optional)
+        .route_layer(middleware::from_fn_with_state(
+            (
+                rbac_policy.clone(),
+                Permission::RenewCertificate,
+                Some("est-reenrollment".to_string()),
+            ),
+            AuthzLayer::authorize,
+        ))
+        // RFC 7030 §4.4: Server-side key generation (requires client auth)
         .route("/.well-known/est/serverkeygen", post(server_key_gen))
+        .route_layer(middleware::from_fn_with_state(
+            (
+                rbac_policy.clone(),
+                Permission::SubmitRequest,
+                Some("est-serverkeygen".to_string()),
+            ),
+            AuthzLayer::authorize,
+        ))
+        .layer(middleware::from_fn_with_state(
+            auth_provider,
+            AuthLayer::authenticate,
+        ));
+
+    // Merge public and protected routes
+    Router::new()
+        .merge(public_routes)
+        .merge(protected_routes)
         .with_state(state)
 }
 
@@ -235,22 +372,13 @@ pub(crate) fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
 /// - RFC 7030 S4.2.1 - Simple enrollment request/response
 /// - RFC 2986 - PKCS#10 CSR format
 ///
-/// TODO: Add mTLS client certificate validation when TLS is configured.
-/// When TLS server is set up, this handler should:
-/// 1. Extract client certificate using `ClientCertExtractor` axum extractor
-/// 2. Validate certificate with `validate_client(&client_cert, &state.db_pool).await?`
-/// 3. Use `client_cert.client_id` as the client identifier
-/// 4. Use `client_cert.subject_dn` for audit logging
-///
-/// Example (when TLS is configured):
-/// ```ignore
-/// let ClientCertExtractor(client_cert) = ClientCertExtractor::from_request_parts(&mut parts, &state).await?;
-/// validate_client(&client_cert, &state.db_pool).await?;
-/// let client_identifier = &client_cert.client_id;
-/// ```
-async fn simple_enroll(State(state): State<EstState>, body: Bytes) -> Result<Response> {
-    // Placeholder client identifier (mTLS validation pending TLS server setup)
-    let client_identifier = "placeholder-client";
+async fn simple_enroll(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+    body: Bytes,
+) -> Result<Response> {
+    // Use authenticated user identity as client identifier
+    let client_identifier = &user.username;
 
     // Decode base64-encoded CSR
     let csr_der = BASE64_STANDARD
@@ -322,27 +450,13 @@ async fn simple_enroll(State(state): State<EstState>, body: Bytes) -> Result<Res
 /// - NIST 800-53: AU-2 - Auditable event (re-enrollment request)
 /// - RFC 7030 S4.2.2 - Simple re-enrollment requirements
 ///
-/// TODO: Add mTLS client certificate validation when TLS is configured.
-/// When TLS server is set up, this handler should:
-/// 1. Extract client certificate using `ClientCertExtractor` axum extractor
-/// 2. Validate certificate with `validate_client(&client_cert, &state.db_pool).await?`
-/// 3. Verify CSR subject matches client certificate subject (re-enrollment requirement)
-/// 4. Use `client_cert.client_id` as the client identifier
-/// 5. Use `client_cert.subject_dn` for audit logging
-///
-/// Example (when TLS is configured):
-/// ```ignore
-/// let ClientCertExtractor(client_cert) = ClientCertExtractor::from_request_parts(&mut parts, &state).await?;
-/// validate_client(&client_cert, &state.db_pool).await?;
-/// // Verify subject match after parsing CSR
-/// if parsed_csr.subject_dn != client_cert.subject_dn {
-///     return Err(Error::Forbidden("CSR subject doesn't match client cert".into()));
-/// }
-/// let client_identifier = &client_cert.client_id;
-/// ```
-async fn simple_reenroll(State(state): State<EstState>, body: Bytes) -> Result<Response> {
-    // Placeholder client identifier (mTLS validation pending TLS server setup)
-    let client_identifier = "placeholder-client";
+async fn simple_reenroll(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+    body: Bytes,
+) -> Result<Response> {
+    // Use authenticated user identity as client identifier
+    let client_identifier = &user.username;
 
     // Decode base64-encoded CSR
     let csr_der = BASE64_STANDARD
@@ -467,26 +581,17 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
 /// - PKCS#12 password should be communicated out-of-band (not in this response)
 /// - Consider KRA escrow for key recovery capability
 ///
-/// TODO: Add mTLS client certificate validation when TLS is configured.
-/// When TLS server is set up, this handler should:
-/// 1. Extract client certificate using `ClientCertExtractor` axum extractor
-/// 2. Validate certificate with `validate_client(&client_cert, &state.db_pool).await?`
-/// 3. Use `client_cert.client_id` as the client identifier
-/// 4. Use `client_cert.subject_dn` for audit logging
-///
-/// Example (when TLS is configured):
-/// ```ignore
-/// let ClientCertExtractor(client_cert) = ClientCertExtractor::from_request_parts(&mut parts, &state).await?;
-/// validate_client(&client_cert, &state.db_pool).await?;
-/// let client_identifier = &client_cert.client_id;
-/// ```
-async fn server_key_gen(State(state): State<EstState>, body: Bytes) -> Result<Response> {
+async fn server_key_gen(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+    body: Bytes,
+) -> Result<Response> {
     use crate::serverkeygen::{ServerKeyGenRequest, generate_key_pair_for_client};
     use ostrich_crypto::KeyType;
     use zeroize::Zeroizing;
 
-    // Placeholder client identifier (mTLS validation pending TLS server setup)
-    let client_identifier = "placeholder-client";
+    // Use authenticated user identity as client identifier
+    let client_identifier = &user.username;
 
     // Decode base64-encoded request body
     let request_der = BASE64_STANDARD
