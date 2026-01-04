@@ -122,13 +122,13 @@ impl AcmeCaClient {
         acme_repo
             .update_order_certificate(order_id, certificate_id, csr_der)
             .await
-            .map_err(|e| Error::Database(e))?;
+            .map_err(Error::Database)?;
 
         // Update order status to "valid"
         acme_repo
             .update_order_status(order_id, "valid")
             .await
-            .map_err(|e| Error::Database(e))?;
+            .map_err(Error::Database)?;
 
         Ok(certificate_id)
     }
@@ -169,7 +169,7 @@ impl AcmeCaClient {
         let certificate = cert_repo
             .find_by_id(certificate_id)
             .await
-            .map_err(|e| Error::Database(e))?
+            .map_err(Error::Database)?
             .ok_or_else(|| Error::NotFound)?;
 
         // Return PEM-encoded certificate

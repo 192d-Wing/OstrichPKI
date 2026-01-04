@@ -363,7 +363,7 @@ impl TlsAlpn01Validator {
         // Parse certificate and verify acmeIdentifier extension
         // RFC 8737 §3: Certificate must contain id-pe-acmeIdentifier extension
         // OID: 1.3.6.1.5.5.7.1.31 (id-pe-acmeIdentifier)
-        let cert = x509_parser::parse_x509_certificate(&cert_der.as_ref())
+        let cert = x509_parser::parse_x509_certificate(cert_der.as_ref())
             .map_err(|e| Error::ChallengeValidation(format!("Failed to parse certificate: {}", e)))?
             .1;
 

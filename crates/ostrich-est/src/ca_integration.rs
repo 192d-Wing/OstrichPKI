@@ -125,13 +125,13 @@ impl EstCaClient {
         est_repo
             .update_enrollment_certificate(enrollment_id, certificate_id, profile_name)
             .await
-            .map_err(|e| Error::Database(e))?;
+            .map_err(Error::Database)?;
 
         // Update enrollment status to "issued"
         est_repo
             .update_enrollment_status(enrollment_id, "issued")
             .await
-            .map_err(|e| Error::Database(e))?;
+            .map_err(Error::Database)?;
 
         Ok(certificate_id)
     }
@@ -172,7 +172,7 @@ impl EstCaClient {
         let certificate = cert_repo
             .find_by_id(certificate_id)
             .await
-            .map_err(|e| Error::Database(e))?
+            .map_err(Error::Database)?
             .ok_or_else(|| Error::NotFound)?;
 
         // RFC 7030 §4.1.3 - Response is PKCS#7 (CMS) signed-data

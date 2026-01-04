@@ -80,10 +80,9 @@ impl Pkcs11Provider {
             .map_err(|e| Error::Pkcs11(format!("Failed to enumerate slots: {}", e)))?;
 
         // Use the slot at the given index, or error if not found
-        let slot = all_slots
+        let slot = *all_slots
             .get(slot_id as usize)
-            .ok_or_else(|| Error::SlotNotFound(slot_id))?
-            .clone();
+            .ok_or_else(|| Error::SlotNotFound(slot_id))?;
 
         let slot_info = context
             .get_slot_info(slot)
