@@ -121,7 +121,8 @@ rand_core = "0.6"
 reqwest = { version = "0.12", features = ["json"] }
 
 # DNS resolver (for ACME DNS-01 challenge)
-trust-dns-resolver = "0.23"
+hickory-resolver = "0.25"
+hickory-proto = "0.25"
 
 # TLS (for ACME TLS-ALPN-01 challenge and mTLS)
 rustls = "0.23"

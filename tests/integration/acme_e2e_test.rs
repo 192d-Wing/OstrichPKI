@@ -35,9 +35,15 @@ async fn test_acme_directory() {
 
     // Verify required directory fields
     assert!(directory["newNonce"].is_string(), "Missing newNonce URL");
-    assert!(directory["newAccount"].is_string(), "Missing newAccount URL");
+    assert!(
+        directory["newAccount"].is_string(),
+        "Missing newAccount URL"
+    );
     assert!(directory["newOrder"].is_string(), "Missing newOrder URL");
-    assert!(directory["revokeCert"].is_string(), "Missing revokeCert URL");
+    assert!(
+        directory["revokeCert"].is_string(),
+        "Missing revokeCert URL"
+    );
 
     println!("✓ ACME directory endpoint working");
 }

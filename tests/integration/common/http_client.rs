@@ -17,9 +17,8 @@ pub fn create_mtls_client(
     client_cert_pem: &str,
     client_key_pem: &str,
 ) -> Result<Client, Box<dyn std::error::Error>> {
-    let client_cert = reqwest::Identity::from_pem(
-        format!("{}{}", client_cert_pem, client_key_pem).as_bytes(),
-    )?;
+    let client_cert =
+        reqwest::Identity::from_pem(format!("{}{}", client_cert_pem, client_key_pem).as_bytes())?;
 
     Ok(Client::builder()
         .timeout(Duration::from_secs(30))
@@ -32,7 +31,10 @@ pub fn create_mtls_client(
 pub async fn assert_status(response: Response, expected_status: reqwest::StatusCode) -> Response {
     let actual_status = response.status();
     if actual_status != expected_status {
-        let body = response.text().await.unwrap_or_else(|_| String::from("<no body>"));
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| String::from("<no body>"));
         panic!(
             "Expected status {}, got {}. Body: {}",
             expected_status, actual_status, body

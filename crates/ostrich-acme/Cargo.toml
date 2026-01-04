@@ -44,7 +44,8 @@ webpki-roots = { workspace = true }
 reqwest = { workspace = true }
 
 # DNS resolver (for DNS-01 challenge validation)
-trust-dns-resolver = { workspace = true }
+hickory-resolver = { workspace = true }
+hickory-proto = { workspace = true }
 
 # TLS (for TLS-ALPN-01 challenge validation)
 tokio-rustls = { workspace = true }

@@ -64,7 +64,9 @@ async fn wait_for_http_service(
             }
             Err(e) => {
                 if attempt == 30 {
-                    return Err(format!("Service not ready after 30 attempts: {} ({})", url, e).into());
+                    return Err(
+                        format!("Service not ready after 30 attempts: {} ({})", url, e).into(),
+                    );
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }

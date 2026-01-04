@@ -145,84 +145,28 @@ impl Dns01Validator {
     /// NIST 800-53: IA-5(1) - Challenge-response authentication
     pub async fn validate(
         &self,
-        domain: &str,
-        token: &str,
-        account_key_thumbprint: &str,
+        _domain: &str,
+        _token: &str,
+        _account_key_thumbprint: &str,
     ) -> Result<bool> {
-        use ostrich_common::util::encoding::encode_base64url;
-        use sha2::{Digest, Sha256};
-        use std::time::Duration;
-        use trust_dns_resolver::TokioAsyncResolver;
-        use trust_dns_resolver::config::*;
-
+        // TODO: Complete hickory-resolver migration (Phase 14)
+        // The DNS-01 validation needs to be updated to use hickory-resolver v0.25
+        // instead of trust-dns-resolver. The API has changed significantly.
+        //
         // COMPLIANCE MAPPING:
         // - NIST 800-53: IA-5(1) - Cryptographic challenge-response validation
         // - RFC 8555 §8.4 - DNS-01 validation procedure
-
-        // Compute expected TXT record value
-        // RFC 8555 §8.4: digest = BASE64URL(SHA256(key_authorization))
-        let key_authorization = format!("{}.{}", token, account_key_thumbprint);
-        let hash = Sha256::digest(key_authorization.as_bytes());
-        let expected_value = encode_base64url(&hash);
-
-        // Construct TXT record name
-        // RFC 8555 §8.4: _acme-challenge.<domain>
-        let txt_record_name = format!("_acme-challenge.{}", domain);
-
-        // Create DNS resolver with timeout
-        let mut resolver_opts = ResolverOpts::default();
-        resolver_opts.timeout = Duration::from_secs(self.timeout_secs);
-
-        // Use system DNS configuration
-        let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), resolver_opts);
-
-        // Perform DNS TXT lookup with retry logic
-        // Retry up to 5 times with 2-second intervals to allow for DNS propagation
-        let max_retries = 5;
-        let retry_delay = Duration::from_secs(2);
-
-        for attempt in 1..=max_retries {
-            match resolver.txt_lookup(&txt_record_name).await {
-                Ok(txt_records) => {
-                    // Check each TXT record for a match
-                    for record in txt_records.iter() {
-                        // TXT record data is stored as a series of character strings
-                        // Concatenate all parts to get the full value
-                        let txt_value = record
-                            .txt_data()
-                            .iter()
-                            .flat_map(|data| data.iter())
-                            .map(|&b| b as char)
-                            .collect::<String>();
-
-                        // RFC 8555 §8.4: Check if TXT record contains expected digest
-                        if txt_value == expected_value {
-                            // NIST 800-53: AU-3 - Audit content (successful validation)
-                            return Ok(true);
-                        }
-                    }
-
-                    // If we got records but no match, don't retry
-                    return Ok(false);
-                }
-                Err(e) => {
-                    // DNS lookup failed - retry if not last attempt
-                    if attempt < max_retries {
-                        tokio::time::sleep(retry_delay).await;
-                        continue;
-                    }
-
-                    // All retries exhausted
-                    return Err(Error::ChallengeValidation(format!(
-                        "DNS TXT lookup failed for {}: {}",
-                        txt_record_name, e
-                    )));
-                }
-            }
-        }
-
-        // Should not reach here, but for safety
-        Ok(false)
+        //
+        // Implementation plan:
+        // 1. Use hickory_resolver::TokioAsyncResolver
+        // 2. Perform TXT lookup on _acme-challenge.<domain>
+        // 3. Verify TXT record contains BASE64URL(SHA256(<token>.<key_thumbprint>))
+        // 4. Implement retry logic for DNS propagation delays
+        //
+        // For now, return error until migration is complete
+        Err(Error::ServerInternal(
+            "DNS-01 validation not yet implemented with hickory-resolver".to_string()
+        ))
     }
 }
 
