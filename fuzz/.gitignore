@@ -1,0 +1,7 @@
+# Fuzzing artifacts
+target/
+corpus/
+artifacts/
+coverage/
+*.profraw
+*.profdata

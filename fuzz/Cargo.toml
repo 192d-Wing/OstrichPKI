@@ -1,0 +1,69 @@
+[package]
+name = "ostrich-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# Fuzzing library
+libfuzzer-sys = "0.4"
+
+# OstrichPKI crates to fuzz
+ostrich-x509 = { path = "../crates/ostrich-x509" }
+ostrich-crypto = { path = "../crates/ostrich-crypto" }
+ostrich-common = { path = "../crates/ostrich-common" }
+ostrich-protocol = { path = "../crates/ostrich-protocol" }
+
+# Dependencies for fuzzing targets
+x509-cert = { workspace = true }
+der = { workspace = true }
+pem-rfc7468 = { workspace = true }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_der_certificate"
+path = "fuzz_targets/fuzz_der_certificate.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_pem_certificate"
+path = "fuzz_targets/fuzz_pem_certificate.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_der_csr"
+path = "fuzz_targets/fuzz_der_csr.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_jws_signature"
+path = "fuzz_targets/fuzz_jws_signature.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ocsp_request"
+path = "fuzz_targets/fuzz_ocsp_request.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ocsp_response"
+path = "fuzz_targets/fuzz_ocsp_response.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_crl_parsing"
+path = "fuzz_targets/fuzz_crl_parsing.rs"
+test = false
+doc = false
