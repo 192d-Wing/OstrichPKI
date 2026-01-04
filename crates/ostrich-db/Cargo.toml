@@ -29,6 +29,10 @@ url = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
+# Cryptography (for audit hash verification)
+sha2 = { workspace = true }
+hex = { workspace = true }
+
 # Logging
 tracing = { workspace = true }
 

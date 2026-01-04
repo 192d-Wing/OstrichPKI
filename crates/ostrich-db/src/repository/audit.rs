@@ -153,12 +153,19 @@ impl AuditRepository {
     /// detecting any tampering, deletion, or insertion of records.
     /// Returns true if the chain is intact, false if integrity violation detected.
     ///
+    /// This method performs two levels of verification:
+    /// 1. **Chain Continuity**: Verifies each event's previous_hash matches the
+    ///    prior event's event_hash (detects missing/inserted records)
+    /// 2. **Hash Integrity**: Recomputes each event's hash from its data fields
+    ///    and verifies it matches the stored hash (detects tampering)
+    ///
     /// COMPLIANCE MAPPING:
-    /// - NIST 800-53: AU-9(3) - Verify audit information integrity
+    /// - NIST 800-53: AU-9(3) - Verify audit information integrity via SHA-256
     /// - NIAP PP-CA v2.1: FAU_STG.4 - Prevention of audit data loss
     ///   (allows detection of missing records via broken chain)
     /// - NIAP PP-CA v2.1: FAU_STG.1.2 - Detection of unauthorized
     ///   modifications to stored audit records
+    /// - FIPS 180-4: SHA-256 hash verification for tamper detection
     pub async fn verify_chain(&self) -> Result<bool> {
         let events = sqlx::query_as::<_, AuditEvent>(
             r#"
@@ -174,31 +181,132 @@ impl AuditRepository {
         .map_err(|e| Error::Query(e.to_string()))?;
 
         if events.is_empty() {
+            tracing::debug!("Audit chain verification: no events to verify");
             return Ok(true);
         }
 
         let mut prev_hash: Option<Vec<u8>> = None;
         let total_events = events.len();
 
-        for event in &events {
-            // Verify the chain link
+        for (index, event) in events.iter().enumerate() {
+            // NIAP PP-CA: FAU_STG.4 - Verify chain continuity
+            // Check that this event's previous_hash links to the prior event
             if event.previous_hash != prev_hash {
                 tracing::error!(
-                    "Audit chain integrity violation at event {} (timestamp: {})",
+                    "Audit chain continuity violation at event #{}/{}: {} (timestamp: {})",
+                    index + 1,
+                    total_events,
                     event.id,
                     event.timestamp
+                );
+                tracing::error!(
+                    "Expected previous_hash: {:?}, found: {:?}",
+                    prev_hash.as_ref().map(hex::encode),
+                    event.previous_hash.as_ref().map(hex::encode)
                 );
                 return Ok(false);
             }
 
-            // TODO: Verify event_hash by recomputing from event data
-            // This requires implementing the hash function in ostrich-audit
+            // NIST 800-53: AU-9(3) - Verify event hash integrity
+            // Recompute the hash from the event data to detect tampering
+            let computed_hash = Self::compute_event_hash(event);
+            if computed_hash != event.event_hash {
+                tracing::error!(
+                    "Audit hash integrity violation at event #{}/{}: {} (timestamp: {})",
+                    index + 1,
+                    total_events,
+                    event.id,
+                    event.timestamp
+                );
+                tracing::error!(
+                    "Computed hash: {}, stored hash: {}",
+                    hex::encode(&computed_hash),
+                    hex::encode(&event.event_hash)
+                );
+                tracing::error!(
+                    "Event details: type={}, actor={}, action={}, target={}",
+                    event.event_type,
+                    event.actor,
+                    event.action,
+                    event.target
+                );
+                return Ok(false);
+            }
 
             prev_hash = Some(event.event_hash.clone());
         }
 
-        tracing::info!("Audit chain integrity verified ({} events)", total_events);
+        tracing::info!(
+            "Audit chain integrity verified successfully ({} events)",
+            total_events
+        );
         Ok(true)
+    }
+
+    /// Compute SHA-256 hash for an audit event
+    ///
+    /// This method recomputes the hash from the event's data fields to verify
+    /// integrity. The hash computation must match exactly the algorithm used
+    /// when the event was originally created.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - FIPS 180-4: SHA-256 hash computation
+    /// - NIST 800-53: AU-9(3) - Cryptographic protection
+    ///
+    /// # Hash Inputs (in order)
+    /// 1. Event ID (UUID bytes)
+    /// 2. Event type (string)
+    /// 3. Actor (string)
+    /// 4. Target (string)
+    /// 5. Action (string)
+    /// 6. Outcome (string)
+    /// 7. Details (JSON string, if present)
+    /// 8. IP address (if present)
+    /// 9. User agent (if present)
+    /// 10. Session ID (if present)
+    /// 11. Previous hash (if present)
+    /// 12. Timestamp (RFC 3339 format)
+    fn compute_event_hash(event: &AuditEvent) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+
+        // Include all immutable fields in hash (must match event::AuditEvent::compute_hash)
+        hasher.update(event.id.as_bytes());
+        hasher.update(event.event_type.as_bytes());
+        hasher.update(event.actor.as_bytes());
+        hasher.update(event.target.as_bytes());
+        hasher.update(event.action.as_bytes());
+        hasher.update(event.outcome.as_bytes());
+
+        // Optional fields
+        if let Some(ref details) = event.details {
+            if let Ok(json_str) = serde_json::to_string(details) {
+                hasher.update(json_str.as_bytes());
+            }
+        }
+
+        if let Some(ref ip) = event.ip_address {
+            hasher.update(ip.as_bytes());
+        }
+
+        if let Some(ref ua) = event.user_agent {
+            hasher.update(ua.as_bytes());
+        }
+
+        if let Some(ref sid) = event.session_id {
+            hasher.update(sid.as_bytes());
+        }
+
+        // Include previous hash in chain
+        if let Some(ref prev) = event.previous_hash {
+            hasher.update(prev);
+        }
+
+        // Include timestamp (must use RFC 3339 format for consistency)
+        hasher.update(event.timestamp.to_rfc3339().as_bytes());
+
+        hasher.finalize().to_vec()
     }
 
     /// Find events by actor (user/system)
