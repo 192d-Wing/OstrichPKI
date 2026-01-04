@@ -184,12 +184,14 @@ impl TestJwk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rsa::traits::PublicKeyParts;
 
     #[test]
     fn test_generate_rsa_keypair() {
-        let (_private_key, _public_key) = generate_test_rsa_keypair();
-        // Just test that we can generate a keypair
-        assert!(true);
+        let (private_key, public_key) = generate_test_rsa_keypair();
+        // Verify keypair components are valid (2048 bits = 256 bytes)
+        assert!(private_key.size() >= 256);
+        assert!(public_key.size() >= 256);
     }
 
     #[test]

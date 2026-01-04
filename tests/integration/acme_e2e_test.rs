@@ -23,7 +23,7 @@ async fn test_acme_health() {
     let client = create_test_client();
 
     let response = client
-        .get(&format!("{}/health", config.acme_base_url))
+        .get(format!("{}/health", config.acme_base_url))
         .send()
         .await
         .expect("Failed to fetch ACME health");
@@ -47,7 +47,7 @@ async fn test_acme_readiness() {
     let client = create_test_client();
 
     let response = client
-        .get(&format!("{}/ready", config.acme_base_url))
+        .get(format!("{}/ready", config.acme_base_url))
         .send()
         .await
         .expect("Failed to fetch ACME readiness");
@@ -72,7 +72,7 @@ async fn test_acme_directory() {
     let client = create_test_client();
 
     let response = client
-        .get(&format!("{}/directory", config.acme_base_url))
+        .get(format!("{}/directory", config.acme_base_url))
         .send()
         .await
         .expect("Failed to fetch ACME directory");
@@ -105,7 +105,7 @@ async fn test_acme_new_nonce() {
 
     // Get directory first
     let directory_response = client
-        .get(&format!("{}/directory", config.acme_base_url))
+        .get(format!("{}/directory", config.acme_base_url))
         .send()
         .await
         .expect("Failed to fetch ACME directory");
@@ -141,7 +141,7 @@ async fn test_acme_account_creation() {
 
     // Get directory
     let directory_response = client
-        .get(&format!("{}/directory", config.acme_base_url))
+        .get(format!("{}/directory", config.acme_base_url))
         .send()
         .await
         .expect("Failed to fetch ACME directory");

@@ -3,6 +3,9 @@
 //! COMPLIANCE MAPPING:
 //! - NIST 800-53: SA-11 (Developer Security Testing)
 
+// Allow dead code in test utilities - these are building blocks for future integration tests
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 pub mod fixtures;

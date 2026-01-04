@@ -302,8 +302,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_est_ca_client_placeholder() {
-        // TODO: Add integration tests with mock CA service
-        assert!(true);
+    fn test_convert_sans_to_proto() {
+        // Test DNS name conversion
+        let sans = vec!["DNS:example.com".to_string()];
+        let result = EstCaClient::convert_sans_to_proto(&sans).unwrap();
+        assert_eq!(result.len(), 1);
+
+        // Test email conversion
+        let sans = vec!["email:user@example.com".to_string()];
+        let result = EstCaClient::convert_sans_to_proto(&sans).unwrap();
+        assert_eq!(result.len(), 1);
+
+        // Test unknown SAN type is skipped
+        let sans = vec!["unknown:value".to_string()];
+        let result = EstCaClient::convert_sans_to_proto(&sans).unwrap();
+        assert_eq!(result.len(), 0);
     }
 }

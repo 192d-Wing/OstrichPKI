@@ -188,8 +188,8 @@ async fn test_csr_invalid_signature_rejected() {
 
     // Corrupt the signature (last 32 bytes)
     let len = csr_der.len();
-    for i in (len - 32)..len {
-        csr_der[i] ^= 0xFF; // Flip all bits in signature
+    for byte in csr_der.iter_mut().skip(len - 32) {
+        *byte ^= 0xFF; // Flip all bits in signature
     }
 
     let parsed = parse_csr(&csr_der).expect("Should parse CSR structure");

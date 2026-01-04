@@ -277,9 +277,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mtls_client_cert_placeholder() {
-        // TODO: Add tests with real certificate DER bytes
-        // For now, just verify module compiles
-        assert!(true);
+    fn test_mtls_client_cert_error_on_invalid_der() {
+        // Test that invalid DER bytes produce an error
+        let invalid_der = vec![0x00, 0x01, 0x02];
+        let result = MtlsClientCert::from_der(invalid_der);
+        assert!(result.is_err());
     }
 }

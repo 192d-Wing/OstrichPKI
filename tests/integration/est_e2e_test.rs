@@ -24,7 +24,7 @@ async fn test_est_health() {
         .replace(":8443", ":8444");
 
     let response = client
-        .get(&format!("{}/health", health_url))
+        .get(format!("{}/health", health_url))
         .send()
         .await
         .expect("Failed to fetch EST health");
@@ -53,7 +53,7 @@ async fn test_est_readiness() {
         .replace(":8443", ":8444");
 
     let response = client
-        .get(&format!("{}/ready", health_url))
+        .get(format!("{}/ready", health_url))
         .send()
         .await
         .expect("Failed to fetch EST readiness");

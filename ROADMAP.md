@@ -1295,8 +1295,10 @@ Achieve **NIAP Protection Profile for Certificate Authority (PP-CA) v2.1** compl
 - ✅ **Account lockout** - `crates/ostrich-common/src/auth/lockout.rs` (FIA_AFL.1)
 - ✅ **Session management** - `crates/ostrich-common/src/auth/session.rs` (FTA_SSL.1/3/4)
 - ✅ **Audit hash chain** - `crates/ostrich-audit/src/event.rs` + `crates/ostrich-db/src/repository/audit.rs` (FAU_STG.1)
+- ✅ **Certificate path validation** - `crates/ostrich-x509/src/validation/` (RFC 5280 §6 complete implementation)
+- ✅ **DRBG implementation** - `crates/ostrich-crypto/src/drbg.rs` (NIST SP 800-90A compliant)
 
-**Compliance Documents** (6/6):
+**Compliance Documents** (7/7):
 
 - ✅ **Security Target (ST)** - `docs/compliance/SECURITY_TARGET.md`
 - ✅ **SFR Implementation Matrix** - `docs/compliance/NIAP_SFR_MATRIX.md`
@@ -1304,6 +1306,7 @@ Achieve **NIAP Protection Profile for Certificate Authority (PP-CA) v2.1** compl
 - ✅ **Administrative Guidance** - `docs/compliance/ADMIN_GUIDE.md`
 - ✅ **Installation Guide** - `docs/compliance/INSTALLATION_GUIDE.md`
 - ✅ **Test Evidence Package** - `docs/compliance/TEST_EVIDENCE.md`
+- ✅ **User Guide (AGD_USR.1)** - `docs/compliance/USER_GUIDE.md`
 
 **Code Annotations**:
 
@@ -1363,7 +1366,7 @@ Achieve **NIAP Protection Profile for Certificate Authority (PP-CA) v2.1** compl
    - [x] Penetration test reference
    - [x] 216 unit tests documented
 
-**Completed**: 6/6 compliance documents (~150+ pages)
+**Completed**: 7/7 compliance documents (~180+ pages)
 
 ##### Track 2: Implementation Work
 
@@ -1734,13 +1737,15 @@ OstrichPKI has achieved **100% completion** of all planned phases (Phases 1-15, 
 - ✅ **Phase 11**: Protocol validation (ACME, EST, mTLS, CSR)
 - ✅ **Phase 12**: Service integration (gRPC, circuit breaker, retry logic)
 - ✅ **Phase 13**: Advanced Features (OCSP caching, EST server-keygen, PQC OIDs, audit hash chain)
-- ✅ **Phase 14**: Testing & Hardening (303 unit tests, CI/CD, security scanning)
-- ✅ **Phase 15**: NIAP Compliance (762+ SFR annotations, 6 compliance documents)
+- ✅ **Phase 14**: Testing & Hardening (367 unit tests, CI/CD, security scanning)
+- ✅ **Phase 15**: NIAP Compliance (762+ SFR annotations, 7 compliance documents, RFC 5280 §6 path validation)
 
 **System Capabilities** (Production-Ready):
 
 - ✅ Certificate Authority with HSM-backed signing
-- ✅ OCSP responder with RFC 6960 compliance
+- ✅ RFC 5280 §6 certificate path validation engine
+- ✅ NIST SP 800-90A compliant DRBG (deterministic random bit generator)
+- ✅ OCSP responder with RFC 6960 compliance and response caching
 - ✅ ACME service (RFC 8555) with automated certificate issuance
 - ✅ EST service (RFC 7030) with mTLS client authentication
 - ✅ KRA service with Shamir secret sharing
@@ -1750,8 +1755,8 @@ OstrichPKI has achieved **100% completion** of all planned phases (Phases 1-15, 
 **Compliance Achievements**:
 
 - ✅ **762+ NIAP SFR annotations** across 57 source files
-- ✅ **303 passing unit tests** with comprehensive coverage
-- ✅ **6 compliance documents** (Security Target, SFR Matrix, Gap Analysis, Admin Guide, Installation Guide, Test Evidence)
+- ✅ **367 passing unit tests** with comprehensive coverage
+- ✅ **7 compliance documents** (Security Target, SFR Matrix, Gap Analysis, Admin Guide, Installation Guide, Test Evidence, User Guide)
 - ✅ All 10 crates annotated with NIAP PP-CA v2.1 references
 - ✅ **Phase 13 complete**: OCSP caching, EST server-keygen, PQC OIDs, audit hash chain verification
 

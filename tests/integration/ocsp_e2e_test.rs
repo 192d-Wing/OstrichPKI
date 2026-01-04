@@ -18,7 +18,7 @@ async fn test_ocsp_health() {
     let client = create_test_client();
 
     let response = client
-        .get(&format!("{}/health", config.ocsp_base_url))
+        .get(format!("{}/health", config.ocsp_base_url))
         .send()
         .await
         .expect("Failed to fetch OCSP health");
@@ -42,7 +42,7 @@ async fn test_ocsp_readiness() {
     let client = create_test_client();
 
     let response = client
-        .get(&format!("{}/ready", config.ocsp_base_url))
+        .get(format!("{}/ready", config.ocsp_base_url))
         .send()
         .await
         .expect("Failed to fetch OCSP readiness");
