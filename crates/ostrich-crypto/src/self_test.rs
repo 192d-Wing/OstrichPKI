@@ -515,7 +515,10 @@ mod tests {
             );
         }
 
-        assert!(SelfTestRunner::self_tests_passed());
+        // Verify summary shows all passed
+        let summary = runner.summary();
+        assert!(summary.all_passed);
+        assert_eq!(summary.failed, 0);
     }
 
     /// FPT_TST_EXT.1 - Verify hash self-tests
