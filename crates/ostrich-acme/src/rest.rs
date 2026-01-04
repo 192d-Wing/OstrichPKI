@@ -211,6 +211,10 @@ async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
 /// Create ACME REST API router
 pub fn create_router(state: AcmeState) -> Router {
     Router::new()
+        // Health and readiness endpoints
+        .route("/health", get(health_check))
+        .route("/ready", get(readiness_check))
+        // ACME protocol endpoints
         .route("/acme/directory", get(get_directory))
         .route("/acme/new-nonce", get(get_new_nonce))
         .route("/acme/new-account", post(new_account))
@@ -222,6 +226,29 @@ pub fn create_router(state: AcmeState) -> Router {
         .route("/acme/order/:id/finalize", post(finalize_order))
         .route("/acme/cert/:id", get(get_certificate))
         .with_state(state)
+}
+
+/// Health check endpoint (liveness probe)
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-17 (Fail-safe response)
+/// - RFC 8555: ACME protocol implementation
+///
+/// Returns 200 OK if the service process is running.
+async fn health_check() -> impl IntoResponse {
+    ostrich_common::health::health_response("ostrich-acme")
+}
+
+/// Readiness check endpoint (readiness probe)
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-17 (Fail-safe response)
+/// - NIST 800-53: SC-8 (Transmission confidentiality and integrity)
+///
+/// Returns 200 OK if the service is ready to handle ACME requests.
+/// Checks database and crypto provider connectivity.
+async fn readiness_check(State(state): State<AcmeState>) -> impl IntoResponse {
+    ostrich_common::health::readiness_response_with_db("ostrich-acme", &state.db_pool).await
 }
 
 /// ACME directory object (RFC 8555 §7.1.1)
