@@ -17,6 +17,7 @@ members = [
     "tools/ostrich-cli",
     "tools/ostrich-init",
     "tests",
+    "benches",
 ]
 
 [workspace.package]

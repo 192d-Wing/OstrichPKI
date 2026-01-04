@@ -1,0 +1,47 @@
+[package]
+name = "ostrich-benches"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+# Internal crates for benchmarking
+ostrich-crypto = { workspace = true }
+ostrich-x509 = { workspace = true }
+ostrich-common = { workspace = true }
+
+# Cryptographic primitives
+rsa = { workspace = true }
+sha2 = { version = "0.10", features = ["oid"] }
+rand = { workspace = true }
+der = { workspace = true }
+x509-cert = { workspace = true }
+spki = { workspace = true }
+const-oid = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "crypto_benchmarks"
+harness = false
+
+[[bench]]
+name = "x509_benchmarks"
+harness = false
+
+[[bench]]
+name = "encoding_benchmarks"
+harness = false

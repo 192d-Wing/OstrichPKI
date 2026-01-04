@@ -155,9 +155,9 @@ impl Dns01Validator {
         token: &str,
         account_key_thumbprint: &str,
     ) -> Result<bool> {
+        use hickory_resolver::Resolver;
         use hickory_resolver::config::ResolverConfig;
         use hickory_resolver::name_server::TokioConnectionProvider;
-        use hickory_resolver::Resolver;
         use ostrich_common::util::encoding::encode_base64url;
         use sha2::{Digest, Sha256};
         use std::time::Duration;
