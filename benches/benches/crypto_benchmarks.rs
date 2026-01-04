@@ -8,9 +8,9 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use rand::rngs::OsRng;
+use rsa::RsaPrivateKey;
 use rsa::pkcs1v15::SigningKey;
 use rsa::signature::{Keypair, RandomizedSigner, Verifier};
-use rsa::RsaPrivateKey;
 use sha2::Sha256;
 
 /// Benchmark RSA key generation at various key sizes

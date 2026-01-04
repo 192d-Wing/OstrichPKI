@@ -6,7 +6,7 @@
 //! - NIST 800-53: SA-11 (Developer Security Testing)
 //! - RFC 5280 - X.509 PKI Certificate Profile
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use der::{Decode, Encode};
 use x509_cert::name::Name;
 

@@ -91,8 +91,8 @@ fn bench_hex_operations(c: &mut Criterion) {
 /// Benchmark DER encoding/decoding of common structures
 fn bench_der_operations(c: &mut Criterion) {
     use der::{Decode, Encode};
-    use x509_cert::serial_number::SerialNumber;
     use x509_cert::certificate::Rfc5280;
+    use x509_cert::serial_number::SerialNumber;
 
     let mut group = c.benchmark_group("DER Operations");
 
