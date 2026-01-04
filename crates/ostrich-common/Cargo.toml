@@ -53,3 +53,6 @@ sqlx = { workspace = true }
 async-trait = { workspace = true }
 secrecy = { workspace = true }
 argon2 = { workspace = true }
+
+# Middleware (HTTP)
+tower = { workspace = true }
