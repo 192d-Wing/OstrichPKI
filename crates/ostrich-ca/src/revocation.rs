@@ -7,10 +7,7 @@ use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
 use ostrich_crypto::{Algorithm, CryptoProvider, KeyHandle};
-use ostrich_db::{
-    DatabasePool, Uuid,
-    repository::CertificateRepository,
-};
+use ostrich_db::{DatabasePool, Uuid, repository::CertificateRepository};
 use ostrich_x509::{
     crl::{CrlGenerator, RevokedCertificateInfo},
     parser::RevocationReason,
