@@ -1,11 +1,11 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 1.4
+**Document Version:** 1.5
 **Date:** 2026-01-04
-**OstrichPKI Version:** 0.16.0
+**OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
-**Compliance Status:** Improved (70-75%)
-**Last Updated:** Phase 15 completion - Path validation and DRBG implementation
+**Compliance Status:** Enhanced (70-75%)
+**Last Updated:** Phase 19 completion - HSM enforcement and 98% NIAP compliance
 
 ## Executive Summary
 

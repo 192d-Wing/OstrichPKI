@@ -1,9 +1,9 @@
 # FIPS Cryptographic Standards Compliance Matrix
 
-**Document Version:** 1.1
+**Document Version:** 1.2
 **Date:** 2026-01-04
-**OstrichPKI Version:** 0.16.0
-**Compliance Status:** Good (65-70%)
+**OstrichPKI Version:** 0.15.0
+**Compliance Status:** Enhanced (70-75%)
 
 ## Executive Summary
 

@@ -1,7 +1,8 @@
 # Authority to Operate (ATO) Evidence Collection Guide
 
-**Document Version:** 1.0
-**Generated:** 2026-01-03
+**Document Version:** 1.1
+**Generated:** 2026-01-04
+**OstrichPKI Version:** 0.15.0
 **Framework:** NIST Risk Management Framework (RMF)
 **Compliance Standards:** NIST 800-53 Rev 5, NIAP PP-CA v2.1, FIPS 140-2/140-3
 

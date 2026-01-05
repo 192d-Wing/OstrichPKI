@@ -1,10 +1,10 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 1.5
+**Document Version:** 1.6
 **Date:** 2026-01-04
-**OstrichPKI Version:** 0.16.0
+**OstrichPKI Version:** 0.15.0
 **Compliance Status:** Excellent (85%)
-**Last Updated:** Phase 15 completion - Path validation and CSR validation integration
+**Last Updated:** Phase 19 completion - HSM enforcement and 98% NIAP compliance
 
 ## Executive Summary
 

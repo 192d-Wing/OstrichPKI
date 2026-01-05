@@ -1,7 +1,8 @@
 # OstrichPKI Installation Guide
 
-**Document Version:** 1.0
+**Document Version:** 1.1
 **Last Updated:** January 2026
+**OstrichPKI Version:** 0.15.0
 **NIAP Reference:** AGD_PRE.1 - Preparative Procedures
 **Audience:** System Administrators, Security Engineers
 
@@ -181,20 +182,62 @@ sudo cp systemd/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
-### 4.2 Docker Installation
+### 4.2 Docker Installation (Development/Testing)
+
+**See Also:** [Docker Deployment Guide](../DOCKER_GUIDE.md) for comprehensive documentation
 
 ```bash
-# Pull official images
-docker pull ghcr.io/ostrich-pki/ostrich-ca:v1.0.0
-docker pull ghcr.io/ostrich-pki/ostrich-acme:v1.0.0
-docker pull ghcr.io/ostrich-pki/ostrich-est:v1.0.0
-docker pull ghcr.io/ostrich-pki/ostrich-ocsp:v1.0.0
+# Pull official images (v0.15.0)
+docker pull ghcr.io/ostrich-pki/ca-service:0.15.0
+docker pull ghcr.io/ostrich-pki/acme-service:0.15.0
+docker pull ghcr.io/ostrich-pki/est-service:0.15.0
+docker pull ghcr.io/ostrich-pki/ocsp-service:0.15.0
+docker pull ghcr.io/ostrich-pki/scms-service:0.15.0
+docker pull ghcr.io/ostrich-pki/kra-service:0.15.0
 
 # Verify image signatures
-docker trust inspect ghcr.io/ostrich-pki/ostrich-ca:v1.0.0
+docker trust inspect ghcr.io/ostrich-pki/ca-service:0.15.0
 
-# Use docker-compose for development
-docker-compose -f docker-compose.yaml up -d
+# Quick start with docker-compose
+git clone https://github.com/ostrich-pki/ostrich-pki.git
+cd ostrich-pki
+
+# Set environment variables
+export POSTGRES_PASSWORD=strongpassword
+export RUST_LOG=info
+
+# Start all services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f ca-service
+
+# Check status
+docker-compose ps
+
+# Access services
+curl http://localhost:8080/health      # CA service
+curl http://localhost:8081/acme/directory  # ACME directory
+curl http://localhost:8082/health      # OCSP service
+```
+
+**⚠️ Docker Deployment Notes:**
+
+- **Development Only**: Docker setup uses SoftHSM (not FIPS 140-2 validated)
+- **Production**: Use Kubernetes with real HSM for NIAP compliance
+- **HSM Requirement**: Set `REQUIRE_HSM=true` and mount real HSM in production
+- **Architecture**: 7 services (CA, ACME, EST, OCSP, SCMS, KRA, PostgreSQL)
+- **Networks**: Internal (service-to-service) and external (public-facing)
+- **Volumes**: Persistent storage for database, certificates, and configurations
+- **Health Checks**: All services include health monitoring
+- **Security**: Non-root containers (UID 1000), minimal images (~52-55MB)
+
+**Docker Compose Architecture:**
+
+```
+External Network: ACME (:8081), EST (:8443), OCSP (:8082), CA REST (:8080)
+        ↓
+Internal Network: CA gRPC (:50051), SCMS (:8083), KRA (:8084), PostgreSQL (:5432)
 ```
 
 ### 4.3 Kubernetes Installation (Helm)
