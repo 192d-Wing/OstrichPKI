@@ -9,8 +9,8 @@
 //! - NIST 800-53: AU-2 - Auditable event generation
 
 use crate::{
-    models::{ApprovalDecisionRecord, ApprovalRequestRecord},
     Error, Result,
+    models::{ApprovalDecisionRecord, ApprovalRequestRecord},
 };
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -47,19 +47,19 @@ impl ApprovalRepository {
             RETURNING *
             "#,
         )
-        .bind(&request.id)
+        .bind(request.id)
         .bind(&request.request_type)
-        .bind(&request.csr_id)
-        .bind(&request.certificate_id)
-        .bind(&request.requestor_id)
+        .bind(request.csr_id)
+        .bind(request.certificate_id)
+        .bind(request.requestor_id)
         .bind(&request.requestor_username)
         .bind(&request.requestor_roles)
         .bind(&request.status)
         .bind(&request.request_details)
-        .bind(&request.created_at)
-        .bind(&request.expires_at)
-        .bind(&request.approved_at)
-        .bind(&request.completed_at)
+        .bind(request.created_at)
+        .bind(request.expires_at)
+        .bind(request.approved_at)
+        .bind(request.completed_at)
         .bind(&request.metadata)
         .fetch_one(&self.pool)
         .await
@@ -235,15 +235,15 @@ impl ApprovalRepository {
             RETURNING *
             "#,
         )
-        .bind(&decision.id)
-        .bind(&decision.request_id)
-        .bind(&decision.approver_id)
+        .bind(decision.id)
+        .bind(decision.request_id)
+        .bind(decision.approver_id)
         .bind(&decision.approver_username)
         .bind(&decision.approver_roles)
         .bind(&decision.decision)
         .bind(&decision.reason)
         .bind(&decision.justification)
-        .bind(&decision.decided_at)
+        .bind(decision.decided_at)
         .bind(&decision.metadata)
         .fetch_one(&self.pool)
         .await
@@ -344,6 +344,9 @@ mod tests {
     fn test_approval_repository_construction() {
         // Verify we can construct the type (requires actual PgPool for real test)
         // This is just a compile-time check
-        assert_eq!(std::mem::size_of::<ApprovalRepository>(), std::mem::size_of::<PgPool>());
+        assert_eq!(
+            std::mem::size_of::<ApprovalRepository>(),
+            std::mem::size_of::<PgPool>()
+        );
     }
 }

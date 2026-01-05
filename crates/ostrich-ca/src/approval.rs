@@ -41,8 +41,8 @@ use uuid::Uuid;
 
 use crate::{Error, Result};
 use ostrich_common::auth::{
-    user::{AuthenticatedUser, UserId},
     Role,
+    user::{AuthenticatedUser, UserId},
 };
 
 /// Approval request for certificate operations
@@ -100,6 +100,29 @@ pub enum RequestType {
     Renewal,
 }
 
+impl std::fmt::Display for RequestType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RequestType::Issuance => write!(f, "issuance"),
+            RequestType::Revocation => write!(f, "revocation"),
+            RequestType::Renewal => write!(f, "renewal"),
+        }
+    }
+}
+
+impl std::str::FromStr for RequestType {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "issuance" => Ok(RequestType::Issuance),
+            "revocation" => Ok(RequestType::Revocation),
+            "renewal" => Ok(RequestType::Renewal),
+            _ => Err(format!("Invalid request type: {}", s)),
+        }
+    }
+}
+
 /// Approval workflow status
 ///
 /// # State Transitions
@@ -120,6 +143,33 @@ pub enum ApprovalStatus {
     Expired,
     /// Completed (certificate issued/revoked)
     Completed,
+}
+
+impl std::fmt::Display for ApprovalStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApprovalStatus::Pending => write!(f, "pending"),
+            ApprovalStatus::Approved => write!(f, "approved"),
+            ApprovalStatus::Rejected => write!(f, "rejected"),
+            ApprovalStatus::Expired => write!(f, "expired"),
+            ApprovalStatus::Completed => write!(f, "completed"),
+        }
+    }
+}
+
+impl std::str::FromStr for ApprovalStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "pending" => Ok(ApprovalStatus::Pending),
+            "approved" => Ok(ApprovalStatus::Approved),
+            "rejected" => Ok(ApprovalStatus::Rejected),
+            "expired" => Ok(ApprovalStatus::Expired),
+            "completed" => Ok(ApprovalStatus::Completed),
+            _ => Err(format!("Invalid approval status: {}", s)),
+        }
+    }
 }
 
 /// Individual approval decision
@@ -168,6 +218,17 @@ pub enum Decision {
     NeedsInfo,
     /// Decision deferred
     Deferred,
+}
+
+impl std::fmt::Display for Decision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Decision::Approved => write!(f, "approved"),
+            Decision::Rejected => write!(f, "rejected"),
+            Decision::NeedsInfo => write!(f, "needs_info"),
+            Decision::Deferred => write!(f, "deferred"),
+        }
+    }
 }
 
 /// Approval workflow configuration
@@ -370,6 +431,40 @@ impl ApprovalRequest {
             self.status = ApprovalStatus::Expired;
         }
     }
+
+    /// Convert from database record
+    ///
+    /// Used by REST API to reconstitute approval request from persistence
+    pub fn from_record(record: ostrich_db::models::ApprovalRequestRecord) -> Self {
+        use std::str::FromStr;
+
+        let status = ApprovalStatus::from_str(&record.status).unwrap_or(ApprovalStatus::Pending);
+        let request_type =
+            RequestType::from_str(&record.request_type).unwrap_or(RequestType::Issuance);
+        let requestor_roles: Vec<Role> = record
+            .requestor_roles
+            .iter()
+            .filter_map(|r| Role::from_str(r).ok())
+            .collect();
+
+        Self {
+            id: record.id,
+            request_type,
+            csr_id: record.csr_id,
+            certificate_id: record.certificate_id,
+            requestor_id: UserId::from_uuid(record.requestor_id),
+            requestor_username: record.requestor_username,
+            requestor_roles,
+            status,
+            request_details: record.request_details,
+            created_at: record.created_at,
+            expires_at: record.expires_at,
+            approved_at: record.approved_at,
+            completed_at: record.completed_at,
+            decisions: Vec::new(), // Decisions loaded separately
+            metadata: record.metadata,
+        }
+    }
 }
 
 /// Approval workflow engine
@@ -414,18 +509,40 @@ impl ApprovalEngine {
     /// * `request` - Approval request to approve
     /// * `approver` - User approving the request
     /// * `justification` - Approval justification
+    ///
+    /// # Returns
+    /// The approval decision record
     pub fn approve_request(
         &self,
         request: &mut ApprovalRequest,
         approver: &AuthenticatedUser,
         justification: String,
-    ) -> Result<()> {
-        request.add_decision(
-            approver,
-            Decision::Approved,
-            Some("Approved".to_string()),
-            Some(justification),
-        )
+    ) -> Result<ApprovalDecision> {
+        // Verify user can approve (FDP_SEPP.1)
+        request.can_approve(approver)?;
+
+        // Create decision record
+        let decision = ApprovalDecision {
+            id: Uuid::new_v4(),
+            request_id: request.id,
+            approver_id: approver.id,
+            approver_username: approver.username.clone(),
+            approver_roles: approver.roles.clone(),
+            decision: Decision::Approved,
+            reason: Some("Approved".to_string()),
+            justification: Some(justification),
+            decided_at: Utc::now(),
+            metadata: None,
+        };
+
+        // Add to request's decision history
+        request.decisions.push(decision.clone());
+
+        // Update request status
+        request.status = ApprovalStatus::Approved;
+        request.approved_at = Some(decision.decided_at);
+
+        Ok(decision)
     }
 
     /// Reject request
@@ -435,19 +552,40 @@ impl ApprovalEngine {
     /// * `approver` - User rejecting the request
     /// * `reason` - Rejection reason
     /// * `justification` - Detailed justification
+    ///
+    /// # Returns
+    /// The rejection decision record
     pub fn reject_request(
         &self,
         request: &mut ApprovalRequest,
         approver: &AuthenticatedUser,
         reason: String,
         justification: String,
-    ) -> Result<()> {
-        request.add_decision(
-            approver,
-            Decision::Rejected,
-            Some(reason),
-            Some(justification),
-        )
+    ) -> Result<ApprovalDecision> {
+        // Verify user can approve (same permission for reject)
+        request.can_approve(approver)?;
+
+        // Create decision record
+        let decision = ApprovalDecision {
+            id: Uuid::new_v4(),
+            request_id: request.id,
+            approver_id: approver.id,
+            approver_username: approver.username.clone(),
+            approver_roles: approver.roles.clone(),
+            decision: Decision::Rejected,
+            reason: Some(reason),
+            justification: Some(justification),
+            decided_at: Utc::now(),
+            metadata: None,
+        };
+
+        // Add to request's decision history
+        request.decisions.push(decision.clone());
+
+        // Update request status
+        request.status = ApprovalStatus::Rejected;
+
+        Ok(decision)
     }
 
     /// Complete request after certificate operation
@@ -574,8 +712,10 @@ mod tests {
     #[test]
     fn test_request_expiration() {
         let requestor = create_test_user("alice", vec![Role::OperationsStaff]);
-        let mut config = ApprovalConfig::default();
-        config.expiration_duration = Duration::seconds(-1); // Already expired
+        let config = ApprovalConfig {
+            expiration_duration: Duration::seconds(-1), // Already expired
+            ..Default::default()
+        };
 
         let mut request = ApprovalRequest::new(
             RequestType::Issuance,

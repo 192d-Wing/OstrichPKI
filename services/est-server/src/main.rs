@@ -71,11 +71,8 @@ async fn main() -> Result<()> {
     // TODO: Initialize actual auth provider and RBAC policy from configuration
     // For now, use the backward-compatible new() method without auth
     // Production deployments should use new_with_auth() with proper authentication
-    let state = ostrich_est::rest::EstState::new(
-        db_pool,
-        Arc::new(crypto_provider),
-        Arc::new(audit_sink),
-    );
+    let state =
+        ostrich_est::rest::EstState::new(db_pool, Arc::new(crypto_provider), Arc::new(audit_sink));
 
     // Create router
     let app = ostrich_est::rest::create_router(state);

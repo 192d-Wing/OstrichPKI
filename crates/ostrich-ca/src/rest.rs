@@ -19,7 +19,10 @@
 //! - SC-12: Cryptographic key establishment and management
 //! - AC-3: Access enforcement
 
-use crate::{CertificateAuthority, Error, IssuanceRequest, Result, RevocationRequest};
+use crate::{
+    CertificateAuthority, Error, IssuanceRequest, Result, RevocationRequest,
+    approval::{ApprovalEngine, ApprovalRequest, RequestType},
+};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -32,6 +35,7 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use ostrich_common::auth::provider::AuthProvider;
 use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy};
 use ostrich_common::types::DistinguishedName;
+use ostrich_db::repository::ApprovalRepository;
 use ostrich_x509::{extensions::SubjectAltName, parser::RevocationReason};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -43,6 +47,8 @@ pub struct ApiState {
     auth_provider: Arc<dyn AuthProvider>,
     #[allow(dead_code)]
     rbac_policy: Arc<RbacPolicy>,
+    approval_engine: Arc<ApprovalEngine>,
+    approval_repo: Arc<ApprovalRepository>,
 }
 
 impl ApiState {
@@ -51,11 +57,15 @@ impl ApiState {
         ca: Arc<CertificateAuthority>,
         auth_provider: Arc<dyn AuthProvider>,
         rbac_policy: Arc<RbacPolicy>,
+        approval_engine: Arc<ApprovalEngine>,
+        approval_repo: Arc<ApprovalRepository>,
     ) -> Self {
         Self {
             ca,
             auth_provider,
             rbac_policy,
+            approval_engine,
+            approval_repo,
         }
     }
 }
@@ -70,11 +80,15 @@ pub fn create_router(
     ca: Arc<CertificateAuthority>,
     auth_provider: Arc<dyn AuthProvider>,
     rbac_policy: Arc<RbacPolicy>,
+    approval_engine: Arc<ApprovalEngine>,
+    approval_repo: Arc<ApprovalRepository>,
 ) -> Router {
     let state = Arc::new(ApiState::new(
         ca,
         auth_provider.clone(),
         rbac_policy.clone(),
+        approval_engine,
+        approval_repo,
     ));
 
     // Public endpoints (no authentication required)
@@ -112,6 +126,28 @@ pub fn create_router(
         .route("/api/v1/crl", post(generate_crl))
         .route_layer(middleware::from_fn_with_state(
             (rbac_policy.clone(), Permission::GenerateCrl, None::<String>),
+            AuthzLayer::authorize,
+        ))
+        // Approval workflow endpoints
+        .route("/api/v1/approvals", post(submit_approval_request))
+        .route("/api/v1/approvals", get(list_approval_requests))
+        .route("/api/v1/approvals/:id", get(get_approval_request))
+        .route("/api/v1/approvals/:id/approve", post(approve_request))
+        .route_layer(middleware::from_fn_with_state(
+            (
+                rbac_policy.clone(),
+                Permission::ApproveRequest,
+                None::<String>,
+            ),
+            AuthzLayer::authorize,
+        ))
+        .route("/api/v1/approvals/:id/reject", post(reject_request))
+        .route_layer(middleware::from_fn_with_state(
+            (
+                rbac_policy.clone(),
+                Permission::ApproveRequest,
+                None::<String>,
+            ),
             AuthzLayer::authorize,
         ))
         .layer(middleware::from_fn_with_state(
@@ -320,6 +356,303 @@ async fn list_profiles(State(_state): State<Arc<ApiState>>) -> Result<Json<ListP
     Ok(Json(ListProfilesResponse { profiles }))
 }
 
+// Approval Workflow Endpoints
+
+/// Submit approval request
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FDP_CER_EXT.3 - Certificate request approval workflow
+/// - NIAP PP-CA: FIA_UAU.1 - Authenticated user required
+/// - NIST 800-53: AC-3 - Access enforcement
+/// - NIST 800-53: AU-2 - Auditable event
+async fn submit_approval_request(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<SubmitApprovalRequest>,
+) -> Result<Json<ApprovalRequestResponse>> {
+    use ostrich_common::auth::user::AuthMethod;
+
+    // Create authenticated user from auth context
+    let auth_user = ostrich_common::auth::user::AuthenticatedUser::new(
+        user.id,
+        user.username.clone(),
+        user.roles.clone(),
+        AuthMethod::Password,
+    );
+
+    // Create approval request via engine
+    let submitted =
+        state
+            .approval_engine
+            .create_request(req.request_type, &auth_user, req.request_details);
+
+    // Persist to database
+    use ostrich_db::models::ApprovalRequestRecord;
+    let record = ApprovalRequestRecord {
+        id: submitted.id,
+        request_type: submitted.request_type.to_string(),
+        csr_id: submitted.csr_id,
+        certificate_id: submitted.certificate_id,
+        requestor_id: *submitted.requestor_id.as_uuid(),
+        requestor_username: submitted.requestor_username.clone(),
+        requestor_roles: submitted
+            .requestor_roles
+            .iter()
+            .map(|r| r.to_string())
+            .collect(),
+        status: submitted.status.to_string(),
+        request_details: submitted.request_details.clone(),
+        created_at: submitted.created_at,
+        expires_at: submitted.expires_at,
+        approved_at: submitted.approved_at,
+        completed_at: submitted.completed_at,
+        metadata: None,
+    };
+
+    state.approval_repo.create_request(&record).await?;
+
+    Ok(Json(ApprovalRequestResponse::from(submitted)))
+}
+
+/// List approval requests
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FDP_CER_EXT.3 - View approval queue
+/// - NIAP PP-CA: FIA_UAU.1 - Authenticated user required
+async fn list_approval_requests(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+) -> Result<Json<ListApprovalRequestsResponse>> {
+    let requests = if user.roles.iter().any(|r| {
+        matches!(
+            r,
+            ostrich_common::auth::Role::RaStaff | ostrich_common::auth::Role::Aor
+        )
+    }) {
+        // RA Staff and AOR can see all pending requests
+        state.approval_repo.list_pending_requests().await?
+    } else {
+        // Regular users can only see their own requests
+        state
+            .approval_repo
+            .list_requests_by_requestor(user.id.as_uuid())
+            .await?
+    };
+
+    Ok(Json(ListApprovalRequestsResponse {
+        requests: requests
+            .into_iter()
+            .map(ApprovalRequestInfo::from)
+            .collect(),
+    }))
+}
+
+/// Get approval request by ID
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FDP_CER_EXT.3 - View request details
+async fn get_approval_request(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<ApprovalRequestDetailResponse>> {
+    let request_id = uuid::Uuid::parse_str(&id)
+        .map_err(|_| Error::InvalidRequest("Invalid request ID".to_string()))?;
+
+    let (request, decisions) = state
+        .approval_repo
+        .get_request_with_decisions(&request_id)
+        .await?
+        .ok_or_else(|| Error::ApprovalRequestNotFound(request_id))?;
+
+    // Authorization: user can view if they are the requestor or have approval role
+    let can_approve = user.roles.iter().any(|r| {
+        matches!(
+            r,
+            ostrich_common::auth::Role::RaStaff | ostrich_common::auth::Role::Aor
+        )
+    });
+    if request.requestor_id != *user.id.as_uuid() && !can_approve {
+        return Err(Error::InsufficientRole {
+            required: "RaStaff/Aor role or request ownership".to_string(),
+        });
+    }
+
+    Ok(Json(ApprovalRequestDetailResponse {
+        request: ApprovalRequestInfo::from(request),
+        decisions: decisions
+            .into_iter()
+            .map(ApprovalDecisionInfo::from)
+            .collect(),
+    }))
+}
+
+/// Approve request
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FDP_CER_EXT.3 - Approve certificate request
+/// - NIAP PP-CA: FDP_SEPP.1 - Segregation of duties (requestor ≠ approver)
+/// - NIST 800-53: AC-3 - Access enforcement
+/// - NIST 800-53: AU-2 - Auditable event
+async fn approve_request(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    Json(req): Json<ApprovalDecisionRequest>,
+) -> Result<Json<ApprovalDecisionResponse>> {
+    use ostrich_common::auth::user::AuthMethod;
+
+    let request_id = uuid::Uuid::parse_str(&id)
+        .map_err(|_| Error::InvalidRequest("Invalid request ID".to_string()))?;
+
+    // Get request from database
+    let request_record = state
+        .approval_repo
+        .get_request(&request_id)
+        .await?
+        .ok_or_else(|| Error::ApprovalRequestNotFound(request_id))?;
+
+    // Convert to engine type
+    let mut request = ApprovalRequest::from_record(request_record);
+
+    // Create authenticated user from auth context
+    let approver = ostrich_common::auth::user::AuthenticatedUser::new(
+        user.id,
+        user.username.clone(),
+        user.roles.clone(),
+        AuthMethod::Password,
+    );
+
+    // Approve via engine (enforces segregation of duties)
+    let decision = state.approval_engine.approve_request(
+        &mut request,
+        &approver,
+        req.justification.unwrap_or_else(|| "Approved".to_string()),
+    )?;
+
+    // Persist decision
+    use ostrich_db::models::ApprovalDecisionRecord;
+    let decision_record = ApprovalDecisionRecord {
+        id: decision.id,
+        request_id: decision.request_id,
+        approver_id: *decision.approver_id.as_uuid(),
+        approver_username: decision.approver_username.clone(),
+        approver_roles: decision
+            .approver_roles
+            .iter()
+            .map(|r| r.to_string())
+            .collect(),
+        decision: decision.decision.to_string(),
+        reason: decision.reason.clone(),
+        justification: decision.justification.clone(),
+        decided_at: decision.decided_at,
+        metadata: None,
+    };
+
+    state
+        .approval_repo
+        .create_decision(&decision_record)
+        .await?;
+
+    // Update request status
+    state
+        .approval_repo
+        .update_request_status(
+            &request_id,
+            &request.status.to_string(),
+            request.approved_at,
+        )
+        .await?;
+
+    Ok(Json(ApprovalDecisionResponse {
+        decision: ApprovalDecisionInfo::from(decision_record),
+        updated_status: request.status.to_string(),
+    }))
+}
+
+/// Reject request
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FDP_CER_EXT.3 - Reject certificate request
+/// - NIAP PP-CA: FDP_SEPP.1 - Segregation of duties (requestor ≠ approver)
+async fn reject_request(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    Json(req): Json<ApprovalDecisionRequest>,
+) -> Result<Json<ApprovalDecisionResponse>> {
+    use ostrich_common::auth::user::AuthMethod;
+
+    let request_id = uuid::Uuid::parse_str(&id)
+        .map_err(|_| Error::InvalidRequest("Invalid request ID".to_string()))?;
+
+    // Get request from database
+    let request_record = state
+        .approval_repo
+        .get_request(&request_id)
+        .await?
+        .ok_or_else(|| Error::ApprovalRequestNotFound(request_id))?;
+
+    // Convert to engine type
+    let mut request = ApprovalRequest::from_record(request_record);
+
+    // Create authenticated user from auth context
+    let approver = ostrich_common::auth::user::AuthenticatedUser::new(
+        user.id,
+        user.username.clone(),
+        user.roles.clone(),
+        AuthMethod::Password,
+    );
+
+    // Reject via engine (enforces segregation of duties)
+    let decision = state.approval_engine.reject_request(
+        &mut request,
+        &approver,
+        req.reason.unwrap_or_else(|| "Rejected".to_string()),
+        req.justification
+            .unwrap_or_else(|| "Request rejected".to_string()),
+    )?;
+
+    // Persist decision
+    use ostrich_db::models::ApprovalDecisionRecord;
+    let decision_record = ApprovalDecisionRecord {
+        id: decision.id,
+        request_id: decision.request_id,
+        approver_id: *decision.approver_id.as_uuid(),
+        approver_username: decision.approver_username.clone(),
+        approver_roles: decision
+            .approver_roles
+            .iter()
+            .map(|r| r.to_string())
+            .collect(),
+        decision: decision.decision.to_string(),
+        reason: decision.reason.clone(),
+        justification: decision.justification.clone(),
+        decided_at: decision.decided_at,
+        metadata: None,
+    };
+
+    state
+        .approval_repo
+        .create_decision(&decision_record)
+        .await?;
+
+    // Update request status
+    state
+        .approval_repo
+        .update_request_status(
+            &request_id,
+            &request.status.to_string(),
+            request.approved_at,
+        )
+        .await?;
+
+    Ok(Json(ApprovalDecisionResponse {
+        decision: ApprovalDecisionInfo::from(decision_record),
+        updated_status: request.status.to_string(),
+    }))
+}
+
 // REST API Request/Response types
 
 /// CA information response
@@ -424,6 +757,114 @@ impl ProfileInfo {
     }
 }
 
+// Approval Workflow Request/Response types
+
+/// Submit approval request
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SubmitApprovalRequest {
+    pub request_type: RequestType,
+    pub request_details: serde_json::Value,
+}
+
+/// Approval request response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApprovalRequestResponse {
+    pub id: String,
+    pub request_type: String,
+    pub requestor_username: String,
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+impl From<ApprovalRequest> for ApprovalRequestResponse {
+    fn from(req: ApprovalRequest) -> Self {
+        Self {
+            id: req.id.to_string(),
+            request_type: req.request_type.to_string(),
+            requestor_username: req.requestor_username,
+            status: req.status.to_string(),
+            created_at: req.created_at.to_rfc3339(),
+            expires_at: req.expires_at.to_rfc3339(),
+        }
+    }
+}
+
+/// List approval requests response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListApprovalRequestsResponse {
+    pub requests: Vec<ApprovalRequestInfo>,
+}
+
+/// Approval request info (summary)
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApprovalRequestInfo {
+    pub id: String,
+    pub request_type: String,
+    pub requestor_username: String,
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+impl From<ostrich_db::models::ApprovalRequestRecord> for ApprovalRequestInfo {
+    fn from(record: ostrich_db::models::ApprovalRequestRecord) -> Self {
+        Self {
+            id: record.id.to_string(),
+            request_type: record.request_type,
+            requestor_username: record.requestor_username,
+            status: record.status,
+            created_at: record.created_at.to_rfc3339(),
+            expires_at: record.expires_at.to_rfc3339(),
+        }
+    }
+}
+
+/// Approval request detail response (includes decisions)
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApprovalRequestDetailResponse {
+    pub request: ApprovalRequestInfo,
+    pub decisions: Vec<ApprovalDecisionInfo>,
+}
+
+/// Approval decision info
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApprovalDecisionInfo {
+    pub id: String,
+    pub approver_username: String,
+    pub decision: String,
+    pub reason: Option<String>,
+    pub justification: Option<String>,
+    pub decided_at: String,
+}
+
+impl From<ostrich_db::models::ApprovalDecisionRecord> for ApprovalDecisionInfo {
+    fn from(record: ostrich_db::models::ApprovalDecisionRecord) -> Self {
+        Self {
+            id: record.id.to_string(),
+            approver_username: record.approver_username,
+            decision: record.decision,
+            reason: record.reason,
+            justification: record.justification,
+            decided_at: record.decided_at.to_rfc3339(),
+        }
+    }
+}
+
+/// Approval decision request
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApprovalDecisionRequest {
+    pub reason: Option<String>,
+    pub justification: Option<String>,
+}
+
+/// Approval decision response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApprovalDecisionResponse {
+    pub decision: ApprovalDecisionInfo,
+    pub updated_status: String,
+}
+
 // Custom serde module for base64 encoding
 mod base64_serde {
     use base64::prelude::*;
@@ -474,7 +915,10 @@ impl IntoResponse for Error {
             ),
             Error::InvalidApprovalState { current, expected } => (
                 StatusCode::BAD_REQUEST,
-                format!("Invalid approval state: current={}, expected={}", current, expected),
+                format!(
+                    "Invalid approval state: current={}, expected={}",
+                    current, expected
+                ),
             ),
             Error::ApprovalRequestExpired { expired_at } => (
                 StatusCode::GONE,

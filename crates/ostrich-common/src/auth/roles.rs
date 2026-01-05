@@ -170,6 +170,21 @@ impl std::fmt::Display for Role {
     }
 }
 
+impl std::str::FromStr for Role {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "administrator" | "Administrator" => Ok(Role::Administrator),
+            "auditor" | "Auditor" => Ok(Role::Auditor),
+            "operations_staff" | "OperationsStaff" => Ok(Role::OperationsStaff),
+            "ra_staff" | "RaStaff" => Ok(Role::RaStaff),
+            "aor" | "Aor" | "AOR" => Ok(Role::Aor),
+            _ => Err(format!("Unknown role: {}", s)),
+        }
+    }
+}
+
 /// Validate a set of roles for separation of duties compliance
 ///
 /// Returns an error if any roles in the set are incompatible with each other.
