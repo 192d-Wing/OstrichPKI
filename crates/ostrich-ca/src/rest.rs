@@ -236,7 +236,8 @@ async fn issue_certificate(
         public_key: req.public_key,
         requestor: user.username.clone(), // Use authenticated identity
         metadata: req.metadata,
-        csr_der: None, // REST API doesn't currently accept CSR
+        csr_der: None,             // REST API doesn't currently accept CSR
+        approval_request_id: None, // TODO: Accept from request
     };
 
     // Issue certificate

@@ -234,6 +234,12 @@ impl std::fmt::Display for Decision {
 /// Approval workflow configuration
 #[derive(Debug, Clone)]
 pub struct ApprovalConfig {
+    /// Require approval for certificate issuance
+    ///
+    /// When true, all certificate issuance requests must go through
+    /// the approval workflow (FDP_CER_EXT.3 compliance)
+    pub require_approval: bool,
+
     /// Request expiration duration (default: 7 days)
     pub expiration_duration: Duration,
 
@@ -247,6 +253,7 @@ pub struct ApprovalConfig {
 impl Default for ApprovalConfig {
     fn default() -> Self {
         Self {
+            require_approval: true, // Default to NIAP-compliant mode
             expiration_duration: Duration::days(7),
             require_multi_approval: false,
             required_approvals: 1,

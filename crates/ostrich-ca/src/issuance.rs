@@ -22,7 +22,10 @@
 //! - SC-13: Use of FIPS-validated cryptographic algorithms
 //! - AU-2: Audit certificate issuance events
 
-use crate::{Error, Result};
+use crate::{
+    Error, Result,
+    approval::{ApprovalConfig, ApprovalEngine, RequestType},
+};
 use chrono::{DateTime, Utc};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
 use ostrich_common::types::{DistinguishedName, SerialNumber};
@@ -30,10 +33,11 @@ use ostrich_crypto::{Algorithm, CryptoProvider, KeyHandle};
 use ostrich_db::{
     DatabasePool,
     models::Certificate,
-    repository::{CertificateRepository, Repository},
+    repository::{ApprovalRepository, CertificateRepository, Repository},
 };
 use ostrich_x509::{CertificateBuilder, extensions::SubjectAltName, profile::CertificateProfile};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Certificate issuance request
@@ -65,6 +69,13 @@ pub struct IssuanceRequest {
     /// to ensure proof-of-possession of the private key
     #[serde(default)]
     pub csr_der: Option<Vec<u8>>,
+
+    /// Optional approval request ID (FDP_CER_EXT.2 linkage)
+    ///
+    /// If provided, the issuance will link to the approval request.
+    /// If approval is required but this is None, issuance will fail.
+    #[serde(default)]
+    pub approval_request_id: Option<Uuid>,
 }
 
 /// Issued certificate response
@@ -92,6 +103,8 @@ pub struct IssuedCertificate {
 /// COMPLIANCE MAPPING:
 /// - NIAP PP-CA: FMT_SMF.1.1 - Security management function for certificate issuance
 /// - NIAP PP-CA: FCS_COP.1.1 - Cryptographic signing operations
+/// - NIAP PP-CA: FDP_CER_EXT.2 - Certificate request linkage via approval workflow
+/// - NIAP PP-CA: FDP_CER_EXT.3 - Certificate request approval enforcement
 /// - NIST 800-53: SC-12 - Cryptographic key generation and management
 pub struct CertificateIssuer {
     /// CA key handle
@@ -111,6 +124,16 @@ pub struct CertificateIssuer {
 
     /// Available profiles
     profiles: std::collections::HashMap<String, CertificateProfile>,
+
+    /// Approval engine (optional - for FDP_CER_EXT.3 compliance)
+    #[allow(dead_code)]
+    approval_engine: Option<Arc<ApprovalEngine>>,
+
+    /// Approval repository (optional - for FDP_CER_EXT.2 linkage)
+    approval_repo: Option<Arc<ApprovalRepository>>,
+
+    /// Approval configuration
+    approval_config: ApprovalConfig,
 }
 
 impl CertificateIssuer {
@@ -129,6 +152,37 @@ impl CertificateIssuer {
             db_pool,
             audit_sink,
             profiles: std::collections::HashMap::new(),
+            approval_engine: None,
+            approval_repo: None,
+            approval_config: ApprovalConfig::default(),
+        }
+    }
+
+    /// Create a new certificate issuer with approval workflow
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA: FDP_CER_EXT.3 - Certificate request approval workflow
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_approval(
+        ca_key: KeyHandle,
+        ca_certificate: Certificate,
+        crypto_provider: std::sync::Arc<dyn CryptoProvider>,
+        db_pool: DatabasePool,
+        audit_sink: Box<dyn AuditSink>,
+        approval_engine: Arc<ApprovalEngine>,
+        approval_repo: Arc<ApprovalRepository>,
+        approval_config: ApprovalConfig,
+    ) -> Self {
+        Self {
+            ca_key,
+            ca_certificate,
+            crypto_provider,
+            db_pool,
+            audit_sink,
+            profiles: std::collections::HashMap::new(),
+            approval_engine: Some(approval_engine),
+            approval_repo: Some(approval_repo),
+            approval_config,
         }
     }
 
@@ -171,6 +225,85 @@ impl CertificateIssuer {
 
         // NIAP PP-CA: FDP_IFC.1.1 - Validate policy constraints
         profile.validate()?;
+
+        // COMPLIANCE MAPPING:
+        // - NIAP PP-CA: FDP_CER_EXT.2 - Certificate request linkage
+        // - NIAP PP-CA: FDP_CER_EXT.3 - Certificate request approval workflow
+        // - NIAP PP-CA: FDP_SEPP.1 - Segregation of duties enforcement
+        //
+        // Verify approval if required
+        let approval_request_id = request.approval_request_id;
+        if self.approval_config.require_approval {
+            let approval_request_id_val = approval_request_id.ok_or_else(|| {
+                Error::InvalidRequest(
+                    "Approval request ID is required when approval workflow is enabled".to_string(),
+                )
+            })?;
+
+            // Get approval repository and request
+            let approval_repo = self.approval_repo.as_ref().ok_or_else(|| {
+                Error::InvalidRequest("Approval repository not configured".to_string())
+            })?;
+
+            let approval_record = approval_repo
+                .get_request(&approval_request_id_val)
+                .await?
+                .ok_or_else(|| {
+                    Error::InvalidRequest(format!(
+                        "Approval request not found: {}",
+                        approval_request_id_val
+                    ))
+                })?;
+
+            // Convert database record to approval request
+            let approval_request = crate::approval::ApprovalRequest::from_record(approval_record);
+
+            // Verify approval status
+            if approval_request.status != crate::approval::ApprovalStatus::Approved {
+                audit_event.outcome = EventOutcome::Failure;
+                self.audit_sink
+                    .record(&mut audit_event)
+                    .await
+                    .map_err(Error::Audit)?;
+
+                return Err(Error::InvalidRequest(format!(
+                    "Approval request must be in Approved status, current status: {:?}",
+                    approval_request.status
+                )));
+            }
+
+            // Verify request type matches
+            if approval_request.request_type != RequestType::Issuance {
+                audit_event.outcome = EventOutcome::Failure;
+                self.audit_sink
+                    .record(&mut audit_event)
+                    .await
+                    .map_err(Error::Audit)?;
+
+                return Err(Error::InvalidRequest(format!(
+                    "Approval request type mismatch: expected Issuance, got {:?}",
+                    approval_request.request_type
+                )));
+            }
+
+            // FDP_CER_EXT.2: Verify approval request hasn't been used already
+            if approval_request.certificate_id.is_some() {
+                audit_event.outcome = EventOutcome::Failure;
+                self.audit_sink
+                    .record(&mut audit_event)
+                    .await
+                    .map_err(Error::Audit)?;
+
+                return Err(Error::InvalidRequest(
+                    "Approval request has already been used to issue a certificate".to_string(),
+                ));
+            }
+
+            tracing::info!(
+                "Approval verified for issuance request: {}",
+                approval_request_id_val
+            );
+        }
 
         // Validate request
         if profile.subject_alt_name_required && request.subject_alt_names.is_empty() {
@@ -300,6 +433,24 @@ impl CertificateIssuer {
         let cert_repo = CertificateRepository::new(self.db_pool.clone());
         cert_repo.create(&certificate).await?;
 
+        // COMPLIANCE MAPPING:
+        // - NIAP PP-CA: FDP_CER_EXT.2 - Link certificate to approval request
+        //
+        // Mark approval request as completed and link to certificate
+        if let Some(approval_request_id_val) = approval_request_id
+            && let Some(approval_repo) = &self.approval_repo
+        {
+            approval_repo
+                .mark_request_completed(&approval_request_id_val, cert_id)
+                .await?;
+
+            tracing::info!(
+                "Linked certificate {} to approval request {}",
+                cert_id,
+                approval_request_id_val
+            );
+        }
+
         // NIAP PP-CA: FAU_GEN.1.1 - Record successful issuance audit event
         self.audit_sink
             .record(&mut audit_event)
@@ -395,6 +546,7 @@ mod tests {
             requestor: "admin@example.com".to_string(),
             metadata: None,
             csr_der: None,
+            approval_request_id: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -403,5 +555,6 @@ mod tests {
         assert_eq!(deserialized.profile_name, "tls_server");
         assert_eq!(deserialized.requestor, "admin@example.com");
         assert!(deserialized.csr_der.is_none());
+        assert!(deserialized.approval_request_id.is_none());
     }
 }
