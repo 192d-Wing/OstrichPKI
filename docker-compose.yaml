@@ -1,0 +1,285 @@
+# OstrichPKI Docker Compose Configuration
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: CM-2 (Baseline Configuration)
+# - NIST 800-53: CM-6 (Configuration Settings)
+# - NIST 800-53: SC-8 (Transmission Confidentiality/Integrity) - mTLS between services
+# - NIST 800-53: AC-6 (Least Privilege) - Non-root containers
+#
+# This compose file provides a complete OstrichPKI deployment for development
+# and testing. For production deployments, use Kubernetes with Helm charts.
+#
+# WARNING: This configuration uses SoftHSM for development only.
+# Production deployments MUST use FIPS 140-2 Level 2+ validated HSMs.
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # PostgreSQL Database
+  # ===========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: ostrich-postgres
+    environment:
+      POSTGRES_DB: ostrich_pki
+      POSTGRES_USER: ostrich
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ostrich -d ostrich_pki"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ostrich_internal
+    restart: unless-stopped
+
+  # ===========================================================================
+  # CA Service (Certificate Authority Core)
+  # ===========================================================================
+  ca-service:
+    build:
+      context: .
+      target: ca-service
+    image: ghcr.io/ostrich-pki/ca-service:0.15.0
+    container_name: ostrich-ca
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
+      CA_BIND_ADDRESS: 0.0.0.0:50051
+      CA_REST_ADDRESS: 0.0.0.0:8080
+      # HSM Configuration (SoftHSM for development)
+      PKCS11_LIBRARY: /usr/lib/softhsm/libsofthsm2.so
+      PKCS11_SLOT: 0
+      PKCS11_PIN: ${PKCS11_PIN:-1234}
+      # Disable HSM requirement for development
+      REQUIRE_HSM: ${REQUIRE_HSM:-false}
+    volumes:
+      - ca_config:/app/config
+      - ca_certs:/app/certs
+      - ca_data:/app/data
+    ports:
+      - "50051:50051"  # gRPC
+      - "8080:8080"    # REST API
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - ostrich_internal
+      - ostrich_external
+    restart: unless-stopped
+
+  # ===========================================================================
+  # ACME Service (RFC 8555 Automated Certificate Management)
+  # ===========================================================================
+  acme-service:
+    build:
+      context: .
+      target: acme-service
+    image: ghcr.io/ostrich-pki/acme-service:0.15.0
+    container_name: ostrich-acme
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
+      ACME_BIND_ADDRESS: 0.0.0.0:8080
+      CA_GRPC_ENDPOINT: http://ca-service:50051
+    volumes:
+      - acme_config:/app/config
+    ports:
+      - "8081:8080"  # ACME API
+    depends_on:
+      - postgres
+      - ca-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ostrich_internal
+      - ostrich_external
+    restart: unless-stopped
+
+  # ===========================================================================
+  # EST Service (RFC 7030 Enrollment over Secure Transport)
+  # ===========================================================================
+  est-service:
+    build:
+      context: .
+      target: est-service
+    image: ghcr.io/ostrich-pki/est-service:0.15.0
+    container_name: ostrich-est
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
+      EST_BIND_ADDRESS: 0.0.0.0:8443
+      CA_GRPC_ENDPOINT: http://ca-service:50051
+    volumes:
+      - est_config:/app/config
+      - est_certs:/app/certs
+    ports:
+      - "8443:8443"  # EST API
+    depends_on:
+      - postgres
+      - ca-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8443/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ostrich_internal
+      - ostrich_external
+    restart: unless-stopped
+
+  # ===========================================================================
+  # OCSP Service (RFC 6960 Online Certificate Status Protocol)
+  # ===========================================================================
+  ocsp-service:
+    build:
+      context: .
+      target: ocsp-service
+    image: ghcr.io/ostrich-pki/ocsp-service:0.15.0
+    container_name: ostrich-ocsp
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
+      OCSP_BIND_ADDRESS: 0.0.0.0:8081
+    volumes:
+      - ocsp_config:/app/config
+    ports:
+      - "8082:8081"  # OCSP API
+    depends_on:
+      - postgres
+      - ca-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ostrich_internal
+      - ostrich_external
+    restart: unless-stopped
+
+  # ===========================================================================
+  # SCMS Service (Smartcard Management System)
+  # ===========================================================================
+  scms-service:
+    build:
+      context: .
+      target: scms-service
+    image: ghcr.io/ostrich-pki/scms-service:0.15.0
+    container_name: ostrich-scms
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
+      SCMS_BIND_ADDRESS: 0.0.0.0:8082
+    volumes:
+      - scms_config:/app/config
+    ports:
+      - "8083:8082"  # SCMS API
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ostrich_internal
+    restart: unless-stopped
+
+  # ===========================================================================
+  # KRA Service (Key Recovery Authority)
+  # ===========================================================================
+  kra-service:
+    build:
+      context: .
+      target: kra-service
+    image: ghcr.io/ostrich-pki/kra-service:0.15.0
+    container_name: ostrich-kra
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
+      KRA_BIND_ADDRESS: 0.0.0.0:8083
+    volumes:
+      - kra_config:/app/config
+      - kra_data:/app/data
+    ports:
+      - "8084:8083"  # KRA API (internal only)
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ostrich_internal
+    restart: unless-stopped
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  # Internal network for service-to-service communication
+  ostrich_internal:
+    driver: bridge
+    internal: false  # Set to true in production for strict isolation
+
+  # External network for public-facing services
+  ostrich_external:
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  # Database
+  postgres_data:
+    driver: local
+
+  # CA Service
+  ca_config:
+    driver: local
+  ca_certs:
+    driver: local
+  ca_data:
+    driver: local
+
+  # ACME Service
+  acme_config:
+    driver: local
+
+  # EST Service
+  est_config:
+    driver: local
+  est_certs:
+    driver: local
+
+  # OCSP Service
+  ocsp_config:
+    driver: local
+
+  # SCMS Service
+  scms_config:
+    driver: local
+
+  # KRA Service
+  kra_config:
+    driver: local
+  kra_data:
+    driver: local

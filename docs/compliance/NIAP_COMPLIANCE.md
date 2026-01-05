@@ -1,8 +1,8 @@
 # NIAP Protection Profile for Certification Authorities v2.1 Compliance Matrix
 
-**Document Version:** 2.3
+**Document Version:** 2.4
 **Date:** 2026-01-04
-**OstrichPKI Version:** 0.16.0
+**OstrichPKI Version:** 0.15.0
 **Protection Profile:** NIAP PP-CA v2.1
 **Overall Compliance:** 98% (49/50 applicable SFRs Compliant, 1 selection-based N/A, 2 optional, 4 OE)
 **Last Updated:** Phase 19 Complete - 98% NIAP compliance achieved (49/50 applicable SFRs)

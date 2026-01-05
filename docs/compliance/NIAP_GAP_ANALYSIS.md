@@ -1,7 +1,8 @@
 # NIAP Protection Profile Gap Analysis
 
-**Document Version:** 2.4
+**Document Version:** 2.5
 **Generated:** 2026-01-04
+**OstrichPKI Version:** 0.15.0
 **NIAP PP-CA Version:** v2.1 FINAL
 **Current Compliance:** 98% (49/50 applicable SFRs Compliant, 1 N/A, 2 optional, 4 OE)
 **Target Compliance:** ✅ ACHIEVED - 98% compliance (49/50 applicable SFRs)
