@@ -62,23 +62,29 @@ feature-depth = 1
 # More documentation for the advisories section can be found here:
 # https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html
 [advisories]
+# Use advisory DBs cloned to the cargo home (default location)
+version = 2
 # The path where the advisory databases are cloned/fetched into
 db-path = "$CARGO_HOME/advisory-dbs"
 # The url(s) of the advisory databases to use
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# CRITICAL: Deny all security vulnerabilities (NIST 800-53: SI-7)
-vulnerability = "deny"
-# Warn about unmaintained crates
-unmaintained = "warn"
+
+# Advisory levels (fields removed in cargo-deny >=0.14):
+# NIST 800-53: SI7
+# - vulnerability/unsound/notice/severity-threshold were removed; vulnerabilities always error.
+# Control handling of unmaintained advisories
+unmaintained = "none"
 # Deny yanked crates
 yanked = "deny"
-# Warn about security notices
-notice = "warn"
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
     # No advisories ignored by default - all must be addressed
 ]
+# Maximum allowed staleness when running with --offline (default 90 days)
+maximum-db-staleness = "P30D"
+# Fetch using git CLI if needed (default: false uses gix)
+git-fetch-with-cli = false
 
 # This section is considered when running `cargo deny check licenses`
 # More documentation for the licenses section can be found here:
@@ -103,13 +109,7 @@ allow = [
     "CC0-1.0",
 ]
 # List of explicitly disallowed licenses (copyleft)
-deny = [
-    "GPL-2.0",
-    "GPL-3.0",
-    "AGPL-3.0",
-    "LGPL-2.0",
-    "LGPL-3.0",
-]
+deny = ["GPL-2.0", "GPL-3.0", "AGPL-3.0", "LGPL-2.0", "LGPL-3.0"]
 # Lint level for licenses considered copyleft
 copyleft = "deny"
 # Blanket approval or denial for OSI-approved or FSF Free/Libre licenses
