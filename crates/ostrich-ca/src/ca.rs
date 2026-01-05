@@ -22,7 +22,7 @@
 use crate::{issuance::CertificateIssuer, revocation::RevocationManager};
 use ostrich_audit::AuditSink;
 use ostrich_common::types::DistinguishedName;
-use ostrich_crypto::{CryptoProvider, KeyHandle};
+use ostrich_crypto::{CryptoProvider, HsmKeyValidator, KeyHandle};
 use ostrich_db::{DatabasePool, models::Certificate};
 use ostrich_x509::profile::CertificateProfile;
 use uuid::Uuid;
@@ -55,6 +55,7 @@ impl CertificateAuthority {
     ///
     /// NIAP PP-CA: FMT_SMF.1.1 - Initialize CA security management functions
     /// NIAP PP-CA: FCS_CKM.1.1 - Load CA cryptographic key material
+    /// NIAP PP-CA: FCS_STG_EXT.1 - Validates CA signing key is stored in HSM
     /// NIST 800-53: SC-12 - CA initialization
     pub fn new(
         ca_certificate: Certificate,
@@ -63,7 +64,10 @@ impl CertificateAuthority {
         db_pool: DatabasePool,
         audit_sink: Box<dyn AuditSink>,
         crl_validity_hours: u32,
-    ) -> Self {
+    ) -> Result<Self, ostrich_crypto::Error> {
+        // FCS_STG_EXT.1: Validate CA signing key is stored in HSM
+        HsmKeyValidator::validate_ca_signing_key(&ca_key)?;
+
         let ca_id = ca_certificate.id;
         let ca_dn = DistinguishedName::new_cn(&ca_certificate.subject_dn); // TODO: Parse properly
 
@@ -94,12 +98,12 @@ impl CertificateAuthority {
             crl_validity_hours,
         );
 
-        Self {
+        Ok(Self {
             ca_id,
             ca_dn,
             issuer,
             revocation_manager,
-        }
+        })
     }
 
     /// Add a certificate profile

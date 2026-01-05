@@ -252,6 +252,50 @@ pub struct CaConfig {
     /// Maximum certificate validity (days).
     #[serde(default = "default_max_validity")]
     pub max_validity_days: u32,
+
+    /// Cryptographic configuration.
+    #[serde(default)]
+    pub crypto: CryptoConfig,
+}
+
+/// Cryptographic configuration for CA signing keys.
+///
+/// # NIAP PP-CA Compliance
+/// - FCS_STG_EXT.1: HSM storage enforcement for CA signing keys
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CryptoConfig {
+    /// Require HSM for CA signing keys (NIAP compliance).
+    ///
+    /// When true, CA signing keys MUST be stored in a PKCS#11 HSM.
+    /// Software-based keys are rejected at initialization.
+    ///
+    /// Default: true (NIAP-compliant mode)
+    #[serde(default = "default_require_hsm")]
+    pub require_hsm: bool,
+
+    /// PKCS#11 library path (required if require_hsm=true).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pkcs11_library: Option<String>,
+
+    /// PKCS#11 slot ID.
+    #[serde(default)]
+    pub pkcs11_slot: u64,
+
+    /// PKCS#11 PIN (use environment variable expansion: ${PKCS11_PIN}).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pkcs11_pin: Option<String>,
+}
+
+impl Default for CryptoConfig {
+    fn default() -> Self {
+        Self {
+            require_hsm: default_require_hsm(),
+            pkcs11_library: None,
+            pkcs11_slot: 0,
+            pkcs11_pin: None,
+        }
+    }
 }
 
 /// OCSP responder configuration.
@@ -382,6 +426,10 @@ fn default_profile() -> String {
 
 fn default_max_validity() -> u32 {
     825
+}
+
+fn default_require_hsm() -> bool {
+    true // Default to NIAP-compliant mode
 }
 
 fn default_cache_size() -> usize {

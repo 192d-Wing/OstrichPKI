@@ -22,6 +22,7 @@
 pub mod algorithm;
 pub mod drbg;
 pub mod error;
+pub mod hsm_validation;
 pub mod key;
 pub mod pkcs11;
 pub mod provider;
@@ -31,6 +32,7 @@ pub mod software;
 // Re-exports
 pub use algorithm::{Algorithm, KeyType};
 pub use error::{Error, Result};
+pub use hsm_validation::HsmKeyValidator;
 pub use key::KeyHandle;
 pub use provider::{CryptoProvider, CryptoProviderFactory};
 pub use self_test::{SelfTestResult, SelfTestRunner, SelfTestSummary};
