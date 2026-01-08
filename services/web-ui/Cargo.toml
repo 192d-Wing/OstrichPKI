@@ -1,0 +1,106 @@
+[package]
+name = "ostrich-web-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OstrichPKI Web Administration Interface"
+
+[[bin]]
+name = "ostrich-web-ui"
+path = "src/main.rs"
+
+[lib]
+name = "ostrich_web_ui_client"
+crate-type = ["cdylib", "rlib"]
+path = "src/client/lib.rs"
+
+[dependencies]
+# Internal crates
+ostrich-common = { workspace = true }
+ostrich-audit = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Web framework (server)
+axum = { workspace = true }
+axum-extra = { workspace = true, features = ["typed-header", "cookie"] }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["fs", "set-header"] }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+
+# OIDC/OAuth
+openidconnect = { workspace = true }
+oauth2 = { workspace = true }
+cookie = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging/Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Configuration
+clap = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Utilities
+base64 = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+url = { workspace = true }
+sha2 = { workspace = true }
+
+# TLS
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Yew framework
+yew = { version = "0.21", features = ["csr"] }
+yew-router = "0.18"
+
+# Browser APIs
+gloo = "0.11"
+gloo-net = "0.6"
+gloo-storage = "0.3"
+gloo-timers = "0.3"
+
+# WASM bindings
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "Location",
+    "History",
+    "Storage",
+    "console",
+] }
+js-sys = "0.3"
+
+# Console logging for WASM
+console_error_panic_hook = "0.1"
+tracing-wasm = "0.2"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[features]
+default = []

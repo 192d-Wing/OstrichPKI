@@ -22,6 +22,7 @@ members = [
     "services/ocsp-server",
     "services/scms-server",
     "services/kra-server",
+    "services/web-ui",
     # Tools
     "tools/ostrich-cli",
     "tools/ostrich-init",
@@ -167,6 +168,11 @@ clap = { version = "4.5", features = ["derive"] }
 tokio-test = "0.4"
 wiremock = "0.6"
 testcontainers = "0.26"
+
+# Web UI (Yew + OIDC)
+openidconnect = "4.0"
+oauth2 = "5.0"
+cookie = { version = "0.18", features = ["secure"] }
 
 [profile.release]
 opt-level = 3

@@ -1,0 +1,45 @@
+# Trunk configuration for building the Yew WASM application
+# https://trunkrs.dev/
+
+[build]
+# Target architecture for WASM
+target = "wasm32-unknown-unknown"
+
+# Output directory for compiled assets
+dist = "dist"
+
+# Public URL path where static assets are served
+public_url = "/static/"
+
+# Minify output in release mode
+# Note: handled by wasm-opt settings below
+
+[watch]
+# Directories to watch for changes
+watch = ["src/client", "index.html", "input.css"]
+# Ignore patterns
+ignore = ["dist", "target"]
+
+# Pre-build hook: Compile Tailwind CSS
+[[hooks]]
+stage = "pre_build"
+command = "sh"
+command_arguments = ["-c", "npx tailwindcss -i ./input.css -o ./dist/output.css --minify 2>/dev/null || echo 'Tailwind not installed, skipping CSS build'"]
+
+# WASM optimization settings
+[tools]
+# Use wasm-opt for production builds
+wasm_opt = "Oz"
+
+# Proxy configuration for development
+[serve]
+# Address to bind to
+address = "127.0.0.1"
+# Port to serve on
+port = 8080
+# Open browser on serve
+open = false
+# Proxy API requests to the backend
+# [[serve.proxy]]
+# backend = "http://localhost:8081"
+# rewrite = "/api/"

@@ -1,11 +1,11 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 1.5
-**Date:** 2026-01-04
+**Document Version:** 1.6
+**Date:** 2026-01-07
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
-**Compliance Status:** Enhanced (70-75%)
-**Last Updated:** Phase 19 completion - HSM enforcement and 98% NIAP compliance
+**Compliance Status:** Enhanced (75-80%)
+**Last Updated:** Phase 20 completion - Web UI with OIDC, CSP, and session management
 
 ## Executive Summary
 
@@ -30,7 +30,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The organization manages information system accounts.
 
-**Implementation Status:** 🔴 **Not Implemented**
+**Implementation Status:** 🟡 **Partial**
 
 **NIAP Mapping:**
 
@@ -39,28 +39,35 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Implementation:**
 
-- None (no user account system)
+- [services/web-ui/src/server/auth/oidc.rs](../../services/web-ui/src/server/auth/oidc.rs) - OIDC/OAuth 2.0 integration with Keycloak
+- User account management delegated to Keycloak Identity Provider
+- Role mapping from Keycloak claims (realm_access.roles, resource_access)
+
+**Evidence:**
+
+- ✅ User authentication via OIDC with PKCE
+- ✅ User roles extracted from Keycloak tokens
+- ✅ Account lifecycle managed in Keycloak (create, modify, disable)
+- 🔴 Internal service accounts not yet managed
 
 **Gaps:**
 
-- No user lifecycle management (create, modify, disable, remove)
-- No account attribute management (roles, privileges)
-- No periodic account review
-- No automatic account disablement
+- Internal service-to-service authentication not using OIDC
+- SCMS/ACME account management separate from OIDC
+- Periodic account review requires Keycloak configuration
 
 **Code References:**
 
-- Planned: `crates/ostrich-common/src/rbac.rs` (Phase 15)
-- Planned: Database users/roles tables (Phase 15)
+- [services/web-ui/src/server/auth/oidc.rs:270](../../services/web-ui/src/server/auth/oidc.rs#L270) - Role extraction from Keycloak claims
+- [services/web-ui/src/server/auth/handlers.rs](../../services/web-ui/src/server/auth/handlers.rs) - OAuth callback and session management
 
-**Remediation:** Phase 16 - Implement user account management with lifecycle controls
+**Remediation:** Configure Keycloak policies for periodic review and automatic disablement
 
 **Evidence Required for ATO:**
 
-- User account creation procedures
-- Role assignment documentation
-- Periodic account review logs
-- Disabled/removed account audit trail
+- Keycloak realm configuration export
+- Role mapping documentation
+- Account review logs from Keycloak
 
 ---
 
@@ -197,7 +204,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system automatically terminates a user session after defined conditions.
 
-**Implementation Status:** 🔴 **Not Implemented**
+**Implementation Status:** 🟢 **Implemented**
 
 **NIAP Mapping:**
 
@@ -206,15 +213,25 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Implementation:**
 
-- None
+- [services/web-ui/src/server/auth/session.rs](../../services/web-ui/src/server/auth/session.rs) - Session management with timeouts
+- [services/web-ui/src/server/auth/handlers.rs:178](../../services/web-ui/src/server/auth/handlers.rs#L178) - Logout handler
+- Session cookies with configurable expiration
+- Inactivity timeout and absolute session timeout support
 
-**Gaps:**
+**Evidence:**
 
-- No session management system
-- No idle timeout enforcement
-- No manual logout capability
+- ✅ Configurable session inactivity timeout
+- ✅ Configurable absolute session lifetime
+- ✅ User-initiated logout endpoint (/auth/logout)
+- ✅ Secure cookie settings (HttpOnly, Secure, SameSite)
 
-**Remediation:** Phase 16 - Implement session management with configurable idle timeout
+**Code References:**
+
+- [services/web-ui/src/server/config.rs](../../services/web-ui/src/server/config.rs) - Session configuration options
+- [services/web-ui/src/server/auth/session.rs:62](../../services/web-ui/src/server/auth/session.rs#L62) - Session locking on inactivity
+- [services/web-ui/src/server/auth/session.rs:57](../../services/web-ui/src/server/auth/session.rs#L57) - Session expiration check
+
+**Remediation:** None required - session termination fully implemented
 
 ---
 
@@ -1148,24 +1165,37 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system protects the authenticity of communications sessions.
 
-**Implementation Status:** 🟡 **Partial**
+**Implementation Status:** 🟢 **Implemented**
 
 **NIAP Mapping:**
 
 - ACME nonce-based replay protection
+- Web UI CSP nonces for script authenticity
+- PKCE for OAuth flow authenticity
 
 **Implementation:**
 
-- [crates/ostrich-acme/src/rest.rs:127](../../crates/ostrich-acme/src/rest.rs#L127) - Nonce generation and validation
-- TLS provides session authenticity
+- [crates/ostrich-acme/src/rest.rs:127](../../crates/ostrich-acme/src/rest.rs#L127) - ACME nonce generation and validation
+- [services/web-ui/src/server/middleware/csp.rs](../../services/web-ui/src/server/middleware/csp.rs) - CSP nonce middleware
+- [services/web-ui/src/server/auth/oidc.rs:118](../../services/web-ui/src/server/auth/oidc.rs#L118) - PKCE challenge generation
+- TLS provides transport-level session authenticity
 
 **Evidence:**
 
-- ✅ ACME nonces prevent replay attacks
-- ✅ TLS session binding
-- 🔴 Session management not implemented for other protocols
+- ✅ ACME nonces prevent replay attacks (RFC 8555 compliance)
+- ✅ CSP nonces per-request prevent XSS attacks (NIST 800-53 SC-18 Mobile Code)
+- ✅ PKCE (S256) prevents authorization code interception
+- ✅ OAuth state parameter prevents CSRF attacks
+- ✅ Secure session cookies with SameSite attribute
+- ✅ TLS session binding for all communication
 
-**Remediation:** Phase 16 - Implement session tokens with binding for administrative interfaces
+**Code References:**
+
+- [services/web-ui/src/server/middleware/csp.rs:35](../../services/web-ui/src/server/middleware/csp.rs#L35) - Cryptographic nonce generation (128-bit)
+- [services/web-ui/src/server/auth/oidc.rs:319](../../services/web-ui/src/server/auth/oidc.rs#L319) - PKCE challenge (SHA-256)
+- [services/web-ui/src/server/auth/handlers.rs:73](../../services/web-ui/src/server/auth/handlers.rs#L73) - CSRF state cookie
+
+**Remediation:** None required - session authenticity fully implemented
 
 ---
 
@@ -1480,7 +1510,9 @@ Mitigation: System deployed in trusted environment with network access controls
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-01-03 | OstrichPKI Team | Initial NIST 800-53 mapping based on v0.10.0 codebase |
+| 1.5 | 2026-01-04 | OstrichPKI Team | HSM enforcement and 98% NIAP compliance |
+| 1.6 | 2026-01-07 | OstrichPKI Team | Web UI: AC-2 partial (OIDC), AC-12 implemented (sessions), SC-23 implemented (CSP nonces, PKCE) |
 
 ---
 
-**Next Review Date:** 2026-02-01 (or upon completion of Phase 15)
+**Next Review Date:** 2026-02-01 (or upon completion of Phase 21)

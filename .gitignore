@@ -16,3 +16,6 @@ target/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 .DS_STORE
+
+# Security vulnerability audit reports (CONFIDENTIAL - do not commit)
+docs/security/VULNERABILITY_AUDIT_*.md

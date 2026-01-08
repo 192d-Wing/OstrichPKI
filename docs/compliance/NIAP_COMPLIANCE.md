@@ -1,11 +1,11 @@
 # NIAP Protection Profile for Certification Authorities v2.1 Compliance Matrix
 
-**Document Version:** 2.4
-**Date:** 2026-01-04
+**Document Version:** 2.5
+**Date:** 2026-01-07
 **OstrichPKI Version:** 0.15.0
 **Protection Profile:** NIAP PP-CA v2.1
 **Overall Compliance:** 98% (49/50 applicable SFRs Compliant, 1 selection-based N/A, 2 optional, 4 OE)
-**Last Updated:** Phase 19 Complete - 98% NIAP compliance achieved (49/50 applicable SFRs)
+**Last Updated:** Phase 20 Complete - Web UI with OIDC authentication, CSP nonces, session management
 
 ## Executive Summary
 
@@ -2193,7 +2193,9 @@ The following SFRs require a complete authentication system:
 | 1.9 | 2026-01-04 | OstrichPKI Team | FCS/FDP/FMT updates: FCS_TLSC_EXT.2, FCS_TLSS_EXT.1, FDP_CSI_EXT.1, FDP_OCSPG_EXT.1, FMT_SMF.1 to Compliant; Overall 91% |
 | 2.0 | 2026-01-04 | OstrichPKI Team | Phase 17: FIA/FMT families 100% - All authentication and RBAC requirements implemented; Overall 93% |
 | 2.1 | 2026-01-04 | OstrichPKI Team | Phase 18: FDP family 100% - FDP_CER_EXT.2 (certificate request linkage) and FDP_CER_EXT.3 (approval workflow) implemented; Overall 96% |
+| 2.4 | 2026-01-04 | OstrichPKI Team | Phase 19: HSM enforcement, 98% compliance |
+| 2.5 | 2026-01-07 | OstrichPKI Team | Phase 20: Web UI service - OIDC authentication (FIA_UAU_EXT.1), CSP nonces (FPT_TRP_EXT.1), session mgmt (FTA_SSL.3/4) |
 
 ---
 
-**Next Review Date:** 2026-02-01 (or upon completion of Phase 19)
+**Next Review Date:** 2026-02-01 (or upon completion of Phase 21)
