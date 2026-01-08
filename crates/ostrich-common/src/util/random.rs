@@ -2,13 +2,13 @@
 // RFC 5280 §4.1.2.2 - Serial number generation
 
 use crate::error::Result;
-use rand::{CryptoRng, RngCore, thread_rng};
+use rand::{CryptoRng, RngCore, rng};
 
 /// Generate cryptographically secure random bytes
 /// NIST 800-53: SC-13 - Use cryptographically secure RNG
 pub fn secure_random_bytes(length: usize) -> Vec<u8> {
     let mut bytes = vec![0u8; length];
-    thread_rng().fill_bytes(&mut bytes);
+    rng().fill_bytes(&mut bytes);
     bytes
 }
 

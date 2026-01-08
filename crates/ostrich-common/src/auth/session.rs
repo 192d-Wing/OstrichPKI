@@ -195,8 +195,8 @@ impl Session {
     /// Generate a cryptographically secure session token
     fn generate_token() -> String {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let bytes: Vec<u8> = (0..DEFAULT_TOKEN_LENGTH).map(|_| rng.r#gen()).collect();
+        let mut rng = rand::rng();
+        let bytes: Vec<u8> = (0..DEFAULT_TOKEN_LENGTH).map(|_| rng.random()).collect();
         use base64::Engine;
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
     }
