@@ -529,7 +529,7 @@ impl OstrichConfig {
         // Collect validation errors
         let errors: Vec<String> = compiled
             .iter_errors(json)
-            .map(|e| format!("{}: {}", e.instance_path, e))
+            .map(|e| format!("{}: {}", e.instance_path(), e))
             .collect();
 
         if !errors.is_empty() {
