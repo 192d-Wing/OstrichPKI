@@ -1,0 +1,285 @@
+# OstrichPKI Development/Test Environment
+#
+# This compose file sets up a complete development environment with:
+# - PostgreSQL database
+# - Keycloak identity provider (OIDC)
+# - Web UI service
+# - Backend services (CA, ACME, OCSP, etc.)
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: CM-2 (Baseline Configuration)
+# - NIST 800-53: IA-2 (Identification and Authentication)
+# - NIST 800-53: IA-8 (External Identity Provider)
+#
+# Usage:
+#   docker-compose -f docker-compose.dev.yml up -d              # Start all services
+#   docker-compose -f docker-compose.dev.yml up -d web-ui       # Start web-ui only
+#   docker-compose -f docker-compose.dev.yml logs -f web-ui     # View logs
+#   docker-compose -f docker-compose.dev.yml down -v            # Stop and remove volumes
+#
+# Access:
+#   Web UI:   http://localhost:3000
+#   Keycloak: http://localhost:8180 (admin/admin)
+
+services:
+  # =============================================================================
+  # PostgreSQL Database
+  # =============================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: ostrich-dev-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ostrich
+      POSTGRES_PASSWORD: ostrich_dev_password
+      POSTGRES_DB: ostrich_pki
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ostrich -d ostrich_pki"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ostrich-dev
+
+  # =============================================================================
+  # Keycloak Identity Provider
+  # NIST 800-53: IA-8 (External Identity Provider)
+  # =============================================================================
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: ostrich-dev-keycloak
+    restart: unless-stopped
+    command:
+      - start-dev
+      - --import-realm
+    environment:
+      # Admin credentials
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      # Database configuration
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/ostrich_pki
+      KC_DB_USERNAME: ostrich
+      KC_DB_PASSWORD: ostrich_dev_password
+      KC_DB_SCHEMA: keycloak
+      # HTTP settings for development
+      KC_HTTP_PORT: 8080
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY: edge
+      # Health endpoint
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8180:8080"
+    volumes:
+      - ./docker/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e 'GET /health/ready HTTP/1.1\r\nhost: localhost\r\nConnection: close\r\n\r\n' >&3;if [ $? -eq 0 ]; then echo 'Healthcheck Successful';exit 0;else echo 'Healthcheck Failed';exit 1;fi;"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks:
+      - ostrich-dev
+
+  # =============================================================================
+  # Web UI Service
+  # NIST 800-53: AC-3 (Access Enforcement), SC-23 (Session Authenticity)
+  # =============================================================================
+  web-ui:
+    build:
+      context: .
+      dockerfile: services/web-ui/Dockerfile
+    container_name: ostrich-dev-web-ui
+    restart: unless-stopped
+    environment:
+      # Server configuration
+      WEBUI_LISTEN_ADDRESS: 0.0.0.0:8080
+      # OIDC Configuration
+      OIDC_ISSUER_URL: http://keycloak:8080/realms/ostrich
+      OIDC_CLIENT_ID: ostrich-web-ui
+      OIDC_CLIENT_SECRET: ostrich-web-ui-secret
+      OIDC_REDIRECT_URI: http://localhost:3000/auth/callback
+      OIDC_SCOPES: "openid profile email"
+      # Session configuration
+      SESSION_COOKIE_NAME: ostrich_session
+      SESSION_SECURE_COOKIES: "false"
+      SESSION_INACTIVITY_TIMEOUT: 900
+      SESSION_ABSOLUTE_TIMEOUT: 28800
+      # Backend service URLs
+      BACKEND_CA_URL: http://ca:8080
+      BACKEND_ACME_URL: http://acme:8080
+      BACKEND_OCSP_URL: http://ocsp:8081
+      BACKEND_SCMS_URL: http://scms:8082
+      BACKEND_KRA_URL: http://kra:8083
+      BACKEND_AUDIT_URL: http://postgres:5432
+      # Static files
+      STATIC_FILES_DIRECTORY: /app/static
+      STATIC_FILES_URL_PREFIX: /static
+      # Logging
+      RUST_LOG: info,ostrich_web_ui=debug
+    ports:
+      - "3000:8080"
+    volumes:
+      - ./services/web-ui/config:/app/config:ro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ostrich-dev
+
+  # =============================================================================
+  # CA Service (Backend)
+  # =============================================================================
+  ca:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ca-service
+    container_name: ostrich-dev-ca
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://ostrich:ostrich_dev_password@postgres:5432/ostrich_pki
+      CA_REST_ADDRESS: 0.0.0.0:8080
+      CA_GRPC_ADDRESS: 0.0.0.0:50051
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ostrich-dev
+
+  # =============================================================================
+  # ACME Service (Backend)
+  # =============================================================================
+  acme:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: acme-service
+    container_name: ostrich-dev-acme
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://ostrich:ostrich_dev_password@postgres:5432/ostrich_pki
+      ACME_BIND_ADDRESS: 0.0.0.0:8080
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ca:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ostrich-dev
+
+  # =============================================================================
+  # OCSP Service (Backend)
+  # =============================================================================
+  ocsp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ocsp-service
+    container_name: ostrich-dev-ocsp
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://ostrich:ostrich_dev_password@postgres:5432/ostrich_pki
+      OCSP_BIND_ADDRESS: 0.0.0.0:8081
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ostrich-dev
+
+  # =============================================================================
+  # SCMS Service (Backend)
+  # =============================================================================
+  scms:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: scms-service
+    container_name: ostrich-dev-scms
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://ostrich:ostrich_dev_password@postgres:5432/ostrich_pki
+      SCMS_BIND_ADDRESS: 0.0.0.0:8082
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ostrich-dev
+
+  # =============================================================================
+  # KRA Service (Backend)
+  # =============================================================================
+  kra:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: kra-service
+    container_name: ostrich-dev-kra
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://ostrich:ostrich_dev_password@postgres:5432/ostrich_pki
+      KRA_BIND_ADDRESS: 0.0.0.0:8083
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ostrich-dev
+
+volumes:
+  postgres_dev_data:
+    driver: local
+
+networks:
+  ostrich-dev:
+    name: ostrich-dev
+    driver: bridge

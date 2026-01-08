@@ -1,0 +1,388 @@
+{
+  "realm": "ostrich",
+  "enabled": true,
+  "displayName": "OstrichPKI",
+  "displayNameHtml": "<b>OstrichPKI</b>",
+  "loginTheme": "keycloak",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": false,
+  "rememberMe": true,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "failureFactor": 5,
+  "roles": {
+    "realm": [
+      {
+        "name": "admin",
+        "description": "Full administrative access to OstrichPKI",
+        "composite": true,
+        "composites": {
+          "realm": [
+            "ca_operator",
+            "auditor",
+            "user_manager"
+          ]
+        }
+      },
+      {
+        "name": "ca_operator",
+        "description": "Certificate Authority operations - issue, revoke, manage certificates",
+        "composite": false
+      },
+      {
+        "name": "auditor",
+        "description": "Read-only access to audit logs and system reports",
+        "composite": false
+      },
+      {
+        "name": "user_manager",
+        "description": "Manage users, roles, and permissions",
+        "composite": false
+      },
+      {
+        "name": "approver",
+        "description": "Approve or reject certificate requests",
+        "composite": false
+      },
+      {
+        "name": "ra_operator",
+        "description": "Registration Authority operations - submit and manage requests",
+        "composite": false
+      },
+      {
+        "name": "viewer",
+        "description": "Read-only access to certificates and basic information",
+        "composite": false
+      }
+    ],
+    "client": {
+      "ostrich-web-ui": [
+        {
+          "name": "view_certificates",
+          "description": "View certificate list and details"
+        },
+        {
+          "name": "manage_certificates",
+          "description": "Issue and revoke certificates"
+        },
+        {
+          "name": "view_approvals",
+          "description": "View pending approval queue"
+        },
+        {
+          "name": "manage_approvals",
+          "description": "Approve or reject requests"
+        },
+        {
+          "name": "view_audit",
+          "description": "View audit logs"
+        },
+        {
+          "name": "export_audit",
+          "description": "Export audit logs"
+        },
+        {
+          "name": "view_tokens",
+          "description": "View SCMS tokens"
+        },
+        {
+          "name": "manage_tokens",
+          "description": "Issue and revoke SCMS tokens"
+        },
+        {
+          "name": "view_users",
+          "description": "View user list"
+        },
+        {
+          "name": "manage_users",
+          "description": "Create, modify, and disable users"
+        },
+        {
+          "name": "view_settings",
+          "description": "View system settings"
+        },
+        {
+          "name": "manage_settings",
+          "description": "Modify system settings"
+        }
+      ]
+    }
+  },
+  "groups": [
+    {
+      "name": "Administrators",
+      "path": "/Administrators",
+      "realmRoles": ["admin"]
+    },
+    {
+      "name": "CA Operators",
+      "path": "/CA Operators",
+      "realmRoles": ["ca_operator"]
+    },
+    {
+      "name": "Auditors",
+      "path": "/Auditors",
+      "realmRoles": ["auditor"]
+    },
+    {
+      "name": "Approvers",
+      "path": "/Approvers",
+      "realmRoles": ["approver"]
+    },
+    {
+      "name": "RA Operators",
+      "path": "/RA Operators",
+      "realmRoles": ["ra_operator"]
+    }
+  ],
+  "defaultRoles": ["viewer"],
+  "users": [
+    {
+      "username": "admin",
+      "email": "admin@ostrich.local",
+      "firstName": "Admin",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin123",
+          "temporary": true
+        }
+      ],
+      "realmRoles": ["admin"],
+      "groups": ["/Administrators"]
+    },
+    {
+      "username": "caoperator",
+      "email": "caoperator@ostrich.local",
+      "firstName": "CA",
+      "lastName": "Operator",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "caoperator123",
+          "temporary": true
+        }
+      ],
+      "realmRoles": ["ca_operator"],
+      "groups": ["/CA Operators"]
+    },
+    {
+      "username": "auditor",
+      "email": "auditor@ostrich.local",
+      "firstName": "Audit",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "auditor123",
+          "temporary": true
+        }
+      ],
+      "realmRoles": ["auditor"],
+      "groups": ["/Auditors"]
+    },
+    {
+      "username": "viewer",
+      "email": "viewer@ostrich.local",
+      "firstName": "View",
+      "lastName": "Only",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "viewer123",
+          "temporary": true
+        }
+      ],
+      "realmRoles": ["viewer"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "ostrich-web-ui",
+      "name": "OstrichPKI Web UI",
+      "description": "Web administration interface for OstrichPKI",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "ostrich-web-ui-secret",
+      "clientAuthenticatorType": "client-secret",
+      "protocol": "openid-connect",
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:8080/*",
+        "http://web-ui:8080/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:8080"
+      ],
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "authorizationServicesEnabled": false,
+      "fullScopeAllowed": true,
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/*",
+        "backchannel.logout.session.required": "true",
+        "backchannel.logout.revoke.offline.tokens": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm-roles-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "client-roles-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "resource_access.${client_id}.roles",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "groups-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups"
+          }
+        }
+      ]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "roles",
+      "description": "OpenID Connect scope for user roles",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true"
+      }
+    }
+  ],
+  "passwordPolicy": "length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1)",
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA256",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "smtpServer": {},
+  "eventsEnabled": true,
+  "eventsListeners": ["jboss-logging"],
+  "enabledEventTypes": [
+    "LOGIN",
+    "LOGIN_ERROR",
+    "LOGOUT",
+    "LOGOUT_ERROR",
+    "CODE_TO_TOKEN",
+    "CODE_TO_TOKEN_ERROR",
+    "CLIENT_LOGIN",
+    "CLIENT_LOGIN_ERROR",
+    "REFRESH_TOKEN",
+    "REFRESH_TOKEN_ERROR",
+    "INTROSPECT_TOKEN",
+    "INTROSPECT_TOKEN_ERROR",
+    "FEDERATED_IDENTITY_LINK",
+    "FEDERATED_IDENTITY_LINK_ERROR",
+    "REMOVE_FEDERATED_IDENTITY",
+    "REMOVE_FEDERATED_IDENTITY_ERROR",
+    "UPDATE_EMAIL",
+    "UPDATE_EMAIL_ERROR",
+    "UPDATE_PROFILE",
+    "UPDATE_PROFILE_ERROR",
+    "UPDATE_PASSWORD",
+    "UPDATE_PASSWORD_ERROR",
+    "UPDATE_TOTP",
+    "UPDATE_TOTP_ERROR",
+    "VERIFY_EMAIL",
+    "VERIFY_EMAIL_ERROR",
+    "REMOVE_TOTP",
+    "REMOVE_TOTP_ERROR",
+    "GRANT_CONSENT",
+    "GRANT_CONSENT_ERROR",
+    "UPDATE_CONSENT",
+    "UPDATE_CONSENT_ERROR",
+    "REVOKE_GRANT",
+    "REVOKE_GRANT_ERROR",
+    "SEND_VERIFY_EMAIL",
+    "SEND_VERIFY_EMAIL_ERROR",
+    "SEND_RESET_PASSWORD",
+    "SEND_RESET_PASSWORD_ERROR",
+    "RESET_PASSWORD",
+    "RESET_PASSWORD_ERROR",
+    "IMPERSONATE",
+    "IMPERSONATE_ERROR",
+    "CUSTOM_REQUIRED_ACTION",
+    "CUSTOM_REQUIRED_ACTION_ERROR",
+    "EXECUTE_ACTIONS",
+    "EXECUTE_ACTIONS_ERROR",
+    "EXECUTE_ACTION_TOKEN",
+    "EXECUTE_ACTION_TOKEN_ERROR",
+    "CLIENT_REGISTER",
+    "CLIENT_REGISTER_ERROR",
+    "CLIENT_UPDATE",
+    "CLIENT_UPDATE_ERROR",
+    "CLIENT_DELETE",
+    "CLIENT_DELETE_ERROR",
+    "CLIENT_INITIATED_ACCOUNT_LINKING",
+    "CLIENT_INITIATED_ACCOUNT_LINKING_ERROR",
+    "TOKEN_EXCHANGE",
+    "TOKEN_EXCHANGE_ERROR",
+    "PERMISSION_TOKEN"
+  ],
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true
+}

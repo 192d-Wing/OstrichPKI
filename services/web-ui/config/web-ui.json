@@ -1,0 +1,45 @@
+{
+  "$schema": "../../../config/schema/web-ui.schema.json",
+  "_comment": "OstrichPKI Web UI Configuration - Development Environment",
+
+  "server": {
+    "listen_address": "0.0.0.0:8080",
+    "graceful_shutdown_timeout_secs": 30
+  },
+
+  "oidc": {
+    "issuer_url": "http://keycloak:8080/realms/ostrich",
+    "client_id": "ostrich-web-ui",
+    "client_secret": "ostrich-web-ui-secret",
+    "redirect_uri": "http://localhost:3000/auth/callback",
+    "scopes": ["openid", "profile", "email", "roles"],
+    "roles_claim": "realm_access.roles"
+  },
+
+  "session": {
+    "cookie_name": "ostrich_session",
+    "secure_cookies": false,
+    "inactivity_timeout_secs": 900,
+    "absolute_timeout_secs": 28800
+  },
+
+  "backend": {
+    "ca_url": "http://ca:8080",
+    "acme_url": "http://acme:8080",
+    "ocsp_url": "http://ocsp:8081",
+    "scms_url": "http://scms:8082",
+    "kra_url": "http://kra:8083",
+    "audit_url": "postgresql://ostrich:ostrich_dev_password@postgres:5432/ostrich_pki"
+  },
+
+  "static_files": {
+    "directory": "/app/static",
+    "url_prefix": "/static"
+  },
+
+  "security": {
+    "csp_nonce_length": 16,
+    "hsts_max_age_secs": 31536000,
+    "frame_ancestors": "none"
+  }
+}
