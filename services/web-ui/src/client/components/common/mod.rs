@@ -1,11 +1,21 @@
 //! Common UI Components
 //!
-//! Reusable components like loading spinners, alerts, modals, etc.
+//! Reusable components for the OstrichPKI Web UI.
+//!
+//! COMPLIANCE MAPPING:
+//! - NIST 800-53: SI-10 (Information Input Validation) - Form validation
+//! - NIAP PP-CA: FIA_UID.1 (User Identification) - User feedback components
 
-// Components will be added as needed
-// - Loading
-// - Alert
-// - Modal
-// - DataTable
-// - Pagination
-// - Badge
+mod alert;
+mod badge;
+mod data_table;
+mod loading;
+mod modal;
+mod pagination;
+
+pub use alert::{Alert, AlertType};
+pub use badge::{Badge, BadgeVariant};
+pub use data_table::{Column, DataTable};
+pub use loading::Loading;
+pub use modal::Modal;
+pub use pagination::Pagination;
