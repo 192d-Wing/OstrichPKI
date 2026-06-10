@@ -107,6 +107,23 @@ pub trait CryptoProvider: Send + Sync {
     /// RFC 5280 §4.1.2.7 - Subject Public Key Info
     async fn export_public_key(&self, key: &KeyHandle) -> Result<Vec<u8>>;
 
+    /// Export the private key in PKCS#8 (PrivateKeyInfo) DER form.
+    ///
+    /// Only supported by software providers for *extractable* keys (e.g. EST
+    /// server-side key generation, RFC 7030 §4.4). HSM-backed providers MUST NOT
+    /// export private keys; the default implementation therefore returns
+    /// `NotImplemented`, and only the software provider overrides it.
+    ///
+    /// The returned bytes are wrapped in `Zeroizing` and MUST be handled as
+    /// sensitive material (NIST 800-53 SI-12).
+    ///
+    /// RFC 5958 - Asymmetric Key Packages (PKCS#8)
+    async fn export_private_key(&self, _key: &KeyHandle) -> Result<Zeroizing<Vec<u8>>> {
+        Err(crate::Error::NotImplemented(
+            "private key export is not supported by this provider".to_string(),
+        ))
+    }
+
     /// Import an existing private key (for software provider or key escrow)
     ///
     /// # Arguments

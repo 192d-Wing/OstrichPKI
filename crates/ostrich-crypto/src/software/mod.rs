@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 // re-exported by `rsa` itself guarantees trait compatibility.
 use rsa::pkcs1v15::{SigningKey as Pkcs1SigningKey, VerifyingKey as Pkcs1VerifyingKey};
 use rsa::rand_core::OsRng;
-use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
+use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey};
 use rsa::pss::{BlindedSigningKey, Signature as PssSignature, VerifyingKey as PssVerifyingKey};
 use rsa::signature::{RandomizedSigner, SignatureEncoding, Signer, Verifier};
 use rsa::traits::PublicKeyParts;
@@ -832,6 +832,37 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
         }
     }
 
+    /// Export the private key as PKCS#8 DER (RFC 5958). Supported for software
+    /// RSA and ECDSA keys (used by EST server-side key generation, RFC 7030
+    /// §4.4); Ed25519 / ML-DSA export is not supported here. SI-12: the result
+    /// is zeroizing and the caller must treat it as sensitive.
+    async fn export_private_key(&self, key: &KeyHandle) -> Result<Zeroizing<Vec<u8>>> {
+        if !matches!(key.provider_id, ProviderId::Software) {
+            return Err(Error::InvalidKeyHandle(
+                "Key handle is not from software provider".into(),
+            ));
+        }
+
+        let keys = self.keys.read().unwrap();
+        let key_pair = keys
+            .get(&key.key_id)
+            .ok_or_else(|| Error::InvalidKeyHandle("Key not found in software provider".into()))?;
+
+        match key_pair {
+            KeyPair::Rsa(rsa_kp) => {
+                let doc = rsa_kp.private_key.to_pkcs8_der().map_err(|e| {
+                    Error::Encoding(format!("RSA PKCS#8 export failed: {}", e))
+                })?;
+                Ok(Zeroizing::new(doc.as_bytes().to_vec()))
+            }
+            // ECDSA private keys are already stored as PKCS#8 DER.
+            KeyPair::Ecdsa(ecdsa_kp) => Ok(Zeroizing::new(ecdsa_kp.private_key.to_vec())),
+            KeyPair::Ed25519(_) | KeyPair::MlDsa(_) => Err(Error::NotImplemented(
+                "private key export for this key type is not supported".to_string(),
+            )),
+        }
+    }
+
     async fn import_key(
         &self,
         key_type: KeyType,
@@ -1065,5 +1096,38 @@ mod ml_dsa_tests {
     #[tokio::test]
     async fn ml_dsa_87_roundtrip() {
         ml_dsa_roundtrip(KeyType::MlDsa87, Algorithm::MlDsa87).await;
+    }
+
+    /// export_private_key returns valid PKCS#8 for software RSA and ECDSA keys
+    /// (used by EST server-side keygen), and errors for unsupported types.
+    #[tokio::test]
+    async fn export_private_key_pkcs8() {
+        use crate::CryptoProvider;
+        use pkcs8::PrivateKeyInfo;
+
+        let provider = SoftwareProvider::new();
+
+        // ECDSA P-256 and RSA-2048 must both export structurally valid PKCS#8.
+        for (kt, label) in [(KeyType::EcP256, "exp-ec"), (KeyType::Rsa2048, "exp-rsa")] {
+            let handle = provider.generate_key_pair(kt, label, true).await.unwrap();
+            let pkcs8 = provider.export_private_key(&handle).await.unwrap();
+            PrivateKeyInfo::try_from(pkcs8.as_slice())
+                .unwrap_or_else(|e| panic!("{:?} export is not valid PKCS#8: {e}", kt));
+        }
+
+        // RSA PKCS#8 additionally round-trips through the rsa parser.
+        let rsa_key = provider
+            .generate_key_pair(KeyType::Rsa2048, "exp-rsa2", true)
+            .await
+            .unwrap();
+        let rsa_pkcs8 = provider.export_private_key(&rsa_key).await.unwrap();
+        rsa::RsaPrivateKey::from_pkcs8_der(&rsa_pkcs8).expect("valid RSA PKCS#8");
+
+        // Ed25519 export is not supported by this provider.
+        let ed = provider
+            .generate_key_pair(KeyType::Ed25519, "exp-ed", true)
+            .await
+            .unwrap();
+        assert!(provider.export_private_key(&ed).await.is_err());
     }
 }
