@@ -36,6 +36,10 @@ path = "integration/acme_full_flow_test.rs"
 name = "est_serverkeygen_e2e"
 path = "integration/est_serverkeygen_e2e.rs"
 
+[[test]]
+name = "mtls_peercert_e2e"
+path = "integration/mtls_peercert_e2e.rs"
+
 [dependencies]
 # OstrichPKI crates
 ostrich-common = { path = "../crates/ostrich-common" }

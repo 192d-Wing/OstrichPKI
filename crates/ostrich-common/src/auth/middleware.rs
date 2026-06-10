@@ -40,10 +40,11 @@ use tracing::{debug, warn};
 
 use super::{
     permissions::Permission,
-    provider::{AuthError, AuthProvider},
+    provider::{AuthError, AuthProvider, Credentials},
     rbac::RbacPolicy,
     user::AuthenticatedUser,
 };
+use crate::tls::PeerCertificate;
 
 /// Authentication layer for Axum
 ///
@@ -95,6 +96,65 @@ impl AuthLayer {
         req.extensions_mut().insert(session_info.user);
 
         // Continue to next middleware/handler
+        Ok(next.run(req).await)
+    }
+}
+
+/// mTLS authentication layer for Axum.
+///
+/// Authenticates the request by the verified TLS *client certificate* (surfaced
+/// by [`crate::tls::serve`] as a [`PeerCertificate`] extension) rather than a
+/// bearer token. The certificate's subject is mapped to an account by the
+/// configured certificate [`AuthProvider`]; on success the resulting
+/// [`AuthenticatedUser`] is injected into the request extensions, so the same
+/// `AuthzLayer` permission checks apply. A request without a client certificate
+/// is rejected (RFC 7030 §3.3 requires mTLS for EST).
+///
+/// # COMPLIANCE MAPPING
+/// - NIAP PP-CA: FIA_UAU.1 - certificate-based authentication
+/// - NIST 800-53: IA-2 / AC-17 - identification via mTLS client certificate
+/// - RFC 7030 §3.3 / RFC 9325 - TLS client authentication
+#[allow(dead_code)]
+pub struct MtlsAuthLayer {
+    provider: Arc<dyn AuthProvider>,
+}
+
+impl MtlsAuthLayer {
+    /// Create a new mTLS authentication layer over a certificate auth provider.
+    pub fn new(provider: Arc<dyn AuthProvider>) -> Self {
+        Self { provider }
+    }
+
+    /// Middleware: authenticate by the verified TLS client certificate.
+    pub async fn authenticate(
+        State(provider): State<Arc<dyn AuthProvider>>,
+        mut req: Request,
+        next: Next,
+    ) -> Result<Response, AuthResponse> {
+        // The certificate was verified by rustls (WebPkiClientVerifier) during
+        // the handshake; here we only map its identity to an account.
+        let cert_der = req
+            .extensions()
+            .get::<PeerCertificate>()
+            .and_then(|p| p.0.clone())
+            .ok_or_else(|| {
+                debug!("mTLS required but no client certificate was presented");
+                AuthResponse::Unauthorized
+            })?;
+
+        let credentials = Credentials::Certificate {
+            cert_chain: vec![cert_der],
+            client_ip: None,
+        };
+        let user = provider.authenticate(&credentials).await.map_err(|e| {
+            warn!(error = %e, "mTLS client certificate authentication failed");
+            match e {
+                AuthError::AccountLocked { .. } => AuthResponse::Forbidden,
+                _ => AuthResponse::Unauthorized,
+            }
+        })?;
+
+        req.extensions_mut().insert(user);
         Ok(next.run(req).await)
     }
 }

@@ -230,6 +230,34 @@ impl UserRepository for DbUserRepository {
     }
 }
 
+/// Certificate-based user lookup for mTLS authentication (RFC 7030 §3.3).
+///
+/// Maps a verified TLS client certificate's subject DN to an account via the
+/// `certificate_subject` column (NIST 800-53 IA-2; NIAP FIA_UAU.1).
+#[async_trait]
+impl ostrich_common::auth::CertificateUserRepository for DbUserRepository {
+    async fn find_by_certificate_dn(
+        &self,
+        subject_dn: &str,
+    ) -> AuthResult<Option<UserAccount>> {
+        let row =
+            sqlx::query_as::<_, UserRow>("SELECT * FROM users WHERE certificate_subject = $1")
+                .bind(subject_dn)
+                .fetch_optional(self.pool.pool())
+                .await
+                .map_err(|e| AuthError::Internal(format!("Database error: {}", e)))?;
+        row.map(UserRow::into_account).transpose()
+    }
+
+    async fn find_by_username(&self, username: &str) -> AuthResult<Option<UserAccount>> {
+        <Self as UserRepository>::find_by_username(self, username).await
+    }
+
+    async fn update_last_login(&self, user_id: &UserId) -> AuthResult<()> {
+        <Self as UserRepository>::update_last_login(self, user_id).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

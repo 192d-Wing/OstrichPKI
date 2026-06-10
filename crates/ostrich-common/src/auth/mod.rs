@@ -70,7 +70,7 @@ pub mod user;
 
 // Re-export commonly used types
 pub use lockout::{AuthLockout, LockoutConfig, LockoutStatus};
-pub use middleware::{AuthLayer, AuthResponse, AuthUser, AuthzLayer};
+pub use middleware::{AuthLayer, AuthResponse, AuthUser, AuthzLayer, MtlsAuthLayer};
 pub use mtls::{CertificateAuthConfig, CertificateAuthProvider, CertificateUserRepository};
 pub use password::{PasswordAuthProvider, PasswordHashConfig, UserRepository};
 pub use permissions::{

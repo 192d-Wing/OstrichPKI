@@ -138,6 +138,85 @@ impl TlsSettings {
     }
 }
 
+/// Request extension carrying the verified TLS client (peer) certificate —
+/// the leaf, DER-encoded. `Some` only on an mTLS connection where the client
+/// presented a certificate (which, when a client CA is configured, the rustls
+/// `WebPkiClientVerifier` has already verified chains to it); `None` on plain
+/// TLS or HTTP. Handlers read this to authenticate by certificate (NIST AC-17 /
+/// IA-2; NIAP FIA_UAU.1 / FTP_ITC.1).
+#[derive(Clone, Debug)]
+pub struct PeerCertificate(pub Option<Vec<u8>>);
+
+/// axum-server `Accept` wrapper that, after the rustls handshake completes,
+/// captures the verified client certificate and injects it into every request
+/// on that connection as a [`PeerCertificate`] extension.
+#[derive(Clone)]
+struct MtlsAcceptor(axum_server::tls_rustls::RustlsAcceptor);
+
+impl<I, S> axum_server::accept::Accept<I, S> for MtlsAcceptor
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    S: Send + 'static,
+{
+    type Stream = tokio_rustls::server::TlsStream<I>;
+    type Service = InjectPeerCert<S>;
+    type Future = std::pin::Pin<
+        Box<dyn Future<Output = std::io::Result<(Self::Stream, Self::Service)>> + Send>,
+    >;
+
+    fn accept(&self, stream: I, service: S) -> Self::Future {
+        let acceptor = self.0.clone();
+        Box::pin(async move {
+            let (tls_stream, service) =
+                axum_server::accept::Accept::accept(&acceptor, stream, service).await?;
+            // peer_certificates() is populated once the handshake (awaited inside
+            // the inner acceptor) has completed.
+            let cert = tls_stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|certs| certs.first())
+                .map(|c| c.as_ref().to_vec());
+            Ok((
+                tls_stream,
+                InjectPeerCert {
+                    inner: service,
+                    cert: PeerCertificate(cert),
+                },
+            ))
+        })
+    }
+}
+
+/// Per-connection tower service that inserts the connection's
+/// [`PeerCertificate`] into each request's extensions.
+#[derive(Clone)]
+struct InjectPeerCert<S> {
+    inner: S,
+    cert: PeerCertificate,
+}
+
+impl<S, B> tower::Service<axum::http::Request<B>> for InjectPeerCert<S>
+where
+    S: tower::Service<axum::http::Request<B>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut req: axum::http::Request<B>) -> Self::Future {
+        req.extensions_mut().insert(self.cert.clone());
+        self.inner.call(req)
+    }
+}
+
 /// Serve an axum router, with TLS when configured and plain HTTP otherwise.
 ///
 /// The `shutdown` future triggers a graceful shutdown (in-flight requests get
@@ -165,14 +244,17 @@ pub async fn serve(
                 mtls = settings.client_ca_path.is_some(),
                 "Serving HTTPS (TLS 1.3)"
             );
-            axum_server::bind_rustls(
-                addr,
+            // Custom acceptor surfaces the verified client certificate to
+            // handlers via the PeerCertificate request extension (mTLS auth).
+            let acceptor = MtlsAcceptor(axum_server::tls_rustls::RustlsAcceptor::new(
                 axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(config)),
-            )
-            .handle(handle)
-            .serve(app.into_make_service())
-            .await
-            .map_err(|e| Error::Config(format!("HTTPS server error: {e}")))
+            ));
+            axum_server::bind(addr)
+                .handle(handle)
+                .acceptor(acceptor)
+                .serve(app.into_make_service())
+                .await
+                .map_err(|e| Error::Config(format!("HTTPS server error: {e}")))
         }
         None => {
             // NIST 800-53: SC-8 - plain HTTP violates transmission

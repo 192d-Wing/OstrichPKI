@@ -61,3 +61,5 @@ tower = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 axum-server = { workspace = true }
+# Surface the verified mTLS client certificate to handlers (custom Accept).
+tokio-rustls = { workspace = true }

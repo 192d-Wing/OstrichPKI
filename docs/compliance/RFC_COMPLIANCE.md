@@ -883,27 +883,23 @@ plus a CA-issued certificate for it, end to end.
 
 #### §3.6: Mutual TLS Authentication
 
-**Status:** 🟡 **Partial**
+**Status:** 🟢 **Implemented**
 
 **Requirement:** EST server MUST authenticate clients via TLS client certificates
 
 **Implementation:**
 
-- [crates/ostrich-est/src/mtls.rs](../../crates/ostrich-est/src/mtls.rs) - mTLS module (Phase 11)
+- [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - the TLS listener requires a client certificate when a client CA is configured (`WebPkiClientVerifier`), and a custom axum-server `Accept` surfaces the verified certificate to handlers as a `PeerCertificate` request extension.
+- [crates/ostrich-common/src/auth/middleware.rs](../../crates/ostrich-common/src/auth/middleware.rs) - `MtlsAuthLayer` authenticates the request by that certificate via the certificate `AuthProvider`, mapping the subject to an account and injecting the `AuthenticatedUser` (so the same RBAC permission checks apply).
+- [crates/ostrich-common/src/auth/mtls.rs](../../crates/ostrich-common/src/auth/mtls.rs) - `CertificateAuthProvider`; [crates/ostrich-db/src/repository/users.rs](../../crates/ostrich-db/src/repository/users.rs) - `DbUserRepository: CertificateUserRepository` (subject → account via `certificate_subject`).
+- [services/est-server/src/main.rs](../../services/est-server/src/main.rs) - selects mTLS authentication when `--tls-ca-cert` is configured; EST router applies `MtlsAuthLayer` (`EstState::with_mtls_auth`).
 
 **Evidence:**
 
-- ✅ MtlsClientCert structure for parsed certificates
-- ✅ Certificate expiration validation
-- ✅ Client identifier computation (SHA-256 of cert DER)
-- ⚠️ TLS server configuration pending
-
-**Gaps:**
-
-- TLS server not configured to require client certificates
-- Certificate extraction from TLS connection pending
-
-**Remediation:** Phase 16 - Configure Axum/tonic for mTLS, extract peer certificates
+- ✅ TLS server requires + verifies client certificates (WebPkiClientVerifier)
+- ✅ Verified client certificate extracted from the TLS connection and surfaced to handlers
+- ✅ Certificate subject mapped to an account; request authenticated as that user
+- ✅ **Live proof:** [tests/integration/mtls_peercert_e2e.rs](../../tests/integration/mtls_peercert_e2e.rs) — over real TLS, the handler receives the verified client certificate's subject, and a connection without a client certificate is rejected at the handshake.
 
 ---
 

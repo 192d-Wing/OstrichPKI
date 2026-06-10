@@ -90,18 +90,35 @@ async fn main() -> Result<()> {
     //
     // POAM: sessions are in-memory (SessionManager); they do not survive a
     // restart and do not replicate across instances.
-    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> =
+    // RFC 7030 §3.3 expects EST clients to authenticate with a TLS client
+    // certificate. When mTLS is configured (--tls-ca-cert), authenticate by the
+    // verified client certificate (mapped to an account by certificate_subject);
+    // otherwise fall back to bearer/password auth.
+    let use_mtls_auth = args.tls_ca_cert.is_some();
+    let user_repo = Arc::new(ostrich_db::repository::DbUserRepository::new(db_pool.clone()));
+    let lockout = Arc::new(ostrich_common::auth::AuthLockout::new(
+        ostrich_common::auth::LockoutConfig::default(),
+    ));
+    let sessions = Arc::new(ostrich_common::auth::SessionManager::new(
+        ostrich_common::auth::SessionConfig::default(),
+    ));
+    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> = if use_mtls_auth {
+        tracing::info!("EST mTLS client-certificate authentication enabled (RFC 7030 §3.3)");
+        Arc::new(ostrich_common::auth::CertificateAuthProvider::new(
+            ostrich_common::auth::CertificateAuthConfig::default(),
+            user_repo.clone(),
+            lockout,
+            sessions,
+        ))
+    } else {
+        tracing::warn!(
+            "EST using bearer/password authentication (no --tls-ca-cert configured); \
+             RFC 7030 §3.3 expects mTLS client authentication."
+        );
         Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
-            Arc::new(ostrich_db::repository::DbUserRepository::new(
-                db_pool.clone(),
-            )),
-            Arc::new(ostrich_common::auth::AuthLockout::new(
-                ostrich_common::auth::LockoutConfig::default(),
-            )),
-            Arc::new(ostrich_common::auth::SessionManager::new(
-                ostrich_common::auth::SessionConfig::default(),
-            )),
-        ));
+            user_repo, lockout, sessions,
+        ))
+    };
     let rbac_policy = Arc::new(ostrich_common::auth::RbacPolicy::new());
 
     // Initialize the CA client for certificate issuance (RFC 7030 §4.2).
@@ -143,7 +160,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let state = ostrich_est::rest::EstState::new_with_auth(
+    let mut state = ostrich_est::rest::EstState::new_with_auth(
         db_pool,
         Arc::new(crypto_provider),
         Arc::new(audit_sink),
@@ -152,6 +169,9 @@ async fn main() -> Result<()> {
     )
     .with_ca(ca_client, ca_certificate_der)
     .with_profile(args.enroll_profile.clone());
+    if use_mtls_auth {
+        state = state.with_mtls_auth();
+    }
 
     // Create router and mount the shared session API (login/logout).
     // Public by necessity; brute-force is mitigated by lockout (AC-7 / FIA_AFL.1).

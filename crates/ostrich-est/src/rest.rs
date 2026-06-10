@@ -81,6 +81,10 @@ pub struct EstState {
     /// Certificate profile used for enrollment/re-enrollment (RFC 7030 §4.2).
     /// NIST 800-53: CM-6 - Configurable issuance profile (secure default).
     pub enroll_profile: String,
+    /// When true, protected endpoints authenticate by the verified TLS client
+    /// certificate (RFC 7030 §3.3 mTLS) using `MtlsAuthLayer` + the certificate
+    /// `auth_provider`, instead of bearer tokens.
+    pub use_mtls_auth: bool,
 }
 
 impl EstState {
@@ -167,6 +171,7 @@ impl EstState {
             ca_client: None,
             ca_certificate_der: None,
             enroll_profile: "tls_client".to_string(),
+            use_mtls_auth: false,
         }
     }
 
@@ -187,6 +192,7 @@ impl EstState {
             ca_client: None,
             ca_certificate_der: None,
             enroll_profile: "tls_client".to_string(),
+            use_mtls_auth: false,
         }
     }
 
@@ -209,6 +215,13 @@ impl EstState {
     /// NIST 800-53: CM-6 - Configuration settings (secure default "tls_client").
     pub fn with_profile(mut self, profile_name: impl Into<String>) -> Self {
         self.enroll_profile = profile_name.into();
+        self
+    }
+
+    /// Authenticate protected endpoints by the TLS client certificate (mTLS,
+    /// RFC 7030 §3.3). `auth_provider` must be a certificate auth provider.
+    pub fn with_mtls_auth(mut self) -> Self {
+        self.use_mtls_auth = true;
         self
     }
 }
@@ -273,11 +286,22 @@ pub fn create_router(state: EstState) -> Router {
         .route(
             "/.well-known/est/serverkeygen",
             post(server_key_gen).route_layer(authz(Permission::SubmitRequest, "est-serverkeygen")),
-        )
-        .layer(middleware::from_fn_with_state(
+        );
+
+    // RFC 7030 §3.3: enrollment requires client authentication. By default this
+    // is a bearer session token; with mTLS enabled the client is authenticated
+    // by its verified TLS certificate (MtlsAuthLayer) instead.
+    let protected_routes = if state.use_mtls_auth {
+        protected_routes.layer(middleware::from_fn_with_state(
+            auth_provider,
+            ostrich_common::auth::MtlsAuthLayer::authenticate,
+        ))
+    } else {
+        protected_routes.layer(middleware::from_fn_with_state(
             auth_provider,
             AuthLayer::authenticate,
-        ));
+        ))
+    };
 
     // Merge public and protected routes
     Router::new()
