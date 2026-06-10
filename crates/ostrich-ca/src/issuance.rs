@@ -758,12 +758,17 @@ impl CertificateIssuer {
     ///
     /// RFC 5280 §4.1.2.2 - Serial number must be positive and unique
     fn generate_serial_number(&self) -> Result<SerialNumber> {
-        use ostrich_common::util::random::secure_random_bytes;
+        // RFC 5280 §4.1.2.2 - serial number is a positive integer, ≤ 20 octets.
+        // Draw 20 bytes (160 bits) from the NIST SP 800-90A CTR_DRBG (AES-256)
+        // rather than the `rand` crate, which is not a FIPS-validated DRBG.
+        //
+        // COMPLIANCE MAPPING:
+        // - NIAP PP-CA: FCS_RBG_EXT.1 - Random Bit Generation
+        // - NIST SP 800-90A - CTR_DRBG; FIPS 186-5 - unpredictable serials
+        let mut bytes = ostrich_crypto::fips_random_bytes(20)?;
 
-        // Generate 20 random bytes (160 bits) - RFC 5280 maximum
-        let mut bytes = secure_random_bytes(20);
-
-        // Ensure positive (clear high bit)
+        // Ensure positive (clear high bit). 20 random bytes with the top bit
+        // cleared remain well above the 64-bit (≥20 random bits) entropy floor.
         bytes[0] &= 0x7F;
 
         SerialNumber::from_bytes(bytes).map_err(Error::Common)

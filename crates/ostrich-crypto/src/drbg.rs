@@ -666,6 +666,36 @@ impl Clone for SecureRng {
     }
 }
 
+/// Process-wide FIPS DRBG, lazily instantiated on first use.
+///
+/// `Mutex::new(None)` is a const initializer, so no `OnceLock`/`LazyLock` is
+/// needed. The DRBG is instantiated (drawing OS entropy) the first time
+/// [`fips_random_bytes`] is called, then reused for the process lifetime.
+static GLOBAL_RNG: Mutex<Option<SecureRng>> = Mutex::new(None);
+
+/// Generate `len` random bytes from the process-wide NIST SP 800-90A CTR_DRBG.
+///
+/// This is the FIPS-validated-DRBG source that security-sensitive randomness
+/// (e.g. X.509 certificate serial numbers) must use instead of the `rand`
+/// crate, which is not a NIST SP 800-90A DRBG.
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FCS_RBG_EXT.1 - Random Bit Generation (CTR_DRBG, AES-256)
+/// - NIST SP 800-90A Rev 1 §10.2 - CTR_DRBG
+/// - NIST 800-53: SC-13 - Cryptographic protection
+pub fn fips_random_bytes(len: usize) -> Result<Vec<u8>> {
+    // Instantiate (or reuse) the global RNG, then drop the outer lock before
+    // generating so concurrent callers only contend on the DRBG's own mutex.
+    let rng = {
+        let mut guard = GLOBAL_RNG.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(SecureRng::new()?);
+        }
+        guard.as_ref().unwrap().clone()
+    };
+    rng.fill_bytes(len)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,6 +714,20 @@ mod tests {
         let output = drbg.generate(32);
         assert!(output.is_ok(), "DRBG generation should succeed");
         assert_eq!(output.unwrap().len(), 32, "Output should be 32 bytes");
+    }
+
+    /// FCS_RBG_EXT.1 - the process-wide FIPS DRBG helper used for certificate
+    /// serial numbers returns the requested length and distinct outputs.
+    #[test]
+    fn test_fips_random_bytes() {
+        let a = fips_random_bytes(20).expect("fips_random_bytes");
+        let b = fips_random_bytes(20).expect("fips_random_bytes");
+        assert_eq!(a.len(), 20);
+        assert_eq!(b.len(), 20);
+        assert_ne!(a, b, "successive DRBG outputs must differ");
+        // Lazy global instantiation works on repeated calls of varying sizes.
+        assert_eq!(fips_random_bytes(1).unwrap().len(), 1);
+        assert_eq!(fips_random_bytes(64).unwrap().len(), 64);
     }
 
     #[test]

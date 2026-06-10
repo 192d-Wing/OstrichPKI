@@ -95,18 +95,20 @@ These gaps MUST be resolved before any certification attempt.
 
 **Code References:**
 
-- [crates/ostrich-crypto/src/drbg/mod.rs](../../crates/ostrich-crypto/src/drbg/mod.rs) - Main DRBG implementation
-- [crates/ostrich-crypto/src/drbg/ctr_drbg.rs](../../crates/ostrich-crypto/src/drbg/ctr_drbg.rs) - CTR_DRBG (AES-256)
-- [crates/ostrich-crypto/src/drbg/health_tests.rs](../../crates/ostrich-crypto/src/drbg/health_tests.rs) - FIPS 140-3 health tests
+- [crates/ostrich-crypto/src/drbg.rs](../../crates/ostrich-crypto/src/drbg.rs) - CTR_DRBG (AES-256) implementation, `SecureRng`, and the process-wide `fips_random_bytes()` helper
+- [crates/ostrich-ca/src/issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - `generate_serial_number` draws certificate serials from `fips_random_bytes` (was the `rand` crate)
+- [tools/ostrich-init/src/main.rs](../../tools/ostrich-init/src/main.rs) - root/subordinate CA serials likewise drawn from the DRBG
 
 **Test Coverage:**
 
-- ✅ 21 unit tests covering all DRBG functionality
-- ✅ Startup health tests (repetition count, adaptive proportion)
-- ✅ Continuous health tests during generation
+- ✅ DRBG unit tests (instantiation, generation, reseeding, health tests)
+- ✅ Startup + continuous health tests (repetition count, adaptive proportion)
 - ✅ Reseeding before 2^48 requests
-- ✅ Entropy source validation
-- ✅ Serial number generation integration
+- ✅ `fips_random_bytes` helper test (length, distinctness)
+- ✅ **Serial-number integration is real and live-verified**: `issuance_aia_e2e`
+  issues a certificate whose serial comes from the DRBG and `openssl x509`
+  parses it successfully (previously the issuer used the non-validated `rand`
+  crate — this wiring closes that gap).
 
 **NIST SP 800-90A Compliance:**
 

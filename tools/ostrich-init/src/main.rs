@@ -224,7 +224,9 @@ async fn main() -> Result<()> {
     };
 
     // RFC 5280 §4.1.2.2 - positive random serial, <= 20 octets
-    let mut serial_bytes = ostrich_common::util::random::secure_random_bytes(20);
+    // RFC 5280 §4.1.2.2 - positive random serial from the FIPS DRBG
+    // (NIST SP 800-90A CTR_DRBG), not the `rand` crate. NIAP FCS_RBG_EXT.1.
+    let mut serial_bytes = ostrich_crypto::fips_random_bytes(20)?;
     serial_bytes[0] &= 0x7F;
     let serial = SerialNumber::from_bytes(serial_bytes)?;
 
@@ -428,7 +430,9 @@ async fn run_subordinate(
     let path_len = args.path_len.unwrap_or(0);
 
     // RFC 5280 §4.1.2.2 - positive random serial, <= 20 octets.
-    let mut serial_bytes = ostrich_common::util::random::secure_random_bytes(20);
+    // RFC 5280 §4.1.2.2 - positive random serial from the FIPS DRBG
+    // (NIST SP 800-90A CTR_DRBG), not the `rand` crate. NIAP FCS_RBG_EXT.1.
+    let mut serial_bytes = ostrich_crypto::fips_random_bytes(20)?;
     serial_bytes[0] &= 0x7F;
     let serial = SerialNumber::from_bytes(serial_bytes)?;
 

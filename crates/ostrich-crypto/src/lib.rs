@@ -32,6 +32,7 @@ pub mod verify;
 
 // Re-exports
 pub use algorithm::{Algorithm, KeyType};
+pub use drbg::{Drbg, SecureRng, fips_random_bytes};
 pub use error::{Error, Result};
 pub use hsm_validation::HsmKeyValidator;
 pub use key::KeyHandle;
