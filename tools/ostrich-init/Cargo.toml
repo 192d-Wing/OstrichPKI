@@ -31,6 +31,7 @@ secrecy = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
 
 # Error handling & logging
 anyhow = { workspace = true }

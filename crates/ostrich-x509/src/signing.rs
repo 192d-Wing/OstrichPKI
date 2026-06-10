@@ -167,6 +167,43 @@ pub fn algorithm_identifier_der(alg: Algorithm) -> Result<Vec<u8>> {
         .map_err(|e| Error::Encoding(format!("failed to encode AlgorithmIdentifier: {}", e)))
 }
 
+/// Compute the RFC 5280 §4.2.1.2 method-(1) key identifier for a public key.
+///
+/// The key identifier is the 160-bit SHA-1 digest of the value of the
+/// `subjectPublicKey` BIT STRING (the public-key bytes only, *excluding* the
+/// BIT STRING tag, length and unused-bits octet). It is used as the value of
+/// the Subject Key Identifier extension (§4.2.1.2) on the key's own certificate
+/// and, for the issuer's key, as the keyIdentifier of the Authority Key
+/// Identifier extension (§4.2.1.1) on certificates that key signs.
+///
+/// SHA-1 is used here per RFC 5280's recommended method; it is a hash of a
+/// *public* identifier (not a security-sensitive digest), so SHA-1's collision
+/// weakness is not relevant to this use.
+///
+/// # Compliance Mapping
+/// - RFC 5280 §4.2.1.2 - Subject Key Identifier (method 1: SHA-1 of public key)
+/// - RFC 5280 §4.2.1.1 - Authority Key Identifier keyIdentifier derivation
+/// - NIAP PP-CA: FDP_CER_EXT.1 - certificate field generation
+/// - FIPS 180-4 - SHA-1
+///
+/// `spki_der` is a DER-encoded SubjectPublicKeyInfo.
+pub fn key_identifier(spki_der: &[u8]) -> Result<Vec<u8>> {
+    use sha1::{Digest, Sha1};
+    use spki::SubjectPublicKeyInfoOwned;
+
+    let spki = SubjectPublicKeyInfoOwned::try_from(spki_der).map_err(|e| {
+        Error::Encoding(format!("failed to parse SubjectPublicKeyInfo for key id: {}", e))
+    })?;
+
+    // RFC 5280 §4.2.1.2 - hash the BIT STRING *contents* (the raw public-key
+    // bytes), not the full SPKI and not the BIT STRING with its unused-bits
+    // octet. `raw_bytes()` returns exactly those contents.
+    let public_key_bits = spki.subject_public_key.raw_bytes();
+
+    let digest = Sha1::digest(public_key_bits);
+    Ok(digest.to_vec())
+}
+
 /// Convert a crypto provider's raw signature into the bytes X.509 puts in the
 /// signature BIT STRING.
 ///
@@ -355,6 +392,38 @@ mod tests {
         assert_eq!(items.len(), 2, "Ecdsa-Sig-Value must hold two INTEGERs");
         assert_eq!(items[0].as_bytes(), &[0x11]);
         assert_eq!(items[1].as_bytes(), &[0x22]);
+    }
+
+    #[test]
+    fn key_identifier_is_stable_20_bytes() {
+        // A minimal valid Ed25519 SubjectPublicKeyInfo (RFC 8410): SEQUENCE {
+        // SEQUENCE { OID id-Ed25519 }, BIT STRING (32-byte public key) }.
+        // We only need a well-formed SPKI; the key value itself is arbitrary.
+        let spki = hex::decode(
+            "302a300506032b6570032100\
+             0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        )
+        .unwrap();
+
+        let ki = key_identifier(&spki).unwrap();
+        // RFC 5280 §4.2.1.2 method 1: 160-bit (20-byte) SHA-1 digest.
+        assert_eq!(ki.len(), 20, "key identifier must be 160 bits");
+
+        // Stable: same input -> same output.
+        let ki2 = key_identifier(&spki).unwrap();
+        assert_eq!(ki, ki2, "key identifier must be deterministic");
+
+        // It hashes the BIT STRING contents (the 32 public-key bytes), so it
+        // equals SHA-1 over exactly those bytes.
+        use sha1::{Digest, Sha1};
+        let pubkey: Vec<u8> = (1u8..=32).collect();
+        let expected = Sha1::digest(&pubkey).to_vec();
+        assert_eq!(ki, expected, "must be SHA-1 of subjectPublicKey contents");
+    }
+
+    #[test]
+    fn key_identifier_rejects_garbage() {
+        assert!(key_identifier(&[0x00, 0x01, 0x02]).is_err());
     }
 
     #[test]

@@ -104,8 +104,8 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
 
 **Mandatory Extensions (CA Certificates):**
 
-- ✅ §4.2.1.1 - **Authority Key Identifier**: Links cert to issuing CA's public key, properly DER encoded
-- ✅ §4.2.1.2 - **Subject Key Identifier**: SHA-256 hash of public key, DER encoded
+- ✅ §4.2.1.1 - **Authority Key Identifier**: Links cert to issuing CA's public key (keyIdentifier = issuer's method-1 key id), properly DER encoded. Computed and applied to issued leaves and to subordinate CA certificates from the issuer's SubjectPublicKeyInfo (`signing::key_identifier`)
+- ✅ §4.2.1.2 - **Subject Key Identifier**: RFC 5280 method (1) - 160-bit SHA-1 of the subjectPublicKey BIT STRING contents (`signing::key_identifier`, `crates/ostrich-x509/src/signing.rs`). Applied to issued leaves (`ostrich-ca/src/issuance.rs`) and subordinate CA certs (`tools/ostrich-init`)
 - ✅ §4.2.1.3 - **Key Usage** (CRITICAL): All 9 usages (digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment, keyAgreement, keyCertSign, cRLSign, encipherOnly, decipherOnly), proper BitString encoding
 - ✅ §4.2.1.9 - **Basic Constraints** (CRITICAL): CA boolean flag, optional pathLenConstraint, DER encoded
 
@@ -272,6 +272,11 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
 
 - ✅ Trust anchor store (in-memory with database-ready design)
 - ✅ Certificate chain building
+- ✅ **CA hierarchy issuance** (root → intermediate → leaf): a root CA can sign a
+  subordinate (intermediate) CA certificate via `ostrich-init --subordinate-of`
+  (basicConstraints CA=true with pathLenConstraint per §4.2.1.9, AKI=parent SKI),
+  and issued leaves carry SKI (own key id) + AKI (issuer key id) so paths build
+  reliably (`tools/ostrich-init/src/main.rs`, `ostrich-ca/src/issuance.rs`)
 - ✅ Path validation with multiple validation steps
 - ✅ Basic constraints enforcement (CA flag, pathLenConstraint)
 - ✅ Key usage validation

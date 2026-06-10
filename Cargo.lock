@@ -3569,6 +3569,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "x509-cert",
 ]
 
@@ -3809,6 +3810,7 @@ dependencies = [
  "pkcs1",
  "pkcs8",
  "serde",
+ "sha1",
  "sha2",
  "spki",
  "thiserror 2.0.17",

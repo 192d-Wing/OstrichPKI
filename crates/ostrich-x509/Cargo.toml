@@ -24,6 +24,7 @@ pem-rfc7468 = { workspace = true }
 
 # Cryptographic primitives
 sha2 = { workspace = true }
+sha1 = { workspace = true }
 digest = { workspace = true }
 
 # Async

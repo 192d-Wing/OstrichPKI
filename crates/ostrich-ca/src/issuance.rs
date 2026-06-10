@@ -411,6 +411,41 @@ impl CertificateIssuer {
             .public_key(request.public_key.clone())
             .signature_algorithm(sig_alg);
 
+        // COMPLIANCE MAPPING:
+        // - RFC 5280 §4.2.1.2 - Subject Key Identifier: SHA-1 of the leaf's own
+        //   subjectPublicKey, so verifiers and downstream issuers can reference
+        //   this certificate's key.
+        // - NIAP PP-CA: FDP_CER_EXT.1 - certificate field generation
+        //
+        // Computed from the subject's SPKI (request.public_key). A malformed
+        // SPKI would already have failed TBS encoding, so a failure here is a
+        // genuine error and is surfaced rather than silently dropped.
+        let ski = ostrich_x509::signing::key_identifier(&request.public_key)
+            .map_err(|e| Error::Issuance(format!("failed to compute subject key id: {}", e)))?;
+        builder = builder.subject_key_id(ski);
+
+        // COMPLIANCE MAPPING:
+        // - RFC 5280 §4.2.1.1 - Authority Key Identifier: the issuer's
+        //   subjectKeyIdentifier, so this leaf points at the key that signed it
+        //   and path builders can chain leaf -> issuer reliably.
+        //
+        // Derived from the CA certificate's SPKI. Kept robust: if AKI cannot be
+        // computed (e.g. an unparseable CA cert), we log and proceed without it
+        // rather than failing issuance - AKI is a path-building hint, not a
+        // correctness requirement for the signature.
+        match Self::ca_subject_public_key_info(&self.ca_certificate.der_encoded)
+            .and_then(|spki| {
+                ostrich_x509::signing::key_identifier(&spki)
+                    .map_err(|e| Error::Issuance(format!("AKI key id: {}", e)))
+            }) {
+            Ok(aki) => builder = builder.authority_key_id(aki),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "Could not compute Authority Key Identifier from CA certificate; \
+                 issuing leaf without AKI"
+            ),
+        }
+
         // Add subject alternative names
         for san in request.subject_alt_names {
             builder = builder.add_subject_alt_name(san);
@@ -510,6 +545,18 @@ impl CertificateIssuer {
             not_before: tbs_cert.not_before,
             not_after: tbs_cert.not_after,
         })
+    }
+
+    /// Extract the DER-encoded SubjectPublicKeyInfo from a CA certificate.
+    ///
+    /// Used to derive the issuer's key identifier for the Authority Key
+    /// Identifier extension (RFC 5280 §4.2.1.1) placed on issued leaves.
+    fn ca_subject_public_key_info(ca_cert_der: &[u8]) -> Result<Vec<u8>> {
+        // ParsedCertificate.public_key is the complete DER SubjectPublicKeyInfo
+        // (x509-parser's `public_key().raw`), exactly what key_identifier wants.
+        let parsed = ostrich_x509::parser::parse_certificate(ca_cert_der)
+            .map_err(|e| Error::Issuance(format!("failed to parse CA certificate for AKI: {}", e)))?;
+        Ok(parsed.public_key)
     }
 
     /// Build a signed X.509 certificate from TBS and signature

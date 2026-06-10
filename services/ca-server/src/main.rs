@@ -409,7 +409,15 @@ fn default_profiles() -> Vec<ostrich_x509::CertificateProfile> {
     acme_default.description =
         Some("ACME-issued TLS server certificates (RFC 8555)".to_string());
 
-    vec![tls_server, tls_client, acme_default]
+    // Subordinate (intermediate) CA issuance via gRPC: CA=true, keyCertSign +
+    // cRLSign, pathLenConstraint 0 (RFC 5280 §4.2.1.9), ~5 year validity.
+    // NIAP PP-CA: FMT_SMF.1 - CA hierarchy management.
+    let mut intermediate_ca = CertificateProfile::intermediate_ca(1825, 0);
+    intermediate_ca.name = "intermediate_ca".to_string();
+    intermediate_ca.description =
+        Some("Subordinate CA certificates (RFC 5280 §4.2.1.9)".to_string());
+
+    vec![tls_server, tls_client, acme_default, intermediate_ca]
 }
 
 /// Parse an ostrich-crypto enum (KeyType/Algorithm) from its serde string form.
