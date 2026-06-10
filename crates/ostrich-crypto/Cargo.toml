@@ -18,7 +18,9 @@ tokio = { workspace = true }
 # Cryptography
 ring = { workspace = true }
 rsa = { workspace = true }
-sha2 = { workspace = true }
+# `oid` provides Sha256/384/512: AssociatedOid, required by the prefixed
+# (standard, RFC 8017) RSASSA-PKCS1-v1_5 SigningKey/VerifyingKey::new.
+sha2 = { workspace = true, features = ["oid"] }
 digest = { workspace = true }
 getrandom = { workspace = true }
 aes = { workspace = true }

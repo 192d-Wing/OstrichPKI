@@ -190,10 +190,15 @@ mod tests {
 
     #[tokio::test]
     async fn server_keygen_ecdsa_roundtrip() {
-        // The REST handler uses ECDSA P-256 for server-side key generation. (The
-        // software provider's RSA PKCS#1 signatures are unprefixed and are not
-        // accepted by the stateless verify_with_spki path the CA uses to check
-        // proof-of-possession, so RSA serverkeygen is intentionally not wired.)
+        // The REST handler uses ECDSA P-256 by default for server-side keygen.
         roundtrip(KeyType::EcP256).await;
+    }
+
+    /// RSA server-side keygen also works now that the software provider emits
+    /// standard (prefixed) RSA PKCS#1 signatures that the CA's verify_with_spki
+    /// proof-of-possession check accepts.
+    #[tokio::test]
+    async fn server_keygen_rsa_roundtrip() {
+        roundtrip(KeyType::Rsa2048).await;
     }
 }

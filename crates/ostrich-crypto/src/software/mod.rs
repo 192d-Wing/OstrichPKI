@@ -175,19 +175,19 @@ impl SoftwareProvider {
             // RSA PKCS#1 v1.5 signatures
             Algorithm::RsaPkcs1Sha256 => {
                 let signing_key =
-                    Pkcs1SigningKey::<Sha256>::new_unprefixed(key_pair.private_key.clone());
+                    Pkcs1SigningKey::<Sha256>::new(key_pair.private_key.clone());
                 let signature = signing_key.sign(data);
                 Ok(signature.to_bytes().to_vec())
             }
             Algorithm::RsaPkcs1Sha384 => {
                 let signing_key =
-                    Pkcs1SigningKey::<Sha384>::new_unprefixed(key_pair.private_key.clone());
+                    Pkcs1SigningKey::<Sha384>::new(key_pair.private_key.clone());
                 let signature = signing_key.sign(data);
                 Ok(signature.to_bytes().to_vec())
             }
             Algorithm::RsaPkcs1Sha512 => {
                 let signing_key =
-                    Pkcs1SigningKey::<Sha512>::new_unprefixed(key_pair.private_key.clone());
+                    Pkcs1SigningKey::<Sha512>::new(key_pair.private_key.clone());
                 let signature = signing_key.sign(data);
                 Ok(signature.to_bytes().to_vec())
             }
@@ -230,21 +230,21 @@ impl SoftwareProvider {
             // RSA PKCS#1 v1.5 verification
             Algorithm::RsaPkcs1Sha256 => {
                 let verifying_key =
-                    Pkcs1VerifyingKey::<Sha256>::new_unprefixed(key_pair.public_key.clone());
+                    Pkcs1VerifyingKey::<Sha256>::new(key_pair.public_key.clone());
                 let sig = rsa::pkcs1v15::Signature::try_from(signature)
                     .map_err(|_| Error::Verification("Invalid PKCS#1 signature format".into()))?;
                 Ok(verifying_key.verify(data, &sig).is_ok())
             }
             Algorithm::RsaPkcs1Sha384 => {
                 let verifying_key =
-                    Pkcs1VerifyingKey::<Sha384>::new_unprefixed(key_pair.public_key.clone());
+                    Pkcs1VerifyingKey::<Sha384>::new(key_pair.public_key.clone());
                 let sig = rsa::pkcs1v15::Signature::try_from(signature)
                     .map_err(|_| Error::Verification("Invalid PKCS#1 signature format".into()))?;
                 Ok(verifying_key.verify(data, &sig).is_ok())
             }
             Algorithm::RsaPkcs1Sha512 => {
                 let verifying_key =
-                    Pkcs1VerifyingKey::<Sha512>::new_unprefixed(key_pair.public_key.clone());
+                    Pkcs1VerifyingKey::<Sha512>::new(key_pair.public_key.clone());
                 let sig = rsa::pkcs1v15::Signature::try_from(signature)
                     .map_err(|_| Error::Verification("Invalid PKCS#1 signature format".into()))?;
                 Ok(verifying_key.verify(data, &sig).is_ok())
@@ -1129,5 +1129,41 @@ mod ml_dsa_tests {
             .await
             .unwrap();
         assert!(provider.export_private_key(&ed).await.is_err());
+    }
+
+    /// Software RSA PKCS#1 v1.5 signatures are standard (prefixed, RFC 8017) and
+    /// verify through the stateless `verify_with_spki` path used by the CA, OCSP,
+    /// CSR proof-of-possession, and audit signing — they were previously
+    /// unprefixed and rejected by that verifier (and by openssl).
+    #[tokio::test]
+    async fn rsa_pkcs1_signature_verifies_with_spki() {
+        use crate::{CryptoProvider, verify_with_spki};
+
+        let provider = SoftwareProvider::new();
+        let data = b"server-side keygen proof-of-possession payload";
+
+        for (kt, alg) in [
+            (KeyType::Rsa2048, Algorithm::RsaPkcs1Sha256),
+            (KeyType::Rsa3072, Algorithm::RsaPkcs1Sha384),
+        ] {
+            let key = provider.generate_key_pair(kt, "rsa-spki", true).await.unwrap();
+            let spki = provider.export_public_key(&key).await.unwrap();
+            let sig = provider.sign(&key, alg, data).await.unwrap();
+
+            // The provider's own verify still round-trips.
+            assert!(
+                provider.verify(&key, alg, data, &sig).await.unwrap(),
+                "{:?} provider self-verify",
+                alg
+            );
+            // And the standard stateless verifier now accepts it.
+            assert!(
+                verify_with_spki(&spki, alg, data, &sig, false).unwrap(),
+                "{:?} must verify via verify_with_spki (prefixed PKCS#1)",
+                alg
+            );
+            // A tampered message is rejected.
+            assert!(!verify_with_spki(&spki, alg, b"other", &sig, false).unwrap());
+        }
     }
 }
