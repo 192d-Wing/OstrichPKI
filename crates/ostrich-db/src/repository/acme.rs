@@ -89,6 +89,39 @@ impl AcmeRepository {
         Ok(account)
     }
 
+    /// Find account by primary key (used when walking FK chains:
+    /// challenge -> authorization -> order -> account)
+    pub async fn find_account_by_uuid(&self, id: Uuid) -> Result<Option<AcmeAccount>> {
+        let account = sqlx::query_as::<_, AcmeAccount>("SELECT * FROM acme_accounts WHERE id = $1")
+            .bind(id)
+            .fetch_optional(self.pool.pool())
+            .await?;
+        Ok(account)
+    }
+
+    /// Find order by primary key
+    pub async fn find_order_by_uuid(&self, id: Uuid) -> Result<Option<AcmeOrder>> {
+        let order = sqlx::query_as::<_, AcmeOrder>("SELECT * FROM acme_orders WHERE id = $1")
+            .bind(id)
+            .fetch_optional(self.pool.pool())
+            .await?;
+        Ok(order)
+    }
+
+    /// Find authorization by primary key
+    pub async fn find_authorization_by_uuid(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<AcmeAuthorization>> {
+        let authz = sqlx::query_as::<_, AcmeAuthorization>(
+            "SELECT * FROM acme_authorizations WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.pool.pool())
+        .await?;
+        Ok(authz)
+    }
+
     /// Update account contact and status
     pub async fn update_account(
         &self,

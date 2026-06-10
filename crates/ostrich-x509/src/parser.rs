@@ -4,7 +4,7 @@
 //! RFC 2986: PKCS#10 certification request syntax
 
 use crate::{Error, Result};
-use ostrich_crypto::{Algorithm, CryptoProvider, KeyHandle};
+use ostrich_crypto::{Algorithm, CryptoProvider};
 use std::sync::Arc;
 use x509_parser::prelude::*;
 
@@ -568,7 +568,7 @@ fn extract_sans_from_csr(
 /// NIST 800-53: SI-10 - Validate cryptographic input
 pub async fn verify_csr_signature(
     csr: &ParsedCsr,
-    crypto_provider: &Arc<dyn CryptoProvider>,
+    _crypto_provider: &Arc<dyn CryptoProvider>,
 ) -> Result<bool> {
     // Re-parse the CSR to get the TBS (To Be Signed) portion
     let (_, parsed_csr) =
@@ -578,83 +578,23 @@ pub async fn verify_csr_signature(
     // The TBS portion is the CertificationRequestInfo, which is already in raw form
     let tbs_der = parsed_csr.certification_request_info.raw.to_vec();
 
-    // Import the public key for verification
-    let key_handle = import_public_key_for_verification(&csr.public_key, &csr.signature_algorithm)?;
-
     // Map signature algorithm to our Algorithm enum
     let algorithm = map_signature_algorithm_oid(&csr.signature_algorithm)?;
 
-    // Verify the signature
-    crypto_provider
-        .verify(&key_handle, algorithm, &tbs_der, &csr.signature)
-        .await
+    // Verify the self-signature (proof of possession) directly against the
+    // CSR's embedded public key. The requester's key is external and not
+    // resident in our crypto provider, so this is a stateless verification -
+    // an earlier version imported the key into the software provider and
+    // called provider.verify(), which used the provider's unprefixed PKCS#1
+    // encoding and rejected standard CSR signatures with "Key not found in
+    // software provider".
+    //
+    // RFC 2986: CSR ECDSA signatures are ASN.1 DER (X.509/CMS form), NOT the
+    // JWS fixed r||s form, so request `ecdsa_fixed = false`.
+    ostrich_crypto::verify_with_spki(&csr.public_key, algorithm, &tbs_der, &csr.signature, false)
         .map_err(|e| {
             Error::SignatureVerification(format!("CSR signature verification failed: {}", e))
         })
-}
-
-/// Import a public key from SPKI DER for verification
-/// Creates a temporary KeyHandle for signature verification
-fn import_public_key_for_verification(spki_der: &[u8], _sig_alg_oid: &str) -> Result<KeyHandle> {
-    use ostrich_crypto::KeyType;
-    use ostrich_crypto::key::ProviderId;
-
-    // Parse the SPKI to determine key type using x509-parser
-    let (_, spki) = SubjectPublicKeyInfo::from_der(spki_der)
-        .map_err(|e| Error::Parse(format!("Failed to parse SPKI: {}", e)))?;
-
-    // Determine key type and algorithm from SPKI algorithm OID
-    let oid_str = spki.algorithm.algorithm.to_id_string();
-
-    let (key_type, algorithm) = match oid_str.as_str() {
-        "1.2.840.113549.1.1.1" => {
-            // rsaEncryption - default to RSA 2048 and PKCS#1 SHA256
-            (KeyType::Rsa2048, Algorithm::RsaPkcs1Sha256)
-        }
-        "1.2.840.10045.2.1" => {
-            // ecPublicKey - check curve parameter
-            if let Some(params) = &spki.algorithm.parameters {
-                // Parse the curve OID from parameters
-                let curve_oid = format!("{:?}", params); // Simplified - would need proper parsing
-
-                // Match common curves (simplified)
-                if curve_oid.contains("1.2.840.10045.3.1.7") {
-                    (KeyType::EcP256, Algorithm::EcdsaP256Sha256)
-                } else if curve_oid.contains("1.3.132.0.34") {
-                    (KeyType::EcP384, Algorithm::EcdsaP384Sha384)
-                } else if curve_oid.contains("1.3.132.0.35") {
-                    (KeyType::EcP521, Algorithm::EcdsaP521Sha512)
-                } else {
-                    return Err(Error::Parse("Unsupported EC curve".to_string()));
-                }
-            } else {
-                return Err(Error::Parse(
-                    "EC public key missing curve parameter".to_string(),
-                ));
-            }
-        }
-        "1.3.101.112" => {
-            // id-Ed25519
-            (KeyType::Ed25519, Algorithm::Ed25519)
-        }
-        _ => {
-            return Err(Error::Parse(format!(
-                "Unsupported public key algorithm: {}",
-                oid_str
-            )));
-        }
-    };
-
-    // Create a temporary KeyHandle for verification
-    let key_id = uuid::Uuid::new_v4().as_bytes().to_vec();
-
-    Ok(KeyHandle {
-        key_id,
-        key_type,
-        provider_id: ProviderId::Software,
-        algorithm,
-        label: "temp-verification-key".to_string(),
-    })
 }
 
 /// Map signature algorithm OID to our Algorithm enum
@@ -831,7 +771,6 @@ impl RevocationReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ostrich_crypto::KeyType;
 
     // NOTE: Full CSR signature verification tests are integration tests
     // and run via ACME/EST REST endpoints (see rest.rs in those crates).
@@ -876,32 +815,6 @@ mod tests {
 
         // Unsupported algorithm
         assert!(map_signature_algorithm_oid("9.9.9.9.9").is_err());
-    }
-
-    /// Test public key import from SPKI
-    ///
-    /// COMPLIANCE MAPPING:
-    /// - RFC 5280 §4.1.2.7: SubjectPublicKeyInfo parsing
-    #[test]
-    fn test_import_public_key_for_verification() {
-        // Valid RSA public key SPKI (simplified, real SPKI would be longer)
-        // This is a minimal SPKI structure for RSA
-        let rsa_spki = hex::decode(
-            "30819f300d06092a864886f70d010101050003818d0030818902818100bb54\
-             94d4b7d52cf1c2a333311f6328e2580e11e3f3366d2d7e7d621c3e6ed3c2c2\
-             e789655b8c631681b646d5657d28913d78a88058553913a61d3633b35f4695\
-             65aab49bf25b61a476b4df06926dc26f985550756ad01923e45de12a005731\
-             bde9a8bc7a0ed2d9e14c79426e968019074e50387bec7b6c6a8e0d741208826\
-             656727339574bc80813d33e8aed2a862448d8e8ca60",
-        )
-        .unwrap();
-
-        let result = import_public_key_for_verification(&rsa_spki, "1.2.840.113549.1.1.11");
-        assert!(result.is_ok(), "Should import RSA public key successfully");
-
-        let key_handle = result.unwrap();
-        assert!(matches!(key_handle.key_type, KeyType::Rsa2048));
-        assert!(matches!(key_handle.algorithm, Algorithm::RsaPkcs1Sha256));
     }
 
     /// Test Distinguished Name parsing with all attributes

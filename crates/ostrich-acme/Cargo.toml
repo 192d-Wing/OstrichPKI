@@ -53,3 +53,4 @@ rustls = { workspace = true }
 
 # Utilities
 thiserror = { workspace = true }
+tracing = { workspace = true }

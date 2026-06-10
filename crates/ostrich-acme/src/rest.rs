@@ -83,6 +83,11 @@ pub struct AcmeState {
     /// issuing a fake certificate.
     /// NIST 800-53: SC-17 - PKI certificate issuance via CA service
     pub ca_client: Option<Arc<crate::ca_integration::AcmeCaClient>>,
+    /// HTTP-01 fetch port (RFC 8555 §8.3 mandates 80; overridable for dev/E2E)
+    pub http01_port: u16,
+    /// Permit private-IP/localhost identifiers (disables the SI-10 SSRF
+    /// guard). Dev/E2E ONLY.
+    pub allow_private_ip_domains: bool,
 }
 
 impl AcmeState {
@@ -100,7 +105,23 @@ impl AcmeState {
             audit_sink,
             base_url,
             ca_client,
+            http01_port: 80,
+            allow_private_ip_domains: false,
         }
+    }
+
+    /// Override challenge-validation options for dev/E2E environments.
+    ///
+    /// SECURITY: `allow_private_ip_domains` disables SSRF protection and a
+    /// non-80 port deviates from RFC 8555 §8.3. Production keeps the defaults.
+    pub fn with_challenge_options(
+        mut self,
+        http01_port: u16,
+        allow_private_ip_domains: bool,
+    ) -> Self {
+        self.http01_port = http01_port;
+        self.allow_private_ip_domains = allow_private_ip_domains;
+        self
     }
 }
 
@@ -259,9 +280,11 @@ async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
     // 8. Compute JWK thumbprint
     let jwk_thumbprint = jws::compute_jwk_thumbprint(&jwk)?;
 
-    // 9. Parse account_id as UUID
-    let account_id = Uuid::parse_str(&account.account_id)
-        .map_err(|e| Error::ServerInternal(format!("Invalid UUID in database: {}", e)))?;
+    // 9. Account primary key for ownership checks.
+    // The public account_id is "acct-<uuid>" (not a parseable UUID) and
+    // order rows reference the account's pk - an earlier version parsed the
+    // public id here and 500'd on every kid-authenticated request.
+    let account_id = account.id;
 
     // 10. Decode payload
     let payload_bytes = decode_base64url(&jws_envelope.payload)?;
@@ -722,18 +745,16 @@ async fn respond_to_challenge(
     let url = format!("{}/acme/challenge/{}", state.base_url, id);
     let _validated = validate_jws_with_account::<ChallengeResponse>(&body, &url, &state).await?;
 
-    // TODO: Validate key authorization (Phase 11)
-    // TODO: Trigger actual validation (HTTP-01, DNS-01, or TLS-ALPN-01) (Phase 11)
-
     let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
     // Load challenge from database to verify it exists
-    let _db_challenge = repo
+    let db_challenge = repo
         .find_challenge_by_id(&id)
         .await?
         .ok_or(Error::Malformed(format!("Challenge not found: {}", id)))?;
 
-    // Mark challenge as processing
+    // Mark challenge as processing; validation runs asynchronously and the
+    // client polls for the result (RFC 8555 §7.5.1).
     let updated_challenge = repo
         .update_challenge_status(
             &id,
@@ -743,11 +764,165 @@ async fn respond_to_challenge(
         )
         .await?;
 
+    // RFC 8555 §8.3/§8.4 - perform the actual domain-control validation.
+    // NIAP PP-CA: FIA_UAU.1 - proof of identifier control before issuance.
+    tokio::spawn(run_challenge_validation(state.clone(), db_challenge));
+
     let challenge = map_db_challenge_to_service(updated_challenge);
 
     let nonce = generate_nonce(&state).await;
 
     Ok((StatusCode::OK, [("Replay-Nonce", nonce)], Json(challenge)).into_response())
+}
+
+/// Asynchronous challenge validation (RFC 8555 §7.5.1).
+///
+/// Walks the FK chain (challenge -> authorization -> order -> account),
+/// runs the type-appropriate validator, then updates the RFC 8555 state
+/// machines: challenge -> valid/invalid, authorization -> valid/invalid,
+/// and order -> ready once every authorization is valid (§7.1.6).
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FIA_UAU.1 - identifier control proven before issuance
+/// - NIST 800-53: IA-5(1) - challenge-response authentication
+/// - NIST 800-53: AU-2 - validation outcome audited
+async fn run_challenge_validation(state: AcmeState, challenge: ostrich_db::models::AcmeChallenge) {
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
+    let challenge_id = challenge.challenge_id.clone();
+
+    let outcome = validate_challenge_inner(&state, &repo, &challenge).await;
+
+    match outcome {
+        Ok(()) => {
+            tracing::info!(challenge_id = %challenge_id, "Challenge validation succeeded");
+        }
+        Err(e) => {
+            tracing::warn!(challenge_id = %challenge_id, error = %e, "Challenge validation failed");
+            let detail = serde_json::json!({
+                "type": "urn:ietf:params:acme:error:unauthorized",
+                "detail": e.to_string(),
+            });
+            let _ = repo
+                .update_challenge_status(&challenge_id, "invalid", None, Some(detail))
+                .await;
+            // RFC 8555 §7.1.6: failed challenge invalidates the authorization
+            if let Ok(Some(authz)) = repo
+                .find_authorization_by_uuid(challenge.authorization_id)
+                .await
+            {
+                let _ = repo
+                    .update_authorization_status(&authz.authorization_id, "invalid")
+                    .await;
+            }
+        }
+    }
+
+    // AU-2: audit the validation outcome
+    let mut event = ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::Authentication,
+        "acme-validator",
+        format!("acme:challenge:{}", challenge_id),
+        "validate_challenge",
+        if matches!(outcome_recorded(&repo, &challenge_id).await, Some(true)) {
+            ostrich_audit::EventOutcome::Success
+        } else {
+            ostrich_audit::EventOutcome::Failure
+        },
+    )
+    .build();
+    let _ = state.audit_sink.record(&mut event).await;
+}
+
+/// Whether the challenge ended up valid (for the audit record).
+async fn outcome_recorded(
+    repo: &ostrich_db::repository::AcmeRepository,
+    challenge_id: &str,
+) -> Option<bool> {
+    repo.find_challenge_by_id(challenge_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|c| c.status == "valid")
+}
+
+/// The fallible part of challenge validation.
+async fn validate_challenge_inner(
+    state: &AcmeState,
+    repo: &ostrich_db::repository::AcmeRepository,
+    challenge: &ostrich_db::models::AcmeChallenge,
+) -> Result<()> {
+    // Walk challenge -> authorization -> order -> account
+    let authz = repo
+        .find_authorization_by_uuid(challenge.authorization_id)
+        .await?
+        .ok_or_else(|| Error::ServerInternal("Authorization not found".to_string()))?;
+    let order = repo
+        .find_order_by_uuid(authz.order_id)
+        .await?
+        .ok_or_else(|| Error::ServerInternal("Order not found".to_string()))?;
+    let account = repo
+        .find_account_by_uuid(order.account_id)
+        .await?
+        .ok_or_else(|| Error::ServerInternal("Account not found".to_string()))?;
+
+    let domain = &authz.identifier_value;
+    let token = &challenge.token;
+    let thumbprint = &account.jwk_thumbprint;
+
+    // Run the type-appropriate validator (RFC 8555 §8)
+    let valid = match challenge.challenge_type.as_str() {
+        "http-01" => {
+            let mut validator =
+                crate::validation::Http01Validator::new().with_http_port(state.http01_port);
+            if state.allow_private_ip_domains {
+                validator = validator.insecure_allow_private_domains();
+            }
+            validator.validate(domain, token, thumbprint).await?
+        }
+        "dns-01" => {
+            crate::validation::Dns01Validator::new()
+                .validate(domain, token, thumbprint)
+                .await?
+        }
+        "tls-alpn-01" => {
+            crate::validation::TlsAlpn01Validator::new()
+                .validate(domain, token, thumbprint)
+                .await?
+        }
+        other => {
+            return Err(Error::Malformed(format!(
+                "Unsupported challenge type: {}",
+                other
+            )));
+        }
+    };
+
+    if !valid {
+        return Err(Error::ChallengeValidation(
+            "Challenge response did not match key authorization".to_string(),
+        ));
+    }
+
+    // Challenge -> valid (RFC 8555 §7.1.6)
+    repo.update_challenge_status(
+        &challenge.challenge_id,
+        "valid",
+        Some(chrono::Utc::now()),
+        None,
+    )
+    .await?;
+
+    // Authorization -> valid
+    repo.update_authorization_status(&authz.authorization_id, "valid")
+        .await?;
+
+    // Order -> ready once ALL authorizations are valid (RFC 8555 §7.1.6)
+    let authzs = repo.list_authorizations_by_order(order.id).await?;
+    if authzs.iter().all(|a| a.status == "valid") {
+        repo.update_order_status(order.id, "ready").await?;
+    }
+
+    Ok(())
 }
 
 /// Get order status (RFC 8555 §7.4)
@@ -1018,9 +1193,13 @@ fn map_db_order_to_service(
         identifiers,
         authorizations,
         finalize: format!("/acme/order/{}/finalize", db.order_id),
+        // The /acme/cert/{id} handler resolves {id} as the ACME order id
+        // (RFC 8555 §7.4.2 download), so the URL must carry the order id -
+        // an earlier version emitted the internal certificate UUID here,
+        // which 404'd.
         certificate: db
             .certificate_id
-            .map(|cert_id| format!("/acme/cert/{}", cert_id)),
+            .map(|_| format!("/acme/cert/{}", db.order_id)),
         not_before: db.not_before,
         not_after: db.not_after,
         error: None,

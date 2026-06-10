@@ -293,7 +293,7 @@ pub async fn verify_jws_with_jwk(
     jws: &JwsEnvelope,
     header: &ProtectedHeader,
     jwk: &Jwk,
-    crypto_provider: &Arc<dyn CryptoProvider>,
+    _crypto_provider: &Arc<dyn CryptoProvider>,
 ) -> Result<bool> {
     // Parse JWS algorithm
     let jws_alg = JwsAlgorithm::parse(&header.alg)?;
@@ -301,9 +301,6 @@ pub async fn verify_jws_with_jwk(
 
     // Convert JWK to SPKI DER format
     let public_key_der = jwk_to_spki_der(jwk)?;
-
-    // Import public key (we'll need to add this helper)
-    let key_handle = import_public_key_temp(public_key_der, crypto_alg, crypto_provider).await?;
 
     // Construct signing input: ASCII(BASE64URL(UTF8(JWS Protected Header)) || '.' || BASE64URL(JWS Payload))
     // RFC 7515 §5.2
@@ -313,16 +310,27 @@ pub async fn verify_jws_with_jwk(
     let signature_bytes = decode_base64url(&jws.signature)
         .map_err(|e| Error::Malformed(format!("Invalid signature encoding: {}", e)))?;
 
-    // Verify signature
-    crypto_provider
-        .verify(
-            &key_handle,
-            crypto_alg,
-            signing_input.as_bytes(),
-            &signature_bytes,
-        )
-        .await
-        .map_err(|e| Error::Unauthorized(format!("Signature verification failed: {}", e)))
+    // Verify directly against the request-supplied public key.
+    //
+    // The signer is an EXTERNAL ACME client whose key is NOT resident in our
+    // crypto provider, so this is a stateless verification over the SPKI
+    // bytes - not a provider keystore lookup. An earlier version imported the
+    // key into the software provider and called provider.verify(), which (a)
+    // mutated shared keystore state on every request and (b) used the
+    // provider's unprefixed PKCS#1 encoding, rejecting standard RS256
+    // signatures from real ACME clients - the bug surfaced as
+    // "Key not found in software provider" on new-account.
+    //
+    // RFC 7515 §3.4: JWS ECDSA signatures are the raw fixed-size r||s
+    // concatenation, so request `ecdsa_fixed = true`.
+    ostrich_crypto::verify_with_spki(
+        &public_key_der,
+        crypto_alg,
+        signing_input.as_bytes(),
+        &signature_bytes,
+        true,
+    )
+    .map_err(|e| Error::Unauthorized(format!("Signature verification failed: {}", e)))
 }
 
 /// Convert JWK to SPKI DER format
@@ -479,56 +487,6 @@ fn jwk_okp_to_spki(jwk: &Jwk) -> Result<Vec<u8>> {
 
     spki.to_der()
         .map_err(|e| Error::Malformed(format!("Failed to encode Ed25519 SPKI: {}", e)))
-}
-
-/// Temporary helper to import public key
-/// TODO: This should be moved to ostrich-crypto as a proper method
-async fn import_public_key_temp(
-    spki_der: Vec<u8>,
-    algorithm: Algorithm,
-    _crypto_provider: &Arc<dyn CryptoProvider>,
-) -> Result<ostrich_crypto::KeyHandle> {
-    use ostrich_crypto::key::ProviderId;
-    use ostrich_crypto::{KeyHandle, KeyType};
-
-    // Determine key type from algorithm
-    let key_type = match algorithm {
-        Algorithm::RsaPkcs1Sha256
-        | Algorithm::RsaPkcs1Sha384
-        | Algorithm::RsaPkcs1Sha512
-        | Algorithm::RsaPssSha256
-        | Algorithm::RsaPssSha384
-        | Algorithm::RsaPssSha512 => {
-            // For RSA, we need to determine size from the key itself
-            // For now, default to 2048 (we'll parse it properly later)
-            KeyType::Rsa2048 // TODO: Parse actual key size
-        }
-        Algorithm::EcdsaP256Sha256 => KeyType::EcP256,
-        Algorithm::EcdsaP384Sha384 => KeyType::EcP384,
-        Algorithm::EcdsaP521Sha512 => KeyType::EcP521,
-        Algorithm::Ed25519 => KeyType::Ed25519,
-        _ => {
-            return Err(Error::Malformed(format!(
-                "Unsupported algorithm for JWK import: {:?}",
-                algorithm
-            )));
-        }
-    };
-
-    // Create a temporary KeyHandle for verification
-    // Note: For verification, we only need the public key, so we create a handle pointing to it
-    // This is a workaround until we add proper public-key-only import to CryptoProvider
-
-    // For now, we'll create a placeholder handle with the SPKI data
-    // The actual verification will happen in the crypto provider using this data
-
-    Ok(KeyHandle::new(
-        ProviderId::Software,
-        spki_der, // Using SPKI DER as key_id (temporary workaround)
-        key_type,
-        algorithm,
-        "temp-jwk-verification".to_string(),
-    ))
 }
 
 #[cfg(test)]

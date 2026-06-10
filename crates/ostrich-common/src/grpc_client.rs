@@ -181,25 +181,42 @@ impl CaGrpcClient {
     /// - NIST 800-53: SC-8(1) - Establish mTLS connection
     /// - NIST 800-53: IA-5(2) - PKI-based authentication
     pub async fn new(config: GrpcClientConfig) -> Result<Self> {
-        // Load client certificate and key
-        let client_identity = Identity::from_pem(&config.client_cert_pem, &config.client_key_pem);
-
-        // Load CA certificate for server verification
-        let ca_cert = Certificate::from_pem(&config.ca_cert_pem);
-
-        // Configure mTLS
-        let tls_config = ClientTlsConfig::new()
-            .identity(client_identity)
-            .ca_certificate(ca_cert)
-            .domain_name("ostrich-ca"); // SNI hostname
-
-        // Create channel with timeouts
-        let channel = Channel::from_shared(config.endpoint.clone())
+        let mut endpoint = Channel::from_shared(config.endpoint.clone())
             .map_err(|e| Error::InvalidConfiguration(format!("Invalid endpoint: {}", e)))?
-            .tls_config(tls_config)
-            .map_err(|e| Error::InvalidConfiguration(format!("TLS config error: {}", e)))?
             .connect_timeout(Duration::from_millis(config.connect_timeout_ms))
-            .timeout(Duration::from_millis(config.request_timeout_ms))
+            .timeout(Duration::from_millis(config.request_timeout_ms));
+
+        // Configure mTLS when certificate material is provided.
+        //
+        // NIST 800-53: SC-8(1) / AC-17 - mTLS is the production posture for
+        // inter-service channels. Plaintext is permitted only when no
+        // certificates are configured (dev/E2E) and is warned about loudly.
+        // Previously this built a TLS config from empty PEM strings
+        // unconditionally, which failed at startup for every plaintext
+        // deployment.
+        let has_mtls = !config.client_cert_pem.is_empty()
+            && !config.client_key_pem.is_empty()
+            && !config.ca_cert_pem.is_empty();
+        if has_mtls {
+            let client_identity =
+                Identity::from_pem(&config.client_cert_pem, &config.client_key_pem);
+            let ca_cert = Certificate::from_pem(&config.ca_cert_pem);
+            let tls_config = ClientTlsConfig::new()
+                .identity(client_identity)
+                .ca_certificate(ca_cert)
+                .domain_name("ostrich-ca"); // SNI hostname
+            endpoint = endpoint
+                .tls_config(tls_config)
+                .map_err(|e| Error::InvalidConfiguration(format!("TLS config error: {}", e)))?;
+        } else {
+            tracing::warn!(
+                endpoint = %config.endpoint,
+                "gRPC channel WITHOUT mTLS - configure client_cert_pem/client_key_pem/\
+                 ca_cert_pem for production (NIST 800-53: SC-8, AC-17)"
+            );
+        }
+
+        let channel = endpoint
             .connect()
             .await
             .map_err(|e| Error::ServiceUnavailable(format!("Failed to connect: {}", e)))?;

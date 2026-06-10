@@ -47,6 +47,16 @@ struct Args {
     #[arg(long, env = "CA_GRPC_URL")]
     ca_grpc_url: Option<String>,
 
+    /// HTTP-01 challenge fetch port. RFC 8555 §8.3 mandates 80; override for
+    /// dev/E2E environments only (like Pebble's -httpPort).
+    #[arg(long, env = "ACME_HTTP01_PORT", default_value = "80")]
+    http01_port: u16,
+
+    /// Allow private-IP/localhost identifiers. DISABLES the SI-10 SSRF guard;
+    /// dev/E2E ONLY.
+    #[arg(long, env = "ACME_ALLOW_PRIVATE_IP_DOMAINS", default_value = "false")]
+    allow_private_ip_domains: bool,
+
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     log_level: String,
@@ -105,13 +115,21 @@ async fn main() -> Result<()> {
     };
 
     // Create ACME state
+    if args.allow_private_ip_domains {
+        // NIST 800-53: SI-10 - make the disabled SSRF guard impossible to miss
+        tracing::warn!(
+            "ACME_ALLOW_PRIVATE_IP_DOMAINS=true: SSRF guard disabled; private/localhost \
+             identifiers will validate. Dev/E2E environments only."
+        );
+    }
     let state = ostrich_acme::rest::AcmeState::new(
         db_pool,
         Arc::new(crypto_provider),
         Arc::new(audit_sink),
         args.base_url.clone(),
         ca_client,
-    );
+    )
+    .with_challenge_options(args.http01_port, args.allow_private_ip_domains);
 
     // Create REST API router
     let app = ostrich_acme::rest::create_router(state);

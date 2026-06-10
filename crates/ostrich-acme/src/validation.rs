@@ -85,6 +85,15 @@ pub struct Http01Validator {
     /// Request timeout in seconds
     #[allow(dead_code)]
     timeout_secs: u64,
+    /// Port the challenge is fetched from (RFC 8555 §8.3 mandates 80;
+    /// overridable for dev/E2E environments only, like Pebble's -httpPort)
+    http_port: u16,
+    /// Permit private-IP / localhost identifiers.
+    ///
+    /// SECURITY: disables the SI-10 SSRF guard. Dev/E2E environments only;
+    /// enabling this in production lets clients obtain certificates for
+    /// internal hostnames and turn the validator into an SSRF vector.
+    allow_private_domains: bool,
 }
 
 impl Http01Validator {
@@ -101,7 +110,23 @@ impl Http01Validator {
             client,
             max_redirects: 10,
             timeout_secs: 10,
+            http_port: 80,
+            allow_private_domains: false,
         }
+    }
+
+    /// Override the HTTP-01 fetch port (RFC 8555 §8.3 mandates 80).
+    /// Dev/E2E only - see `insecure_allow_private_domains`.
+    pub fn with_http_port(mut self, port: u16) -> Self {
+        self.http_port = port;
+        self
+    }
+
+    /// Disable the private-IP SSRF guard (SI-10). Dev/E2E only; the name is
+    /// deliberately alarming.
+    pub fn insecure_allow_private_domains(mut self) -> Self {
+        self.allow_private_domains = true;
+        self
     }
 
     /// Validate HTTP-01 challenge
@@ -124,13 +149,21 @@ impl Http01Validator {
         // Construct expected response
         let expected_response = format!("{}.{}", token, account_key_thumbprint);
 
-        // Construct challenge URL
-        let url = format!("http://{}/.well-known/acme-challenge/{}", domain, token);
+        // Construct challenge URL. RFC 8555 §8.3: port 80; the override
+        // exists for dev/E2E environments only.
+        let url = if self.http_port == 80 {
+            format!("http://{}/.well-known/acme-challenge/{}", domain, token)
+        } else {
+            format!(
+                "http://{}:{}/.well-known/acme-challenge/{}",
+                domain, self.http_port, token
+            )
+        };
 
-        // TODO: Validate domain is not a private IP (SSRF prevention)
-        // TODO: Perform DNS lookup and check for private IP ranges
-        // For now, we'll just block obvious private IP patterns
-        if is_private_ip_domain(domain) {
+        // SI-10: SSRF prevention - block private IP / localhost identifiers
+        // unless the dev override is set.
+        // TODO: also resolve DNS and check the resulting addresses.
+        if !self.allow_private_domains && is_private_ip_domain(domain) {
             return Err(Error::Malformed(format!(
                 "Cannot validate private IP domain: {}",
                 domain

@@ -28,6 +28,7 @@ pub mod pkcs11;
 pub mod provider;
 pub mod self_test;
 pub mod software;
+pub mod verify;
 
 // Re-exports
 pub use algorithm::{Algorithm, KeyType};
@@ -35,4 +36,5 @@ pub use error::{Error, Result};
 pub use hsm_validation::HsmKeyValidator;
 pub use key::KeyHandle;
 pub use provider::{CryptoProvider, CryptoProviderFactory};
+pub use verify::verify_with_spki;
 pub use self_test::{SelfTestResult, SelfTestRunner, SelfTestSummary};

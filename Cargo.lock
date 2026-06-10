@@ -3264,6 +3264,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tonic",
+ "tracing",
  "uuid",
  "webpki-roots 0.26.11",
  "x509-cert",
@@ -3661,6 +3662,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]

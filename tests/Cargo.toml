@@ -24,6 +24,10 @@ path = "integration/ocsp_e2e_test.rs"
 name = "csr_parsing_test"
 path = "integration/csr_parsing_test.rs"
 
+[[test]]
+name = "acme_full_flow_test"
+path = "integration/acme_full_flow_test.rs"
+
 [dependencies]
 # OstrichPKI crates
 ostrich-common = { path = "../crates/ostrich-common" }
@@ -51,7 +55,8 @@ p256 = "0.13"
 ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
 sha2 = "0.10"
 signature = "2.2"
-x509-cert = "0.2"
+# "builder" feature enables PKCS#10 CSR generation (acme_full_flow_test)
+x509-cert = { version = "0.2", features = ["builder"] }
 der = "0.7"
 base64 = "0.22"
 

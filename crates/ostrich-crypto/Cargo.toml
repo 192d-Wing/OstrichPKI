@@ -49,3 +49,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 tokio-test = { workspace = true }
 serde_json = { workspace = true }
+# sha2 feature wires the SHA-256 OID needed by Pkcs1v15Sign::new in tests
+rsa = { workspace = true, features = ["sha2"] }
