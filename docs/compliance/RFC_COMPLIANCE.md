@@ -745,11 +745,18 @@ of identifiers authorized in the order.
 
 - ✅ HTTP-01: Fetch token from `http://<domain>/.well-known/acme-challenge/<token>`
 - ✅ HTTP-01: Verify response = `<token>.<account_key_thumbprint>`
+- ✅ **SSRF / DNS-rebinding prevention (SI-10):** HTTP-01 and TLS-ALPN-01 resolve
+  the target, reject the validation if ANY resolved address is non-globally-
+  routable (`is_disallowed_ip`: loopback, private, link-local, CGNAT, cloud
+  metadata, IPv4-mapped, etc.), and **pin the connection to the validated
+  address** (closing the rebinding TOCTOU window). HTTP-01 follows redirects
+  MANUALLY so each redirect hop is re-resolved and re-validated. **Fixed:** the
+  previous check only string-matched literal private-IP hostnames, so a public
+  name resolving to an internal address bypassed it.
 - ✅ DNS-01: Compute `_acme-challenge.<domain>` TXT record value
 - ⚠️ DNS-01: DNS resolver implementation pending
-- ⚠️ TLS-ALPN-01: TLS client with ALPN pending
 
-**Remediation:** Phase 16 - Complete DNS-01 and TLS-ALPN-01 validators
+**Remediation:** Phase 16 - Complete DNS-01 validator
 
 ---
 

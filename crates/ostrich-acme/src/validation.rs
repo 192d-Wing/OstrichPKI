@@ -151,7 +151,7 @@ impl Http01Validator {
 
         // Construct challenge URL. RFC 8555 §8.3: port 80; the override
         // exists for dev/E2E environments only.
-        let url = if self.http_port == 80 {
+        let initial_url = if self.http_port == 80 {
             format!("http://{}/.well-known/acme-challenge/{}", domain, token)
         } else {
             format!(
@@ -160,40 +160,98 @@ impl Http01Validator {
             )
         };
 
-        // SI-10: SSRF prevention - block private IP / localhost identifiers
-        // unless the dev override is set.
-        // TODO: also resolve DNS and check the resulting addresses.
-        if !self.allow_private_domains && is_private_ip_domain(domain) {
-            return Err(Error::Malformed(format!(
-                "Cannot validate private IP domain: {}",
-                domain
-            )));
+        // Dev/E2E override: keep the permissive shared client (private addresses
+        // allowed, reqwest follows redirects). NOT for production.
+        if self.allow_private_domains {
+            let response = self
+                .client
+                .get(&initial_url)
+                .send()
+                .await
+                .map_err(|e| Error::ChallengeValidation(format!("HTTP request failed: {}", e)))?;
+            if !response.status().is_success() {
+                return Err(Error::ChallengeValidation(format!(
+                    "HTTP challenge returned status {}: expected 200 OK",
+                    response.status()
+                )));
+            }
+            let body = response.text().await.map_err(|e| {
+                Error::ChallengeValidation(format!("Failed to read response: {}", e))
+            })?;
+            return Ok(body.trim() == expected_response);
         }
 
-        // Perform HTTP GET request
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::ChallengeValidation(format!("HTTP request failed: {}", e)))?;
+        // SI-10: SSRF prevention. Follow redirects MANUALLY so every hop's host
+        // is resolved, checked to be globally routable, and the connection is
+        // pinned to a validated address — closing DNS-rebinding (including via a
+        // redirect to a name that rebinds to an internal address).
+        let mut url = reqwest::Url::parse(&initial_url)
+            .map_err(|e| Error::Malformed(format!("Invalid challenge URL: {}", e)))?;
 
-        // Check status code
-        if !response.status().is_success() {
-            return Err(Error::ChallengeValidation(format!(
-                "HTTP challenge returned status {}: expected 200 OK",
-                response.status()
-            )));
+        for _ in 0..=self.max_redirects {
+            if !matches!(url.scheme(), "http" | "https") {
+                return Err(Error::Malformed(format!(
+                    "Disallowed challenge URL scheme: {}",
+                    url.scheme()
+                )));
+            }
+            let host = url
+                .host_str()
+                .ok_or_else(|| Error::Malformed("Challenge URL has no host".to_string()))?
+                .to_string();
+            let port = url.port_or_known_default().unwrap_or(80);
+
+            // Resolve + validate + pin: the request goes to a checked address.
+            let addr = resolve_public(&host, port).await?;
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(self.timeout_secs))
+                .redirect(reqwest::redirect::Policy::none())
+                .user_agent("OstrichPKI-ACME/0.10.0")
+                .resolve(&host, addr)
+                .build()
+                .map_err(|e| {
+                    Error::ChallengeValidation(format!("Failed to build HTTP client: {}", e))
+                })?;
+
+            let response = client
+                .get(url.clone())
+                .send()
+                .await
+                .map_err(|e| Error::ChallengeValidation(format!("HTTP request failed: {}", e)))?;
+
+            let status = response.status();
+            if status.is_redirection() {
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| {
+                        Error::ChallengeValidation("Redirect response without Location".to_string())
+                    })?;
+                // Resolve relative Locations against the current URL.
+                url = url.join(location).map_err(|e| {
+                    Error::Malformed(format!("Invalid redirect Location: {}", e))
+                })?;
+                continue;
+            }
+
+            if !status.is_success() {
+                return Err(Error::ChallengeValidation(format!(
+                    "HTTP challenge returned status {}: expected 200 OK",
+                    status
+                )));
+            }
+
+            let body = response
+                .text()
+                .await
+                .map_err(|e| Error::ChallengeValidation(format!("Failed to read response: {}", e)))?;
+            return Ok(body.trim() == expected_response);
         }
 
-        // Get response body
-        let body = response
-            .text()
-            .await
-            .map_err(|e| Error::ChallengeValidation(format!("Failed to read response: {}", e)))?;
-
-        // Verify response matches expected
-        Ok(body.trim() == expected_response)
+        Err(Error::ChallengeValidation(
+            "Too many redirects during HTTP-01 validation".to_string(),
+        ))
     }
 }
 
@@ -423,28 +481,23 @@ impl TlsAlpn01Validator {
         // - RFC 8737 - TLS-ALPN-01 validation procedure
         // - RFC 8555 §8.1 - Key authorization computation
 
-        // Prevent SSRF by blocking private IP domains
-        if is_private_ip_domain(domain) {
-            return Err(Error::Malformed(format!(
-                "Cannot validate private IP domain: {}",
-                domain
-            )));
-        }
+        // SI-10: SSRF prevention. Resolve the domain, require every resolved
+        // address to be globally routable, and connect to that VALIDATED address
+        // (not a re-resolution) — closing DNS-rebinding. The TLS ServerName below
+        // stays the domain so certificate validation is unaffected.
+        let addr = resolve_public(domain, 443).await?;
+        let tcp_stream = timeout(
+            std::time::Duration::from_secs(self.timeout_secs),
+            TcpStream::connect(addr),
+        )
+        .await
+        .map_err(|_| Error::ChallengeValidation(format!("TLS connection timed out to {}", addr)))?
+        .map_err(|e| Error::ChallengeValidation(format!("Failed to connect to {}: {}", addr, e)))?;
 
         // Compute expected acmeIdentifier extension value
         // RFC 8737 §3: acmeIdentifier = SHA256(key_authorization)
         let key_authorization = format!("{}.{}", token, account_key_thumbprint);
         let expected_hash = Sha256::digest(key_authorization.as_bytes());
-
-        // Connect to domain:443 with timeout
-        let addr = format!("{}:443", domain);
-        let tcp_stream = timeout(
-            std::time::Duration::from_secs(self.timeout_secs),
-            TcpStream::connect(&addr),
-        )
-        .await
-        .map_err(|_| Error::ChallengeValidation(format!("TLS connection timed out to {}", addr)))?
-        .map_err(|e| Error::ChallengeValidation(format!("Failed to connect to {}: {}", addr, e)))?;
 
         // Create TLS client configuration with ALPN "acme-tls/1"
         // RFC 8737 §3: Client must send "acme-tls/1" in ALPN extension
@@ -549,50 +602,73 @@ impl Default for TlsAlpn01Validator {
     }
 }
 
-/// Check if domain appears to be a private IP address
+/// True if `ip` must NOT be a challenge-validation target: any address that is
+/// not globally routable (loopback, private, link-local, CGNAT, documentation,
+/// reserved, etc.). Checking the *resolved* address — not just the literal
+/// hostname — is what closes the DNS-rebinding SSRF hole. `Ipv4Addr/Ipv6Addr::
+/// is_global` is still unstable, so the disallowed ranges are enumerated here.
 ///
-/// This is a basic check - production code should do DNS resolution
-/// and check the resolved IP against private ranges.
-fn is_private_ip_domain(domain: &str) -> bool {
-    // Check for localhost variants
-    if domain == "localhost"
-        || domain == "localhost.localdomain"
-        || domain.ends_with(".local")
-        || domain.ends_with(".localhost")
-    {
-        return true;
+/// COMPLIANCE: NIST 800-53 SI-10 (input validation / SSRF prevention).
+fn is_disallowed_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_unspecified()
+                || v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                || o[0] == 0                                       // 0.0.0.0/8
+                || (o[0] == 100 && (64..128).contains(&o[1]))      // 100.64.0.0/10 CGNAT
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)         // 192.0.0.0/24
+                || o[0] >= 240 // 240.0.0.0/4 reserved (and 255.255.255.255)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_disallowed_ip(IpAddr::V4(mapped));
+            }
+            let s = v6.segments();
+            v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00   // fc00::/7 unique-local
+                || (s[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+        }
     }
+}
 
-    // Check for obvious private IP patterns
-    // TODO: This should be replaced with proper DNS resolution + IP range checking
-    if domain.starts_with("10.")
-        || domain.starts_with("192.168.")
-        || domain.starts_with("172.16.")
-        || domain.starts_with("172.17.")
-        || domain.starts_with("172.18.")
-        || domain.starts_with("172.19.")
-        || domain.starts_with("172.20.")
-        || domain.starts_with("172.21.")
-        || domain.starts_with("172.22.")
-        || domain.starts_with("172.23.")
-        || domain.starts_with("172.24.")
-        || domain.starts_with("172.25.")
-        || domain.starts_with("172.26.")
-        || domain.starts_with("172.27.")
-        || domain.starts_with("172.28.")
-        || domain.starts_with("172.29.")
-        || domain.starts_with("172.30.")
-        || domain.starts_with("172.31.")
-        || domain.starts_with("127.")
-        || domain == "::1"
-        || domain.starts_with("fe80:")
-        || domain.starts_with("fc00:")
-        || domain.starts_with("fd00:")
-    {
-        return true;
+/// Resolve `host:port` and require EVERY resolved address to be globally
+/// routable, returning one validated address to *pin* the connection to. Pinning
+/// (connecting to the returned address rather than re-resolving) closes the
+/// DNS-rebinding TOCTOU window where the name resolves to a public address for
+/// the check but an internal one for the actual connection.
+///
+/// COMPLIANCE: NIST 800-53 SI-10; RFC 8555 §10.1 (SSRF in validation).
+async fn resolve_public(host: &str, port: u16) -> Result<std::net::SocketAddr> {
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| Error::ChallengeValidation(format!("DNS resolution failed for {host}: {e}")))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(Error::ChallengeValidation(format!(
+            "{host} did not resolve to any address"
+        )));
     }
-
-    false
+    // Fail closed: if ANY resolved address is non-public, refuse — an attacker
+    // could otherwise round-robin a public and an internal address.
+    for a in &addrs {
+        if is_disallowed_ip(a.ip()) {
+            return Err(Error::Malformed(format!(
+                "Refusing to validate {host}: resolves to non-public address {} \
+                 (SSRF prevention)",
+                a.ip()
+            )));
+        }
+    }
+    Ok(addrs[0])
 }
 
 #[cfg(test)]
@@ -600,17 +676,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_private_ip_domain() {
-        assert!(is_private_ip_domain("localhost"));
-        assert!(is_private_ip_domain("127.0.0.1"));
-        assert!(is_private_ip_domain("10.0.0.1"));
-        assert!(is_private_ip_domain("192.168.1.1"));
-        assert!(is_private_ip_domain("172.16.0.1"));
-        assert!(is_private_ip_domain("test.local"));
+    fn test_is_disallowed_ip() {
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
 
-        assert!(!is_private_ip_domain("example.com"));
-        assert!(!is_private_ip_domain("192.167.1.1")); // Not in private range
-        assert!(!is_private_ip_domain("8.8.8.8"));
+        // Non-public (SSRF targets) — must be rejected. This is the check that,
+        // applied to the RESOLVED address, closes DNS-rebinding.
+        assert!(is_disallowed_ip(ip("127.0.0.1"))); // loopback
+        assert!(is_disallowed_ip(ip("10.0.0.1"))); // private
+        assert!(is_disallowed_ip(ip("192.168.1.1"))); // private
+        assert!(is_disallowed_ip(ip("172.16.0.1"))); // private
+        assert!(is_disallowed_ip(ip("169.254.169.254"))); // link-local / cloud metadata
+        assert!(is_disallowed_ip(ip("100.64.0.1"))); // CGNAT
+        assert!(is_disallowed_ip(ip("0.0.0.0"))); // unspecified
+        assert!(is_disallowed_ip(ip("::1"))); // IPv6 loopback
+        assert!(is_disallowed_ip(ip("fc00::1"))); // IPv6 unique-local
+        assert!(is_disallowed_ip(ip("fe80::1"))); // IPv6 link-local
+        assert!(is_disallowed_ip(ip("::ffff:127.0.0.1"))); // IPv4-mapped loopback
+
+        // Globally routable — allowed.
+        assert!(!is_disallowed_ip(ip("8.8.8.8")));
+        assert!(!is_disallowed_ip(ip("1.1.1.1")));
+        assert!(!is_disallowed_ip(ip("192.167.1.1")));
+        assert!(!is_disallowed_ip(ip("2606:4700:4700::1111"))); // public IPv6
     }
 
     #[tokio::test]
