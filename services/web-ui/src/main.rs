@@ -16,7 +16,6 @@ mod server;
 use anyhow::Result;
 use clap::Parser;
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -38,6 +37,15 @@ struct Args {
     /// Enable JSON logging format
     #[arg(long)]
     json_logs: bool,
+
+    /// TLS certificate chain file (PEM). With --tls-key, serves HTTPS (TLS 1.3).
+    /// NIST 800-53: SC-8 - Transmission Confidentiality
+    #[arg(long, env = "TLS_CERT_FILE")]
+    tls_cert: Option<String>,
+
+    /// TLS private key file (PEM)
+    #[arg(long, env = "TLS_KEY_FILE")]
+    tls_key: Option<String>,
 }
 
 #[tokio::main]
@@ -80,16 +88,14 @@ async fn main() -> Result<()> {
     // Parse listen address
     let addr: SocketAddr = args.listen.parse()?;
 
-    // Create TCP listener
-    let listener = TcpListener::bind(addr).await?;
-
     info!(%addr, "Web UI server listening");
 
-    // Run the server with graceful shutdown
-    // NIST 800-53: SC-8 - Transmission Confidentiality (TLS handled by load balancer or reverse proxy)
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Run the server with graceful shutdown.
+    // NIST 800-53: SC-8 - serves HTTPS directly when TLS is configured;
+    // otherwise plain HTTP (e.g. behind a TLS-terminating reverse proxy) with
+    // a startup warning.
+    let tls = ostrich_common::tls::TlsSettings::from_options(args.tls_cert, args.tls_key, None)?;
+    ostrich_common::tls::serve(addr, app, tls.as_ref(), shutdown_signal()).await?;
 
     info!("Web UI server shutdown complete");
 

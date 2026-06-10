@@ -226,10 +226,27 @@ impl RevocationManager {
         let tbs_der = tbs_crl.to_der()?;
 
         // NIAP PP-CA: FCS_COP.1.1 - Sign TBS CRL with CA private key
-        // Uses FIPS-validated cryptographic algorithm (RSA-PSS with SHA-256)
+        //
+        // Must match the AlgorithmIdentifier CrlBuilder wrote into the TBS
+        // (sha256WithRSAEncryption, RFC 5280 §5.1.1.2/§5.1.2.2 require the
+        // inner and outer algorithm identifiers to be identical). Signing with
+        // RSA-PSS here (as the previous code did) produced CRLs that fail
+        // verification. POAM: algorithm agility tracked with issuance.rs.
+        let signature_algorithm = match self.ca_key.key_type {
+            ostrich_crypto::KeyType::Rsa2048
+            | ostrich_crypto::KeyType::Rsa3072
+            | ostrich_crypto::KeyType::Rsa4096 => Algorithm::RsaPkcs1Sha256,
+            other => {
+                return Err(Error::Revocation(format!(
+                    "CA key type {:?} not yet supported for CRL signing \
+                     (signature algorithm selection is RSA-only pending algorithm agility)",
+                    other
+                )));
+            }
+        };
         let signature = self
             .crypto_provider
-            .sign(&self.ca_key, Algorithm::RsaPssSha256, &tbs_der)
+            .sign(&self.ca_key, signature_algorithm, &tbs_der)
             .await?;
 
         // Construct final signed CRL

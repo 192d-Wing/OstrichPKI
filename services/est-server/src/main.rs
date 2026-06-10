@@ -82,12 +82,16 @@ async fn main() -> Result<()> {
 
     tracing::info!(%addr, "Starting EST server");
 
-    // TODO: Add TLS support when TLS configuration is provided
-    // For now, start without TLS (mTLS will be added in production)
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Serve HTTPS when TLS is configured (HTTP fallback warns at startup).
+    // RFC 7030 §3.3 requires TLS for EST; --tls-ca-cert enables the mTLS
+    // client authentication EST relies on for enrollment identity.
+    // NIST 800-53: SC-8 - Transmission Confidentiality and Integrity
+    let tls = ostrich_common::tls::TlsSettings::from_options(
+        args.tls_cert,
+        args.tls_key,
+        args.tls_ca_cert,
+    )?;
+    ostrich_common::tls::serve(addr, app, tls.as_ref(), shutdown_signal()).await?;
 
     tracing::info!("EST Server shutdown complete");
     Ok(())

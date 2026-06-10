@@ -325,28 +325,30 @@ impl KeyRecovery {
 
     /// Complete recovery and reconstruct the private key
     ///
+    /// Reconstructs the KEK from the submitted Shamir shares, loads the
+    /// escrowed ciphertext for the session's recovery request, and unwraps the
+    /// private key (AES-256-GCM, AAD = certificate ID). The KEK is zeroized as
+    /// soon as unwrapping completes; the returned private key is wrapped in
+    /// `Zeroizing` so it is destroyed when the caller drops it.
+    ///
     /// # NIAP PP-CA v2.1 Compliance
     ///
-    /// - **FCS_CKM.2**: Reconstructs key from M submitted shares using Lagrange interpolation.
-    /// - **FCS_CKM.4**: Caller must zeroize returned key material after use.
+    /// - **FCS_CKM.2**: Reconstructs KEK from M submitted shares using Lagrange interpolation.
+    /// - **FCS_COP.1**: Unwraps escrowed key with AES-256-GCM (approved algorithm).
+    /// - **FCS_CKM.4**: KEK and returned key material are zeroized on drop.
     /// - **FDP_ACC.1**: Enforces threshold requirement - fails if fewer than M shares.
-    /// - **FAU_GEN.1**: Generates audit event for successful key reconstruction.
+    /// - **FAU_GEN.1**: Generates audit event for success AND failure outcomes.
     ///
     /// # NIST 800-53 Compliance
     ///
     /// - **SC-12**: Cryptographic key establishment - key recovery.
     /// - **AU-3**: Audit record includes session, shares used, outcome.
-    ///
-    /// # Security Note
-    ///
-    /// The returned key material MUST be zeroized after use to comply with FCS_CKM.4.
-    /// Consider using `zeroize::Zeroizing<Vec<u8>>` wrapper for automatic cleanup.
     pub async fn complete_recovery(
         &self,
         session_id: Uuid,
         shares: Vec<crate::shamir::Share>,
         threshold: usize,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>> {
         // Verify we have enough shares
         if shares.len() < threshold {
             return Err(Error::InsufficientShares {
@@ -355,11 +357,45 @@ impl KeyRecovery {
             });
         }
 
-        // Reconstruct the KEK from shares
-        let kek = ShamirSecretSharing::reconstruct(&shares, threshold)?;
+        // Locate the escrowed ciphertext for this recovery session
+        let repo = ostrich_db::repository::KraRepository::new(self.db.clone());
+        let recovery_request = repo
+            .find_recovery_request(session_id)
+            .await?
+            .ok_or_else(|| Error::RecoveryError(format!("Recovery session not found: {}", session_id)))?;
+        let escrowed_key = repo
+            .find_escrowed_key(recovery_request.escrowed_key_id)
+            .await?
+            .ok_or_else(|| {
+                Error::KeyNotFound(format!("Escrow ID: {}", recovery_request.escrowed_key_id))
+            })?;
 
-        // TODO: Use KEK to unwrap the escrowed private key
-        // For now, return placeholder
+        // Reconstruct the KEK from shares and unwrap the private key.
+        // Zeroizing ensures the KEK is destroyed when it goes out of scope.
+        let kek = zeroize::Zeroizing::new(ShamirSecretSharing::reconstruct(&shares, threshold)?);
+        let aad = escrowed_key.certificate_id.as_bytes();
+        let private_key = match crate::wrap::unwrap_key(&kek, &escrowed_key.wrapped_key, aad) {
+            Ok(key) => key,
+            Err(e) => {
+                // Fail secure: audit the failed reconstruction before returning
+                let mut event = AuditEventBuilder::new(
+                    EventType::KeyRecovery,
+                    "system",
+                    session_id.to_string(),
+                    "complete_recovery",
+                    EventOutcome::Failure,
+                )
+                .with_details(serde_json::json!({
+                    "session_id": session_id.to_string(),
+                    "escrow_id": escrowed_key.id.to_string(),
+                    "shares_used": shares.len(),
+                    "reason": "key unwrap failed",
+                }))
+                .build();
+                self.audit.record(&mut event).await.ok();
+                return Err(e);
+            }
+        };
 
         // Audit successful recovery
         let mut event = AuditEventBuilder::new(
@@ -371,13 +407,14 @@ impl KeyRecovery {
         )
         .with_details(serde_json::json!({
             "session_id": session_id.to_string(),
+            "escrow_id": escrowed_key.id.to_string(),
             "shares_used": shares.len(),
         }))
         .build();
 
         self.audit.record(&mut event).await.ok();
 
-        Ok(kek)
+        Ok(private_key)
     }
 
     /// List recovery agents

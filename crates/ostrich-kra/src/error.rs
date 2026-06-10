@@ -37,6 +37,11 @@ pub enum Error {
     #[error("Insufficient shares: need {required}, got {provided}")]
     InsufficientShares { required: usize, provided: usize },
 
+    /// Key wrap/unwrap failure. Deliberately does not distinguish wrong-KEK,
+    /// tampered ciphertext, or AAD mismatch (NIST 800-53: SI-11 - safe errors).
+    #[error("Key wrap error: {0}")]
+    KeyWrap(String),
+
     #[error("Invalid share")]
     InvalidShare,
 

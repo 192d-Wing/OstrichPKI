@@ -7,8 +7,11 @@
 //! - NIST 800-53: CP-2 (Contingency Plan) - Capacity planning
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use rand::rngs::OsRng;
+// OsRng comes from rsa's re-exported rand_core: the rsa 0.9 APIs require the
+// rand_core 0.6 traits, while the workspace `rand` is 0.9 (rand_core 0.9).
+// Same pattern as crates/ostrich-crypto/src/software/mod.rs.
 use rsa::RsaPrivateKey;
+use rsa::rand_core::OsRng;
 use rsa::pkcs1v15::SigningKey;
 use rsa::signature::{Keypair, RandomizedSigner, Verifier};
 use sha2::Sha256;

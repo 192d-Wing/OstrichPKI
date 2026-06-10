@@ -29,6 +29,7 @@
 pub mod acme;
 pub mod approval;
 pub mod audit;
+pub mod ca;
 pub mod certificate;
 pub mod est;
 pub mod kra;
@@ -37,6 +38,7 @@ pub mod scms;
 pub use acme::AcmeRepository;
 pub use approval::ApprovalRepository;
 pub use audit::AuditRepository;
+pub use ca::CaRepository;
 pub use certificate::CertificateRepository;
 pub use est::EstRepository;
 pub use kra::KraRepository;

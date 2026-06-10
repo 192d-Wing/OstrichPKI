@@ -172,15 +172,21 @@ impl KeyEscrow {
         }))
         .build();
 
-        // TODO: Actual key wrapping with crypto provider
-        // For now, use placeholder encryption (XOR with fixed key - NOT SECURE)
-        let encrypted_key = Self::placeholder_encrypt(&request.private_key);
+        // Wrap the private key under a fresh per-escrow 256-bit KEK using
+        // AES-256-GCM. The certificate ID is bound in as AEAD associated data
+        // so the ciphertext cannot be re-attached to a different escrow record.
+        //
+        // COMPLIANCE MAPPING:
+        // - NIST 800-53: SC-12, SC-13 - AES-256-GCM key wrapping (SP 800-38D)
+        // - NIAP PP-CA: FCS_COP.1 - approved algorithm for key wrap
+        // - NIAP PP-CA: FCS_CKM.4 - KEK zeroized on drop after splitting
+        let kek = crate::wrap::generate_kek()?;
+        let aad = request.certificate_id.as_bytes();
+        let encrypted_key = crate::wrap::wrap_key(&kek, &request.private_key, aad)?;
 
-        // Split the "wrapping key" into shares
-        // In production, this would be the actual KEK used to wrap the private key
-        let wrapping_key = b"temporary-kek-32-bytes-fixed!!"; // Placeholder
-        let shares =
-            ShamirSecretSharing::split(wrapping_key, request.threshold, request.num_agents)?;
+        // Split the KEK into M-of-N Shamir shares for the recovery agents.
+        // The KEK itself is never persisted; once `kek` drops it is zeroized.
+        let shares = ShamirSecretSharing::split(&kek, request.threshold, request.num_agents)?;
 
         // Store escrowed key in database
         let repo = ostrich_db::repository::KraRepository::new(self.db.clone());
@@ -236,22 +242,6 @@ impl KeyEscrow {
         Ok(escrowed_key)
     }
 
-    /// Placeholder encryption (NOT SECURE - for testing only)
-    fn placeholder_encrypt(data: &[u8]) -> Vec<u8> {
-        // Simple XOR encryption (NOT FOR PRODUCTION)
-        let key = b"placeholder_key_";
-        data.iter()
-            .enumerate()
-            .map(|(i, &b)| b ^ key[i % key.len()])
-            .collect()
-    }
-
-    /// Placeholder decryption (NOT SECURE - for testing only)
-    #[allow(dead_code)]
-    fn placeholder_decrypt(data: &[u8]) -> Vec<u8> {
-        // XOR is symmetric
-        Self::placeholder_encrypt(data)
-    }
 }
 
 #[cfg(test)]

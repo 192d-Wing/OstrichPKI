@@ -19,6 +19,13 @@ ostrich-common = { path = "../../crates/ostrich-common" }
 ostrich-db = { path = "../../crates/ostrich-db" }
 ostrich-crypto = { path = "../../crates/ostrich-crypto" }
 ostrich-audit = { path = "../../crates/ostrich-audit" }
+ostrich-protocol = { path = "../../crates/ostrich-protocol" }
+
+# gRPC server (inter-service issuance API)
+tonic = { workspace = true }
+
+# Identifiers
+uuid = { workspace = true }
 
 # Web framework
 axum = { workspace = true }

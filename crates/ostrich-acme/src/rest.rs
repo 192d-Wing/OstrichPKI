@@ -77,6 +77,12 @@ pub struct AcmeState {
     pub audit_sink: Arc<dyn AuditSink>,
     /// Base URL for ACME directory (from configuration)
     pub base_url: String,
+    /// CA client for certificate issuance (RFC 8555 §7.4)
+    ///
+    /// When `None`, order finalization fails closed rather than
+    /// issuing a fake certificate.
+    /// NIST 800-53: SC-17 - PKI certificate issuance via CA service
+    pub ca_client: Option<Arc<crate::ca_integration::AcmeCaClient>>,
 }
 
 impl AcmeState {
@@ -86,12 +92,14 @@ impl AcmeState {
         crypto_provider: Arc<dyn CryptoProvider>,
         audit_sink: Arc<dyn AuditSink>,
         base_url: String,
+        ca_client: Option<Arc<crate::ca_integration::AcmeCaClient>>,
     ) -> Self {
         Self {
             db_pool,
             crypto_provider,
             audit_sink,
             base_url,
+            ca_client,
         }
     }
 }
@@ -270,12 +278,36 @@ async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
 }
 
 /// Create ACME REST API router
+///
+/// PUBLIC-ENDPOINT ALLOWLIST (intentionally unauthenticated at the transport layer):
+///
+/// ACME endpoints do NOT use the project's standard AuthLayer + AuthzLayer stack.
+/// This is deliberate: RFC 8555 defines its own request authentication model based
+/// on signed JWS envelopes. Every POST request to `/acme/*` carries a JWS whose
+/// signature is validated against either the embedded JWK (for new-account) or the
+/// server-side account key identified by `kid` (for subsequent requests). Wrapping
+/// these endpoints in session-based auth would be redundant, would break the RFC,
+/// and would block legitimate clients.
+///
+/// Per-endpoint authentication reference:
+/// - /acme/directory, /acme/new-nonce: public by RFC 8555 §7.1 / §7.2 (no auth required)
+/// - /acme/new-account:                JWS with embedded JWK (§7.3)
+/// - /acme/new-order:                  JWS with account kid (§7.4)
+/// - /acme/account/:id:                JWS with matching kid (§7.3.2 / §7.3.7)
+/// - /acme/authz/:id, /acme/order/:id: JWS POST-as-GET (§6.3)
+/// - /acme/challenge/:id:              JWS with account kid (§7.5.1)
+/// - /acme/order/:id/finalize:         JWS with account kid (§7.4)
+/// - /acme/cert/:id:                   JWS POST-as-GET (§7.4.2)
+/// - /health, /ready:                  orchestrator probes (NIST SI-17)
+///
+/// JWS verification lives in the ACME challenge/account handlers. Any future
+/// non-ACME endpoint added here MUST go behind AuthLayer instead.
 pub fn create_router(state: AcmeState) -> Router {
     Router::new()
         // Health and readiness endpoints
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
-        // ACME protocol endpoints
+        // ACME protocol endpoints - authenticated via per-request JWS per RFC 8555
         .route("/acme/directory", get(get_directory))
         .route("/acme/new-nonce", get(get_new_nonce))
         .route("/acme/new-account", post(new_account))
@@ -827,17 +859,41 @@ async fn finalize_order(
     }
 
     // Update order status to processing
+    // RFC 8555 §7.1.6 - Order moves to "processing" while issuance is underway
     let _processing_order = repo.update_order_status(db_order.id, "processing").await?;
 
-    // TODO: Actually issue certificate via CA (Phase 12)
-    // For now, simulate certificate issuance
-    let cert_id = Uuid::new_v4();
+    // Issue certificate via CA service
+    // RFC 8555 §7.4 - Order finalization triggers certificate issuance
+    // NIST 800-53: SC-17 - PKI certificate issuance via CA
+    // NIST 800-53: AU-2 - Certificate issuance is an auditable event (CA side)
+    let Some(ca_client) = state.ca_client.as_ref() else {
+        // NIST 800-53: SI-17 / fail-secure - never fake a certificate.
+        // Roll the order back from "processing" so the client may retry
+        // once CA integration is configured.
+        let _ = repo.update_order_status(db_order.id, "ready").await;
+        return Err(Error::ServerInternal(
+            "CA integration not configured".to_string(),
+        ));
+    };
 
-    // Update order with certificate and mark as valid
-    let _updated_order = repo
-        .update_order_certificate(db_order.id, cert_id, &csr_der)
+    // AcmeCaClient::finalize_order issues the certificate, stores the
+    // certificate id on the order, and transitions the order to "valid".
+    // validated.account_id is a Uuid; the CA client takes a string actor id
+    // for the audit trail (NIST 800-53: AU-3 - subject identity).
+    let _certificate_id = ca_client
+        .finalize_order(db_order.id, &csr_der, &validated.account_id.to_string())
         .await?;
-    let valid_order = repo.update_order_status(db_order.id, "valid").await?;
+
+    // Re-fetch the order so the response reflects the post-issuance state
+    // ("valid" status plus certificate URL). find_order_by_id takes the
+    // ACME order id string (path id), not the internal Uuid.
+    let valid_order = repo
+        .find_order_by_id(&id)
+        .await?
+        .ok_or(Error::ServerInternal(format!(
+            "Order disappeared during finalization: {}",
+            id
+        )))?;
 
     let authorization_urls: Vec<String> = db_authzs
         .iter()
@@ -852,20 +908,35 @@ async fn finalize_order(
 }
 
 /// Download certificate (RFC 8555 §7.4.2)
+///
+/// # NIST 800-53 Controls
+///
+/// - **SC-17**: PKI certificate delivery.
+/// - **AC-3**: Certificate retrieved via its issuing order.
 async fn get_certificate(
     State(state): State<AcmeState>,
     Path(id): Path<String>,
 ) -> Result<Response> {
-    // TODO: Load certificate from database (Phase 12 - CA integration)
-    // TODO: Return actual PEM-encoded certificate chain (Phase 12)
+    // RFC 8555 §7.4.2 - Certificate URL references the order's certificate.
+    // The path id is the ACME order id; resolve it to the issued certificate.
+    let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
-    // For now, return placeholder certificate
-    let cert_pem = format!(
-        "-----BEGIN CERTIFICATE-----\n\
-         MIICertificatePlaceholder{}\n\
-         -----END CERTIFICATE-----\n",
-        id
-    );
+    let db_order = repo.find_order_by_id(&id).await?.ok_or(Error::NotFound)?;
+
+    // Order has no certificate until finalization completes
+    // RFC 8555 §7.1.6 - Certificate only available in "valid" state
+    let certificate_id = db_order.certificate_id.ok_or(Error::NotFound)?;
+
+    // Load the issued certificate from the certificate store
+    let cert_repo = ostrich_db::repository::CertificateRepository::new(state.db_pool.clone());
+    let certificate = cert_repo
+        .find_by_id(certificate_id)
+        .await
+        .map_err(Error::Database)?
+        .ok_or(Error::NotFound)?;
+
+    // RFC 8555 §7.4.2 - application/pem-certificate-chain response
+    let cert_pem = certificate.pem_encoded;
 
     let nonce = generate_nonce(&state).await;
 

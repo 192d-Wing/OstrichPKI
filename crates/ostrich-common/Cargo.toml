@@ -56,3 +56,8 @@ argon2 = { workspace = true }
 
 # Middleware (HTTP)
 tower = { workspace = true }
+
+# TLS serving (HTTPS/mTLS for service binaries)
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+axum-server = { workspace = true }

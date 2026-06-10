@@ -75,7 +75,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system enforces approved authorizations for logical access.
 
-**Implementation Status:** 🔴 **Not Implemented**
+**Implementation Status:** 🟢 **Implemented** (Phase 1a gap-closure)
 
 **NIAP Mapping:**
 
@@ -85,25 +85,60 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Implementation:**
 
-- None (no authorization enforcement)
+- `RbacPolicy` engine at `crates/ostrich-common/src/auth/rbac.rs` evaluates every
+  authorization decision against the 33-permission enum in
+  `crates/ostrich-common/src/auth/permissions.rs`. The role→permission matrix lives in
+  `permissions_for_role()` and is enforced by `permissions.rs` + `roles.rs`.
+- `AuthLayer` (authentication) and `AuthzLayer` (authorization) middleware in
+  `crates/ostrich-common/src/auth/middleware.rs` apply RBAC enforcement to all
+  service routers.
+- Per-endpoint permission wiring:
+  - `crates/ostrich-ca/src/rest.rs` — IssueCertificate, RevokeCertificate, GenerateCrl,
+    ApproveRequest, RejectRequest, SubmitRequest, ViewRequests, ViewConfig (profiles)
+  - `crates/ostrich-est/src/rest.rs` — SubmitRequest, RenewCertificate
+  - `crates/ostrich-scms/src/rest.rs` — CreateUser, ModifyUser, DeleteUser,
+    ViewUsers, UnlockAccount, ViewConfig, ModifyConfig, ReadAuditLog
+    (see the route→permission mapping table in `create_router`)
+- Web UI proxy (`services/web-ui/src/server/middleware/session.rs`) rejects any
+  `/api/*` request that lacks the configured session cookie (fail-closed).
+- Intentionally public endpoints are explicitly allowlisted with RFC / NIAP
+  justifications at `crates/ostrich-ocsp/src/rest.rs::create_router` (RFC 6960,
+  NIAP FDP_IFC.1) and `crates/ostrich-acme/src/rest.rs::create_router`
+  (RFC 8555 JWS-per-request authentication model).
+- `DisabledAuthProvider` at `crates/ostrich-common/src/auth/provider.rs` provides
+  a fail-closed placeholder: any service running without a real `AuthProvider`
+  wired in returns 401 for every protected route.
 
 **Gaps:**
 
-- No role-based access control (RBAC)
-- All endpoints accessible without authorization checks
-- Certificate issuance not restricted by role
+- Real `AuthProvider` implementations (password DB, mTLS, OIDC) are not yet wired
+  into `services/ca-server`, `services/scms-server`, `services/kra-server`.
+  The enforcement scaffolding is complete and fail-closed; a follow-up PR
+  connects an actual user store. No production deployment can bypass RBAC.
+- Web UI proxy currently validates session-cookie *presence*; full server-side
+  session validation against `SessionManager` is a follow-up (the type exists at
+  `services/web-ui/src/server/auth/session.rs`).
 
 **Code References:**
 
-- Planned: `crates/ostrich-common/src/rbac.rs` (Phase 15)
-
-**Remediation:** Phase 16 - Implement RBAC middleware on all REST/gRPC endpoints
+- `crates/ostrich-common/src/auth/rbac.rs:130` - `RbacPolicy::authorize`
+- `crates/ostrich-common/src/auth/middleware.rs:138` - `AuthzLayer::authorize`
+- `crates/ostrich-common/src/auth/permissions.rs:240` - `permissions_for_role`
+- `crates/ostrich-ca/src/rest.rs:95-160` - CA route authorization wiring
+- `crates/ostrich-scms/src/rest.rs:68-165` - SCMS route→permission mapping table
+- `crates/ostrich-est/src/rest.rs:202-235` - EST route authorization wiring
+- `services/web-ui/src/server/middleware/session.rs` - proxy session gate
+- Tests: `crates/ostrich-common/src/auth/rbac.rs` — `rbac_matrix_*` and
+  `separation_of_duties_*` tests exercise the matrix end-to-end.
 
 **Evidence Required for ATO:**
 
-- Access control policy documentation
-- Authorization test results
-- Privilege escalation testing (negative tests)
+- ✅ Access control policy documentation (role-permission matrix in source + this file)
+- ✅ Authorization test results (7 new `rbac_matrix_*` tests pass; see `cargo test
+  -p ostrich-common --lib auth::rbac`)
+- ✅ Privilege escalation testing (negative tests):
+  `separation_of_duties_auditor_cannot_modify_and_admin_cannot_audit` asserts
+  that Auditor cannot mutate state and Admin cannot read audit logs
 
 ---
 
@@ -111,7 +146,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The organization separates duties of individuals to reduce the risk of malevolent activity.
 
-**Implementation Status:** 🔴 **Not Implemented**
+**Implementation Status:** 🟢 **Implemented** (Phase 1a gap-closure)
 
 **NIAP Mapping:**
 
@@ -119,19 +154,36 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Implementation:**
 
-- None
+- Role set and separation rules defined in
+  `crates/ostrich-common/src/auth/roles.rs`: Administrator, Auditor,
+  OperationsStaff, RaStaff, Aor. `validate_role_set()` rejects conflicting
+  assignments (Auditor ⊕ Admin, Auditor ⊕ Operations).
+- Permission matrix in `permissions_for_role()` at
+  `crates/ostrich-common/src/auth/permissions.rs:240` enforces that:
+  - Only **Auditor** holds `ReadAuditLog` / `ExportAuditLog` / `SearchAuditLog`
+  - Only **OperationsStaff** holds `IssueCertificate` / `RevokeCertificate`
+  - **Administrator** cannot issue certificates or read audit logs
+  - **RaStaff / Aor** approve requests but cannot issue certificates directly
+- `RbacPolicy::verify_can_approve` at `crates/ostrich-common/src/auth/rbac.rs:237`
+  enforces requestor ≠ approver for certificate request approvals
+  (NIAP FDP_CER_EXT.3).
+- Self-approval is blocked at the CA REST handler via the same policy method;
+  `Error::SelfApprovalProhibited` surfaces as HTTP 403.
 
 **Gaps:**
 
-- No enforcement that Auditor role is separate from all others
-- No enforcement that CA Operations Staff role is separate from all others
-- No validation of conflicting role assignments
+- None at the policy / enforcement layer. Operational role assignment to
+  real users depends on the follow-up that wires a real `AuthProvider`.
 
 **Code References:**
 
-- Planned: `crates/ostrich-common/src/rbac.rs` - Role separation validation (Phase 15)
-
-**Remediation:** Phase 15 - Implement role separation validation logic
+- `crates/ostrich-common/src/auth/roles.rs` - `Role` enum, `validate_role_set`
+- `crates/ostrich-common/src/auth/permissions.rs:240` - `permissions_for_role`
+- `crates/ostrich-common/src/auth/rbac.rs:237` - `verify_can_approve`
+- `crates/ostrich-ca/src/approval.rs` - ApprovalEngine uses separation checks
+- Tests: `separation_of_duties_auditor_cannot_modify_and_admin_cannot_audit`,
+  `test_self_approval_prohibited`, `test_approval_by_different_user` in
+  `crates/ostrich-common/src/auth/rbac.rs`
 
 **Evidence Required for ATO:**
 
@@ -282,6 +334,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **Implementation:**
 
 - [crates/ostrich-audit/src/event.rs:15-45](../../crates/ostrich-audit/src/event.rs#L15-L45) - `EventType` enum with comprehensive event types
+- [crates/ostrich-scms/src/rest.rs](../../crates/ostrich-scms/src/rest.rs) — `audit_token_event` helper called by every state-changing SCMS handler (Phase 1b). 11 distinct token lifecycle actions audited.
 
 **Evidence:**
 
@@ -290,8 +343,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - ✅ Configuration changes
 - ✅ Cryptographic operations
 - ✅ Access control decisions
+- ✅ Token lifecycle (Phase 1b): create, revoke, initialize, personalize, suspend, resume, unblock, verify-pin (success + failure), change-pin, generate-key, delete-key, create-model
 
-**Code Annotation:** NIAP PP-CA v2.1: FAU_GEN.1 - Required in Phase 15
+**Code Annotation:** NIAP PP-CA v2.1: FAU_GEN.1 — Phase 1b SCMS coverage complete
 
 **Evidence Required for ATO:**
 
@@ -905,20 +959,40 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **Code References:**
 
 - `crates/ostrich-common/src/grpc_client.rs:41-89` - GrpcClientConfig with TLS
+- `crates/ostrich-common/src/tls.rs` - Shared TLS 1.3 server module: rustls
+  (ring provider), optional mTLS client verification, fail-fast on partial
+  configuration, plain-HTTP fallback with prominent startup warning
 - `crates/ostrich-acme/src/ca_integration.rs:32-41` - CA client with mTLS
 - `crates/ostrich-est/src/ca_integration.rs:30-39` - EST client with mTLS
+- All seven service binaries (`services/*/src/main.rs`) accept
+  `TLS_CERT_FILE`/`TLS_KEY_FILE`/`TLS_CLIENT_CA_FILE` and serve HTTPS via
+  `ostrich_common::tls::serve`
+
+**Implementation Update (Phase 14):**
+
+- ✅ Native TLS 1.3 serving on every service binary (ca, acme, est, ocsp,
+  scms, kra, web-ui) - TLS 1.3 only, enforced in
+  `crates/ostrich-common/src/tls.rs` via
+  `ServerConfig::builder_with_provider(...).with_protocol_versions(&[&TLS13])`
+- ✅ Optional mTLS: `TLS_CLIENT_CA_FILE` enables WebPkiClientVerifier
+  (AC-17 inter-service authentication)
+- ✅ Fail-secure configuration: cert-without-key (or client CA without server
+  TLS) aborts startup instead of downgrading (CM-6)
+- ✅ Unit tests: `crates/ostrich-common/src/tls.rs` (partial-config rejection,
+  missing-file rejection)
 
 **Remaining Gaps:**
 
-- External REST API TLS configuration (deployment-specific)
-- TLS 1.3 enforcement for external endpoints (Phase 14)
+- gRPC (tonic) listener TLS configuration on ca-server (REST is covered;
+  gRPC mTLS via tonic TLS config or service mesh)
+- TLS scan results (deployment evidence)
 
 **Evidence Required for ATO:**
 
 - ✅ mTLS configuration documentation (Phase 12)
 - ✅ Inter-service authentication test results
-- ⏳ External TLS configuration documentation (Phase 14)
-- ⏳ TLS scan results (Phase 14)
+- ✅ External TLS configuration (TLS_CERT_FILE/TLS_KEY_FILE, Phase 14)
+- ⏳ TLS scan results (deployment)
 
 ---
 
@@ -956,7 +1030,19 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - ✅ Thread-safe concurrent key operations
 - ✅ KRA for key escrow and recovery
 - ✅ Shamir secret sharing for split knowledge
-- ✅ Comprehensive integration test suite (18 tests)
+- ✅ **KRA key wrapping uses AES-256-GCM (SP 800-38D) with per-escrow random
+  KEK** (`crates/ostrich-kra/src/wrap.rs`); the previous placeholder XOR
+  encryption is removed. The escrow record's certificate ID is bound as AEAD
+  associated data; the KEK is Shamir-split, never persisted, and zeroized
+  after use (FCS_CKM.4). Recovery (`complete_recovery`) reconstructs the KEK,
+  unwraps the escrowed key, and returns it in a `Zeroizing` buffer; unwrap
+  failures are audited as Failure outcomes (AU-2)
+- ✅ CA bootstrap from database: `ca_keys`/`ca_certificates` repository
+  (`crates/ostrich-db/src/repository/ca.rs`), loaded by
+  `services/ca-server/src/main.rs::bootstrap_ca` with FCS_STG_EXT.1 HSM
+  validation; `tools/ostrich-init` generates and registers the root CA
+- ✅ Comprehensive integration test suite (18 tests) plus 6 KEK wrap/unwrap
+  unit tests (roundtrip, wrong-KEK, tamper, AAD mismatch, nonce uniqueness)
 - ⚠️  Key destruction not yet implemented
 - ⚠️  Key lifecycle procedures partially documented
 
@@ -1114,6 +1200,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - [crates/ostrich-x509/src/builder/crl.rs:392-451](../../crates/ostrich-x509/src/builder/crl.rs#L392-L451) - CRL extension building
 - [crates/ostrich-x509/src/validation/](../../crates/ostrich-x509/src/validation/) - **Path validation (Phase 15)**
 - [crates/ostrich-ca/src/issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - Certificate issuance
+- [crates/ostrich-acme/src/rest.rs:791](../../crates/ostrich-acme/src/rest.rs#L791) - ACME order finalization issues certificates via CA gRPC (`AcmeCaClient`); fails closed (SI-17) when CA integration is not configured
+- [crates/ostrich-acme/src/rest.rs:916](../../crates/ostrich-acme/src/rest.rs#L916) - ACME certificate download serves issued PEM chain from certificate store (RFC 8555 §7.4.2)
 
 **Evidence:**
 

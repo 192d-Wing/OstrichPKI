@@ -8,5 +8,28 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Internal crates
 ostrich-common = { workspace = true }
-clap = { workspace = true }
+ostrich-crypto = { workspace = true }
+ostrich-db = { workspace = true }
+ostrich-x509 = { workspace = true }
+
+# CLI
+clap = { workspace = true, features = ["derive", "env"] }
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+
+# X.509 assembly (RFC 5280) and PEM (RFC 7468)
+der = { workspace = true }
+x509-cert = { workspace = true }
+pem-rfc7468 = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling & logging
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

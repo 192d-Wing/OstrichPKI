@@ -29,6 +29,24 @@ struct Args {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
 
+    /// TLS certificate chain file (PEM). With --tls-key, serves HTTPS (TLS 1.3).
+    /// NIST 800-53: SC-8 - Transmission Confidentiality
+    #[arg(long, env = "TLS_CERT_FILE")]
+    tls_cert: Option<String>,
+
+    /// TLS private key file (PEM)
+    #[arg(long, env = "TLS_KEY_FILE")]
+    tls_key: Option<String>,
+
+    /// Client CA bundle (PEM). When set, clients must present certificates (mTLS).
+    #[arg(long, env = "TLS_CLIENT_CA_FILE")]
+    tls_client_ca: Option<String>,
+
+    /// CA gRPC endpoint for certificate issuance
+    /// NIST 800-53: SC-17 - PKI certificate issuance via CA service
+    #[arg(long, env = "CA_GRPC_URL")]
+    ca_grpc_url: Option<String>,
+
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     log_level: String,
@@ -62,12 +80,37 @@ async fn main() -> Result<()> {
     // Initialize audit sink
     let audit_sink = ostrich_audit::DatabaseAuditSink::new(db_pool.clone());
 
+    // Initialize CA client for certificate issuance (RFC 8555 §7.4)
+    // NIST 800-53: SC-17 - PKI certificate issuance via CA service
+    // NIST 800-53: SC-8 - gRPC channel to CA (mTLS when configured)
+    let ca_client = match &args.ca_grpc_url {
+        Some(url) => {
+            tracing::info!(endpoint = %url, "Connecting to CA gRPC service");
+            let config = ostrich_common::GrpcClientConfig {
+                endpoint: url.clone(),
+                ..Default::default()
+            };
+            let client =
+                ostrich_acme::ca_integration::AcmeCaClient::new(config, db_pool.clone()).await?;
+            Some(Arc::new(client))
+        }
+        None => {
+            // NIST 800-53: SI-17 - Fail secure: finalization will be rejected
+            tracing::warn!(
+                "CA_GRPC_URL not configured; ACME order finalization will fail \
+                 until a CA gRPC endpoint is provided"
+            );
+            None
+        }
+    };
+
     // Create ACME state
     let state = ostrich_acme::rest::AcmeState::new(
         db_pool,
         Arc::new(crypto_provider),
         Arc::new(audit_sink),
         args.base_url.clone(),
+        ca_client,
     );
 
     // Create REST API router
@@ -78,11 +121,14 @@ async fn main() -> Result<()> {
 
     tracing::info!(%addr, base_url = %args.base_url, "Starting ACME server");
 
-    // Start server
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Start server (HTTPS when TLS is configured, HTTP with warning otherwise)
+    // NIST 800-53: SC-8 - Transmission Confidentiality and Integrity
+    let tls = ostrich_common::tls::TlsSettings::from_options(
+        args.tls_cert,
+        args.tls_key,
+        args.tls_client_ca,
+    )?;
+    ostrich_common::tls::serve(addr, app, tls.as_ref(), shutdown_signal()).await?;
 
     tracing::info!("ACME Server shutdown complete");
     Ok(())

@@ -18,6 +18,75 @@ pub fn generate_test_rsa_keypair() -> (RsaPrivateKey, RsaPublicKey) {
     (private_key, public_key)
 }
 
+/// Generate a test RSA-2048 public key as DER-encoded SubjectPublicKeyInfo
+///
+/// COMPLIANCE MAPPING:
+/// - FIPS 186-5: RSA key generation (test fixture)
+/// - RFC 5280 §4.1.2.7 - SubjectPublicKeyInfo encoding
+pub fn generate_test_rsa_spki() -> Vec<u8> {
+    use rsa::pkcs8::EncodePublicKey;
+    let (_, public_key) = generate_test_rsa_keypair();
+    public_key
+        .to_public_key_der()
+        .expect("Failed to encode RSA SubjectPublicKeyInfo")
+        .as_bytes()
+        .to_vec()
+}
+
+/// Generate a test ECDSA P-256 public key as DER-encoded SubjectPublicKeyInfo
+///
+/// COMPLIANCE MAPPING:
+/// - FIPS 186-5: ECDSA P-256 key generation (test fixture)
+/// - RFC 5480: ECC SubjectPublicKeyInfo format
+pub fn generate_test_p256_spki() -> Vec<u8> {
+    use p256::pkcs8::EncodePublicKey;
+    let secret_key = p256::SecretKey::random(&mut rand::thread_rng());
+    secret_key
+        .public_key()
+        .to_public_key_der()
+        .expect("Failed to encode P-256 SubjectPublicKeyInfo")
+        .as_bytes()
+        .to_vec()
+}
+
+/// Generate a test Ed25519 public key as DER-encoded SubjectPublicKeyInfo
+///
+/// COMPLIANCE MAPPING:
+/// - FIPS 186-5: EdDSA (Ed25519) key generation (test fixture)
+/// - RFC 8410: Ed25519 algorithm identifier in SubjectPublicKeyInfo
+pub fn generate_test_ed25519_spki() -> Vec<u8> {
+    use ed25519_dalek::pkcs8::EncodePublicKey;
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+    signing_key
+        .verifying_key()
+        .to_public_key_der()
+        .expect("Failed to encode Ed25519 SubjectPublicKeyInfo")
+        .as_bytes()
+        .to_vec()
+}
+
+/// Placeholder ML-DSA-65 SubjectPublicKeyInfo (FIPS 204)
+///
+/// Hand-encoded DER using the ML-DSA-65 OID (2.16.840.1.101.3.4.3.18) with a
+/// dummy key body. No workspace crate can generate real ML-DSA keys yet, so
+/// this fixture exists only to exercise the CA's rejection path. Replace with
+/// a real ML-DSA keypair when FIPS 204 support lands.
+///
+/// COMPLIANCE MAPPING:
+/// - FIPS 204: ML-DSA-65 algorithm identifier (negative-path fixture)
+/// - draft-ietf-lamps-dilithium-certificates: ML-DSA in X.509
+pub fn ml_dsa_65_placeholder_spki() -> Vec<u8> {
+    let mut spki = vec![
+        0x30, 0x30, // SEQUENCE, 48 bytes (SubjectPublicKeyInfo)
+        0x30, 0x0b, // SEQUENCE, 11 bytes (AlgorithmIdentifier)
+        0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03,
+        0x12, // OID 2.16.840.1.101.3.4.3.18 (id-ml-dsa-65)
+        0x03, 0x21, 0x00, // BIT STRING, 33 bytes, 0 unused bits
+    ];
+    spki.extend(std::iter::repeat(0xAA).take(32)); // dummy key body
+    spki
+}
+
 /// Generate a test certificate signing request (CSR)
 #[allow(dead_code)]
 pub fn generate_test_csr(_common_name: &str) -> Vec<u8> {

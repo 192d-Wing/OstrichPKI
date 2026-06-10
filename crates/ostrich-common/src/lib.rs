@@ -9,6 +9,7 @@ pub mod grpc_client;
 pub mod health;
 pub mod oid;
 pub mod test_constants;
+pub mod tls;
 pub mod types;
 pub mod util;
 

@@ -177,25 +177,33 @@ This document tracks OstrichPKI's compliance with Federal Information Processing
    - AES-256-GCM
    - ChaCha20-Poly1305 (not AES, but AEAD)
 
-2. **Key Wrapping** (planned for KRA)
-   - [crates/ostrich-crypto/src/provider.rs:83-91](../../crates/ostrich-crypto/src/provider.rs#L83-L91) - `wrap_key()` interface
-   - AES-KW per RFC 3394 / NIST SP 800-38F
+2. **KRA Key Escrow Wrapping** ✅ **Implemented**
+   - [crates/ostrich-kra/src/wrap.rs](../../crates/ostrich-kra/src/wrap.rs) - AES-256-GCM (NIST SP 800-38D) via ring
+   - Per-escrow random 256-bit KEK (OS CSPRNG via ring `SystemRandom`)
+   - 96-bit random nonce per wrap; wire format `nonce || ciphertext || tag`
+   - Escrow certificate ID bound as AEAD associated data (context binding)
+   - KEK Shamir-split for M-of-N recovery, zeroized after use, never persisted
+   - Test coverage: roundtrip, wrong-KEK rejection, tamper detection, AAD
+     mismatch rejection, nonce uniqueness, KEK length validation
+   - [crates/ostrich-crypto/src/provider.rs:83-91](../../crates/ostrich-crypto/src/provider.rs#L83-L91) - HSM `wrap_key()` interface (AES-KW per SP 800-38F) remains for PKCS#11-resident keys
 
-3. **Database Encryption** (optional)
-   - AES-256-GCM for escrowed key material
+3. **TLS 1.3 Service Endpoints** ✅ **Implemented**
+   - [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - rustls with explicit ring provider, TLS 1.3 only
+   - AES-GCM AEAD suites via the ring CryptoProvider
 
 **Implementation:**
 
-- 🔴 Key wrapping not implemented
-- ✅ TLS uses AES-GCM (via library)
+- ✅ KRA escrow key wrapping: AES-256-GCM (the prior placeholder XOR stub is removed)
+- ✅ TLS uses AES-GCM (via rustls/ring)
 
 **Compliance Notes:**
 
 - CBC mode deprecated for most uses (use GCM or CCM for AEAD)
 - ECB mode prohibited (not secure)
-- GCM IV: 96 bits recommended, MUST NOT reuse with same key
+- GCM IV: 96 bits random per wrap; each escrow uses a fresh single-use KEK,
+  so IV reuse with the same key cannot occur structurally
 
-**Remediation:** Phase 10 - Implement AES-KW for key wrapping in crypto providers
+**Remediation:** Complete for KRA escrow. AES-KW (SP 800-38F) for HSM-resident key transport remains available via the PKCS#11 provider.
 
 ---
 

@@ -24,6 +24,10 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 
+# Cryptography
+ring = { workspace = true }
+zeroize = { workspace = true }
+
 # Utilities
 thiserror = { workspace = true }
 rand = { workspace = true }

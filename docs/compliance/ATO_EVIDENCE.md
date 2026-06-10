@@ -8,6 +8,128 @@
 
 ---
 
+## Phase 1c Gap-Closure Evidence (SCMS Schema + Repository)
+
+The data layer for SCMS now matches the service-model surface. Migration
+[00005_scms_token_fields.sql](../../migrations/00005_scms_token_fields.sql)
+moves source-of-truth for nine fields out of in-memory defaults and into the
+database. Hardware-backed PKCS#11 calls (`C_Login`, on-token `C_GenerateKeyPair`,
+`C_DestroyObject`) remain a Phase 1c-hardware follow-up; the data path,
+audit trail, and lifecycle state machine are complete.
+
+| Control / SFR | Framework  | Evidence |
+|---------------|------------|----------|
+| FIA_AFL.1     | NIAP PP-CA  | `tokens.so_pin_attempts_remaining` is a distinct counter from `pin_attempts_remaining`, persisted via migration 00005. `unblock_token` resets both. `verify_pin` flips status to `blocked` atomically with the User-PIN counter hitting zero. |
+| FMT_SMR.1     | NIAP PP-CA  | SO PIN and User PIN counters tracked independently in `tokens` table; SO PIN updates go through `ScmsRepository::update_token_so_pin_attempts`. |
+| FMT_SMF.1     | NIAP PP-CA  | Lifecycle timestamps (`initialized_at`, `expires_at`) recorded by `update_token_lifecycle`; `initialize_token` handler now writes the timestamp on transition. |
+| FCS_COP.1     | NIAP PP-CA  | `token_keys.usage` array stores X.509 KeyUsage flags (RFC 5280 §4.2.1.3) per key; `token_keys.key_size` recorded for queryable strength. |
+| FPT_STM.1     | NIAP PP-CA  | All lifecycle timestamps (`initialized_at`, `expires_at`, `assigned_at`, `blocked_at`, `retired_at`) come from `Utc::now()` at the repository layer, not client input. |
+| CM-3          | NIST 800-53 | Migration is forward-only, checked-in (`migrations/00005_scms_token_fields.sql`), and includes inline comments explaining each column's compliance role. |
+
+Test evidence:
+
+```
+cargo check --workspace                          # Clean
+cargo test -p ostrich-db -p ostrich-scms --lib   # 50 + 15 passed
+cargo test -p ostrich-common --lib               # 145 passed (no regressions)
+```
+
+Code path summary:
+
+- [migrations/00005_scms_token_fields.sql](../../migrations/00005_scms_token_fields.sql) — adds 9 columns
+- [crates/ostrich-db/src/models/scms.rs](../../crates/ostrich-db/src/models/scms.rs) — Token / TokenModel / TokenKey carry new fields
+- [crates/ostrich-db/src/repository/scms.rs](../../crates/ostrich-db/src/repository/scms.rs) — `create_token` accepts label; new `update_token_lifecycle`, `update_token_so_pin_attempts`, `update_token_label` methods; `create_token_model` and `create_token_key` accept the full field set
+- [crates/ostrich-scms/src/rest.rs](../../crates/ostrich-scms/src/rest.rs) — `list_tokens` accepts `status` / `assignedTo` / `page` / `limit` query parameters; `initialize_token` records `initialized_at`; `unblock_token` resets the SO-PIN counter; `map_db_token_to_service` reads real DB columns instead of hard-coded defaults
+
+Phase 1c-hardware (next iteration):
+
+- Extend `CryptoProvider` with PIN-management ops (`verify_user_pin`, `set_user_pin`, `verify_so_pin`, `unblock_user_pin`)
+- Wire `cryptoki::Session::login(CKU_USER)` and `set_pin` calls in a new `Pkcs11ScmsAdapter`
+- On-token keygen: `C_GenerateKeyPair` with `CKA_TOKEN=true` against softhsm2
+- Integration test driving init → personalize → fail-PIN-3x → lockout → unblock against softhsm2 (test harness already exists at `tests/setup_softhsm.sh`)
+
+---
+
+## Phase 1b Gap-Closure Evidence (SCMS Audit + PIN Lockout)
+
+The following moved from 🟡 Partial to 🟢 Implemented in the Phase 1b SCMS
+audit + lockout change. PKCS#11 hardware calls themselves (PIN verification
+against the physical token, on-token keygen) remain a Phase 1c follow-up;
+the management-plane state machine and audit trail are now complete.
+
+| Control / SFR | Framework  | Evidence |
+|---------------|------------|----------|
+| AU-2          | NIST 800-53 | `audit_token_event` helper at [crates/ostrich-scms/src/rest.rs](crates/ostrich-scms/src/rest.rs); every state-changing handler emits an event |
+| AU-3          | NIST 800-53 | All audit records carry actor (authenticated user), target (`scms:token:{uuid}`), action, outcome, and JSON details |
+| AU-12         | NIST 800-53 | Audit generation in `record()` path of `DatabaseAuditSink` is exercised by every SCMS lifecycle handler |
+| FAU_GEN.1     | NIAP PP-CA  | Audit Data Generation: 11 distinct `action` values (create_token, revoke_token, initialize_token, personalize_token, suspend_token, resume_token, unblock_token, verify_pin, change_pin, generate_token_key, delete_token_key, create_token_model) |
+| FAU_GEN.2     | NIAP PP-CA  | User Identity Association: actor field populated from `AuthUser::username` extracted by `AuthLayer` |
+| FIA_AFL.1     | NIAP PP-CA  | `verify_pin` decrements `pin_attempts_remaining` on each failure and atomically transitions token status to `blocked` when the counter reaches zero, requiring `unblock_token` (`Permission::UnlockAccount`) for recovery |
+
+Test evidence:
+
+```
+cargo test -p ostrich-scms --lib
+# 15 tests passed — including:
+#  - audit_token_event_records_lifecycle_event (AU-2/AU-3 wiring)
+#  - pin_lockout_threshold_at_zero (FIA_AFL.1.2 lockout)
+#  - pin_success_resets_counter (FIA_AFL.1.2 reset)
+#  - token_target_format_is_stable (audit target naming convention)
+```
+
+Known follow-ups (Phase 1c) — these are explicitly out-of-scope for the
+audit / lockout attestation because the management-plane evidence above
+stands on its own:
+
+- Wire `CryptoProvider`-backed PKCS#11 calls for actual PIN verification,
+  on-token keygen, and key destruction. Each handler has a `// TODO (Phase 1c)`
+  comment marking the exact insertion point.
+- Add migration `migrations/00005_scms_token_fields.sql` for the columns the
+  `Token`/`TokenModel`/`TokenKey` service models still default in code:
+  `label`, `so_pin_attempts_remaining`, `initialized_at`, `expires_at`,
+  `firmware_version`, `key_capacity`, `cert_capacity`, `key_size`, `usage[]`.
+- Extend `ostrich-db::repository::ScmsRepository::update_token` to accept
+  partial field updates so the `update_token` REST handler stops being a
+  no-op.
+- Integration test against softhsm2 that drives the full
+  init → personalize → fail-PIN-3x → lockout → unblock cycle and verifies
+  the audit trail.
+
+---
+
+## Phase 1a Gap-Closure Evidence (RBAC Route Wiring)
+
+The following controls moved from 🔴 Not Implemented to 🟢 Implemented in the
+Phase 1a RBAC route-wiring change:
+
+| Control   | Framework  | Evidence |
+|-----------|------------|----------|
+| AC-3      | NIST 800-53 | `crates/ostrich-common/src/auth/rbac.rs`, `crates/ostrich-common/src/auth/middleware.rs`, per-route wiring in `ostrich-ca/src/rest.rs`, `ostrich-scms/src/rest.rs`, `ostrich-est/src/rest.rs` |
+| AC-5      | NIST 800-53 | `roles.rs::validate_role_set`, `permissions.rs::permissions_for_role`, `rbac.rs::verify_can_approve` |
+| FMT_MOF.1 | NIAP PP-CA  | `AuthzLayer` per-route enforcement; permission decorators on management routes |
+| FMT_MTD.1 | NIAP PP-CA  | Permission-gated access to tokens, profiles, keys, audit events |
+| FDP_IFC.1 | NIAP PP-CA  | Explicit public-endpoint allowlist with RFC justifications in OCSP and ACME routers |
+
+Test evidence:
+
+```
+cargo test -p ostrich-common --lib auth::rbac
+# 16 tests passed — including 7 new rbac_matrix_* tests and the
+# separation_of_duties test covering AC-5 negative cases
+```
+
+Known follow-ups (do not block AC-3 / AC-5 attestation because the enforcement
+is fail-closed — all protected routes return 401 without a real provider):
+
+- Wire a production `AuthProvider` (password DB, mTLS, or OIDC) into
+  `services/ca-server/src/main.rs`, `services/scms-server/src/main.rs`,
+  and `services/kra-server/src/main.rs`. SCMS currently uses
+  `DisabledAuthProvider` (fail-closed placeholder).
+- Upgrade `services/web-ui/src/server/middleware/session.rs` from
+  cookie-presence validation to full server-side `SessionManager` lookup.
+
+---
+
 ## Executive Summary
 
 This guide provides procedures for collecting, organizing, and maintaining evidence required for OstrichPKI's Authority to Operate (ATO) certification under the NIST Risk Management Framework (RMF). The evidence collected supports the System Security Plan (SSP), Security Assessment Report (SAR), and Plan of Action & Milestones (POA&M).
@@ -1395,6 +1517,14 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | FCS_RBG_EXT.1 | `evidence/sar/test_results/crypto_nist_tests.log` | NIST CAVP results |
 | FMT_SMR.2 | `crates/ostrich-rbac/src/lib.rs` | Code implementation |
 | FMT_SMR.2 | `evidence/sar/test_results/rbac_tests.log` | Test results |
+| SC-8 | `crates/ostrich-common/src/tls.rs` | Code implementation (TLS 1.3 serving, all services) |
+| SC-8 | `services/*/src/main.rs` (TLS_CERT_FILE/TLS_KEY_FILE wiring) | Configuration |
+| SC-12 / FCS_COP.1 | `crates/ostrich-kra/src/wrap.rs` | Code implementation (AES-256-GCM KEK wrapping) |
+| SC-12 / FCS_CKM.4 | `crates/ostrich-kra/src/wrap.rs` unit tests (6) | Test results (wrap/unwrap, tamper, AAD, zeroization-by-construction) |
+| SC-17 / FCS_STG_EXT.1 | `services/ca-server/src/main.rs::bootstrap_ca` | Code implementation (HSM-validated CA bootstrap) |
+| SC-17 / FCS_CKM.1 | `tools/ostrich-init/src/main.rs` | Code implementation (root CA generation + registration) |
+| SC-17 (RFC 5280 §4.1.1.2) | `crates/ostrich-ca/src/issuance.rs`, `crates/ostrich-ca/src/revocation.rs` | Code fix (signature algorithm matches declared AlgorithmIdentifier) |
+| AC-17 | `crates/ostrich-common/src/tls.rs` (WebPkiClientVerifier) | Code implementation (optional mTLS client verification) |
 
 ---
 

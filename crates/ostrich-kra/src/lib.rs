@@ -49,6 +49,7 @@ pub mod error;
 pub mod escrow;
 pub mod recovery;
 pub mod shamir;
+pub mod wrap;
 
 pub use error::{Error, Result};
 pub use escrow::{KeyEscrow, KeyEscrowRequest};

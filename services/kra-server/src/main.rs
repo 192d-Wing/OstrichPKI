@@ -25,6 +25,19 @@ struct Args {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
 
+    /// TLS certificate chain file (PEM). With --tls-key, serves HTTPS (TLS 1.3).
+    /// NIST 800-53: SC-8 - Transmission Confidentiality
+    #[arg(long, env = "TLS_CERT_FILE")]
+    tls_cert: Option<String>,
+
+    /// TLS private key file (PEM)
+    #[arg(long, env = "TLS_KEY_FILE")]
+    tls_key: Option<String>,
+
+    /// Client CA bundle (PEM). When set, clients must present certificates (mTLS).
+    #[arg(long, env = "TLS_CLIENT_CA_FILE")]
+    tls_client_ca: Option<String>,
+
     /// Log level
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     log_level: String,
@@ -64,10 +77,13 @@ async fn main() -> Result<()> {
 
     tracing::info!(%addr, "Starting KRA server");
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // NIST 800-53: SC-8 - HTTPS when TLS is configured (HTTP fallback warns)
+    let tls = ostrich_common::tls::TlsSettings::from_options(
+        args.tls_cert,
+        args.tls_key,
+        args.tls_client_ca,
+    )?;
+    ostrich_common::tls::serve(addr, app, tls.as_ref(), shutdown_signal()).await?;
 
     tracing::info!("KRA Server shutdown complete");
     Ok(())

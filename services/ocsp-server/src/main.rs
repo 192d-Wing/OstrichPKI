@@ -32,6 +32,16 @@ struct Args {
     #[arg(long, env = "OCSP_SIGNING_KEY")]
     signing_key: Option<String>,
 
+    /// TLS certificate chain file (PEM). With --tls-key, serves HTTPS (TLS 1.3).
+    /// OCSP responses are self-signed and verifiable, so plain HTTP is
+    /// RFC 6960-conformant; TLS is still recommended for privacy.
+    #[arg(long, env = "TLS_CERT_FILE")]
+    tls_cert: Option<String>,
+
+    /// TLS private key file (PEM)
+    #[arg(long, env = "TLS_KEY_FILE")]
+    tls_key: Option<String>,
+
     /// Log level
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     log_level: String,
@@ -76,10 +86,10 @@ async fn main() -> Result<()> {
 
     tracing::info!(%addr, "Starting OCSP responder");
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // NIST 800-53: SC-8 - HTTPS when TLS is configured (HTTP fallback warns).
+    // OCSP is a public, unauthenticated protocol, so no client CA option here.
+    let tls = ostrich_common::tls::TlsSettings::from_options(args.tls_cert, args.tls_key, None)?;
+    ostrich_common::tls::serve(addr, app, tls.as_ref(), shutdown_signal()).await?;
 
     tracing::info!("OCSP Responder shutdown complete");
     Ok(())

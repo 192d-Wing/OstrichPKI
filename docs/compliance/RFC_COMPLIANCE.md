@@ -41,6 +41,14 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
 
 - ✅ §4.1.1.1 - Version: v3 certificates (version field = 2)
 - ✅ §4.1.1.2 - Serial Number: Unique positive integer
+- ✅ §4.1.1.2/§4.1.1.3 - **Inner/outer AlgorithmIdentifier coherence fixed**:
+  `tbsCertificate.signature` and `signatureAlgorithm` are identical, and the
+  CA signing path now signs with the scheme the TBS declares
+  (sha256WithRSAEncryption / PKCS#1 v1.5). The previous implementation
+  declared PKCS#1 v1.5 but signed with RSA-PSS, producing certificates and
+  CRLs that fail verification ([issuance.rs](../../crates/ostrich-ca/src/issuance.rs),
+  [revocation.rs](../../crates/ostrich-ca/src/revocation.rs)). Non-RSA CA keys
+  are rejected with a clean error until algorithm agility lands (POAM)
 - ✅ §4.1.1.3 - Signature Algorithm: Matches public key algorithm
 - ✅ §4.1.2.4 - Issuer: Distinguished Name present with proper RFC 4514 parsing
 - ✅ §4.1.2.5 - Validity: notBefore and notAfter fields
@@ -597,13 +605,18 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
 - ✅ §7.1.3 - Order status: pending → ready → processing → valid
 - ✅ §7.4.1 - newOrder endpoint
 - ✅ §7.4.2 - Authorization resource created
+- ✅ §7.4 - Finalization performs real certificate issuance via CA gRPC service
+- ✅ §7.4.2 - Certificate download returns issued PEM chain (`application/pem-certificate-chain`)
 - ✅ §7.5.1 - Challenge validation
 
 **Evidence:**
 
 - [rest.rs:237](../../crates/ostrich-acme/src/rest.rs#L237) - Order creation
 - [rest.rs:305](../../crates/ostrich-acme/src/rest.rs#L305) - Authorization handling
-- [rest.rs:358](../../crates/ostrich-acme/src/rest.rs#L358) - Order finalization with CSR
+- [rest.rs:791](../../crates/ostrich-acme/src/rest.rs#L791) - Order finalization with CSR; issues certificate through `AcmeCaClient` (fails closed when CA integration is not configured — no fake certificates)
+- [rest.rs:916](../../crates/ostrich-acme/src/rest.rs#L916) - Certificate download: order id → certificate_id → PEM chain from certificate store
+- [ca_integration.rs](../../crates/ostrich-acme/src/ca_integration.rs) - CA gRPC client (`AcmeCaClient::finalize_order`) updates order with certificate id and "valid" status
+- [services/acme-server/src/main.rs](../../services/acme-server/src/main.rs) - `CA_GRPC_URL` configuration; warns and fails finalization closed when absent
 
 **Code References (Phase 11):**
 

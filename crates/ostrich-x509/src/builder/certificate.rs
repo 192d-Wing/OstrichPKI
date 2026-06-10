@@ -449,8 +449,12 @@ impl TbsCertificate {
 
     /// Get signature algorithm identifier
     fn get_signature_algorithm(&self) -> Result<x509_cert::spki::AlgorithmIdentifierOwned> {
-        // TODO: Determine algorithm from CA key type
-        // For now, default to RSA-PSS with SHA-256
+        // sha256WithRSAEncryption (PKCS#1 v1.5). The CA signing path
+        // (ostrich-ca issuance/revocation) selects the matching Algorithm so
+        // tbsCertificate.signature and signatureAlgorithm stay identical per
+        // RFC 5280 §4.1.1.2.
+        // POAM: algorithm agility - derive this from the CA key type to
+        // support ECDSA/EdDSA/ML-DSA issuers.
         use const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION;
 
         Ok(x509_cert::spki::AlgorithmIdentifierOwned {
