@@ -1,22 +1,20 @@
 //! Session Gate Middleware
 //!
 //! Rejects unauthenticated access to `/api/*` proxy routes. The OIDC callback
-//! handler sets a session cookie (name configured via
-//! `config.session.cookie_name`) after a successful login. This middleware
-//! extracts that cookie on every request and rejects with 401 if it is missing.
-//!
-//! Note: this is a session *presence* check, not a full session *validity*
-//! check. Full server-side session validation against `SessionManager` is a
-//! follow-up (the `SessionManager` type already exists in
-//! `server::auth::session` but is not wired to AppState yet). Checking presence
-//! still meaningfully closes the hole where an unauthenticated client could
-//! call the proxy and reach backend services directly; without a valid OIDC
-//! login the cookie will not be set.
+//! handler creates a server-side session (in `AppState::session_manager`) and
+//! sets a cookie carrying its token. This middleware validates that token
+//! against the session store on every request - it is a full session
+//! *validity* check, not a cookie *presence* check: a forged or stale cookie
+//! whose token is not a live session is rejected, and the session's
+//! inactivity/absolute timeouts (FTA_SSL.1/FTA_SSL.3) are enforced on each
+//! call. A session that has locked due to inactivity is also rejected
+//! (the user must re-authenticate).
 //!
 //! COMPLIANCE MAPPING:
 //! - NIST 800-53: AC-3 (Access Enforcement) - deny unauthenticated proxy access
-//! - NIST 800-53: IA-2 (Identification and Authentication) - enforce session presence
+//! - NIST 800-53: IA-2 (Identification and Authentication) - server-validated session
 //! - NIAP PP-CA: FIA_UAU.1 (Authentication before TSF-mediated actions)
+//! - NIAP PP-CA: FTA_SSL.1/FTA_SSL.3 (session timeout enforcement)
 
 use axum::{
     extract::{Request, State},
@@ -30,33 +28,42 @@ use serde_json::json;
 
 use crate::server::router::AppState;
 
-/// Require a session cookie on the incoming request.
+/// Validate the session token cookie against the server-side session store.
 ///
-/// Returns 401 Unauthorized if the configured session cookie is missing. The
-/// cookie name is read from `AppState::config::session::cookie_name`.
+/// Returns 401 Unauthorized if the cookie is missing, its token is not a live
+/// session, the session has expired, or the session is locked due to
+/// inactivity.
 pub async fn require_session(
     State(state): State<AppState>,
     jar: CookieJar,
     request: Request,
     next: Next,
 ) -> Response {
-    let cookie_name = &state.config.session.cookie_name;
+    let reject = |path: &str, reason: &str| -> Response {
+        tracing::warn!(path = %path, reason = %reason, "Proxy request rejected");
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "not_authenticated",
+                "message": "Active session required",
+            })),
+        )
+            .into_response()
+    };
 
-    match jar.get(cookie_name) {
-        Some(cookie) if !cookie.value().is_empty() => next.run(request).await,
-        _ => {
-            tracing::warn!(
-                path = %request.uri().path(),
-                "Proxy request rejected: missing session cookie"
-            );
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({
-                    "error": "not_authenticated",
-                    "message": "Active session required"
-                })),
-            )
-                .into_response()
+    let path = request.uri().path().to_string();
+
+    let token = match jar.get(&state.config.session.cookie_name) {
+        Some(cookie) if !cookie.value().is_empty() => cookie.value().to_string(),
+        _ => return reject(&path, "missing session cookie"),
+    };
+
+    // Server-side validation: token must map to a live, non-expired session.
+    match state.session_manager.validate_session(&token).await {
+        Some(session) if session.locked => {
+            reject(&path, "session locked (inactivity); re-authentication required")
         }
+        Some(_) => next.run(request).await,
+        None => reject(&path, "invalid or expired session"),
     }
 }

@@ -36,6 +36,14 @@ use super::{
 pub struct AppState {
     pub config: Arc<WebUiConfig>,
     pub oidc_client: Arc<auth::OidcClient>,
+    /// Server-side session store. Sessions are created by the OIDC callback
+    /// and validated by `require_session` on every proxied request, so a
+    /// session cookie is meaningful only if it maps to a live server session.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: IA-2 - server-validated authentication state
+    /// - NIAP PP-CA: FTA_SSL.1/FTA_SSL.3 - inactivity + absolute timeouts
+    pub session_manager: Arc<auth::SessionManager>,
 }
 
 /// Create the main router with all routes
@@ -45,9 +53,18 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
     // Initialize OIDC client
     let oidc_client = Arc::new(auth::OidcClient::new(&config.oidc).await?);
 
+    // Server-side session manager (in-memory).
+    // POAM: in-memory sessions do not survive a restart and do not replicate
+    // across instances - DB-backed session storage is a tracked follow-up.
+    let session_manager = Arc::new(auth::SessionManager::new(
+        config.session.inactivity_timeout_secs,
+        config.session.absolute_timeout_secs,
+    ));
+
     let state = AppState {
         config: config.clone(),
         oidc_client,
+        session_manager,
     };
 
     // Health check routes (no auth, no CSP)
