@@ -671,6 +671,7 @@ pub struct TlsConfig {
 - ✅ **Direct request_id linkage (all issuance paths, including non-approval):**
   - `certificates.request_id` column ([migrations/00008_certificate_request_id.sql](../../migrations/00008_certificate_request_id.sql)) and `Certificate.request_id` field record the request that produced each certificate, even for ACME/EST/direct issuance that does not go through the approval workflow.
   - `IssuanceRequest.request_id` lets a protocol carry its own id (ACME order / EST enrollment); when absent the CA generates one. `CertificateIssuer::issue` writes it to the certificate **and** the issuance audit event, giving `request → certificate → audit` traceability.
+  - The gRPC `IssueCertificateRequest` carries `request_id` (proto field 8); the ACME and EST CA clients populate it with the ACME order id / EST enrollment id respectively, so a certificate traces back to the originating protocol request end-to-end.
   - **Live evidence:** `issuance_aia_e2e` issues with a known `request_id` and asserts both the stored certificate row and the `certificate_issuance` audit event carry it.
 
 **Linkage Flow:**

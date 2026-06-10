@@ -151,6 +151,8 @@ impl EstCaClient {
             metadata,
             // Forward the CSR so the CA verifies proof-of-possession (RFC 2986).
             csr_der: csr_der.to_vec(),
+            // Tie the issued certificate to this EST enrollment (FDP_CER_EXT.2).
+            request_id: enrollment_id.to_string(),
         };
 
         // Call CA service with retry logic

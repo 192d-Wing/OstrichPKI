@@ -178,9 +178,14 @@ impl CertificateAuthorityService for CaGrpcService {
                 Some(req.csr_der)
             },
             approval_request_id: None, // TODO: Accept from request
-            // CA generates a request_id (FDP_CER_EXT.2). TODO: carry the calling
-            // protocol's id (ACME order / EST enrollment) once added to the proto.
-            request_id: None,
+            // Caller-supplied request id (ACME order / EST enrollment) for
+            // traceability (FDP_CER_EXT.2); the CA generates one when empty or
+            // unparseable.
+            request_id: if req.request_id.is_empty() {
+                None
+            } else {
+                uuid::Uuid::parse_str(&req.request_id).ok()
+            },
         };
 
         // Issue certificate

@@ -67,6 +67,8 @@ pub fn build_issue_request(
         // runs with CA_REQUIRE_POP=false. Production defaults to requiring a CSR
         // (proof-of-possession); see services/ca-server CA_REQUIRE_POP.
         csr_der: Vec::new(),
+        // No caller-supplied request id; the CA generates one (FDP_CER_EXT.2).
+        request_id: String::new(),
     }
 }
 
