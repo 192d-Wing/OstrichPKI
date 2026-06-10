@@ -41,10 +41,7 @@ impl CertificateRepository {
     pub async fn find_by_serial(&self, serial_number: &[u8]) -> Result<Option<Certificate>> {
         let cert = sqlx::query_as::<_, Certificate>(
             r#"
-            SELECT id, ca_id, serial_number, subject_dn, issuer_dn,
-                   not_before, not_after, der_encoded, pem_encoded,
-                   revoked, revocation_time, revocation_reason,
-                   created_at, updated_at
+            SELECT *
             FROM certificates
             WHERE serial_number = $1
             "#,
@@ -61,10 +58,7 @@ impl CertificateRepository {
     pub async fn find_by_subject(&self, subject_dn: &str) -> Result<Vec<Certificate>> {
         let certs = sqlx::query_as::<_, Certificate>(
             r#"
-            SELECT id, ca_id, serial_number, subject_dn, issuer_dn,
-                   not_before, not_after, der_encoded, pem_encoded,
-                   revoked, revocation_time, revocation_reason,
-                   created_at, updated_at
+            SELECT *
             FROM certificates
             WHERE subject_dn = $1
             ORDER BY not_before DESC
@@ -82,10 +76,7 @@ impl CertificateRepository {
     pub async fn find_by_ca(&self, ca_id: &Uuid) -> Result<Vec<Certificate>> {
         let certs = sqlx::query_as::<_, Certificate>(
             r#"
-            SELECT id, ca_id, serial_number, subject_dn, issuer_dn,
-                   not_before, not_after, der_encoded, pem_encoded,
-                   revoked, revocation_time, revocation_reason,
-                   created_at, updated_at
+            SELECT *
             FROM certificates
             WHERE ca_id = $1
             ORDER BY not_before DESC
@@ -105,10 +96,7 @@ impl CertificateRepository {
     pub async fn find_revoked(&self, ca_id: &Uuid) -> Result<Vec<Certificate>> {
         let certs = sqlx::query_as::<_, Certificate>(
             r#"
-            SELECT id, ca_id, serial_number, subject_dn, issuer_dn,
-                   not_before, not_after, der_encoded, pem_encoded,
-                   revoked, revocation_time, revocation_reason,
-                   created_at, updated_at
+            SELECT *
             FROM certificates
             WHERE ca_id = $1 AND revoked = true
             ORDER BY revocation_time DESC
@@ -183,10 +171,7 @@ impl super::Repository<Certificate> for CertificateRepository {
     async fn find_by_id(&self, id: &Uuid) -> Result<Option<Certificate>> {
         let cert = sqlx::query_as::<_, Certificate>(
             r#"
-            SELECT id, ca_id, serial_number, subject_dn, issuer_dn,
-                   not_before, not_after, der_encoded, pem_encoded,
-                   revoked, revocation_time, revocation_reason,
-                   created_at, updated_at
+            SELECT *
             FROM certificates
             WHERE id = $1
             "#,
@@ -200,19 +185,22 @@ impl super::Repository<Certificate> for CertificateRepository {
     }
 
     async fn create(&self, cert: &Certificate) -> Result<Certificate> {
+        // NIST 800-53: AU-3(1) - issuer_service/requestor/profile_name/metadata
+        // carry issuance attribution and MUST be persisted (an earlier version
+        // of this INSERT silently dropped them, and its explicit RETURNING
+        // list broke row mapping after migration 00002 added the columns).
         let created = sqlx::query_as::<_, Certificate>(
             r#"
             INSERT INTO certificates (
                 id, ca_id, serial_number, subject_dn, issuer_dn,
                 not_before, not_after, der_encoded, pem_encoded,
                 revoked, revocation_time, revocation_reason,
+                issuer_service, requestor, profile_name, metadata,
                 created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-            RETURNING id, ca_id, serial_number, subject_dn, issuer_dn,
-                      not_before, not_after, der_encoded, pem_encoded,
-                      revoked, revocation_time, revocation_reason,
-                      created_at, updated_at
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17, $18)
+            RETURNING *
             "#,
         )
         .bind(cert.id)
@@ -227,6 +215,10 @@ impl super::Repository<Certificate> for CertificateRepository {
         .bind(cert.revoked)
         .bind(cert.revocation_time)
         .bind(cert.revocation_reason)
+        .bind(&cert.issuer_service)
+        .bind(&cert.requestor)
+        .bind(&cert.profile_name)
+        .bind(&cert.metadata)
         .bind(cert.created_at)
         .bind(cert.updated_at)
         .fetch_one(self.pool.pool())
@@ -309,10 +301,7 @@ impl super::Repository<Certificate> for CertificateRepository {
 
         let certs = sqlx::query_as::<_, Certificate>(
             r#"
-            SELECT id, ca_id, serial_number, subject_dn, issuer_dn,
-                   not_before, not_after, der_encoded, pem_encoded,
-                   revoked, revocation_time, revocation_reason,
-                   created_at, updated_at
+            SELECT *
             FROM certificates
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2

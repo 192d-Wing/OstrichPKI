@@ -69,7 +69,17 @@ impl CertificateAuthority {
         HsmKeyValidator::validate_ca_signing_key(&ca_key)?;
 
         let ca_id = ca_certificate.id;
-        let ca_dn = DistinguishedName::new_cn(&ca_certificate.subject_dn); // TODO: Parse properly
+        // RFC 5280 §7.1 - parse the structured subject DN from the CA
+        // certificate so issued certificates' issuer fields chain correctly.
+        // (Wrapping the rendered string in new_cn produced "CN=CN=..." and
+        // broke OpenSSL chain verification.)
+        let ca_dn = ostrich_x509::parser::parse_subject_dn(&ca_certificate.der_encoded)
+            .map_err(|e| {
+                ostrich_crypto::Error::InvalidInput(format!(
+                    "Failed to parse CA certificate subject DN: {}",
+                    e
+                ))
+            })?;
 
         // Wrap crypto provider in Arc for sharing between components
         let crypto_provider_arc: std::sync::Arc<dyn CryptoProvider> =
@@ -83,16 +93,17 @@ impl CertificateAuthority {
             audit_sink,
         );
 
-        // Create new crypto provider and audit sink for revocation manager
-        // TODO: Implement proper provider/sink cloning
-        let crypto_provider2 =
-            ostrich_crypto::provider::CryptoProviderFactory::create_software_provider();
+        // The revocation manager shares the same crypto provider as the
+        // issuer: the CA key lives in that provider (HSM for production), and
+        // a separate software provider cannot sign with it. An earlier version
+        // constructed a second software provider here, which broke CRL signing
+        // for HSM-backed CAs.
         let audit_sink2 = Box::new(ostrich_audit::sink::DatabaseAuditSink::new(db_pool.clone()));
 
         let revocation_manager = RevocationManager::new(
             ca_key,
             ca_id,
-            crypto_provider2,
+            crypto_provider_arc.clone(),
             db_pool.clone(),
             audit_sink2,
             crl_validity_hours,
@@ -112,6 +123,15 @@ impl CertificateAuthority {
     /// NIAP PP-CA: FDP_IFC.1.1 - Define information flow policy for certificates
     pub fn add_profile(&mut self, profile: CertificateProfile) {
         self.issuer.add_profile(profile);
+    }
+
+    /// Override the issuer's approval configuration.
+    ///
+    /// NIAP PP-CA: FDP_CER_EXT.3 - approval-required is the default; turning
+    /// it off is an explicit deployment decision (e.g. automated ACME
+    /// issuance where challenge validation is the approval).
+    pub fn set_approval_config(&mut self, config: crate::approval::ApprovalConfig) {
+        self.issuer.set_approval_config(config);
     }
 
     /// Get the certificate issuer

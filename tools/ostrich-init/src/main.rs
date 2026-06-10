@@ -77,6 +77,12 @@ struct Args {
     /// PKCS#11 user PIN
     #[arg(long, env = "PKCS11_PIN")]
     pkcs11_pin: Option<String>,
+
+    /// Exit successfully (without doing anything) if a CA key with this
+    /// label is already registered. Makes the tool idempotent for one-shot
+    /// init containers (CM-2: convergent baseline configuration).
+    #[arg(long, default_value = "false")]
+    if_exists_ok: bool,
 }
 
 #[tokio::main]
@@ -111,6 +117,13 @@ async fn main() -> Result<()> {
         .await?
         .is_some()
     {
+        if args.if_exists_ok {
+            println!(
+                "CA key '{}' already registered; nothing to do (--if-exists-ok).",
+                args.key_label
+            );
+            return Ok(());
+        }
         bail!(
             "A CA key labeled '{}' is already registered; choose another --key-label",
             args.key_label

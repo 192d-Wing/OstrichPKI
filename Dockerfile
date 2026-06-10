@@ -46,18 +46,27 @@ FROM debian:bookworm-slim AS runtime-base
 
 # Install runtime dependencies
 # NIST 800-53: CM-6 - Minimal software installation
+# softhsm2 provides a PKCS#11 token for development; production deployments
+# mount a real HSM's PKCS#11 module instead (NIAP PP-CA FCS_STG_EXT.1).
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     libpq5 \
     curl \
+    softhsm2 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -u 1000 -s /sbin/nologin ostrich
 
 # Create necessary directories with proper permissions
 # NIST 800-53: AC-6 - Least Privilege
-RUN mkdir -p /app/config /app/certs /app/data \
+# /app/tokens holds the SoftHSM token store (shared volume between the
+# one-shot ca-init container and ca-service).
+RUN mkdir -p /app/config /app/certs /app/data /app/tokens \
     && chown -R ostrich:ostrich /app
+
+# Point SoftHSM at the shared token directory
+COPY docker/softhsm2.conf /app/config/softhsm2.conf
+ENV SOFTHSM2_CONF=/app/config/softhsm2.conf
 
 WORKDIR /app
 
@@ -217,6 +226,10 @@ LABEL org.opencontainers.image.vendor="OstrichPKI"
 
 COPY --from=builder /app/target/release/ostrich-cli /usr/local/bin/
 COPY --from=builder /app/target/release/ostrich-init /usr/local/bin/
+
+# One-shot CA bootstrap script (SoftHSM token init + root CA registration)
+# used by the ca-init compose service. NIAP PP-CA: FCS_CKM.1
+COPY --chmod=755 docker/ca-init.sh /usr/local/bin/ca-init.sh
 
 USER ostrich
 

@@ -312,12 +312,12 @@ pub fn create_router(state: AcmeState) -> Router {
         .route("/acme/new-nonce", get(get_new_nonce))
         .route("/acme/new-account", post(new_account))
         .route("/acme/new-order", post(new_order))
-        .route("/acme/account/:id", post(update_account))
-        .route("/acme/authz/:id", get(get_authorization))
-        .route("/acme/challenge/:id", post(respond_to_challenge))
-        .route("/acme/order/:id", get(get_order))
-        .route("/acme/order/:id/finalize", post(finalize_order))
-        .route("/acme/cert/:id", get(get_certificate))
+        .route("/acme/account/{id}", post(update_account))
+        .route("/acme/authz/{id}", get(get_authorization))
+        .route("/acme/challenge/{id}", post(respond_to_challenge))
+        .route("/acme/order/{id}", get(get_order))
+        .route("/acme/order/{id}/finalize", post(finalize_order))
+        .route("/acme/cert/{id}", get(get_certificate))
         .with_state(state)
 }
 

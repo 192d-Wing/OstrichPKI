@@ -191,6 +191,17 @@ impl CertificateIssuer {
         self.profiles.insert(profile.name.clone(), profile);
     }
 
+    /// Override the approval configuration.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA: FDP_CER_EXT.3 - approval workflow is the compliant
+    ///   default (`require_approval: true`); disabling it is an explicit,
+    ///   audited deployment decision (e.g. ACME issuance where RFC 8555
+    ///   challenge validation serves as the automated approval)
+    pub fn set_approval_config(&mut self, config: ApprovalConfig) {
+        self.approval_config = config;
+    }
+
     /// Issue a certificate
     ///
     /// NIAP PP-CA: FMT_SMF.1.1 - Issue certificate security management function
@@ -373,13 +384,18 @@ impl CertificateIssuer {
         // Generate serial number
         let serial_number = self.generate_serial_number()?;
 
-        // Build certificate
+        // Build certificate.
+        // RFC 5280 §7.1 - the issuer field must be the CA certificate's
+        // structured subject DN (parsed from DER), not a CN wrapper around
+        // the rendered string, or name chaining fails at validation time.
+        let issuer_dn = ostrich_x509::parser::parse_subject_dn(&self.ca_certificate.der_encoded)
+            .map_err(|e| {
+                Error::Issuance(format!("Failed to parse CA subject DN: {}", e))
+            })?;
         let mut builder = CertificateBuilder::from_profile(profile)
             .serial_number(serial_number.clone())
             .subject(request.subject.clone())
-            .issuer(
-                DistinguishedName::new_cn(&self.ca_certificate.subject_dn), // TODO: Parse from certificate
-            )
+            .issuer(issuer_dn)
             .public_key(request.public_key.clone());
 
         // Add subject alternative names

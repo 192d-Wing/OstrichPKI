@@ -111,7 +111,7 @@ pub fn create_router(
         .route("/ready", get(readiness_check))
         .route("/api/v1/ca/info", get(get_ca_info))
         .route(
-            "/api/v1/certificates/:id/status",
+            "/api/v1/certificates/{id}/status",
             get(check_revocation_status),
         );
 
@@ -126,7 +126,7 @@ pub fn create_router(
             ),
             AuthzLayer::authorize,
         ))
-        .route("/api/v1/certificates/:id/revoke", post(revoke_certificate))
+        .route("/api/v1/certificates/{id}/revoke", post(revoke_certificate))
         .route_layer(middleware::from_fn_with_state(
             (
                 rbac_policy.clone(),
@@ -157,12 +157,12 @@ pub fn create_router(
             AuthzLayer::authorize,
         ))
         .route("/api/v1/approvals", get(list_approval_requests))
-        .route("/api/v1/approvals/:id", get(get_approval_request))
+        .route("/api/v1/approvals/{id}", get(get_approval_request))
         .route_layer(middleware::from_fn_with_state(
             (rbac_policy.clone(), Permission::ViewRequests, None::<String>),
             AuthzLayer::authorize,
         ))
-        .route("/api/v1/approvals/:id/approve", post(approve_request))
+        .route("/api/v1/approvals/{id}/approve", post(approve_request))
         .route_layer(middleware::from_fn_with_state(
             (
                 rbac_policy.clone(),
@@ -171,7 +171,7 @@ pub fn create_router(
             ),
             AuthzLayer::authorize,
         ))
-        .route("/api/v1/approvals/:id/reject", post(reject_request))
+        .route("/api/v1/approvals/{id}/reject", post(reject_request))
         .route_layer(middleware::from_fn_with_state(
             (
                 rbac_policy.clone(),

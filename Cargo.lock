@@ -3384,6 +3384,7 @@ dependencies = [
  "ostrich-crypto",
  "ostrich-db",
  "ostrich-protocol",
+ "ostrich-x509",
  "serde",
  "serde_json",
  "tokio",

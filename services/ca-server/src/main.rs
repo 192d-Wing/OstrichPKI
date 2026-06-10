@@ -54,6 +54,12 @@ struct Args {
     #[arg(long, env = "CRL_VALIDITY_HOURS", default_value = "24")]
     crl_validity_hours: u32,
 
+    /// Require an approved request for every issuance (NIAP FDP_CER_EXT.3).
+    /// Set to false for automated pipelines (e.g. ACME, dev/E2E) where
+    /// challenge validation serves as the approval.
+    #[arg(long, env = "CA_REQUIRE_APPROVAL", default_value = "true")]
+    require_approval: bool,
+
     /// TLS certificate chain file (PEM). With --tls-key, serves HTTPS (TLS 1.3).
     /// NIST 800-53: SC-8 - Transmission Confidentiality
     #[arg(long, env = "TLS_CERT_FILE")]
@@ -260,10 +266,17 @@ async fn bootstrap_ca(
     let crypto_provider: Box<dyn ostrich_crypto::CryptoProvider> =
         match (&args.pkcs11_module, &args.pkcs11_pin) {
             (Some(module), Some(pin)) => {
-                tracing::info!(module = %module, slot = args.pkcs11_slot, "Using PKCS#11 HSM provider");
+                // Prefer the slot recorded on the ca_keys row (SoftHSM assigns
+                // random slot IDs at token init; the registered value is
+                // authoritative). PKCS11_SLOT_ID is the fallback.
+                let slot = ca_key_row
+                    .provider_slot_id
+                    .map(|s| s as u64)
+                    .unwrap_or(args.pkcs11_slot);
+                tracing::info!(module = %module, slot, "Using PKCS#11 HSM provider");
                 ostrich_crypto::CryptoProviderFactory::create_pkcs11_provider(
                     std::path::Path::new(module),
-                    args.pkcs11_slot,
+                    slot,
                     pin,
                 )
                 .await
@@ -306,7 +319,7 @@ async fn bootstrap_ca(
 
     let audit_sink = Box::new(ostrich_audit::DatabaseAuditSink::new(db_pool.clone()));
 
-    let ca = ostrich_ca::CertificateAuthority::new(
+    let mut ca = ostrich_ca::CertificateAuthority::new(
         ca_certificate,
         key_handle,
         crypto_provider,
@@ -316,6 +329,28 @@ async fn bootstrap_ca(
     )
     .context("CertificateAuthority initialization failed")?;
 
+    // Register the default certificate profiles.
+    // NIAP PP-CA: FDP_IFC.1 - issuance policy definitions
+    // POAM: profiles should be loaded from the certificate_profiles table
+    // (CM-2: configuration as data) instead of code defaults.
+    for profile in default_profiles() {
+        tracing::info!(profile = %profile.name, "Registering certificate profile");
+        ca.add_profile(profile);
+    }
+
+    // Approval workflow toggle.
+    // NIAP PP-CA: FDP_CER_EXT.3 - approval-required is the secure default.
+    if !args.require_approval {
+        tracing::warn!(
+            "CA_REQUIRE_APPROVAL=false: certificates are issued WITHOUT an approval \
+             workflow. Acceptable for automated pipelines (ACME) and dev/E2E only."
+        );
+        ca.set_approval_config(ostrich_ca::approval::ApprovalConfig {
+            require_approval: false,
+            ..Default::default()
+        });
+    }
+
     tracing::info!(
         ca_id = %ca_cert_row.id,
         subject = %ca_cert_row.subject_dn,
@@ -324,6 +359,37 @@ async fn bootstrap_ca(
     );
 
     Ok(Some(Arc::new(ca)))
+}
+
+/// Default certificate profiles registered at startup.
+///
+/// Names are the API-facing identifiers used by clients (REST/gRPC
+/// `profile_name`, ACME's issuance path, the E2E test suite).
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FDP_IFC.1 - certificate issuance policy definitions
+/// - RFC 5280 §4.2.1.3/§4.2.1.12 - key usage / extended key usage per profile
+/// - CA/Browser Forum BR §6.3.2 - 398-day max for TLS server certificates
+fn default_profiles() -> Vec<ostrich_x509::CertificateProfile> {
+    use ostrich_x509::CertificateProfile;
+
+    // RFC 6125 / CABF: server certs need SANs, ≤398 days
+    let mut tls_server = CertificateProfile::tls_server(397);
+    tls_server.name = "tls_server".to_string();
+    tls_server.description = Some("TLS server authentication (serverAuth)".to_string());
+
+    let mut tls_client = CertificateProfile::tls_client(365);
+    tls_client.name = "tls_client".to_string();
+    tls_client.description = Some("TLS client authentication (clientAuth)".to_string());
+
+    // ACME-issued certificates: short-lived, server auth, SAN required
+    // (RFC 8555 identifiers become SANs)
+    let mut acme_default = CertificateProfile::tls_server(90);
+    acme_default.name = "acme-default".to_string();
+    acme_default.description =
+        Some("ACME-issued TLS server certificates (RFC 8555)".to_string());
+
+    vec![tls_server, tls_client, acme_default]
 }
 
 /// Parse an ostrich-crypto enum (KeyType/Algorithm) from its serde string form.

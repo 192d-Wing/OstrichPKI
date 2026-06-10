@@ -148,7 +148,26 @@ impl PoolConfig {
             .ok_or_else(|| Error::Config("Missing password in URL".to_string()))?
             .to_string();
 
-        Ok(Self::new(host, port, database, username, password))
+        let mut config = Self::new(host, port, database, username, password);
+
+        // Honor a libpq-style `?sslmode=` query parameter.
+        //
+        // NIST 800-53: SC-8 / CM-6 - TLS-required stays the secure default;
+        // disabling it must be an explicit, visible choice in the URL (and is
+        // warned about at connect time). Unknown values fail closed.
+        if let Some((_, value)) = url.query_pairs().find(|(k, _)| k == "sslmode") {
+            match value.as_ref() {
+                "disable" => config.require_ssl = false,
+                "require" | "prefer" | "verify-ca" | "verify-full" => {
+                    config.require_ssl = true;
+                }
+                other => {
+                    return Err(Error::Config(format!("Unsupported sslmode: {}", other)));
+                }
+            }
+        }
+
+        Ok(config)
     }
 }
 

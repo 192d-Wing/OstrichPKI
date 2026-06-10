@@ -533,7 +533,6 @@ impl TbsCertificate {
         // RFC 5280 §4.2.1.12 - Extended Key Usage
         if !self.extended_key_usage.is_empty() {
             use const_oid::ObjectIdentifier;
-            use der::asn1::SetOfVec;
 
             let mut ekus = Vec::new();
             for eku in &self.extended_key_usage {
@@ -562,17 +561,16 @@ impl TbsCertificate {
                 ekus.push(oid);
             }
 
+            // RFC 5280 §4.2.1.12: ExtKeyUsageSyntax ::= SEQUENCE OF KeyPurposeId.
+            // Vec<T> encodes as SEQUENCE OF; an earlier version used SetOfVec
+            // (SET OF, tag 0x31), which produced a malformed extension that
+            // OpenSSL rejects during chain validation.
             let ext = Extension {
                 extn_id: rfc5280::ID_CE_EXT_KEY_USAGE,
                 critical: false,
-                extn_value: OctetString::new(
-                    SetOfVec::try_from(ekus)
-                        .map_err(|e| Error::Encoding(format!("Invalid EKU set: {}", e)))?
-                        .to_der()
-                        .map_err(|e| {
-                            Error::Encoding(format!("Failed to encode extended key usage: {}", e))
-                        })?,
-                )?,
+                extn_value: OctetString::new(ekus.to_der().map_err(|e| {
+                    Error::Encoding(format!("Failed to encode extended key usage: {}", e))
+                })?)?,
             };
             extensions.push(ext);
         }

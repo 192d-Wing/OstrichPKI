@@ -50,6 +50,17 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
   [revocation.rs](../../crates/ostrich-ca/src/revocation.rs)). Non-RSA CA keys
   are rejected with a clean error until algorithm agility lands (POAM)
 - ✅ §4.1.1.3 - Signature Algorithm: Matches public key algorithm
+- ✅ §4.2.1.12 - **Extended Key Usage encoding fixed**: ExtKeyUsageSyntax is
+  SEQUENCE OF KeyPurposeId; the builder previously emitted SET OF (tag 0x31),
+  a malformed extension OpenSSL rejects during chain validation
+  ([builder/certificate.rs](../../crates/ostrich-x509/src/builder/certificate.rs))
+- ✅ §7.1 - **Issuer name chaining fixed**: issued certificates' issuer field
+  is now the CA certificate's structured subject DN parsed from DER
+  (`parse_subject_dn`); previously the rendered RFC 4514 string was wrapped
+  in a CN attribute, producing `CN=CN=...` and breaking path validation
+- ✅ End-to-end evidence: `openssl verify -CAfile root-ca.pem issued.pem: OK`
+  against a SoftHSM-backed root (E2E suite `tests/integration/ca_core_test.rs`,
+  7/7 passing)
 - ✅ §4.1.2.4 - Issuer: Distinguished Name present with proper RFC 4514 parsing
 - ✅ §4.1.2.5 - Validity: notBefore and notAfter fields
 - ✅ §4.1.2.6 - Subject: Distinguished Name present with proper RFC 4514 parsing

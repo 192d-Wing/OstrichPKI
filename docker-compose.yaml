@@ -41,6 +41,34 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
+  # CA Init (one-shot: SoftHSM token + root CA generation/registration)
+  # Idempotent - safe to re-run on every `docker compose up`.
+  # NIAP PP-CA: FCS_CKM.1 / FCS_STG_EXT.1 - HSM-backed CA key generation
+  # ===========================================================================
+  ca-init:
+    build:
+      context: .
+      target: cli
+    image: ghcr.io/ostrich-pki/cli:0.15.0
+    container_name: ostrich-ca-init
+    entrypoint: ["/usr/local/bin/ca-init.sh"]
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki?sslmode=disable
+      PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
+      PKCS11_PIN: ${PKCS11_PIN:-1234}
+      SOFTHSM_TOKEN_LABEL: ostrich-dev
+      CA_KEY_LABEL: ostrich-root-ca
+    volumes:
+      - softhsm_tokens:/app/tokens
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ostrich_internal
+    restart: "no"
+
+  # ===========================================================================
   # CA Service (Certificate Authority Core)
   # ===========================================================================
   ca-service:
@@ -51,25 +79,29 @@ services:
     container_name: ostrich-ca
     environment:
       RUST_LOG: ${RUST_LOG:-info}
-      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
-      CA_BIND_ADDRESS: 0.0.0.0:50051
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki?sslmode=disable
+      CA_GRPC_ADDRESS: 0.0.0.0:50051
       CA_REST_ADDRESS: 0.0.0.0:8080
       # HSM Configuration (SoftHSM for development)
-      PKCS11_LIBRARY: /usr/lib/softhsm/libsofthsm2.so
-      PKCS11_SLOT: 0
+      # The PKCS#11 slot is read from the ca_keys row registered by ca-init.
+      PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
       PKCS11_PIN: ${PKCS11_PIN:-1234}
-      # Disable HSM requirement for development
-      REQUIRE_HSM: ${REQUIRE_HSM:-false}
+      # Dev/E2E: ACME-style automated issuance without the approval workflow.
+      # Production keeps the NIAP FDP_CER_EXT.3 default (true).
+      CA_REQUIRE_APPROVAL: ${CA_REQUIRE_APPROVAL:-false}
     volumes:
       - ca_config:/app/config
       - ca_certs:/app/certs
       - ca_data:/app/data
+      - softhsm_tokens:/app/tokens
     ports:
       - "50051:50051"  # gRPC
       - "8080:8080"    # REST API
     depends_on:
       postgres:
         condition: service_healthy
+      ca-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -92,9 +124,9 @@ services:
     container_name: ostrich-acme
     environment:
       RUST_LOG: ${RUST_LOG:-info}
-      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki?sslmode=disable
       ACME_BIND_ADDRESS: 0.0.0.0:8080
-      CA_GRPC_ENDPOINT: http://ca-service:50051
+      CA_GRPC_URL: http://ca-service:50051
     volumes:
       - acme_config:/app/config
     ports:
@@ -123,9 +155,9 @@ services:
     container_name: ostrich-est
     environment:
       RUST_LOG: ${RUST_LOG:-info}
-      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki?sslmode=disable
       EST_BIND_ADDRESS: 0.0.0.0:8443
-      CA_GRPC_ENDPOINT: http://ca-service:50051
+      CA_GRPC_URL: http://ca-service:50051
     volumes:
       - est_config:/app/config
       - est_certs:/app/certs
@@ -155,7 +187,7 @@ services:
     container_name: ostrich-ocsp
     environment:
       RUST_LOG: ${RUST_LOG:-info}
-      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki?sslmode=disable
       OCSP_BIND_ADDRESS: 0.0.0.0:8081
     volumes:
       - ocsp_config:/app/config
@@ -185,7 +217,7 @@ services:
     container_name: ostrich-scms
     environment:
       RUST_LOG: ${RUST_LOG:-info}
-      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki?sslmode=disable
       SCMS_BIND_ADDRESS: 0.0.0.0:8082
     volumes:
       - scms_config:/app/config
@@ -213,7 +245,7 @@ services:
     container_name: ostrich-kra
     environment:
       RUST_LOG: ${RUST_LOG:-info}
-      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki
+      DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki?sslmode=disable
       KRA_BIND_ADDRESS: 0.0.0.0:8083
     volumes:
       - kra_config:/app/config
@@ -258,6 +290,9 @@ volumes:
   ca_certs:
     driver: local
   ca_data:
+    driver: local
+  # SoftHSM token store shared by ca-init and ca-service (dev only)
+  softhsm_tokens:
     driver: local
 
   # ACME Service

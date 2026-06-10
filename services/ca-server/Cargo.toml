@@ -20,6 +20,7 @@ ostrich-db = { path = "../../crates/ostrich-db" }
 ostrich-crypto = { path = "../../crates/ostrich-crypto" }
 ostrich-audit = { path = "../../crates/ostrich-audit" }
 ostrich-protocol = { path = "../../crates/ostrich-protocol" }
+ostrich-x509 = { path = "../../crates/ostrich-x509" }
 
 # gRPC server (inter-service issuance API)
 tonic = { workspace = true }

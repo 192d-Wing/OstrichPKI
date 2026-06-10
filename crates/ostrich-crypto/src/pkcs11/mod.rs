@@ -81,9 +81,15 @@ impl Pkcs11Provider {
             .get_slots_with_token()
             .map_err(|e| Error::Pkcs11(format!("Failed to enumerate slots: {}", e)))?;
 
-        // Use the slot at the given index, or error if not found
-        let slot = *all_slots
-            .get(slot_id as usize)
+        // Resolve `slot_id` as the actual PKCS#11 slot ID first (SoftHSM
+        // assigns random slot IDs at token init; real HSMs use stable IDs).
+        // Fall back to treating small values as an index into the slot list
+        // for backwards compatibility with configs that used "slot 0".
+        let slot = all_slots
+            .iter()
+            .find(|s| s.id() == slot_id)
+            .copied()
+            .or_else(|| all_slots.get(slot_id as usize).copied())
             .ok_or_else(|| Error::SlotNotFound(slot_id))?;
 
         let slot_info = context
@@ -167,9 +173,23 @@ impl Pkcs11Provider {
             .map_err(|e| Error::SessionError(format!("Failed to acquire PIN lock: {}", e)))?;
 
         let auth_pin = AuthPin::new(pin_guard.to_string().into_boxed_str());
-        session
-            .login(UserType::User, Some(&auth_pin))
-            .map_err(|e| Error::Pkcs11(format!("Failed to authenticate session: {}", e)))?;
+        // PKCS#11 §11.6: login state is per-token, shared by all of the
+        // application's sessions. Under concurrent operations another session
+        // may already hold the login, in which case C_Login returns
+        // CKR_USER_ALREADY_LOGGED_IN - that is success for our purposes.
+        match session.login(UserType::User, Some(&auth_pin)) {
+            Ok(())
+            | Err(cryptoki::error::Error::Pkcs11(
+                cryptoki::error::RvError::UserAlreadyLoggedIn,
+                _,
+            )) => {}
+            Err(e) => {
+                return Err(Error::Pkcs11(format!(
+                    "Failed to authenticate session: {}",
+                    e
+                )));
+            }
+        }
 
         Ok(session)
     }

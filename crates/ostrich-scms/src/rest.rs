@@ -139,24 +139,24 @@ pub fn create_router(state: ScmsState) -> Router {
         // Token management
         .route("/scms/tokens", get(list_tokens).post(create_token))
         .route(
-            "/scms/tokens/:id",
+            "/scms/tokens/{id}",
             get(get_token).put(update_token).delete(revoke_token),
         )
-        .route("/scms/tokens/:id/initialize", post(initialize_token))
-        .route("/scms/tokens/:id/personalize", post(personalize_token))
-        .route("/scms/tokens/:id/suspend", post(suspend_token))
-        .route("/scms/tokens/:id/resume", post(resume_token))
-        .route("/scms/tokens/:id/unblock", post(unblock_token))
-        .route("/scms/tokens/:id/verify-pin", post(verify_pin))
-        .route("/scms/tokens/:id/change-pin", post(change_pin))
+        .route("/scms/tokens/{id}/initialize", post(initialize_token))
+        .route("/scms/tokens/{id}/personalize", post(personalize_token))
+        .route("/scms/tokens/{id}/suspend", post(suspend_token))
+        .route("/scms/tokens/{id}/resume", post(resume_token))
+        .route("/scms/tokens/{id}/unblock", post(unblock_token))
+        .route("/scms/tokens/{id}/verify-pin", post(verify_pin))
+        .route("/scms/tokens/{id}/change-pin", post(change_pin))
         // Key management
-        .route("/scms/tokens/:id/keys", get(list_token_keys))
-        .route("/scms/tokens/:id/keys/generate", post(generate_key))
-        .route("/scms/tokens/:token_id/keys/:key_id", delete(delete_key))
+        .route("/scms/tokens/{id}/keys", get(list_token_keys))
+        .route("/scms/tokens/{id}/keys/generate", post(generate_key))
+        .route("/scms/tokens/{token_id}/keys/{key_id}", delete(delete_key))
         // Token models
         .route("/scms/models", get(list_models).post(create_model))
         // Events/audit
-        .route("/scms/tokens/:id/events", get(get_token_events))
+        .route("/scms/tokens/{id}/events", get(get_token_events))
         .layer(middleware::from_fn_with_state(
             auth_provider,
             AuthLayer::authenticate,

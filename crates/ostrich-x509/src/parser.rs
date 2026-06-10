@@ -267,6 +267,19 @@ pub fn parse_csr(der: &[u8]) -> Result<ParsedCsr> {
 
 /// Parse X.509 Distinguished Name to structured format
 ///
+/// Parse the subject DN of a DER-encoded certificate into a structured DN.
+///
+/// RFC 5280 §7.1 - name chaining requires the issuer field of an issued
+/// certificate to match the issuing CA's subject. Use this (rather than
+/// wrapping a pre-rendered RFC 4514 string in `DistinguishedName::new_cn`,
+/// which produces a bogus `CN=CN=...` attribute) whenever a structured DN
+/// is needed from stored certificate bytes.
+pub fn parse_subject_dn(der: &[u8]) -> Result<ostrich_common::types::DistinguishedName> {
+    let (_, cert) = X509Certificate::from_der(der)
+        .map_err(|e| Error::Parse(format!("Failed to parse certificate: {}", e)))?;
+    parse_distinguished_name(cert.subject())
+}
+
 /// RFC 5280 §4.1.2.4 - Issuer and Subject fields
 /// RFC 4514 - LDAP: String Representation of Distinguished Names
 ///

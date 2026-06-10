@@ -20,7 +20,10 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     request_type VARCHAR(50) NOT NULL CHECK (request_type IN ('issuance', 'revocation', 'renewal')),
 
     -- Linkage to certificate operations (FDP_CER_EXT.2)
-    csr_id UUID REFERENCES certificate_requests(id) ON DELETE SET NULL,
+    -- TODO: add FK once a certificate_requests (CSR storage) table exists;
+    -- no migration creates that table today, so a REFERENCES clause here
+    -- breaks fresh-database migration runs.
+    csr_id UUID,
     certificate_id UUID REFERENCES certificates(id) ON DELETE SET NULL,
 
     -- Requestor information (FDP_SEPP.1 - segregation of duties)
@@ -51,15 +54,15 @@ CREATE TABLE IF NOT EXISTS approval_requests (
 );
 
 -- Indexes for performance
-CREATE INDEX idx_approval_requests_status ON approval_requests(status);
-CREATE INDEX idx_approval_requests_requestor ON approval_requests(requestor_id);
-CREATE INDEX idx_approval_requests_type ON approval_requests(request_type);
-CREATE INDEX idx_approval_requests_created ON approval_requests(created_at DESC);
-CREATE INDEX idx_approval_requests_expires ON approval_requests(expires_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_approval_requests_status ON approval_requests(status);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_requestor ON approval_requests(requestor_id);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_type ON approval_requests(request_type);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_created ON approval_requests(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_expires ON approval_requests(expires_at) WHERE status = 'pending';
 
 -- Index for CSR linkage (FDP_CER_EXT.2)
-CREATE INDEX idx_approval_requests_csr ON approval_requests(csr_id) WHERE csr_id IS NOT NULL;
-CREATE INDEX idx_approval_requests_cert ON approval_requests(certificate_id) WHERE certificate_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_approval_requests_csr ON approval_requests(csr_id) WHERE csr_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_approval_requests_cert ON approval_requests(certificate_id) WHERE certificate_id IS NOT NULL;
 
 -- ============================================================================
 -- Approval Decisions Table
@@ -87,13 +90,13 @@ CREATE TABLE IF NOT EXISTS approval_decisions (
 );
 
 -- Indexes for performance
-CREATE INDEX idx_approval_decisions_request ON approval_decisions(request_id);
-CREATE INDEX idx_approval_decisions_approver ON approval_decisions(approver_id);
-CREATE INDEX idx_approval_decisions_decision ON approval_decisions(decision);
-CREATE INDEX idx_approval_decisions_decided ON approval_decisions(decided_at DESC);
+CREATE INDEX IF NOT EXISTS idx_approval_decisions_request ON approval_decisions(request_id);
+CREATE INDEX IF NOT EXISTS idx_approval_decisions_approver ON approval_decisions(approver_id);
+CREATE INDEX IF NOT EXISTS idx_approval_decisions_decision ON approval_decisions(decision);
+CREATE INDEX IF NOT EXISTS idx_approval_decisions_decided ON approval_decisions(decided_at DESC);
 
 -- Prevent duplicate decisions from same approver on same request
-CREATE UNIQUE INDEX idx_approval_decisions_unique ON approval_decisions(request_id, approver_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_decisions_unique ON approval_decisions(request_id, approver_id);
 
 -- ============================================================================
 -- Comments

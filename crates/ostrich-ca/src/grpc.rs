@@ -285,19 +285,20 @@ impl CertificateAuthorityService for CaGrpcService {
         let certificate_id = uuid::Uuid::parse_str(&req.certificate_id)
             .map_err(|_| Status::invalid_argument("Invalid certificate ID"))?;
 
-        // Check revocation status
-        let is_revoked = self
+        // Check revocation status with time and reason
+        // RFC 6960 §2.2 / RFC 5280 §5.3.1 - status answer includes
+        // revocationTime and CRLReason, not just the boolean
+        let (revoked, revocation_time, reason) = self
             .ca
             .revocation_manager()
-            .is_revoked(&certificate_id)
+            .revocation_status(&certificate_id)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // TODO: Get revocation time and reason from database
         let response = CheckRevocationStatusResponse {
-            revoked: is_revoked,
-            revocation_time: None,
-            reason: None,
+            revoked,
+            revocation_time: revocation_time.map(|t| t.timestamp()),
+            reason,
         };
 
         Ok(Response::new(response))

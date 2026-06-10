@@ -65,7 +65,7 @@ pub struct RevocationManager {
     ca_certificate_id: Uuid,
 
     /// Crypto provider
-    crypto_provider: Box<dyn CryptoProvider>,
+    crypto_provider: std::sync::Arc<dyn CryptoProvider>,
 
     /// Database pool
     db_pool: DatabasePool,
@@ -85,7 +85,7 @@ impl RevocationManager {
     pub fn new(
         ca_key: KeyHandle,
         ca_certificate_id: Uuid,
-        crypto_provider: Box<dyn CryptoProvider>,
+        crypto_provider: std::sync::Arc<dyn CryptoProvider>,
         db_pool: DatabasePool,
         audit_sink: Box<dyn AuditSink>,
         crl_validity_hours: u32,
@@ -336,6 +336,24 @@ impl RevocationManager {
             .ok_or_else(|| Error::InvalidRequest("Certificate not found".to_string()))?;
 
         Ok(cert.revoked)
+    }
+
+    /// Full revocation status for a certificate.
+    ///
+    /// Returns `(revoked, revocation_time, reason_code)` so status responders
+    /// can populate the complete RFC 6960 §2.2 / RFC 5280 §5.3.1 answer
+    /// (revocation time and CRLReason), not just the boolean.
+    pub async fn revocation_status(
+        &self,
+        certificate_id: &Uuid,
+    ) -> Result<(bool, Option<DateTime<Utc>>, Option<i32>)> {
+        let cert_repo = CertificateRepository::new(self.db_pool.clone());
+        let cert = cert_repo
+            .find_by_id(*certificate_id)
+            .await?
+            .ok_or_else(|| Error::InvalidRequest("Certificate not found".to_string()))?;
+
+        Ok((cert.revoked, cert.revocation_time, cert.revocation_reason))
     }
 }
 
