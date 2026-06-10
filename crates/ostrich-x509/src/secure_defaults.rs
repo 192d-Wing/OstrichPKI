@@ -532,6 +532,50 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("exceeds maximum"));
     }
 
+    /// FMT_MSA.1.2 - Regression: every built-in profile constructor must pass
+    /// secure-default validation, since issuance now enforces it on the active
+    /// profile. A failure here would break legitimate issuance.
+    #[test]
+    fn test_builtin_profiles_pass_validation() {
+        let defaults = SecureDefaults::new();
+        for profile in [
+            CertificateProfile::root_ca(3650),
+            CertificateProfile::intermediate_ca(1825, 0),
+            CertificateProfile::tls_server(397),
+            CertificateProfile::tls_client(365),
+            CertificateProfile::ocsp_signing(90),
+        ] {
+            assert!(
+                defaults.validate_profile(&profile).is_ok(),
+                "built-in profile '{}' must pass secure-default validation: {:?}",
+                profile.name,
+                defaults.validate_profile(&profile)
+            );
+        }
+    }
+
+    /// FMT_MSA.1.2 - A SHA-1 signature algorithm is not allow-listed and must be
+    /// rejected (FIPS 186-5 requires SHA-2/SHA-3; SHA-1 is broken for signatures).
+    #[test]
+    fn test_validate_profile_rejects_sha1_and_weak_rsa() {
+        let defaults = SecureDefaults::new();
+
+        let mut sha1 = CertificateProfile::tls_server(365);
+        sha1.algorithm = "rsa_pkcs1_sha1".to_string();
+        assert!(
+            defaults.validate_profile(&sha1).is_err(),
+            "SHA-1 signature algorithm must be rejected"
+        );
+
+        let mut weak_rsa = CertificateProfile::tls_server(365);
+        weak_rsa.key_type = "rsa_1024".to_string();
+        weak_rsa.algorithm = "rsa_pkcs1_sha256".to_string();
+        assert!(
+            defaults.validate_profile(&weak_rsa).is_err(),
+            "sub-2048-bit RSA key must be rejected"
+        );
+    }
+
     /// FMT_MSA.1.2 - Test CA profile validation
     #[test]
     fn test_validate_ca_profile() {

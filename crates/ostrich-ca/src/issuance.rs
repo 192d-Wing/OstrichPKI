@@ -153,6 +153,12 @@ pub struct CertificateIssuer {
     /// RFC 5280 §4.2.2.1 - `id-ad-caIssuers` accessDescription pointing relying
     /// parties at the issuing CA certificate (for chain building).
     ca_issuers_url: Option<String>,
+
+    /// Secure-default policy enforced on every profile at issuance time
+    /// (minimum key sizes, approved algorithms, validity ceilings, etc.).
+    ///
+    /// NIAP PP-CA: FMT_MSA.1.2 - Enforce secure security-attribute defaults.
+    secure_defaults: ostrich_x509::SecureDefaults,
 }
 
 impl CertificateIssuer {
@@ -177,6 +183,7 @@ impl CertificateIssuer {
             crl_distribution_url: None,
             ocsp_responder_url: None,
             ca_issuers_url: None,
+            secure_defaults: ostrich_x509::SecureDefaults::new(),
         }
     }
 
@@ -208,6 +215,7 @@ impl CertificateIssuer {
             crl_distribution_url: None,
             ocsp_responder_url: None,
             ca_issuers_url: None,
+            secure_defaults: ostrich_x509::SecureDefaults::new(),
         }
     }
 
@@ -318,8 +326,21 @@ impl CertificateIssuer {
             .get(&request.profile_name)
             .ok_or_else(|| Error::ProfileNotFound(request.profile_name.clone()))?;
 
-        // NIAP PP-CA: FDP_IFC.1.1 - Validate policy constraints
+        // NIAP PP-CA: FDP_IFC.1.1 - Validate policy constraints (structural).
         profile.validate()?;
+
+        // Enforce secure-default policy on the profile before issuing. This
+        // rejects weak configurations the structural check above does not catch:
+        // sub-minimum key sizes (RSA < 2048, EC < 256), non-allowlisted /
+        // SHA-1 signature algorithms, validity beyond the end-entity / CA
+        // ceilings, TLS-server profiles without a required SAN, and prohibited
+        // EKUs. Without this, a weak profile would issue silently.
+        //
+        // COMPLIANCE MAPPING:
+        // - NIAP PP-CA: FMT_MSA.1.2 - Enforce secure security-attribute defaults
+        // - NIST 800-53: CM-2 / CM-6 - Baseline / secure configuration settings
+        // - FIPS 186-5 / NIST SP 800-57 - minimum key sizes, approved algorithms
+        self.secure_defaults.validate_profile(profile)?;
 
         // COMPLIANCE MAPPING:
         // - NIAP PP-CA: FDP_CER_EXT.2 - Certificate request linkage

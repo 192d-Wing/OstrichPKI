@@ -553,17 +553,17 @@ impl SelfTest {
 
 ### 1.6 FMT_MSA.1.2 - Secure Attribute Defaults
 
-**Status:** 🔴 **Missing**
+**Status:** 🟢 **Implemented**
 **Priority:** **HIGH**
 **Risk:** Insecure default configurations could lead to weak certificates
 **Assigned Phase:** Phase 15
 **Effort Estimate:** 1 week
 
-**Current State:**
+**Current State (implemented):**
 
-- Certificate profiles exist but may lack secure defaults
-- No validation of profile security attributes
-- No enforcement of minimum key sizes
+- `SecureDefaults` ([crates/ostrich-x509/src/secure_defaults.rs](../../crates/ostrich-x509/src/secure_defaults.rs)) defines NIAP-restrictive defaults: minimum key sizes (RSA ≥ 2048, EC ≥ 256), an allow-list of FIPS 186-5/204/205 signature algorithms (excluding SHA-1), end-entity (≤ 825 d) and CA (≤ 7300 d) validity ceilings, required SAN for TLS-server profiles, and prohibited EKUs.
+- **Enforced at issuance**: `CertificateIssuer::issue` calls `SecureDefaults::validate_profile` on the active profile before signing, so a weak profile is refused rather than issued ([crates/ostrich-ca/src/issuance.rs](../../crates/ostrich-ca/src/issuance.rs)).
+- **Evidence**: unit tests (built-in profiles pass; SHA-1 / sub-2048 RSA / over-long validity rejected) in `secure_defaults.rs`, plus the live `issuance_aia_e2e` test which issues a compliant cert and asserts an over-long-validity profile is rejected by `issue()`.
 
 **Required Secure Defaults (per NIAP PP-CA):**
 
@@ -1513,7 +1513,7 @@ psql ostrich -c "SELECT * FROM audit_events WHERE event_type LIKE 'FMT_%'" > evi
 | FMT_MOF.1.1 | Credential management | 🟡 Partial | MED | 16 | 1w |
 | FMT_MOF.1.2 | Security function mgmt | 🔴 Missing | **CRITICAL** | 15 | 1w |
 | FMT_MSA.1.1 | Attribute management | 🟡 Partial | MED | 15 | 3d |
-| FMT_MSA.1.2 | Secure defaults | 🔴 Missing | **CRITICAL** | 15 | 1w |
+| FMT_MSA.1.2 | Secure defaults | 🟢 Implemented | **CRITICAL** | 15 | 1w |
 | FMT_MSA.2 | Secure attribute values | 🔴 Missing | HIGH | 15 | 3d |
 | FMT_MTD.1.1 | TSF data query | 🔴 Missing | MED | 15 | 3d |
 | FMT_MTD.1.2 | TSF data management | 🔴 Missing | HIGH | 15 | 1w |

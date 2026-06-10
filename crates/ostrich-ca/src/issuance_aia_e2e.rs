@@ -243,6 +243,36 @@ async fn issued_certificates_carry_aia_extension_verified_by_openssl() {
         "AIA must include the CA Issuers URI; openssl output:\n{text}"
     );
 
+    // --- Secure-default enforcement: a weak profile is rejected at issuance ---
+    // The successful issuance above already proves a compliant profile passes;
+    // here a profile with end-entity validity beyond the 825-day ceiling must be
+    // refused by issue() (NIAP FMT_MSA.1.2 / NIST CM-2).
+    let mut weak = ostrich_x509::CertificateProfile::tls_server(4000);
+    weak.name = "weak-overlong".to_string();
+    weak.validity_days = 4000; // exceeds MAX_END_ENTITY_VALIDITY_DAYS (825)
+    ca.add_profile(weak);
+    let weak_leaf = leaf_provider.export_public_key(&leaf_key).await.unwrap();
+    let weak_result = ca
+        .issuer()
+        .issue(IssuanceRequest {
+            profile_name: "weak-overlong".to_string(),
+            subject: DistinguishedName {
+                common_name: Some("weak.test.example".to_string()),
+                ..Default::default()
+            },
+            subject_alt_names: vec![SubjectAltName::DnsName("weak.test.example".to_string())],
+            public_key: weak_leaf,
+            requestor: "aia-e2e".to_string(),
+            metadata: None,
+            csr_der: None,
+            approval_request_id: None,
+        })
+        .await;
+    assert!(
+        weak_result.is_err(),
+        "issuance with an over-long-validity profile must be rejected by secure-default enforcement"
+    );
+
     for table in ["audit_events", "certificates", "ca_certificates", "ca_keys"] {
         let _ = sqlx::query(&format!("DELETE FROM {table}"))
             .execute(pool.pool())
