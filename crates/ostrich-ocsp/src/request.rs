@@ -253,6 +253,14 @@ impl OcspRequest {
             }
 
             if ext_oid == NONCE_OID {
+                // RFC 8954 §2.1: the OCSP nonce MUST be 1..=32 octets. Reject
+                // anything outside that range with malformedRequest rather than
+                // echo it back in a signed response — an oversized,
+                // attacker-controlled nonce would otherwise turn the responder
+                // into a signing oracle / amplifier. NIST 800-53 SC-23, SI-10.
+                if extn_value.is_empty() || extn_value.len() > 32 {
+                    return Err(Error::MalformedRequest);
+                }
                 return Ok(Some(extn_value.to_vec()));
             }
         }
@@ -366,6 +374,43 @@ mod tests {
         let req = OcspRequest::new(serial_number, b"issuer", b"key").with_nonce(nonce.clone());
 
         assert_eq!(req.nonce, Some(nonce));
+    }
+
+    /// Build a DER Extensions SEQUENCE containing a single OCSP nonce extension
+    /// with a nonce of `nonce_len` bytes (lengths < 128 only — single-byte DER).
+    fn nonce_extensions(nonce_len: usize) -> Vec<u8> {
+        let oid = [0x06u8, 0x09, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x02];
+        let mut octet = vec![0x04, nonce_len as u8];
+        octet.extend(std::iter::repeat_n(0xABu8, nonce_len));
+        let mut ext = oid.to_vec();
+        ext.extend(&octet);
+        let mut extension = vec![0x30, ext.len() as u8];
+        extension.extend(&ext);
+        let mut extensions = vec![0x30, extension.len() as u8];
+        extensions.extend(&extension);
+        extensions
+    }
+
+    /// RFC 8954 §2.1: a nonce of 1..=32 octets is accepted; anything outside
+    /// that range is rejected as malformedRequest (no signing-oracle echo).
+    #[test]
+    fn test_nonce_length_bounds() {
+        assert_eq!(
+            OcspRequest::find_nonce_extension(&nonce_extensions(32)).unwrap(),
+            Some(vec![0xAB; 32])
+        );
+        assert_eq!(
+            OcspRequest::find_nonce_extension(&nonce_extensions(1)).unwrap(),
+            Some(vec![0xAB; 1])
+        );
+        assert!(matches!(
+            OcspRequest::find_nonce_extension(&nonce_extensions(33)),
+            Err(Error::MalformedRequest)
+        ));
+        assert!(matches!(
+            OcspRequest::find_nonce_extension(&nonce_extensions(0)),
+            Err(Error::MalformedRequest)
+        ));
     }
 
     #[test]

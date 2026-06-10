@@ -478,7 +478,10 @@ Key corrections in this phase:
   request hashes (placeholder zero hashes removed).
 - **SHA-1 CertIDs** accepted (RFC 6960 §4.3 mandatory; OpenSSL default).
 - **RFC 8954 nonce** parsed from the request and echoed in responseExtensions;
-  nonced requests bypass the cache.
+  nonced requests bypass the cache. The nonce length is bounded to 1..=32 octets
+  per RFC 8954 §2.1 — a request with a nonce outside that range is rejected with
+  the `malformedRequest` response status, so the responder cannot be turned into
+  a signing oracle by echoing an oversized attacker-controlled nonce.
 
 **Sections:**
 
