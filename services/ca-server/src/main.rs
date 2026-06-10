@@ -358,6 +358,7 @@ async fn bootstrap_ca(
         requestor: None,
         profile_name: None,
         metadata: None,
+        request_id: None,
         created_at: ca_cert_row.created_at,
         updated_at: ca_cert_row.updated_at,
     };

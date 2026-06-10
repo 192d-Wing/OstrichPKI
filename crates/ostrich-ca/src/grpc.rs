@@ -172,6 +172,9 @@ impl CertificateAuthorityService for CaGrpcService {
             metadata,
             csr_der: None,             // gRPC API doesn't currently accept CSR
             approval_request_id: None, // TODO: Accept from request
+            // CA generates a request_id (FDP_CER_EXT.2). TODO: carry the calling
+            // protocol's id (ACME order / EST enrollment) once added to the proto.
+            request_id: None,
         };
 
         // Issue certificate

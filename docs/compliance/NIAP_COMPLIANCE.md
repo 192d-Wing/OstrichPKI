@@ -668,6 +668,10 @@ pub struct TlsConfig {
   - [crates/ostrich-ca/src/issuance.rs:318-330](../../crates/ostrich-ca/src/issuance.rs#L318-L330) - Automatic linkage on issuance
   - Prevents approval request reuse (line 247-257)
   - Marks request as Completed with certificate ID
+- ✅ **Direct request_id linkage (all issuance paths, including non-approval):**
+  - `certificates.request_id` column ([migrations/00008_certificate_request_id.sql](../../migrations/00008_certificate_request_id.sql)) and `Certificate.request_id` field record the request that produced each certificate, even for ACME/EST/direct issuance that does not go through the approval workflow.
+  - `IssuanceRequest.request_id` lets a protocol carry its own id (ACME order / EST enrollment); when absent the CA generates one. `CertificateIssuer::issue` writes it to the certificate **and** the issuance audit event, giving `request → certificate → audit` traceability.
+  - **Live evidence:** `issuance_aia_e2e` issues with a known `request_id` and asserts both the stored certificate row and the `certificate_issuance` audit event carry it.
 
 **Linkage Flow:**
 

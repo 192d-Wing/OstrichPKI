@@ -182,6 +182,7 @@ async fn ca_emits_signed_audit_records_verifiable_with_ca_public_key() {
         requestor: None,
         profile_name: None,
         metadata: None,
+        request_id: None,
         created_at: now,
         updated_at: now,
     };
@@ -207,6 +208,7 @@ async fn ca_emits_signed_audit_records_verifiable_with_ca_public_key() {
         requestor: Some("audit-e2e".to_string()),
         profile_name: None,
         metadata: None,
+        request_id: None,
         created_at: now,
         updated_at: now,
     };

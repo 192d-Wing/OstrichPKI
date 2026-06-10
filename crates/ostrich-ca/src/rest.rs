@@ -290,6 +290,7 @@ async fn issue_certificate(
         metadata: req.metadata,
         csr_der: None, // REST API doesn't currently accept CSR
         approval_request_id,
+        request_id: None, // CA generates a request_id for traceability (FDP_CER_EXT.2)
     };
 
     // Issue certificate

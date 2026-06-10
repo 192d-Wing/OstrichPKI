@@ -163,6 +163,7 @@ async fn issued_certificates_carry_aia_extension_verified_by_openssl() {
         requestor: None,
         profile_name: None,
         metadata: None,
+        request_id: None,
         created_at: now,
         updated_at: now,
     };
@@ -190,7 +191,8 @@ async fn issued_certificates_carry_aia_extension_verified_by_openssl() {
         .unwrap();
     let leaf_spki = leaf_provider.export_public_key(&leaf_key).await.unwrap();
 
-    // --- Issue the leaf ---
+    // --- Issue the leaf (with a caller-supplied request_id for FDP_CER_EXT.2) ---
+    let request_id = uuid::Uuid::new_v4();
     let issued = ca
         .issuer()
         .issue(IssuanceRequest {
@@ -205,6 +207,7 @@ async fn issued_certificates_carry_aia_extension_verified_by_openssl() {
             metadata: None,
             csr_der: None,
             approval_request_id: None,
+            request_id: Some(request_id),
         })
         .await
         .expect("issue leaf certificate");
@@ -243,6 +246,36 @@ async fn issued_certificates_carry_aia_extension_verified_by_openssl() {
         "AIA must include the CA Issuers URI; openssl output:\n{text}"
     );
 
+    // --- FDP_CER_EXT.2: the request_id links request -> certificate -> audit ---
+    let stored = ostrich_db::repository::CertificateRepository::new(pool.clone())
+        .find_by_id(issued.certificate_id)
+        .await
+        .unwrap()
+        .expect("issued certificate row");
+    assert_eq!(
+        stored.request_id,
+        Some(request_id),
+        "the issued certificate must record the request_id (FDP_CER_EXT.2)"
+    );
+
+    let events = ostrich_db::repository::AuditRepository::new(pool.clone())
+        .all_events_ordered()
+        .await
+        .unwrap();
+    let issuance_evt = events
+        .iter()
+        .find(|e| e.event_type == "certificate_issuance")
+        .expect("a certificate_issuance audit event");
+    assert_eq!(
+        issuance_evt
+            .details
+            .as_ref()
+            .and_then(|d| d.get("request_id"))
+            .and_then(|v| v.as_str()),
+        Some(request_id.to_string().as_str()),
+        "the issuance audit event must record the same request_id (end-to-end traceability)"
+    );
+
     // --- Secure-default enforcement: a weak profile is rejected at issuance ---
     // The successful issuance above already proves a compliant profile passes;
     // here a profile with end-entity validity beyond the 825-day ceiling must be
@@ -266,6 +299,7 @@ async fn issued_certificates_carry_aia_extension_verified_by_openssl() {
             metadata: None,
             csr_der: None,
             approval_request_id: None,
+            request_id: None,
         })
         .await;
     assert!(

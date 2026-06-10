@@ -76,6 +76,13 @@ pub struct IssuanceRequest {
     /// If approval is required but this is None, issuance will fail.
     #[serde(default)]
     pub approval_request_id: Option<Uuid>,
+
+    /// Optional request identifier carried by the calling protocol (e.g. an ACME
+    /// order id or EST enrollment id). Recorded on the issued certificate and the
+    /// issuance audit event for end-to-end traceability (FDP_CER_EXT.2). When
+    /// absent, the CA generates one at issuance.
+    #[serde(default)]
+    pub request_id: Option<Uuid>,
 }
 
 /// Issued certificate response
@@ -305,6 +312,12 @@ impl CertificateIssuer {
     /// NIST 800-53: SC-12 - Cryptographic key generation
     /// NIST 800-53: AU-2 - Auditable event (certificate issuance)
     pub async fn issue(&self, request: IssuanceRequest) -> Result<IssuedCertificate> {
+        // NIAP PP-CA: FDP_CER_EXT.2 - Certificate request linkage. Use the
+        // caller-supplied request id (ACME order / EST enrollment) or generate
+        // one. It is stored on the certificate AND recorded on the issuance audit
+        // event below, giving request -> certificate -> audit traceability.
+        let request_id = request.request_id.unwrap_or_else(Uuid::new_v4);
+
         // NIAP PP-CA: FAU_GEN.1.1 - Generate audit record
         // NIST 800-53: AU-2 - Audit certificate issuance
         let mut audit_event = AuditEventBuilder::new(
@@ -317,6 +330,7 @@ impl CertificateIssuer {
         .with_details(serde_json::json!({
             "profile": request.profile_name,
             "subject": request.subject.to_string_rfc4514(),
+            "request_id": request_id.to_string(),
         }))
         .build();
 
@@ -637,6 +651,7 @@ impl CertificateIssuer {
             requestor: Some(request.requestor.clone()),
             profile_name: Some(request.profile_name.clone()),
             metadata: request.metadata.clone(),
+            request_id: Some(request_id),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -770,6 +785,7 @@ mod tests {
             metadata: None,
             csr_der: None,
             approval_request_id: None,
+            request_id: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();

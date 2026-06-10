@@ -196,10 +196,10 @@ impl super::Repository<Certificate> for CertificateRepository {
                 not_before, not_after, der_encoded, pem_encoded,
                 revoked, revocation_time, revocation_reason,
                 issuer_service, requestor, profile_name, metadata,
-                created_at, updated_at
+                request_id, created_at, updated_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    $13, $14, $15, $16, $17, $18)
+                    $13, $14, $15, $16, $17, $18, $19)
             RETURNING *
             "#,
         )
@@ -219,6 +219,7 @@ impl super::Repository<Certificate> for CertificateRepository {
         .bind(&cert.requestor)
         .bind(&cert.profile_name)
         .bind(&cert.metadata)
+        .bind(cert.request_id)
         .bind(cert.created_at)
         .bind(cert.updated_at)
         .fetch_one(self.pool.pool())
