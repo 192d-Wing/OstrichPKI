@@ -7,6 +7,8 @@
 
 pub mod certificate;
 pub mod crl;
+pub mod csr;
 
 pub use certificate::CertificateBuilder;
 pub use crl::CrlBuilder;
+pub use csr::{assemble_csr, build_csr_info_der};
