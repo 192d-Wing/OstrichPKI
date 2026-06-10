@@ -21,7 +21,10 @@
 //!
 //! - **FDP_ACC.1/FDP_ACF.1**: Access control for enrollment
 //!   - Only authenticated clients may enroll
-//!   - Re-enrollment requires matching subject DN
+//!   - Re-enrollment (RFC 7030 §4.2.2) is bound to the client's existing
+//!     certificate: the CSR subject must structurally match a certificate
+//!     previously issued to the same client, else the request is denied and
+//!     audited (see `simple_reenroll`)
 //!
 //! - **FCS_COP.1**: Cryptographic operations
 //!   - CSR signature verification (proof of possession)
@@ -597,12 +600,75 @@ async fn simple_reenroll(
         return Err(Error::InvalidCsr("Invalid CSR signature".to_string()));
     }
 
-    // POAM: re-enrollment does not yet verify that the CSR subject DN matches
-    // the caller's existing certificate. mTLS client-identity binding is out of
-    // scope here; once mTLS is wired, enforce subject match per RFC 7030 §4.2.2:
-    // if parsed_csr.subject_dn != client_cert.subject_dn {
-    //     return Err(Error::Forbidden("CSR subject doesn't match client certificate".into()));
-    // }
+    // RFC 7030 §4.2.2 - Re-enrollment renews an EXISTING certificate, so the CSR
+    // subject MUST match the subject of a certificate previously issued to this
+    // client. The EST server authenticates clients by account (not mTLS), so the
+    // "existing certificate" is resolved from this client's prior issued
+    // enrollments rather than a TLS-presented cert. Comparison is structural
+    // (field-by-field DistinguishedName) to avoid DN string-format mismatches.
+    //
+    // COMPLIANCE MAPPING:
+    // - RFC 7030 §4.2.2 - re-enrollment subject binding
+    // - NIAP PP-CA: FDP_ACC.1 / FDP_ACF.1 - access control (identity binding)
+    // - NIST 800-53: AC-3 (access enforcement), SI-10 (input validation),
+    //   AU-2 (audit the denial). Fail secure: deny + audit on any mismatch.
+    let csr_subject = ostrich_x509::parser::parse_csr_subject_dn(&csr_der)
+        .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR subject: {}", e)))?;
+
+    let reenroll_repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let reenroll_cert_repo =
+        ostrich_db::repository::CertificateRepository::new(state.db_pool.clone());
+    let prior_enrollments = reenroll_repo
+        .list_enrollments_by_client(client_identifier)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to load prior enrollments: {}", e)))?;
+
+    let mut subject_matches_prior = false;
+    let mut had_prior_certificate = false;
+    for enrollment in &prior_enrollments {
+        let Some(cert_id) = enrollment.certificate_id else {
+            continue;
+        };
+        had_prior_certificate = true;
+        if let Some(prior_cert) = reenroll_cert_repo
+            .find_by_id(cert_id)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to load prior certificate: {}", e)))?
+            && let Ok(prior_subject) =
+                ostrich_x509::parser::parse_subject_dn(&prior_cert.der_encoded)
+            && prior_subject == csr_subject
+        {
+            subject_matches_prior = true;
+            break;
+        }
+    }
+
+    if !subject_matches_prior {
+        let reason = if had_prior_certificate {
+            "CSR subject does not match any certificate previously issued to this client"
+        } else {
+            "no existing certificate to renew for this client"
+        };
+        // Fail secure: audit the security-relevant denial (AU-2 / AC-3).
+        let mut denial = ostrich_audit::AuditEventBuilder::new(
+            ostrich_audit::EventType::AccessViolation,
+            client_identifier,
+            "est:reenroll",
+            "reenroll_subject_mismatch",
+            ostrich_audit::EventOutcome::Failure,
+        )
+        .build();
+        let _ = state.audit_sink.record(&mut denial).await;
+        tracing::warn!(
+            client = %client_identifier,
+            "EST re-enrollment denied: {} (RFC 7030 §4.2.2)",
+            reason
+        );
+        return Err(Error::Forbidden(format!(
+            "re-enrollment denied: {} (RFC 7030 §4.2.2)",
+            reason
+        )));
+    }
 
     // Create re-enrollment record in database
     let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());

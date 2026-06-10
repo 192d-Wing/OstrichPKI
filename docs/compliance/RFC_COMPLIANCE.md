@@ -787,9 +787,15 @@ path (§4.2.1). Authorization bug fixed: chained `Router::route_layer` calls
 stacked /simplereenroll's RenewCertificate check onto /simpleenroll, 403-ing
 RaStaff enrollers; permission layers are now per-route (AC-3).
 
-POAM: simplereenroll does not yet verify the CSR subject matches the
-caller's existing certificate (mTLS identity binding); server-side keygen
-still returns a placeholder.
+Re-enrollment subject binding (RFC 7030 §4.2.2): `simplereenroll` now requires
+the CSR subject to structurally match a certificate previously issued to the
+same client (resolved from this client's prior issued enrollments, since the
+EST server authenticates by account rather than mTLS). A mismatch — or a client
+with no existing certificate to renew — is denied (403) and audited as an
+AccessViolation. Structured DN comparison (`parse_csr_subject_dn` vs.
+`parse_subject_dn`) avoids string-format false mismatches.
+
+POAM: server-side keygen (/serverkeygen) still returns a placeholder.
 
 **Sections:**
 

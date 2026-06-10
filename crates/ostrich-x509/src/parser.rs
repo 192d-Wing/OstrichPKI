@@ -280,6 +280,24 @@ pub fn parse_subject_dn(der: &[u8]) -> Result<ostrich_common::types::Distinguish
     parse_distinguished_name(cert.subject())
 }
 
+/// Parse the subject DN of a DER-encoded PKCS#10 CSR into a structured DN.
+///
+/// Mirrors [`parse_subject_dn`] for certification requests. Use this to compare
+/// a CSR's subject against a certificate's subject *structurally* (field by
+/// field) rather than by comparing rendered DN strings, which can differ in
+/// formatting (e.g. RFC 4514 vs. the x509-parser default) for the same name.
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 7030 §4.2.2 - Re-enrollment: the CSR subject must match the existing
+///   certificate's subject; structured comparison avoids false mismatches.
+/// - RFC 5280 §4.1.2.4 / RFC 4514 - Subject DN representation
+/// - NIST 800-53: SI-10 - Information input validation
+pub fn parse_csr_subject_dn(der: &[u8]) -> Result<ostrich_common::types::DistinguishedName> {
+    let (_, csr) = x509_parser::certification_request::X509CertificationRequest::from_der(der)
+        .map_err(|e| Error::Parse(format!("Failed to parse PKCS#10 CSR: {}", e)))?;
+    parse_distinguished_name(&csr.certification_request_info.subject)
+}
+
 /// RFC 5280 §4.1.2.4 - Issuer and Subject fields
 /// RFC 4514 - LDAP: String Representation of Distinguished Names
 ///
@@ -1064,6 +1082,70 @@ mod tests {
                 .subject_alternative_names
                 .contains(&"email:test@example.com".to_string())
         );
+    }
+
+    /// Test parse_csr_subject_dn extracts the structured subject DN, and that it
+    /// matches a certificate subject parsed via parse_subject_dn (both delegate
+    /// to parse_distinguished_name, so the RFC 7030 §4.2.2 re-enrollment subject
+    /// binding can compare them structurally regardless of string formatting).
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - RFC 7030 §4.2.2: re-enrollment subject binding
+    /// - RFC 5280 §4.1.2.4 / RFC 4514: structured DN comparison
+    #[test]
+    fn test_parse_csr_subject_dn_structured() {
+        use ostrich_common::types::DistinguishedName;
+
+        // Same CSR fixture as test_parse_csr_includes_sans: subject is
+        // C=US, ST=NY, L=NYC, O=OstrichPKI, CN=test-cn.
+        let csr_der = hex::decode(
+            "308202e4308201cc020100304f310b3009060355040613025553310b300906\
+             035504080c024e59310c300a06035504070c034e594331133011060355040a\
+             0c0a4f737472696368504b493110300e06035504030c07746573742d636e30\
+             820122300d06092a864886f70d01010105000382010f003082010a02820101\
+             00be86f82dd15ef264fe2ecd0ebd5960d9378b5b84191b76214c581825185953\
+             c7316c4de350058c45655b392d87f5de4ef9fb8f9fe4fcc595f82964412385e\
+             9a8732c87b0eaa05b13849480c5050461dc50f79281935e03a585432cfc09c4\
+             f6a4730164afd9743ded98fe135c1203d5ea96fbb3ec3a8620db6f89c7700a0\
+             f19f201888a90936d54baabd79cfd2a3d1715282bb309ced5fe588d99db24ed\
+             f1f66822eb57d5236a3093f5c0ab5adc66431b80c998163acc2fb0f881214a8\
+             7a5be084ff4d209c31d04ee9d7422001eee801d66ee8be4d1ae18a63b325200\
+             a3a11c9c7dab09adb5b7cf4c6e96418f7dc7ee1bc096e46b9d076a27f87cddc\
+             8311bc83d0203010001a050304e06092a864886f70d01090e3141303f303d06\
+             03551d1104363034820f7777772e6578616d706c652e636f6d820f6170692e\
+             6578616d706c652e636f6d811074657374406578616d706c652e636f6d300d\
+             06092a864886f70d01010b05000382010100b1bbfb93099c3b3e371ba55a16\
+             580645faf0e793a9305d2fc4fc6a65b3314276614591094c01a3272898abfec\
+             7d4e29cd23efb0608358f4aff0995f86fa0b92f763db99f3f4f4e9e53d246ed\
+             88fa453f51a84db8714dec0cb6cca913b672f67c6787965f23ce679b232edde\
+             711c78c118156e359aa67e443da2e369a4baf06a9d6f7d0b580db9b421ffd72\
+             727904b8e266090be6e8735a8424f1706564bff395bbf4af2db95851c6dbaf\
+             fc58d95d945993403016710c16bb51bdc44a7c5e855b51c3327c5991372e8c2\
+             bed9bf228b4ecf90b5941b3efaf52b06f3c34cabc1182977f36eeeebbc5d5eb\
+             beafc0f80845d755d818d30a5d67e979b2ffb5cc0a59c5",
+        )
+        .unwrap();
+
+        let dn = parse_csr_subject_dn(&csr_der).expect("parse CSR subject DN");
+
+        let expected = DistinguishedName {
+            common_name: Some("test-cn".to_string()),
+            organization: Some("OstrichPKI".to_string()),
+            organizational_unit: None,
+            locality: Some("NYC".to_string()),
+            state_or_province: Some("NY".to_string()),
+            country: Some("US".to_string()),
+            serial_number: None,
+        };
+        assert_eq!(
+            dn, expected,
+            "CSR subject must parse into the expected structured DN"
+        );
+
+        // A different subject must NOT compare equal (the re-enroll guard relies
+        // on this to reject CSRs whose subject differs from the prior cert).
+        let other = DistinguishedName::new_cn("attacker");
+        assert_ne!(dn, other);
     }
 
     /// Test SAN formatting for otherName GeneralName type
