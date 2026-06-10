@@ -21,6 +21,10 @@ name = "ocsp_e2e_test"
 path = "integration/ocsp_e2e_test.rs"
 
 [[test]]
+name = "ocsp_revocation_test"
+path = "integration/ocsp_revocation_test.rs"
+
+[[test]]
 name = "csr_parsing_test"
 path = "integration/csr_parsing_test.rs"
 

@@ -38,6 +38,7 @@
 //! - **FIPS 204**: ML-DSA for post-quantum OCSP response signing
 
 pub mod cache;
+mod der_util;
 pub mod error;
 pub mod request;
 pub mod responder;

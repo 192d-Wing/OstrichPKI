@@ -3,8 +3,10 @@
 //! COMPLIANCE MAPPING:
 //! - RFC 6960: Online Certificate Status Protocol (OCSP)
 //! - NIST 800-53: SC-17 (PKI Certificates)
+//! - NIST 800-53: SC-12 (Cryptographic Key Establishment and Management)
+//! - NIAP PP-CA: FDP_OCSPG_EXT.1 (OCSP Response Generation)
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -24,13 +26,25 @@ struct Args {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
 
-    /// OCSP signing certificate file
-    #[arg(long, env = "OCSP_SIGNING_CERT")]
-    signing_cert: Option<String>,
+    /// CA certificate ID (UUID of the ca_certificates row whose key signs
+    /// OCSP responses). When omitted, the most recently created valid CA
+    /// certificate is used.
+    #[arg(long, env = "CA_CERTIFICATE_ID")]
+    ca_certificate_id: Option<String>,
 
-    /// OCSP signing key file
-    #[arg(long, env = "OCSP_SIGNING_KEY")]
-    signing_key: Option<String>,
+    /// PKCS#11 library path for HSM-backed CA keys (e.g. SoftHSM2 .so/.dylib)
+    /// NIAP PP-CA: FCS_STG_EXT.1 - CA signing keys should be HSM-backed
+    #[arg(long, env = "PKCS11_MODULE_PATH")]
+    pkcs11_module: Option<String>,
+
+    /// PKCS#11 slot ID
+    #[arg(long, env = "PKCS11_SLOT_ID", default_value = "0")]
+    pkcs11_slot: u64,
+
+    /// PKCS#11 user PIN
+    /// NIST 800-53: IA-7 - Cryptographic module authentication
+    #[arg(long, env = "PKCS11_PIN")]
+    pkcs11_pin: Option<String>,
 
     /// TLS certificate chain file (PEM). With --tls-key, serves HTTPS (TLS 1.3).
     /// OCSP responses are self-signed and verifiable, so plain HTTP is
@@ -69,13 +83,17 @@ async fn main() -> Result<()> {
     tracing::info!("Running database migrations");
     db_pool.migrate().await?;
 
-    // Initialize crypto provider
-    let crypto_provider = Arc::new(ostrich_crypto::software::SoftwareProvider::new());
+    // Bootstrap the OCSP signing configuration from the registered CA.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: SC-12 - the CA key is loaded by reference (KeyHandle);
+    //   key material stays in the crypto provider
+    // - NIST 800-53: CM-6 - without a registered CA the responder runs with
+    //   signing unconfigured and fails closed on every status request
+    // - NIAP PP-CA: FCS_COP.1(1) - OCSP responses are signed with the real CA key
+    let (config, crypto_provider) = bootstrap_ocsp(&args, &db_pool).await?;
     let audit_sink = Arc::new(ostrich_audit::DatabaseAuditSink::new(db_pool.clone()));
 
-    // Create OCSP responder with default config
-    // TODO: Load signing certificate and key from files
-    let config = ostrich_ocsp::responder::OcspConfig::default();
     let responder = ostrich_ocsp::OcspResponder::new(config, db_pool, crypto_provider, audit_sink);
 
     // Create router
@@ -93,6 +111,139 @@ async fn main() -> Result<()> {
 
     tracing::info!("OCSP Responder shutdown complete");
     Ok(())
+}
+
+/// Load the CA certificate + key reference from the database and build the
+/// OCSP responder configuration and crypto provider.
+///
+/// Mirrors the CA server bootstrap (services/ca-server/src/main.rs
+/// `bootstrap_ca`). When no CA certificate is registered, the responder runs
+/// with `signing_key: None` and fails closed on every status request
+/// (a warning is logged). Misconfiguration (e.g. a registered CA whose key
+/// row is missing, or partial PKCS#11 settings) is a fatal error.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SC-12 - key material stays in the crypto provider; only the
+///   KeyHandle reference is reconstructed here
+/// - NIST 800-53: CM-6 - explicit CA_CERTIFICATE_ID beats implicit selection;
+///   fail-closed default when signing is unconfigured
+/// - NIAP PP-CA: FDP_OCSPG_EXT.1 - responses signed by the CA key
+/// - NIAP PP-CA: FPT_STM.1 - timestamps produced by the responder
+async fn bootstrap_ocsp(
+    args: &Args,
+    db_pool: &ostrich_db::DatabasePool,
+) -> Result<(
+    ostrich_ocsp::responder::OcspConfig,
+    Arc<dyn ostrich_crypto::CryptoProvider>,
+)> {
+    let repo = ostrich_db::repository::CaRepository::new(db_pool.clone());
+
+    // Resolve the CA certificate row
+    let ca_cert_row = match &args.ca_certificate_id {
+        Some(id) => {
+            let id = uuid::Uuid::parse_str(id).context("CA_CERTIFICATE_ID is not a valid UUID")?;
+            Some(
+                repo.find_ca_certificate(id)
+                    .await?
+                    .with_context(|| format!("CA certificate {} not found in database", id))?,
+            )
+        }
+        None => repo.find_default_ca_certificate().await?,
+    };
+
+    let Some(ca_cert_row) = ca_cert_row else {
+        // NIST 800-53: CM-6 - fail-closed default: the responder starts but
+        // refuses to sign (ostrich-ocsp returns SigningError per request).
+        tracing::warn!(
+            "No CA certificate registered in the database - OCSP signing is NOT configured \
+             and every status request will fail closed. Register a CA (ca_keys + \
+             ca_certificates) and set CA_CERTIFICATE_ID to enable signed responses."
+        );
+        let provider: Arc<dyn ostrich_crypto::CryptoProvider> =
+            Arc::from(ostrich_crypto::CryptoProviderFactory::create_software_provider());
+        return Ok((ostrich_ocsp::responder::OcspConfig::default(), provider));
+    };
+
+    // Resolve the key reference
+    let ca_key_row = repo
+        .find_ca_key(ca_cert_row.ca_key_id)
+        .await?
+        .with_context(|| format!("CA key {} not found in database", ca_cert_row.ca_key_id))?;
+
+    let provider_id = match ca_key_row.provider_type.as_str() {
+        "Pkcs11" => ostrich_crypto::key::ProviderId::Pkcs11 {
+            slot_id: ca_key_row.provider_slot_id.unwrap_or(0) as u64,
+        },
+        "Software" => ostrich_crypto::key::ProviderId::Software,
+        other => anyhow::bail!("Unknown CA key provider type: {}", other),
+    };
+
+    let key_handle = ostrich_crypto::KeyHandle {
+        provider_id,
+        key_id: ca_key_row.key_id.clone(),
+        key_type: parse_crypto_enum(&ca_key_row.key_type)
+            .context("Invalid key_type on ca_keys row")?,
+        algorithm: parse_crypto_enum(&ca_key_row.algorithm)
+            .context("Invalid algorithm on ca_keys row")?,
+        label: ca_key_row.label.clone(),
+    };
+
+    // Crypto provider: PKCS#11 when configured, software otherwise.
+    // NIAP PP-CA FCS_STG_EXT.1: HSM-backed CA keys require the PKCS#11
+    // provider; with a software provider HSM-referenced keys will fail to
+    // sign - that failure is correct and intentional.
+    let crypto_provider: Box<dyn ostrich_crypto::CryptoProvider> =
+        match (&args.pkcs11_module, &args.pkcs11_pin) {
+            (Some(module), Some(pin)) => {
+                // Prefer the slot recorded on the ca_keys row (SoftHSM assigns
+                // random slot IDs at token init; the registered value is
+                // authoritative). PKCS11_SLOT_ID is the fallback.
+                let slot = ca_key_row
+                    .provider_slot_id
+                    .map(|s| s as u64)
+                    .unwrap_or(args.pkcs11_slot);
+                tracing::info!(module = %module, slot, "Using PKCS#11 HSM provider");
+                ostrich_crypto::CryptoProviderFactory::create_pkcs11_provider(
+                    std::path::Path::new(module),
+                    slot,
+                    pin,
+                )
+                .await
+                .context("Failed to initialize PKCS#11 provider")?
+            }
+            (None, None) => {
+                tracing::warn!(
+                    "No PKCS#11 configuration; using software crypto provider. \
+                     HSM-referenced CA keys will fail to sign OCSP responses."
+                );
+                ostrich_crypto::CryptoProviderFactory::create_software_provider()
+            }
+            _ => anyhow::bail!(
+                "Partial PKCS#11 configuration: both PKCS11_MODULE_PATH and PKCS11_PIN are required"
+            ),
+        };
+
+    tracing::info!(
+        ca_id = %ca_cert_row.id,
+        subject = %ca_cert_row.subject_dn,
+        key_label = %ca_key_row.label,
+        "OCSP responder signing configured with CA key"
+    );
+
+    let config = ostrich_ocsp::responder::OcspConfig {
+        ca_id: ca_cert_row.id,
+        signing_key: Some(key_handle),
+        ca_certificate_der: Some(ca_cert_row.der_encoded.clone()),
+        ..Default::default()
+    };
+
+    Ok((config, Arc::from(crypto_provider)))
+}
+
+/// Parse an ostrich-crypto enum (KeyType/Algorithm) from its serde string form.
+fn parse_crypto_enum<T: serde::de::DeserializeOwned>(s: &str) -> Result<T> {
+    serde_json::from_value(serde_json::Value::String(s.to_string()))
+        .map_err(|e| anyhow::anyhow!("'{}': {}", s, e))
 }
 
 fn init_logging(level: &str, json: bool) -> Result<()> {

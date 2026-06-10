@@ -58,6 +58,11 @@ pub struct OcspRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashAlgorithm {
+    /// SHA-1. RFC 6960 §4.3 requires responders to support SHA-1 CertIDs, and
+    /// it is the default for OpenSSL and most clients. The hash covers the
+    /// issuer name and key (an identifier), not security-sensitive data, so
+    /// SHA-1 here is not a collision-resistance concern.
+    Sha1,
     Sha256,
     Sha384,
     Sha512,
@@ -87,9 +92,8 @@ impl OcspRequest {
     ///
     /// # Errors
     /// Returns `Error::MalformedRequest` if the DER encoding is invalid.
-    pub fn from_der(der: &[u8]) -> Result<Self> {
-        use der::asn1::{ObjectIdentifier, OctetString};
-        use der::{Decode, Sequence};
+    pub fn from_der(input: &[u8]) -> Result<Self> {
+        use crate::der_util::read_tlv;
 
         // RFC 6960 §4.1.1 ASN.1 Structure:
         // OCSPRequest ::= SEQUENCE {
@@ -111,70 +115,161 @@ impl OcspRequest {
         //     issuerNameHash      OCTET STRING,
         //     issuerKeyHash       OCTET STRING,
         //     serialNumber        CertificateSerialNumber }
+        //
+        // Parsing is tolerant of the optional version [0], requestorName [1]
+        // and optionalSignature [0] fields: they are skipped, not rejected.
+        // NIST 800-53: SI-10 - structural validation of every consumed TLV.
 
-        #[derive(Sequence)]
-        struct AlgorithmIdentifier {
-            algorithm: ObjectIdentifier,
+        // OCSPRequest ::= SEQUENCE { ... }
+        let (tag, ocsp_content, _trailing) = read_tlv(input).ok_or(Error::MalformedRequest)?;
+        if tag != 0x30 {
+            return Err(Error::MalformedRequest);
         }
 
-        #[derive(Sequence)]
-        struct CertId {
-            hash_algorithm: AlgorithmIdentifier,
-            issuer_name_hash: OctetString,
-            issuer_key_hash: OctetString,
-            serial_number: der::asn1::Int,
+        // tbsRequest ::= SEQUENCE { ... } (optionalSignature [0] after it is ignored)
+        let (tag, tbs_content, _sig) = read_tlv(ocsp_content).ok_or(Error::MalformedRequest)?;
+        if tag != 0x30 {
+            return Err(Error::MalformedRequest);
         }
 
-        #[derive(Sequence)]
-        struct Request {
-            req_cert: CertId,
+        // Skip version [0] EXPLICIT and requestorName [1] EXPLICIT if present
+        let mut cursor = tbs_content;
+        for skip_tag in [0xA0u8, 0xA1u8] {
+            if let Some((tag, _, rest)) = read_tlv(cursor)
+                && tag == skip_tag
+            {
+                cursor = rest;
+            }
         }
 
-        #[derive(Sequence)]
-        struct TbsRequest {
-            request_list: der::asn1::SequenceOf<Request, 10>,
+        // requestList SEQUENCE OF Request
+        let (tag, request_list, after_list) = read_tlv(cursor).ok_or(Error::MalformedRequest)?;
+        if tag != 0x30 {
+            return Err(Error::MalformedRequest);
         }
 
-        #[derive(Sequence)]
-        struct OcspRequestAsn1 {
-            tbs_request: TbsRequest,
+        // First Request (simplified - only handle single cert queries)
+        let (tag, request_content, _) = read_tlv(request_list).ok_or(Error::MalformedRequest)?;
+        if tag != 0x30 {
+            return Err(Error::MalformedRequest);
         }
 
-        // Parse the DER
-        let ocsp_req = OcspRequestAsn1::from_der(der).map_err(|_| Error::MalformedRequest)?;
+        // reqCert CertID ::= SEQUENCE { hashAlgorithm, nameHash, keyHash, serial }
+        let (tag, cert_id, _) = read_tlv(request_content).ok_or(Error::MalformedRequest)?;
+        if tag != 0x30 {
+            return Err(Error::MalformedRequest);
+        }
 
-        // Extract first request (simplified - only handle single cert queries)
-        let first_request = ocsp_req
-            .tbs_request
-            .request_list
-            .iter()
-            .next()
-            .ok_or(Error::MalformedRequest)?;
+        // hashAlgorithm AlgorithmIdentifier ::= SEQUENCE { OID, params OPTIONAL }
+        let (tag, alg_id, after_alg) = read_tlv(cert_id).ok_or(Error::MalformedRequest)?;
+        if tag != 0x30 {
+            return Err(Error::MalformedRequest);
+        }
+        let (tag, oid_bytes, _params) = read_tlv(alg_id).ok_or(Error::MalformedRequest)?;
+        if tag != 0x06 {
+            return Err(Error::MalformedRequest);
+        }
+        let oid = der::asn1::ObjectIdentifier::from_bytes(oid_bytes)
+            .map_err(|_| Error::MalformedRequest)?;
+        let hash_algorithm = Self::oid_to_hash_algorithm(&oid)?;
 
-        let cert_id = &first_request.req_cert;
+        // issuerNameHash OCTET STRING
+        let (tag, issuer_name_hash, after_name) =
+            read_tlv(after_alg).ok_or(Error::MalformedRequest)?;
+        if tag != 0x04 {
+            return Err(Error::MalformedRequest);
+        }
 
-        // Convert hash algorithm OID to enum
-        let hash_algorithm = Self::oid_to_hash_algorithm(&cert_id.hash_algorithm.algorithm)?;
+        // issuerKeyHash OCTET STRING
+        let (tag, issuer_key_hash, after_key) =
+            read_tlv(after_name).ok_or(Error::MalformedRequest)?;
+        if tag != 0x04 {
+            return Err(Error::MalformedRequest);
+        }
 
-        // Convert serial number from ASN.1 Int to bytes
-        let serial_number = cert_id.serial_number.as_bytes().to_vec();
+        // serialNumber INTEGER (content bytes kept as-is)
+        let (tag, serial_number, _) = read_tlv(after_key).ok_or(Error::MalformedRequest)?;
+        if tag != 0x02 || serial_number.is_empty() {
+            return Err(Error::MalformedRequest);
+        }
+
+        // requestExtensions [2] EXPLICIT Extensions OPTIONAL - scan for the
+        // nonce extension (RFC 6960 §4.4.1 / RFC 8954).
+        // NIST 800-53: SC-23 - nonce provides replay protection.
+        let mut nonce = None;
+        if let Some((0xA2, ext_explicit, _)) = read_tlv(after_list) {
+            nonce = Self::find_nonce_extension(ext_explicit)?;
+        }
 
         Ok(Self {
-            serial_number,
-            issuer_name_hash: cert_id.issuer_name_hash.as_bytes().to_vec(),
-            issuer_key_hash: cert_id.issuer_key_hash.as_bytes().to_vec(),
+            serial_number: serial_number.to_vec(),
+            issuer_name_hash: issuer_name_hash.to_vec(),
+            issuer_key_hash: issuer_key_hash.to_vec(),
             hash_algorithm,
-            nonce: None, // TODO: Extract nonce from extensions
+            nonce,
         })
+    }
+
+    /// Scan an Extensions SEQUENCE for id-pkix-ocsp-nonce, returning the raw
+    /// extnValue content bytes (echoed verbatim in the response per RFC 8954).
+    ///
+    /// Extensions ::= SEQUENCE OF Extension
+    /// Extension  ::= SEQUENCE {
+    ///     extnID      OBJECT IDENTIFIER,
+    ///     critical    BOOLEAN DEFAULT FALSE,
+    ///     extnValue   OCTET STRING }
+    fn find_nonce_extension(extensions_tlv: &[u8]) -> Result<Option<Vec<u8>>> {
+        use crate::der_util::read_tlv;
+
+        // id-pkix-ocsp-nonce 1.3.6.1.5.5.7.48.1.2
+        const NONCE_OID: [u8; 9] = [0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x02];
+
+        let (tag, mut cursor, _) = read_tlv(extensions_tlv).ok_or(Error::MalformedRequest)?;
+        if tag != 0x30 {
+            return Err(Error::MalformedRequest);
+        }
+
+        while !cursor.is_empty() {
+            let (tag, ext_content, rest) = read_tlv(cursor).ok_or(Error::MalformedRequest)?;
+            cursor = rest;
+            if tag != 0x30 {
+                return Err(Error::MalformedRequest);
+            }
+
+            let (tag, ext_oid, after_oid) = read_tlv(ext_content).ok_or(Error::MalformedRequest)?;
+            if tag != 0x06 {
+                return Err(Error::MalformedRequest);
+            }
+
+            // Skip optional critical BOOLEAN
+            let mut value_cursor = after_oid;
+            if let Some((0x01, _, rest)) = read_tlv(value_cursor) {
+                value_cursor = rest;
+            }
+
+            let (tag, extn_value, _) = read_tlv(value_cursor).ok_or(Error::MalformedRequest)?;
+            if tag != 0x04 {
+                return Err(Error::MalformedRequest);
+            }
+
+            if ext_oid == NONCE_OID {
+                return Ok(Some(extn_value.to_vec()));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Convert OID to HashAlgorithm
     fn oid_to_hash_algorithm(oid: &der::asn1::ObjectIdentifier) -> Result<HashAlgorithm> {
+        // SHA-1 is RFC 6960 §4.3 MANDATORY and the OpenSSL/client default.
+        const SHA1_OID: &str = "1.3.14.3.2.26";
         const SHA256_OID: &str = "2.16.840.1.101.3.4.2.1";
         const SHA384_OID: &str = "2.16.840.1.101.3.4.2.2";
         const SHA512_OID: &str = "2.16.840.1.101.3.4.2.3";
 
         match oid.to_string().as_str() {
+            SHA1_OID => Ok(HashAlgorithm::Sha1),
             SHA256_OID => Ok(HashAlgorithm::Sha256),
             SHA384_OID => Ok(HashAlgorithm::Sha384),
             SHA512_OID => Ok(HashAlgorithm::Sha512),
@@ -227,6 +322,7 @@ impl OcspRequest {
 impl HashAlgorithm {
     pub fn oid(&self) -> &'static str {
         match self {
+            Self::Sha1 => "1.3.14.3.2.26",
             Self::Sha256 => "2.16.840.1.101.3.4.2.1",
             Self::Sha384 => "2.16.840.1.101.3.4.2.2",
             Self::Sha512 => "2.16.840.1.101.3.4.2.3",
@@ -326,5 +422,76 @@ mod tests {
         let invalid_der = vec![0x00, 0x01, 0x02];
         let result = OcspRequest::from_der(&invalid_der);
         assert!(result.is_err());
+    }
+
+    /// Build a DER OCSPRequest for tests (mirrors what `openssl ocsp` emits).
+    fn build_request_der(nonce_extn_value: Option<&[u8]>, with_version: bool) -> Vec<u8> {
+        use crate::der_util::{null, octet_string, oid, seq, tlv, unsigned_integer};
+
+        // CertID
+        let mut alg = oid("2.16.840.1.101.3.4.2.1").unwrap();
+        alg.extend_from_slice(&null());
+        let mut cert_id = seq(&alg);
+        cert_id.extend_from_slice(&octet_string(&[0x11; 32]));
+        cert_id.extend_from_slice(&octet_string(&[0x22; 32]));
+        cert_id.extend_from_slice(&unsigned_integer(&[0x01, 0x02, 0x03]));
+        let cert_id = seq(&cert_id);
+
+        // Request ::= SEQUENCE { reqCert }
+        let request = seq(&cert_id);
+        // requestList ::= SEQUENCE OF Request
+        let request_list = seq(&request);
+
+        let mut tbs = Vec::new();
+        if with_version {
+            // version [0] EXPLICIT INTEGER 0
+            tbs.extend_from_slice(&tlv(0xA0, &[0x02, 0x01, 0x00]));
+        }
+        tbs.extend_from_slice(&request_list);
+
+        if let Some(nonce_value) = nonce_extn_value {
+            // Extension ::= SEQUENCE { extnID, extnValue }
+            let mut ext = oid("1.3.6.1.5.5.7.48.1.2").unwrap();
+            ext.extend_from_slice(&octet_string(nonce_value));
+            let extensions = seq(&seq(&ext));
+            // requestExtensions [2] EXPLICIT Extensions
+            tbs.extend_from_slice(&tlv(0xA2, &extensions));
+        }
+
+        // OCSPRequest ::= SEQUENCE { tbsRequest }
+        seq(&seq(&tbs))
+    }
+
+    #[test]
+    fn test_from_der_parses_cert_id() {
+        let der = build_request_der(None, false);
+        let req = OcspRequest::from_der(&der).unwrap();
+
+        assert_eq!(req.serial_number, vec![0x01, 0x02, 0x03]);
+        assert_eq!(req.issuer_name_hash, vec![0x11; 32]);
+        assert_eq!(req.issuer_key_hash, vec![0x22; 32]);
+        assert_eq!(req.hash_algorithm, HashAlgorithm::Sha256);
+        assert!(req.nonce.is_none());
+    }
+
+    // RFC 6960 §4.4.1 / RFC 8954 - nonce extracted from requestExtensions [2]
+    #[test]
+    fn test_from_der_extracts_nonce() {
+        // RFC 8954: extnValue content is an OCTET STRING wrapping the nonce
+        let nonce_extn_value = vec![0x04, 0x08, 1, 2, 3, 4, 5, 6, 7, 8];
+        let der = build_request_der(Some(&nonce_extn_value), false);
+
+        let req = OcspRequest::from_der(&der).unwrap();
+        assert_eq!(req.nonce, Some(nonce_extn_value));
+    }
+
+    #[test]
+    fn test_from_der_tolerates_explicit_version() {
+        let nonce_extn_value = vec![0x04, 0x04, 0xDE, 0xAD, 0xBE, 0xEF];
+        let der = build_request_der(Some(&nonce_extn_value), true);
+
+        let req = OcspRequest::from_der(&der).unwrap();
+        assert_eq!(req.serial_number, vec![0x01, 0x02, 0x03]);
+        assert_eq!(req.nonce, Some(nonce_extn_value));
     }
 }

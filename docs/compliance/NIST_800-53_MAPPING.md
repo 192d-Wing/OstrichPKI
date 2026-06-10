@@ -1221,6 +1221,21 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - [crates/ostrich-x509/src/validation/](../../crates/ostrich-x509/src/validation/) - **Path validation (Phase 15)**
 - [crates/ostrich-ca/src/issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - Certificate issuance
 - [crates/ostrich-acme/src/rest.rs:791](../../crates/ostrich-acme/src/rest.rs#L791) - ACME order finalization issues certificates via CA gRPC (`AcmeCaClient`); fails closed (SI-17) when CA integration is not configured
+- **ACME end-to-end (Phase 16, verified live)**: full RFC 8555 flow -
+  new-account -> new-order -> http-01 challenge validation
+  ([crates/ostrich-acme/src/rest.rs](../../crates/ostrich-acme/src/rest.rs)
+  `run_challenge_validation`) -> finalize -> certificate download, issuing a
+  leaf that verifies against the root. Test:
+  `tests/integration/acme_full_flow_test.rs`
+- **OCSP responder (Phase 16, verified live)**: signs status responses with
+  the real CA key
+  ([services/ocsp-server/src/main.rs](../../services/ocsp-server/src/main.rs)
+  `bootstrap_ocsp`); `openssl ocsp` confirms good->revoked transitions with
+  the correct CRLReason. Test: `tests/integration/ocsp_revocation_test.rs`
+- **External signature verification** (ACME JWS, CSR proof-of-possession) is
+  a stateless operation over the request-supplied public key
+  ([crates/ostrich-crypto/src/verify.rs](../../crates/ostrich-crypto/src/verify.rs)),
+  never importing attacker-supplied keys into the provider keystore (SI-10)
 - [crates/ostrich-acme/src/rest.rs:916](../../crates/ostrich-acme/src/rest.rs#L916) - ACME certificate download serves issued PEM chain from certificate store (RFC 8555 §7.4.2)
 
 **Evidence:**

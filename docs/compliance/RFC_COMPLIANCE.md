@@ -416,7 +416,27 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
 
 ### RFC 6960: X.509 Internet Public Key Infrastructure Online Certificate Status Protocol (OCSP)
 
-**Status:** 🟡 **Partial** (70% compliant)
+**Status:** 🟢 **Compliant** (signed responses verified by `openssl ocsp`)
+
+**End-to-end evidence (Phase 16):** a live `openssl ocsp` round-trip against
+the responder (signing with the real CA key in SoftHSM) returns `Cert
+Status: good` before revocation and `Cert Status: revoked` /
+`Revocation Reason: keyCompromise` after — OpenSSL independently parses the
+responderID, certStatus CHOICE, thisUpdate/nextUpdate, nonce, and embedded
+responder certificate. Test: `tests/integration/ocsp_revocation_test.rs`.
+
+Key corrections in this phase:
+- Responses are signed with the **real CA key** (was a placeholder KeyHandle).
+- TBS is encoded **once** and the exact signed bytes are embedded (was a
+  divergent second encoding, so signatures never verified).
+- Signing algorithm now matches the declared `sha256WithRSAEncryption` OID
+  (was RSA-PSS — mismatched and unverifiable).
+- certStatus is the real context-tagged **CHOICE** (good `[0]`, revoked `[1]`,
+  unknown `[2]`); nextUpdate has its `[0] EXPLICIT` wrapper; CertID echoes the
+  request hashes (placeholder zero hashes removed).
+- **SHA-1 CertIDs** accepted (RFC 6960 §4.3 mandatory; OpenSSL default).
+- **RFC 8954 nonce** parsed from the request and echoed in responseExtensions;
+  nonced requests bypass the cache.
 
 **Sections:**
 

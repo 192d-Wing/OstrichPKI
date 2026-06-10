@@ -30,22 +30,25 @@ use crate::{
     Result,
     cache::{CacheKey, OcspCache},
     request::OcspRequest,
-    response::{CertStatus, OcspResponse, SingleResponse},
+    response::{self, CertStatus, OcspResponse, SingleResponse},
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
-use ostrich_crypto::{Algorithm, CryptoProvider, KeyType, key::ProviderId};
+use ostrich_crypto::{Algorithm, CryptoProvider, KeyHandle, KeyType};
 use ostrich_db::{DatabasePool, repository::CertificateRepository};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Response data structure for signing
-struct ResponseData {
-    produced_at: DateTime<Utc>,
-    responses: Vec<SingleResponse>,
-}
-
 /// OCSP Responder configuration
+///
+/// # NIAP PP-CA v2.1 Compliance
+/// - **FCS_COP.1(1)**: `signing_key` references the real CA signing key in
+///   the crypto provider; when absent the responder fails closed
+///
+/// # NIST 800-53 Rev 5 Controls
+/// - **SC-12**: Key material stays in the crypto provider; only the
+///   KeyHandle reference is held here
+/// - **CM-6**: Secure default - no signing key means no signed responses
 #[derive(Debug, Clone)]
 pub struct OcspConfig {
     /// Validity period for responses (in seconds)
@@ -54,8 +57,13 @@ pub struct OcspConfig {
     /// CA certificate ID
     pub ca_id: Uuid,
 
-    /// OCSP signing key handle
-    pub signing_key_id: String,
+    /// OCSP signing key (the CA key, loaded from the database at bootstrap).
+    /// `None` means signing is not configured: the responder fails closed.
+    pub signing_key: Option<KeyHandle>,
+
+    /// DER-encoded CA certificate. Used for the responderID (byName: the CA
+    /// subject) and included in the certs field of BasicOCSPResponse.
+    pub ca_certificate_der: Option<Vec<u8>>,
 
     /// Whether to include nonce in response
     pub include_nonce: bool,
@@ -66,9 +74,43 @@ impl Default for OcspConfig {
         Self {
             response_validity: 3600, // 1 hour
             ca_id: Uuid::nil(),
-            signing_key_id: String::new(),
+            signing_key: None,
+            ca_certificate_der: None,
             include_nonce: true,
         }
+    }
+}
+
+/// Select the signature algorithm for the configured signing key.
+///
+/// Fails closed when no key is configured (NIST 800-53 CM-6: secure default).
+///
+/// The declared signatureAlgorithm in BasicOCSPResponse is
+/// sha256WithRSAEncryption (1.2.840.113549.1.1.11), so RSA keys MUST be
+/// signed with PKCS#1 v1.5 / SHA-256 - signing with a different scheme (e.g.
+/// RSA-PSS) would make every response unverifiable (RFC 6960 §4.2.1; same
+/// pattern as certificate issuance in crates/ostrich-ca/src/issuance.rs).
+///
+/// # COMPLIANCE MAPPING:
+/// - NIST 800-53: SC-13 (Cryptographic Protection) - declared and actual
+///   algorithms must match
+/// - NIAP PP-CA: FCS_COP.1(1) - approved signature algorithm selection
+/// - RFC 6960 §4.3: responders MUST support sha256WithRSAEncryption
+//
+// POAM: algorithm agility - ECDSA/EdDSA/ML-DSA OCSP signing requires
+// emitting the matching AlgorithmIdentifier in BasicOCSPResponse; until
+// then non-RSA keys are rejected rather than producing broken responses.
+pub(crate) fn signing_algorithm_for_key(signing_key: Option<&KeyHandle>) -> Result<Algorithm> {
+    let key = signing_key
+        .ok_or_else(|| crate::Error::SigningError("OCSP signing key not configured".to_string()))?;
+
+    match key.key_type {
+        KeyType::Rsa2048 | KeyType::Rsa3072 | KeyType::Rsa4096 => Ok(Algorithm::RsaPkcs1Sha256),
+        other => Err(crate::Error::SigningError(format!(
+            "OCSP signing with key type {:?} is not supported yet; only RSA keys \
+             (sha256WithRSAEncryption) are implemented (POAM: algorithm agility)",
+            other
+        ))),
     }
 }
 
@@ -163,14 +205,21 @@ impl OcspResponder {
     /// - Section 4.2.1: Response format and signing
     /// - Section 2.2: Response status (good, revoked, unknown)
     pub async fn process_request(&self, request: OcspRequest) -> Result<OcspResponse> {
-        // Create cache key (using SHA-256 as default hash algorithm)
+        // Cache key includes the request's hash algorithm: CertIDs computed
+        // with different hash algorithms are distinct responses.
         let cache_key = CacheKey::new(
             request.serial_number.clone(),
-            "2.16.840.1.101.3.4.2.1".to_string(), // SHA-256 OID
+            request.hash_algorithm.oid().to_string(),
         );
 
+        // RFC 8954 §2.1: a response carrying a nonce must echo the nonce of
+        // *this* request - cached (pre-produced) responses cannot satisfy
+        // that, so requests with a nonce bypass the cache entirely.
+        // NIST 800-53: SC-23 - replay protection takes precedence over caching.
+        let cacheable = request.nonce.is_none() || !self.config.include_nonce;
+
         // Check cache for existing valid response
-        if let Some(cached_response) = self.cache.get(&cache_key).await {
+        if cacheable && let Some(cached_response) = self.cache.get(&cache_key).await {
             // Cache hit - return cached response
             let mut event = AuditEventBuilder::new(
                 EventType::OcspProtocol,
@@ -218,32 +267,26 @@ impl OcspResponder {
             }
         };
 
-        // Create single response based on certificate status
-        let single_response = if cert.revoked {
-            SingleResponse {
-                serial_number: request.serial_number.clone(),
-                cert_status: CertStatus::Revoked {
-                    revocation_time: cert.revocation_time.unwrap_or_else(Utc::now),
-                    revocation_reason: cert.revocation_reason.map(|r| r as u8),
-                },
-                this_update: Utc::now(),
-                next_update: Some(Utc::now() + Duration::seconds(self.config.response_validity)),
-            }
-        } else if !cert.is_time_valid() {
-            // Expired certificate - still return "good" per OCSP spec
-            SingleResponse {
-                serial_number: request.serial_number.clone(),
-                cert_status: CertStatus::Good,
-                this_update: Utc::now(),
-                next_update: Some(Utc::now() + Duration::seconds(self.config.response_validity)),
+        // Create single response based on certificate status.
+        // The CertID fields echo the request exactly (RFC 6960 §4.2.1).
+        // Note: expired certificates still return "good" per OCSP spec.
+        let cert_status = if cert.revoked {
+            CertStatus::Revoked {
+                revocation_time: cert.revocation_time.unwrap_or_else(Utc::now),
+                revocation_reason: cert.revocation_reason.map(|r| r as u8),
             }
         } else {
-            SingleResponse {
-                serial_number: request.serial_number.clone(),
-                cert_status: CertStatus::Good,
-                this_update: Utc::now(),
-                next_update: Some(Utc::now() + Duration::seconds(self.config.response_validity)),
-            }
+            CertStatus::Good
+        };
+
+        let single_response = SingleResponse {
+            serial_number: request.serial_number.clone(),
+            issuer_name_hash: request.issuer_name_hash.clone(),
+            issuer_key_hash: request.issuer_key_hash.clone(),
+            hash_algorithm: request.hash_algorithm.oid().to_string(),
+            cert_status,
+            this_update: Utc::now(),
+            next_update: Some(Utc::now() + Duration::seconds(self.config.response_validity)),
         };
 
         // Sign the response
@@ -251,8 +294,11 @@ impl OcspResponder {
             .sign_response(vec![single_response], request.nonce)
             .await?;
 
-        // Cache the response for future queries
-        self.cache.insert(cache_key, response.clone()).await;
+        // Cache the response for future queries (nonce'd responses are
+        // request-specific and must not be served to other requesters)
+        if cacheable {
+            self.cache.insert(cache_key, response.clone()).await;
+        }
 
         // Log successful response
         let mut event = AuditEventBuilder::new(
@@ -294,6 +340,9 @@ impl OcspResponder {
     async fn create_unknown_response(&self, request: OcspRequest) -> Result<OcspResponse> {
         let single_response = SingleResponse {
             serial_number: request.serial_number,
+            issuer_name_hash: request.issuer_name_hash,
+            issuer_key_hash: request.issuer_key_hash,
+            hash_algorithm: request.hash_algorithm.oid().to_string(),
             cert_status: CertStatus::Unknown,
             this_update: Utc::now(),
             next_update: None,
@@ -305,17 +354,26 @@ impl OcspResponder {
 
     /// Sign an OCSP response
     ///
-    /// Produces a signed BasicOCSPResponse per RFC 6960 Section 4.2.1.
+    /// Encodes the to-be-signed ResponseData exactly once, signs those bytes
+    /// with the configured CA key, and stores the same bytes for verbatim
+    /// embedding in the BasicOCSPResponse - the signed bytes and the emitted
+    /// bytes are guaranteed identical.
+    ///
+    /// Fails closed when no signing key or CA certificate is configured.
     ///
     /// # NIAP PP-CA v2.1 Compliance
     /// - **FCS_COP.1(1)**: Cryptographic signature operation using approved
-    ///   algorithms (RSA-PSS with SHA-256, ECDSA, EdDSA, or ML-DSA)
+    ///   algorithms (RSA PKCS#1 v1.5 with SHA-256)
     /// - **FDP_OCSPG_EXT.1**: Signed OCSP response generation
     /// - **FCO_NRO_EXT.2**: Proof of origin via digital signature
+    /// - **FPT_STM.1**: producedAt from reliable time source
     ///
     /// # FIPS Compliance
-    /// - FIPS 186-5: RSA-PSS, ECDSA, EdDSA signature algorithms
-    /// - FIPS 204: ML-DSA post-quantum signatures (when enabled)
+    /// - FIPS 186-5: RSA signature algorithm
+    ///
+    /// # NIST 800-53 Rev 5 Controls
+    /// - **SC-13**: Declared signatureAlgorithm matches the actual scheme
+    /// - **AU-10**: Non-repudiation via CA signature
     ///
     /// # RFC 6960 Section 4.2.1
     /// BasicOCSPResponse ::= SEQUENCE {
@@ -328,32 +386,24 @@ impl OcspResponder {
         responses: Vec<SingleResponse>,
         nonce: Option<Vec<u8>>,
     ) -> Result<OcspResponse> {
-        // Build response data structure for signing
-        let response_data = ResponseData {
-            produced_at: chrono::Utc::now(),
-            responses: responses.clone(),
-        };
+        // Fail closed: no signing key means no responses (NIST 800-53 CM-6)
+        let algorithm = signing_algorithm_for_key(self.config.signing_key.as_ref())?;
+        let key_handle = self
+            .config
+            .signing_key
+            .as_ref()
+            .expect("checked by signing_algorithm_for_key");
 
-        // Encode response data to DER for signing
-        let tbs_der = self.encode_response_data(&response_data)?;
+        let ca_cert_der = self.config.ca_certificate_der.as_deref().ok_or_else(|| {
+            crate::Error::SigningError("OCSP responder CA certificate not configured".to_string())
+        })?;
 
-        // Sign the response data
-        // TODO: Load actual key handle from database or configuration
-        // For now, create a placeholder key handle
-        let key_handle = ostrich_crypto::KeyHandle::new(
-            ProviderId::Software,
-            self.config.signing_key_id.as_bytes().to_vec(),
-            KeyType::Rsa2048,
-            Algorithm::RsaPssSha256,
-            "ocsp-signing".to_string(),
-        );
-        let signature = self
-            .crypto
-            .sign(&key_handle, Algorithm::RsaPssSha256, &tbs_der)
-            .await
-            .map_err(|e| {
-                crate::Error::SigningError(format!("Failed to sign OCSP response: {}", e))
-            })?;
+        // ResponderID byName: the CA certificate's subject Name, embedded as
+        // raw DER bytes (RFC 6960 §4.2.1 - byName [1] Name)
+        let (_, ca_cert) = x509_parser::parse_x509_certificate(ca_cert_der).map_err(|e| {
+            crate::Error::SigningError(format!("Failed to parse CA certificate: {}", e))
+        })?;
+        let responder_name_der = ca_cert.subject().as_raw().to_vec();
 
         let nonce = if self.config.include_nonce {
             nonce
@@ -361,123 +411,29 @@ impl OcspResponder {
             None
         };
 
-        // For now, use empty signing cert (should load from database)
-        let signing_cert = Vec::new();
+        // Encode the TBS once - these exact bytes are signed and emitted
+        let tbs_der = response::encode_tbs_response_data(
+            &responder_name_der,
+            Utc::now(),
+            &responses,
+            nonce.as_deref(),
+        )?;
+
+        let signature = self
+            .crypto
+            .sign(key_handle, algorithm, &tbs_der)
+            .await
+            .map_err(|e| {
+                crate::Error::SigningError(format!("Failed to sign OCSP response: {}", e))
+            })?;
 
         Ok(OcspResponse::successful(
             responses,
+            tbs_der,
             signature,
-            signing_cert,
+            ca_cert_der.to_vec(),
             nonce,
         ))
-    }
-
-    /// Encode ResponseData to DER for signing
-    ///
-    /// Encodes the to-be-signed response data structure per RFC 6960 Section 4.2.1.
-    ///
-    /// # NIAP PP-CA v2.1 Compliance
-    /// - **FDP_OCSPG_EXT.1**: Proper ASN.1/DER encoding of response data
-    /// - **FPT_STM.1**: producedAt timestamp from reliable time source
-    ///
-    /// # RFC 6960 Section 4.2.1
-    /// ResponseData ::= SEQUENCE {
-    ///    version              [0] EXPLICIT Version DEFAULT v1,
-    ///    responderID              ResponderID,
-    ///    producedAt               GeneralizedTime,
-    ///    responses                SEQUENCE OF SingleResponse,
-    ///    responseExtensions   [1] EXPLICIT Extensions OPTIONAL }
-    fn encode_response_data(&self, data: &ResponseData) -> Result<Vec<u8>> {
-        use der::asn1::{GeneralizedTime, Int, ObjectIdentifier, OctetString};
-        use der::{Encode, Sequence};
-
-        #[derive(Sequence)]
-        struct AlgorithmIdentifier {
-            algorithm: ObjectIdentifier,
-        }
-
-        #[derive(Sequence)]
-        struct CertId {
-            hash_algorithm: AlgorithmIdentifier,
-            issuer_name_hash: OctetString,
-            issuer_key_hash: OctetString,
-            serial_number: Int,
-        }
-
-        #[derive(Sequence)]
-        struct SingleResponseAsn1 {
-            cert_id: CertId,
-            cert_status: u8, // Simplified - just encode status as integer
-            this_update: GeneralizedTime,
-        }
-
-        #[derive(Sequence)]
-        struct ResponseDataAsn1 {
-            produced_at: GeneralizedTime,
-            responses: der::asn1::SequenceOf<SingleResponseAsn1, 10>,
-        }
-
-        let produced_at = GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(
-            data.produced_at.timestamp() as u64,
-        ))
-        .map_err(|e| crate::Error::InternalError(format!("Invalid timestamp: {}", e)))?;
-
-        let mut asn1_responses = Vec::new();
-        for resp in &data.responses {
-            const SHA256_OID: ObjectIdentifier =
-                ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
-
-            let hash_alg = AlgorithmIdentifier {
-                algorithm: SHA256_OID,
-            };
-
-            let cert_id = CertId {
-                hash_algorithm: hash_alg,
-                issuer_name_hash: OctetString::new(vec![0u8; 32]).map_err(|e| {
-                    crate::Error::InternalError(format!("Failed to encode hash: {}", e))
-                })?,
-                issuer_key_hash: OctetString::new(vec![0u8; 32]).map_err(|e| {
-                    crate::Error::InternalError(format!("Failed to encode hash: {}", e))
-                })?,
-                serial_number: Int::new(&resp.serial_number).map_err(|e| {
-                    crate::Error::InternalError(format!("Failed to encode serial: {}", e))
-                })?,
-            };
-
-            let cert_status = match &resp.cert_status {
-                crate::response::CertStatus::Good => 0u8,
-                crate::response::CertStatus::Revoked { .. } => 1u8,
-                crate::response::CertStatus::Unknown => 2u8,
-            };
-
-            let this_update = GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(
-                resp.this_update.timestamp() as u64,
-            ))
-            .map_err(|e| crate::Error::InternalError(format!("Invalid timestamp: {}", e)))?;
-
-            asn1_responses.push(SingleResponseAsn1 {
-                cert_id,
-                cert_status,
-                this_update,
-            });
-        }
-
-        // Convert Vec to array-backed SequenceOf
-        let mut responses = der::asn1::SequenceOf::<SingleResponseAsn1, 10>::new();
-        for resp in asn1_responses {
-            responses
-                .add(resp)
-                .map_err(|e| crate::Error::InternalError(format!("Too many responses: {}", e)))?;
-        }
-
-        let response_data_asn1 = ResponseDataAsn1 {
-            produced_at,
-            responses,
-        };
-
-        response_data_asn1.to_der().map_err(|e| {
-            crate::Error::InternalError(format!("Failed to encode response data: {}", e))
-        })
     }
 
     /// Get OCSP responder configuration
@@ -495,5 +451,60 @@ mod tests {
         let config = OcspConfig::default();
         assert_eq!(config.response_validity, 3600);
         assert!(config.include_nonce);
+        // Secure defaults: signing not configured -> responder fails closed
+        assert!(config.signing_key.is_none());
+        assert!(config.ca_certificate_der.is_none());
+    }
+
+    /// NIST 800-53 CM-6 - fail closed when no signing key is configured
+    #[test]
+    fn test_signing_fails_closed_without_key() {
+        let result = signing_algorithm_for_key(None);
+        match result {
+            Err(crate::Error::SigningError(msg)) => {
+                assert!(
+                    msg.contains("not configured"),
+                    "unexpected message: {}",
+                    msg
+                );
+            }
+            other => panic!("expected SigningError, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// RFC 6960 §4.2.1 - actual signing scheme must match the declared
+    /// sha256WithRSAEncryption AlgorithmIdentifier
+    #[test]
+    fn test_rsa_keys_use_pkcs1_sha256() {
+        for key_type in [KeyType::Rsa2048, KeyType::Rsa3072, KeyType::Rsa4096] {
+            let key = KeyHandle::new(
+                ostrich_crypto::key::ProviderId::Software,
+                vec![1, 2, 3],
+                key_type,
+                Algorithm::RsaPkcs1Sha256,
+                "ocsp-test".to_string(),
+            );
+            assert_eq!(
+                signing_algorithm_for_key(Some(&key)).unwrap(),
+                Algorithm::RsaPkcs1Sha256
+            );
+        }
+    }
+
+    /// POAM: algorithm agility - non-RSA keys are rejected rather than
+    /// producing responses whose declared and actual algorithms differ
+    #[test]
+    fn test_non_rsa_keys_rejected() {
+        let key = KeyHandle::new(
+            ostrich_crypto::key::ProviderId::Software,
+            vec![1, 2, 3],
+            KeyType::EcP256,
+            Algorithm::EcdsaP256Sha256,
+            "ocsp-test".to_string(),
+        );
+        assert!(matches!(
+            signing_algorithm_for_key(Some(&key)),
+            Err(crate::Error::SigningError(_))
+        ));
     }
 }

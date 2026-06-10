@@ -34,6 +34,7 @@ clap = { workspace = true, features = ["derive", "env"] }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
