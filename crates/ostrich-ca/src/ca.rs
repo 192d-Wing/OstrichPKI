@@ -134,6 +134,17 @@ impl CertificateAuthority {
         self.issuer.set_approval_config(config);
     }
 
+    /// Wire the approval engine + repository into the issuer so that
+    /// approval-gated issuance (FDP_CER_EXT.3) can validate approvals.
+    pub fn set_approval(
+        &mut self,
+        engine: std::sync::Arc<crate::approval::ApprovalEngine>,
+        repo: std::sync::Arc<ostrich_db::repository::ApprovalRepository>,
+        config: crate::approval::ApprovalConfig,
+    ) {
+        self.issuer.set_approval(engine, repo, config);
+    }
+
     /// Get the certificate issuer
     ///
     /// NIAP PP-CA: FMT_SMF.1.1 - Access certificate issuance security function

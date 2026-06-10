@@ -169,6 +169,20 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   (NIAP FDP_CER_EXT.3).
 - Self-approval is blocked at the CA REST handler via the same policy method;
   `Error::SelfApprovalProhibited` surfaces as HTTP 403.
+- **Live evidence (the secure-default issuance path, verified end to end):**
+  with `CA_REQUIRE_APPROVAL=true` (the default), a 3-actor flow was exercised
+  against a SoftHSM-backed CA - submit (RaStaff) -> approve (AOR, a *different*
+  user) -> issue (OperationsStaff, referencing `approval_request_id`). The
+  issued certificate `openssl verify`s against the root, and the approval
+  request is marked `completed` and linked to the certificate (FDP_CER_EXT.2).
+  Verified negative cases: issuance with no approval id is rejected (the secure
+  default blocks unapproved issuance); a requestor approving their own request
+  is denied 403 (FDP_SEPP.1 separation of duties); and re-issuing against an
+  already-completed approval is rejected (single-use). The issuer is wired with
+  the approval engine + repository at bootstrap when require_approval is true
+  (services/ca-server `bootstrap_ca`), and the REST issue handler now accepts
+  `approval_request_id` (previously hardcoded to None, which made the
+  secure-default path always fail).
 
 **Gaps:**
 

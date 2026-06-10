@@ -360,15 +360,26 @@ async fn bootstrap_ca(
 
     // Approval workflow toggle.
     // NIAP PP-CA: FDP_CER_EXT.3 - approval-required is the secure default.
-    if !args.require_approval {
+    // When enabled, the issuer must hold the approval engine + repository so it
+    // can verify the referenced request is Approved before issuing (otherwise
+    // issuance fails closed with "Approval repository not configured").
+    let approval_config = ostrich_ca::approval::ApprovalConfig {
+        require_approval: args.require_approval,
+        ..Default::default()
+    };
+    if args.require_approval {
+        let approval_engine =
+            std::sync::Arc::new(ostrich_ca::ApprovalEngine::new(approval_config.clone()));
+        let approval_repo = std::sync::Arc::new(
+            ostrich_db::repository::ApprovalRepository::new(db_pool.pool().clone()),
+        );
+        ca.set_approval(approval_engine, approval_repo, approval_config);
+    } else {
         tracing::warn!(
             "CA_REQUIRE_APPROVAL=false: certificates are issued WITHOUT an approval \
              workflow. Acceptable for automated pipelines (ACME) and dev/E2E only."
         );
-        ca.set_approval_config(ostrich_ca::approval::ApprovalConfig {
-            require_approval: false,
-            ..Default::default()
-        });
+        ca.set_approval_config(approval_config);
     }
 
     tracing::info!(

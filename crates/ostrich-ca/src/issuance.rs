@@ -202,6 +202,26 @@ impl CertificateIssuer {
         self.approval_config = config;
     }
 
+    /// Wire the approval engine + repository into the issuer.
+    ///
+    /// Required when `approval_config.require_approval` is true: issuance loads
+    /// the referenced approval request from this repository and refuses to
+    /// proceed unless it is Approved. Without it, issuance fails closed with
+    /// "Approval repository not configured".
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA: FDP_CER_EXT.2 (request linkage) / FDP_CER_EXT.3 (approval)
+    pub fn set_approval(
+        &mut self,
+        engine: Arc<ApprovalEngine>,
+        repo: Arc<ApprovalRepository>,
+        config: ApprovalConfig,
+    ) {
+        self.approval_engine = Some(engine);
+        self.approval_repo = Some(repo);
+        self.approval_config = config;
+    }
+
     /// Issue a certificate
     ///
     /// NIAP PP-CA: FMT_SMF.1.1 - Issue certificate security management function

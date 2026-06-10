@@ -253,6 +253,18 @@ async fn issue_certificate(
     AuthUser(user): AuthUser,
     Json(req): Json<IssueCertificateRequest>,
 ) -> Result<Json<IssueCertificateResponse>> {
+    // Parse the optional approval request id (NIAP PP-CA FDP_CER_EXT.3).
+    // When the CA runs with the approval workflow enabled (the secure
+    // default), the issuer requires this to reference an already-Approved
+    // request; when disabled it is ignored.
+    let approval_request_id = match req.approval_request_id.as_deref() {
+        Some(id) => Some(
+            uuid::Uuid::parse_str(id)
+                .map_err(|_| Error::InvalidRequest("Invalid approval_request_id".to_string()))?,
+        ),
+        None => None,
+    };
+
     // Convert REST request to internal request
     // Use authenticated user's identity as requestor (override client-provided value)
     let issuance_req = IssuanceRequest {
@@ -262,8 +274,8 @@ async fn issue_certificate(
         public_key: req.public_key,
         requestor: user.username.clone(), // Use authenticated identity
         metadata: req.metadata,
-        csr_der: None,             // REST API doesn't currently accept CSR
-        approval_request_id: None, // TODO: Accept from request
+        csr_der: None, // REST API doesn't currently accept CSR
+        approval_request_id,
     };
 
     // Issue certificate
@@ -701,6 +713,12 @@ pub struct IssueCertificateRequest {
     pub requestor: String,
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
+    /// Approved request to issue against (NIAP PP-CA FDP_CER_EXT.3).
+    /// Required when the CA runs with the approval workflow enabled (the
+    /// secure default); the referenced request must already be Approved by a
+    /// different user (separation of duties enforced at approval time).
+    #[serde(default)]
+    pub approval_request_id: Option<String>,
 }
 
 /// Certificate issuance response
