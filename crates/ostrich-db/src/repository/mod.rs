@@ -34,12 +34,14 @@ pub mod certificate;
 pub mod est;
 pub mod kra;
 pub mod scms;
+pub mod users;
 
 pub use acme::AcmeRepository;
 pub use approval::ApprovalRepository;
 pub use audit::AuditRepository;
 pub use ca::CaRepository;
 pub use certificate::CertificateRepository;
+pub use users::DbUserRepository;
 pub use est::EstRepository;
 pub use kra::KraRepository;
 pub use scms::ScmsRepository;

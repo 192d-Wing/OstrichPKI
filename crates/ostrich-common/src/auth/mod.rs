@@ -64,6 +64,7 @@ pub mod permissions;
 pub mod provider;
 pub mod rbac;
 pub mod roles;
+pub mod routes;
 pub mod session;
 pub mod user;
 
@@ -81,6 +82,7 @@ pub use provider::{
     SessionInfo,
 };
 pub use rbac::{AuthorizationError, AuthzResult, RbacMiddleware, RbacPolicy};
+pub use routes::auth_routes;
 pub use roles::{Role, RoleValidationError, validate_role_set};
 pub use session::{Session, SessionConfig, SessionManager, SessionStatus};
 pub use user::{AccountStatus, AuthMethod, AuthenticatedUser, UserAccount, UserId};

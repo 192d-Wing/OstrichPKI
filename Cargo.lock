@@ -3559,6 +3559,7 @@ dependencies = [
  "ostrich-db",
  "ostrich-x509",
  "pem-rfc7468 1.0.0",
+ "secrecy",
  "serde",
  "serde_json",
  "tokio",

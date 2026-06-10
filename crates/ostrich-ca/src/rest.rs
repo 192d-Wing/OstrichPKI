@@ -115,71 +115,67 @@ pub fn create_router(
             get(check_revocation_status),
         );
 
+    // Per-permission authorization middleware factory.
+    //
+    // IMPORTANT: the permission layer is applied to the *MethodRouter*
+    // (`post(handler).route_layer(...)`), never via `Router::route_layer`
+    // chained between `.route(...)` calls. `Router::route_layer` wraps every
+    // route added so far, so the previous chained style stacked ALL
+    // subsequent permission checks onto the earlier routes - no single role
+    // held every permission (AC-5 separation of duties), making the entire
+    // protected API return 403 for everyone.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: AC-3 (Access Enforcement) - exactly one permission per route
+    // - NIST 800-53: AC-5 - separation-of-duties matrix remains enforceable
+    let authz = |permission: Permission| {
+        middleware::from_fn_with_state(
+            (rbac_policy.clone(), permission, None::<String>),
+            AuthzLayer::authorize,
+        )
+    };
+
     // Protected endpoints requiring authentication and authorization
     let protected_routes = Router::new()
-        .route("/api/v1/certificates", post(issue_certificate))
-        .route_layer(middleware::from_fn_with_state(
-            (
-                rbac_policy.clone(),
-                Permission::IssueCertificate,
-                None::<String>,
-            ),
-            AuthzLayer::authorize,
-        ))
-        .route("/api/v1/certificates/{id}/revoke", post(revoke_certificate))
-        .route_layer(middleware::from_fn_with_state(
-            (
-                rbac_policy.clone(),
-                Permission::RevokeCertificate,
-                None::<String>,
-            ),
-            AuthzLayer::authorize,
-        ))
-        .route("/api/v1/crl", post(generate_crl))
-        .route_layer(middleware::from_fn_with_state(
-            (rbac_policy.clone(), Permission::GenerateCrl, None::<String>),
-            AuthzLayer::authorize,
-        ))
+        .route(
+            "/api/v1/certificates",
+            post(issue_certificate).route_layer(authz(Permission::IssueCertificate)),
+        )
+        .route(
+            "/api/v1/certificates/{id}/revoke",
+            post(revoke_certificate).route_layer(authz(Permission::RevokeCertificate)),
+        )
+        .route(
+            "/api/v1/crl",
+            post(generate_crl).route_layer(authz(Permission::GenerateCrl)),
+        )
         // Configuration metadata
         // Permission::ViewConfig - profile catalog is configuration data (NIAP FMT_SMF.1)
-        .route("/api/v1/profiles", get(list_profiles))
-        .route_layer(middleware::from_fn_with_state(
-            (rbac_policy.clone(), Permission::ViewConfig, None::<String>),
-            AuthzLayer::authorize,
-        ))
+        .route(
+            "/api/v1/profiles",
+            get(list_profiles).route_layer(authz(Permission::ViewConfig)),
+        )
         // Approval workflow endpoints
-        // submit_approval_request + list + get enforce permissions inline (handlers
-        // use the authenticated user identity and role-based filtering). The
-        // approve/reject routes use middleware-based Permission::ApproveRequest below.
-        .route("/api/v1/approvals", post(submit_approval_request))
-        .route_layer(middleware::from_fn_with_state(
-            (rbac_policy.clone(), Permission::SubmitRequest, None::<String>),
-            AuthzLayer::authorize,
-        ))
-        .route("/api/v1/approvals", get(list_approval_requests))
-        .route("/api/v1/approvals/{id}", get(get_approval_request))
-        .route_layer(middleware::from_fn_with_state(
-            (rbac_policy.clone(), Permission::ViewRequests, None::<String>),
-            AuthzLayer::authorize,
-        ))
-        .route("/api/v1/approvals/{id}/approve", post(approve_request))
-        .route_layer(middleware::from_fn_with_state(
-            (
-                rbac_policy.clone(),
-                Permission::ApproveRequest,
-                None::<String>,
-            ),
-            AuthzLayer::authorize,
-        ))
-        .route("/api/v1/approvals/{id}/reject", post(reject_request))
-        .route_layer(middleware::from_fn_with_state(
-            (
-                rbac_policy.clone(),
-                Permission::ApproveRequest,
-                None::<String>,
-            ),
-            AuthzLayer::authorize,
-        ))
+        .route(
+            "/api/v1/approvals",
+            post(submit_approval_request).route_layer(authz(Permission::SubmitRequest)),
+        )
+        .route(
+            "/api/v1/approvals",
+            get(list_approval_requests).route_layer(authz(Permission::ViewRequests)),
+        )
+        .route(
+            "/api/v1/approvals/{id}",
+            get(get_approval_request).route_layer(authz(Permission::ViewRequests)),
+        )
+        .route(
+            "/api/v1/approvals/{id}/approve",
+            post(approve_request).route_layer(authz(Permission::ApproveRequest)),
+        )
+        .route(
+            "/api/v1/approvals/{id}/reject",
+            post(reject_request).route_layer(authz(Permission::ApproveRequest)),
+        )
         .layer(middleware::from_fn_with_state(
             auth_provider.clone(),
             AuthLayer::authenticate,

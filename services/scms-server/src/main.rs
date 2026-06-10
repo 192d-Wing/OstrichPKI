@@ -68,19 +68,30 @@ async fn main() -> Result<()> {
     let crypto_provider = ostrich_crypto::software::SoftwareProvider::new();
     let audit_sink = ostrich_audit::DatabaseAuditSink::new(db_pool.clone());
 
-    // Authentication provider: DisabledAuthProvider is a fail-closed placeholder
-    // that rejects every request. All protected /scms/* endpoints will return 401
-    // until a real provider (password DB, mTLS, OIDC) is wired in.
+    // Authentication: database-backed password provider (argon2id) with
+    // failed-attempt lockout and bearer-token sessions. Users are provisioned
+    // via `ostrich-init --admin-username/--admin-password` and (eventually)
+    // the user-management API.
     //
     // COMPLIANCE MAPPING:
-    // - NIST 800-53: AC-3 (fail-closed default for protected endpoints)
-    // - NIAP PP-CA: FIA_UAU.1 (no unauthenticated access to management functions)
-    tracing::warn!(
-        "SCMS is running with DisabledAuthProvider: all /scms/* endpoints will return 401. \
-         Wire a real AuthProvider (password DB, mTLS, or OIDC) for production use."
-    );
+    // - NIST 800-53: IA-2, IA-5(1), AC-7 (lockout)
+    // - NIAP PP-CA: FIA_UAU.1 / FIA_AFL.1
+    //
+    // POAM: sessions are in-memory; persistent/shared session storage is a
+    // follow-up. Note each service holds its own session store, so a token
+    // issued by ca-server is not valid here - log in per service.
     let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> =
-        Arc::new(ostrich_common::auth::DisabledAuthProvider::new());
+        Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
+            Arc::new(ostrich_db::repository::DbUserRepository::new(
+                db_pool.clone(),
+            )),
+            Arc::new(ostrich_common::auth::AuthLockout::new(
+                ostrich_common::auth::LockoutConfig::default(),
+            )),
+            Arc::new(ostrich_common::auth::SessionManager::new(
+                ostrich_common::auth::SessionConfig::default(),
+            )),
+        ));
 
     // RBAC policy: enforces per-permission checks at handler entry.
     // NIST 800-53: AC-3 (Access Enforcement), AC-5 (Separation of Duties)
@@ -92,12 +103,14 @@ async fn main() -> Result<()> {
         db_pool,
         Arc::new(crypto_provider),
         Arc::new(audit_sink),
-        auth_provider,
+        auth_provider.clone(),
         rbac_policy,
     );
 
-    // Create router
-    let app = ostrich_scms::rest::create_router(state);
+    // Create router; merge the session API (login/logout). Public by
+    // necessity; brute-force mitigated by lockout (AC-7 / FIA_AFL.1).
+    let app = ostrich_scms::rest::create_router(state)
+        .merge(ostrich_common::auth::auth_routes(auth_provider));
 
     // Parse bind address
     let addr: SocketAddr = args.bind_address.parse().expect("Invalid bind address");

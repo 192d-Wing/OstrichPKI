@@ -25,6 +25,9 @@ der = { workspace = true }
 x509-cert = { workspace = true }
 pem-rfc7468 = { workspace = true }
 
+# Secrets handling (IA-5: password never logged)
+secrecy = { workspace = true }
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }

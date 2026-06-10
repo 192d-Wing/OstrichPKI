@@ -83,6 +83,18 @@ struct Args {
     /// init containers (CM-2: convergent baseline configuration).
     #[arg(long, default_value = "false")]
     if_exists_ok: bool,
+
+    /// Provision the initial Administrator account with this username.
+    /// Requires --admin-password. Idempotent: skipped if the user exists.
+    /// NIST 800-53: AC-2 - initial account provisioning (replaces the
+    /// hardcoded seed user removed from migration 00003 per CM-6/IA-5)
+    #[arg(long, env = "CA_ADMIN_USERNAME")]
+    admin_username: Option<String>,
+
+    /// Initial Administrator password (hashed with Argon2id; never stored
+    /// or logged in plaintext). NIST 800-53: IA-5(1)
+    #[arg(long, env = "CA_ADMIN_PASSWORD")]
+    admin_password: Option<String>,
 }
 
 #[tokio::main]
@@ -110,6 +122,11 @@ async fn main() -> Result<()> {
     let db_pool = ostrich_db::DatabasePool::new(&db_config).await?;
     tracing::info!("Running database migrations");
     db_pool.migrate().await?;
+
+    // Provision the initial Administrator account (idempotent).
+    // Runs before the CA-exists early-return so re-running the tool can add
+    // the admin to an already-bootstrapped deployment.
+    provision_admin(&args, &db_pool).await?;
 
     let ca_repo = ostrich_db::repository::CaRepository::new(db_pool.clone());
     if ca_repo
@@ -267,6 +284,51 @@ async fn main() -> Result<()> {
     println!("CA certificate (PEM):");
     println!("{}", pem_encoded);
 
+    Ok(())
+}
+
+/// Provision the initial Administrator account if requested.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-2 - account provisioning
+/// - NIST 800-53: IA-5(1) - Argon2id hashing; plaintext never persisted/logged
+/// - NIST 800-53: CM-6 - explicit provisioning instead of hardcoded seed users
+/// - NIAP PP-CA: FMT_SMR.2 - Administrator role assignment
+async fn provision_admin(args: &Args, db_pool: &ostrich_db::DatabasePool) -> Result<()> {
+    let (username, password) = match (&args.admin_username, &args.admin_password) {
+        (Some(u), Some(p)) => (u, p),
+        (None, None) => return Ok(()),
+        _ => bail!("Both --admin-username and --admin-password are required to provision an admin"),
+    };
+
+    if password.len() < 12 {
+        // NIST 800-63B §3.1.1: minimum 8, longer required for privileged accounts
+        bail!("Admin password must be at least 12 characters (NIST 800-63B)");
+    }
+
+    let users = ostrich_db::repository::DbUserRepository::new(db_pool.clone());
+    if users.user_exists(username).await? {
+        println!("User '{}' already exists; skipping provisioning.", username);
+        return Ok(());
+    }
+
+    let hash = ostrich_common::auth::password::hash_password(
+        &ostrich_common::auth::PasswordHashConfig::default(),
+        &secrecy::SecretString::from(password.clone()),
+    )
+    .map_err(|e| anyhow::anyhow!("Password hashing failed: {}", e))?;
+
+    let id = users
+        .create_user(
+            username,
+            Some("Initial Administrator"),
+            &hash,
+            &[ostrich_common::auth::Role::Administrator],
+        )
+        .await
+        .context("Failed to create admin user")?;
+
+    println!("Administrator account '{}' created (id {}).", username, id);
     Ok(())
 }
 

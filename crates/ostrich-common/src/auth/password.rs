@@ -94,6 +94,26 @@ impl PasswordHashConfig {
     }
 }
 
+/// Hash a password with Argon2id (standalone form for provisioning tools
+/// that don't construct a full PasswordAuthProvider).
+///
+/// NIST 800-53: IA-5(1) - Password hashing using approved algorithm
+/// RFC 9106: Argon2 password hashing algorithm
+pub fn hash_password(config: &PasswordHashConfig, password: &SecretString) -> AuthResult<String> {
+    let salt = SaltString::generate(&mut OsRng);
+    let params = config
+        .build_params()
+        .map_err(|e| AuthError::Internal(format!("Invalid Argon2 params: {}", e)))?;
+
+    let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
+
+    let password_hash = argon2
+        .hash_password(password.expose_secret().as_bytes(), &salt)
+        .map_err(|e| AuthError::Internal(format!("Password hashing failed: {}", e)))?;
+
+    Ok(password_hash.to_string())
+}
+
 /// User repository trait for password provider
 ///
 /// Abstracts database access for user authentication
@@ -169,19 +189,7 @@ impl PasswordAuthProvider {
     /// NIST 800-53: IA-5(1) - Password hashing using approved algorithm
     /// RFC 9106: Argon2 password hashing algorithm
     pub fn hash_password(&self, password: &SecretString) -> AuthResult<String> {
-        let salt = SaltString::generate(&mut OsRng);
-        let params = self
-            .config
-            .build_params()
-            .map_err(|e| AuthError::Internal(format!("Invalid Argon2 params: {}", e)))?;
-
-        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
-
-        let password_hash = argon2
-            .hash_password(password.expose_secret().as_bytes(), &salt)
-            .map_err(|e| AuthError::Internal(format!("Password hashing failed: {}", e)))?;
-
-        Ok(password_hash.to_string())
+        hash_password(&self.config, password)
     }
 
     /// Verify a password against a hash

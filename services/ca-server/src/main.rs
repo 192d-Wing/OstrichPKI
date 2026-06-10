@@ -116,18 +116,34 @@ async fn main() -> Result<()> {
     // - NIAP PP-CA: FMT_SMF.1 - CA initialization is a security management function
     let ca = bootstrap_ca(&args, &db_pool).await?;
 
+    // Authentication: database-backed password provider (argon2id) with
+    // failed-attempt lockout and bearer-token sessions. The users table is
+    // provisioned via `ostrich-init --admin-username/--admin-password`.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: IA-2 (Identification and Authentication)
+    // - NIST 800-53: IA-5(1) (Password-based Authentication, Argon2id)
+    // - NIST 800-53: AC-7 (Unsuccessful Logon Attempts) - lockout
+    // - NIAP PP-CA: FIA_UAU.1 / FIA_AFL.1
+    //
+    // POAM: sessions are in-memory (SessionManager); they do not survive a
+    // restart and do not replicate across instances. Persistent/shared
+    // session storage is a follow-up.
+    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> =
+        Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
+            Arc::new(ostrich_db::repository::DbUserRepository::new(
+                db_pool.clone(),
+            )),
+            Arc::new(ostrich_common::auth::AuthLockout::new(
+                ostrich_common::auth::LockoutConfig::default(),
+            )),
+            Arc::new(ostrich_common::auth::SessionManager::new(
+                ostrich_common::auth::SessionConfig::default(),
+            )),
+        ));
+
     let app = match &ca {
         Some(ca) => {
-            // Authentication: fail-closed placeholder until a real provider
-            // (password DB, mTLS, OIDC) is wired in. All protected endpoints
-            // return 401. Same pattern as scms-server.
-            // NIST 800-53: AC-3 - fail-closed access enforcement
-            tracing::warn!(
-                "CA REST API is running with DisabledAuthProvider: protected endpoints \
-                 return 401 until a real AuthProvider is configured"
-            );
-            let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> =
-                Arc::new(ostrich_common::auth::DisabledAuthProvider::new());
             let rbac_policy = Arc::new(ostrich_common::auth::RbacPolicy::new());
 
             // Approval workflow (NIAP PP-CA FDP_CER_EXT.3: issuance requires approval)
@@ -163,7 +179,7 @@ async fn main() -> Result<()> {
 
             ostrich_ca::rest::create_router(
                 ca.clone(),
-                auth_provider,
+                auth_provider.clone(),
                 rbac_policy,
                 approval_engine,
                 approval_repo,
@@ -180,6 +196,10 @@ async fn main() -> Result<()> {
                 .route("/ready", get(readiness_check))
         }
     };
+
+    // Session API (login/logout). Public by necessity; brute-force is
+    // mitigated by the provider's lockout (AC-7 / FIA_AFL.1).
+    let app = app.merge(ostrich_common::auth::auth_routes(auth_provider));
 
     // Parse REST address
     let rest_addr: SocketAddr = args

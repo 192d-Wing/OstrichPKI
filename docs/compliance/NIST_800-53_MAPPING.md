@@ -793,29 +793,49 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system uniquely identifies and authenticates organizational users.
 
-**Implementation Status:** 🔴 **Not Implemented**
+**Implementation Status:** ✅ **Implemented (password-based)**
 
 **NIAP Mapping:**
 
 - FIA_UAU_EXT.1 - Authentication Mechanism
 - FIA_UIA_EXT.1 - User Identification and Authentication
+- FIA_AFL.1 - Authentication Failure Handling
 
 **Implementation:**
 
-- None
+- `crates/ostrich-common/src/auth/password.rs` - `PasswordAuthProvider`:
+  Argon2id verification (RFC 9106), account-status enforcement, lockout
+  integration, bearer-token sessions
+- `crates/ostrich-db/src/repository/users.rs` - `DbUserRepository` against the
+  `users` table (migration 00003): unique UUID identifiers (FIA_UID.1),
+  failed-attempt counter with atomic 15-minute lock at 5 failures (AC-7)
+- `crates/ostrich-common/src/auth/routes.rs` - shared
+  `POST /api/v1/auth/login` / `logout` endpoints; error responses do not
+  enumerate accounts (SI-11)
+- Wired into ca-server and scms-server (replaces the fail-closed
+  `DisabledAuthProvider` placeholder)
+- Initial Administrator provisioned via
+  `ostrich-init --admin-username/--admin-password` (CM-6: the previous
+  hardcoded seed user was removed from migration 00003)
+- **Live evidence**: login → 200 + token; no token → 401; Administrator
+  token on `GET /api/v1/profiles` → 200 (ViewConfig); same token on
+  `POST /api/v1/certificates` → 403 (AC-5 separation of duties); 5 bad
+  passwords → locked (403, timed); logout → token invalid (401)
 
 **Gaps:**
 
-- No user authentication system
-- No unique user identifiers
+- Certificate-based (mTLS) user authentication: provider exists but subject
+  DN extraction is a placeholder
+- Multi-factor authentication for privileged users
+- Sessions are in-memory per service (POAM: persistent/shared session store)
 
-**Remediation:** Phase 16 - Implement password and certificate-based authentication
+**Remediation:** mTLS DN extraction + MFA tracked as follow-ups
 
 **Evidence Required for ATO:**
 
-- Authentication mechanism description
-- User identification procedures
-- Multi-factor authentication for privileged users
+- ✅ Authentication mechanism description (this section + code references)
+- ✅ User identification procedures (unique UUIDs, ostrich-init provisioning)
+- ⏳ Multi-factor authentication for privileged users
 
 ---
 

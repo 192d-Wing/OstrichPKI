@@ -196,30 +196,10 @@ CREATE TRIGGER trigger_users_updated_at
     EXECUTE FUNCTION update_users_updated_at();
 
 -- ============================================================================
--- Seed Data (Development/Testing)
+-- Seed Data
 -- ============================================================================
-
--- Default admin user (password: 'admin', Argon2id hash)
--- WARNING: Change password in production!
--- This is the Argon2id hash for 'admin' with default parameters
-INSERT INTO users (username, display_name, password_hash, roles, status)
-VALUES (
-    'admin',
-    'Default Administrator',
-    '$argon2id$v=19$m=19456,t=2,p=1$aB3cD4eF5gH6iJ7kL8mN9oP0qR1sT2u$vW3xY4zA5bC6dD7eE8fF9gG0hH1iI2j',
-    ARRAY['administrator'],
-    'active'
-)
-ON CONFLICT (username) DO NOTHING;
-
--- Default auditor user (certificate-only auth)
--- Must configure certificate_subject DN after first login
-INSERT INTO users (username, display_name, certificate_subject, roles, status)
-VALUES (
-    'auditor',
-    'Default Auditor',
-    'CN=auditor,OU=Auditors,O=OstrichPKI,C=US',
-    ARRAY['auditor'],
-    'active'
-)
-ON CONFLICT (username) DO NOTHING;
+-- NOTE: an earlier revision seeded a default 'admin' user here with a
+-- hardcoded (and structurally invalid) Argon2 hash. Hardcoded credentials
+-- violate NIST 800-53 CM-6 / IA-5; the initial Administrator account is now
+-- provisioned explicitly via `ostrich-init --admin-username/--admin-password`
+-- (or the SCMS/CA user-management APIs once an administrator exists).
