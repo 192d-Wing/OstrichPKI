@@ -18,6 +18,10 @@
 //!
 //! Gated on DATABASE_URL + PKCS11_MODULE_PATH + PKCS11_SLOT + PKCS11_PIN; skips
 //! (passes) when they are not set, so the normal `cargo test` run is unaffected.
+//!
+//! Run live with `--test-threads=1`: this and the issuance_aia_e2e test share
+//! the database and the SoftHSM token, and two PKCS#11 providers opened against
+//! the same module concurrently can crash.
 
 use std::path::Path;
 

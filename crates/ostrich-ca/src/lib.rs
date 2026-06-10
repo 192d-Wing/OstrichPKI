@@ -37,6 +37,8 @@ pub mod revocation;
 
 #[cfg(test)]
 mod audit_signing_e2e;
+#[cfg(test)]
+mod issuance_aia_e2e;
 
 pub use approval::{ApprovalEngine, ApprovalRequest, ApprovalStatus, RequestType};
 pub use ca::CertificateAuthority;

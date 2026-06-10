@@ -231,6 +231,13 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
   at the public CRL endpoint when the CA is configured with a public CRL URL:
   - [issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - `set_crl_distribution_url` + `add_crl_distribution_point` in `issue`
   - [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs) - `--crl-distribution-url` / `CA_CRL_URL`
+- ✅ §4.2.2.1 - Issued leaves carry an **Authority Information Access** extension
+  (id-ad-ocsp + id-ad-caIssuers) so relying parties can discover the OCSP
+  responder and fetch the issuing CA certificate, when the CA is configured with
+  those URLs:
+  - [issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - `set_ocsp_responder_url` / `set_ca_issuers_url` + `add_authority_info_access` in `issue`
+  - [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs) - `--ocsp-responder-url` / `CA_OCSP_URL`, `--ca-issuers-url` / `CA_ISSUERS_URL`
+  - **Live proof (openssl)**: [crates/ostrich-ca/src/issuance_aia_e2e.rs](../../crates/ostrich-ca/src/issuance_aia_e2e.rs) issues a leaf through the real issuer and asserts `openssl x509 -text` shows the AIA extension with both URIs.
 
 **Gaps:**
 

@@ -174,6 +174,24 @@ impl CertificateAuthority {
         self.issuer.set_crl_distribution_url(url);
     }
 
+    /// Set the OCSP responder URL embedded into issued certificates (AIA).
+    ///
+    /// RFC 5280 §4.2.2.1 / RFC 6960 - issued leaves gain an Authority
+    /// Information Access extension with an id-ad-ocsp accessDescription so
+    /// relying parties can discover the OCSP responder.
+    /// NIAP PP-CA: FMT_SMF.1 - certificate status discovery configuration.
+    pub fn set_ocsp_responder_url(&mut self, url: impl Into<String>) {
+        self.issuer.set_ocsp_responder_url(url);
+    }
+
+    /// Set the CA Issuers URL embedded into issued certificates (AIA).
+    ///
+    /// RFC 5280 §4.2.2.1 - id-ad-caIssuers accessDescription pointing relying
+    /// parties at the issuing CA certificate for chain building.
+    pub fn set_ca_issuers_url(&mut self, url: impl Into<String>) {
+        self.issuer.set_ca_issuers_url(url);
+    }
+
     /// Get the certificate issuer
     ///
     /// NIAP PP-CA: FMT_SMF.1.1 - Access certificate issuance security function

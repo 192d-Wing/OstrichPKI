@@ -140,6 +140,19 @@ pub struct CertificateIssuer {
     /// RFC 5280 §4.2.1.13 - when set, issued leaves carry a CRL Distribution
     /// Points extension pointing relying parties at the public GET CRL endpoint.
     crl_distribution_url: Option<String>,
+
+    /// Public OCSP responder URL embedded into issued certificates.
+    ///
+    /// RFC 5280 §4.2.2.1 / RFC 6960 - when set, issued leaves carry an Authority
+    /// Information Access extension with an `id-ad-ocsp` accessDescription so
+    /// relying parties can discover the OCSP responder for revocation checking.
+    ocsp_responder_url: Option<String>,
+
+    /// CA Issuers URL embedded into issued certificates' AIA extension.
+    ///
+    /// RFC 5280 §4.2.2.1 - `id-ad-caIssuers` accessDescription pointing relying
+    /// parties at the issuing CA certificate (for chain building).
+    ca_issuers_url: Option<String>,
 }
 
 impl CertificateIssuer {
@@ -162,6 +175,8 @@ impl CertificateIssuer {
             approval_repo: None,
             approval_config: ApprovalConfig::default(),
             crl_distribution_url: None,
+            ocsp_responder_url: None,
+            ca_issuers_url: None,
         }
     }
 
@@ -191,6 +206,8 @@ impl CertificateIssuer {
             approval_repo: Some(approval_repo),
             approval_config,
             crl_distribution_url: None,
+            ocsp_responder_url: None,
+            ca_issuers_url: None,
         }
     }
 
@@ -242,6 +259,31 @@ impl CertificateIssuer {
     /// (e.g. `https://ca.example.com/api/v1/crl`).
     pub fn set_crl_distribution_url(&mut self, url: impl Into<String>) {
         self.crl_distribution_url = Some(url.into());
+    }
+
+    /// Set the OCSP responder URL embedded into issued certificates (AIA).
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - RFC 5280 §4.2.2.1 / RFC 6960 - id-ad-ocsp accessDescription
+    /// - NIST 800-53: SC-17 - PKI certificate status (lets relying parties
+    ///   discover the OCSP responder for revocation checking)
+    ///
+    /// Should be the externally reachable URL of the OCSP responder
+    /// (e.g. `http://ocsp.example.com`).
+    pub fn set_ocsp_responder_url(&mut self, url: impl Into<String>) {
+        self.ocsp_responder_url = Some(url.into());
+    }
+
+    /// Set the CA Issuers URL embedded into issued certificates (AIA).
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - RFC 5280 §4.2.2.1 - id-ad-caIssuers accessDescription (points relying
+    ///   parties at the issuing CA certificate for chain building)
+    ///
+    /// Should be the externally reachable URL serving the CA certificate
+    /// (e.g. `http://ca.example.com/api/v1/ca-certificate`).
+    pub fn set_ca_issuers_url(&mut self, url: impl Into<String>) {
+        self.ca_issuers_url = Some(url.into());
     }
 
     /// Issue a certificate
@@ -503,6 +545,25 @@ impl CertificateIssuer {
         if let Some(crl_url) = &self.crl_distribution_url {
             builder = builder.add_crl_distribution_point(
                 ostrich_x509::extensions::CrlDistributionPoint::new(crl_url.clone()),
+            );
+        }
+
+        // COMPLIANCE MAPPING:
+        // - RFC 5280 §4.2.2.1 / RFC 6960 - Authority Information Access: point
+        //   relying parties at the OCSP responder (id-ad-ocsp) so they can check
+        //   revocation status, and at the issuing CA cert (id-ad-caIssuers) for
+        //   chain building.
+        // - NIST 800-53: SC-17 - PKI certificate status discovery
+        //
+        // Each accessDescription is emitted only when its URL is configured.
+        if let Some(ocsp_url) = &self.ocsp_responder_url {
+            builder = builder.add_authority_info_access(
+                ostrich_x509::extensions::AuthorityInfoAccess::Ocsp(ocsp_url.clone()),
+            );
+        }
+        if let Some(ca_issuers_url) = &self.ca_issuers_url {
+            builder = builder.add_authority_info_access(
+                ostrich_x509::extensions::AuthorityInfoAccess::CaIssuers(ca_issuers_url.clone()),
             );
         }
 

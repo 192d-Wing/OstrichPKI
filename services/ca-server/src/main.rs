@@ -63,6 +63,21 @@ struct Args {
     #[arg(long, env = "CA_CRL_URL")]
     crl_distribution_url: Option<String>,
 
+    /// Public OCSP responder URL embedded into the Authority Information Access
+    /// extension of every issued certificate (RFC 5280 §4.2.2.1 / RFC 6960) so
+    /// relying parties can discover the OCSP responder for revocation checking.
+    /// e.g. http://ocsp.example.com
+    /// NIST 800-53: SC-17 - PKI certificate status distribution
+    #[arg(long, env = "CA_OCSP_URL")]
+    ocsp_responder_url: Option<String>,
+
+    /// Public CA Issuers URL embedded into the Authority Information Access
+    /// extension of every issued certificate (RFC 5280 §4.2.2.1, id-ad-caIssuers)
+    /// so relying parties can fetch the issuing CA certificate for chain building.
+    /// e.g. http://ca.example.com/api/v1/ca-certificate
+    #[arg(long, env = "CA_ISSUERS_URL")]
+    ca_issuers_url: Option<String>,
+
     /// Require an approved request for every issuance (NIAP FDP_CER_EXT.3).
     /// Set to false for automated pipelines (e.g. ACME, dev/E2E) where
     /// challenge validation serves as the approval.
@@ -408,6 +423,25 @@ async fn bootstrap_ca(
             "CA_CRL_URL not set: issued certificates will NOT carry a CRL \
              Distribution Points extension (RFC 5280 §4.2.1.13)."
         );
+    }
+
+    // Authority Information Access (RFC 5280 §4.2.2.1 / RFC 6960): embed the
+    // OCSP responder and CA Issuers URLs so relying parties can discover the
+    // OCSP responder and fetch the issuing CA certificate.
+    // NIST 800-53: SC-17 - PKI certificate status distribution.
+    if let Some(ocsp_url) = &args.ocsp_responder_url {
+        tracing::info!(ocsp_url = %ocsp_url, "Embedding AIA OCSP responder URL in issued certificates");
+        ca.set_ocsp_responder_url(ocsp_url.clone());
+    } else {
+        tracing::warn!(
+            "CA_OCSP_URL not set: issued certificates will NOT carry an AIA OCSP \
+             accessDescription (RFC 5280 §4.2.2.1); relying parties cannot \
+             auto-discover the OCSP responder."
+        );
+    }
+    if let Some(ca_issuers_url) = &args.ca_issuers_url {
+        tracing::info!(ca_issuers_url = %ca_issuers_url, "Embedding AIA CA Issuers URL in issued certificates");
+        ca.set_ca_issuers_url(ca_issuers_url.clone());
     }
 
     tracing::info!(
