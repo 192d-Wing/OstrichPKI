@@ -32,6 +32,10 @@ path = "integration/csr_parsing_test.rs"
 name = "acme_full_flow_test"
 path = "integration/acme_full_flow_test.rs"
 
+[[test]]
+name = "est_serverkeygen_e2e"
+path = "integration/est_serverkeygen_e2e.rs"
+
 [dependencies]
 # OstrichPKI crates
 ostrich-common = { path = "../crates/ostrich-common" }
@@ -39,6 +43,13 @@ ostrich-crypto = { path = "../crates/ostrich-crypto" }
 ostrich-db = { path = "../crates/ostrich-db" }
 ostrich-protocol = { path = "../crates/ostrich-protocol" }
 ostrich-x509 = { path = "../crates/ostrich-x509" }
+ostrich-ca = { path = "../crates/ostrich-ca" }
+ostrich-est = { path = "../crates/ostrich-est" }
+ostrich-audit = { path = "../crates/ostrich-audit" }
+axum = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+pem-rfc7468 = { workspace = true }
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
@@ -69,3 +80,4 @@ rand = "0.8"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 hex = "0.4"
 x509-parser = { workspace = true }
+sqlx = { workspace = true }

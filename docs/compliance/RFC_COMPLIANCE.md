@@ -818,6 +818,13 @@ RFC 5958) and the certificate (`application/pkcs7-mime`, certs-only). The
 private key is exported via `CryptoProvider::export_private_key` (software
 provider only) and zeroized after the response is built.
 
+**Live full-stack proof:** [tests/integration/est_serverkeygen_e2e.rs](../../tests/integration/est_serverkeygen_e2e.rs)
+spins up the CA gRPC service (SoftHSM-backed) and the EST HTTP server in-process,
+POSTs a CSR to `/.well-known/est/serverkeygen` over real HTTP, and verifies with
+`openssl` that the returned PKCS#8 private key's public key matches the public
+key of the returned (PKCS#7) certificate — i.e. the server delivered a key pair
+plus a CA-issued certificate for it, end to end.
+
 **Sections:**
 
 #### §3.1: EST Functions
