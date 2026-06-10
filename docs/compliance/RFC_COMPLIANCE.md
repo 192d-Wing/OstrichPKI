@@ -183,8 +183,9 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
 
 - ✅ §5.2.1 - **Authority Key Identifier**: Links CRL to issuing CA's public key, DER encoded with KeyIdentifier
 - ✅ §5.2.3 - **CRL Number** (CRITICAL): Monotonically increasing integer for CRL versioning, properly encoded as INTEGER wrapped in OCTET STRING
-- ⚪ §5.2.4 - **Delta CRL Indicator**: Not implemented (selection-based, rarely used)
-- ⚪ §5.2.5 - **Issuing Distribution Point**: Not implemented (for indirect CRLs, rarely needed)
+- ✅ §5.2.4 - **Delta CRL Indicator**: emitted (critical) by `CrlBuilder::delta_crl_indicator(base)`; openssl-verified
+- ✅ §5.2.5 - **Issuing Distribution Point**: emitted (critical, indirectCRL) by `CrlBuilder::indirect_crl()`; openssl-verified
+- ✅ §5.2.6 - **Freshest CRL**: emitted by `CrlBuilder::freshest_crl(url)` to locate the delta CRL; openssl-verified
 
 **CRL Entry Extensions (§5.3):**
 
@@ -241,10 +242,13 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
 
 **Gaps:**
 
-- ⚪ Delta CRL support (§5.2.4 - selection-based, not required for basic operation)
-- ⚪ Indirect CRL support (§5.2.5, §5.3.3 - rarely needed, complex)
+- ✅ Delta CRL extension encoding (§5.2.4 Delta CRL Indicator, §5.2.6 Freshest CRL) — `CrlBuilder`, openssl-verified
+- ✅ Indirect CRL marking (§5.2.5 Issuing Distribution Point, indirectCRL) — `CrlBuilder::indirect_crl()`
+- ⚪ CA-level delta-CRL *generation lifecycle* (issue a delta listing entries since a base CRL, persist/serve it, and emit a Freshest CRL pointer on the full CRL) — follow-up; the X.509 building blocks are in place
+- ⚪ §5.3.3 Certificate Issuer entry extension (per-entry issuer for indirect CRLs) — rarely needed
 
-**Remediation:** Delta/indirect CRLs deferred (optional, low priority)
+**Remediation:** delta/indirect CRL *extensions* implemented in the builder; the
+CA generation cadence for deltas is a scoped follow-up.
 
 ---
 

@@ -25,6 +25,15 @@ pub struct CrlBuilder {
     /// Signature algorithm the issuing CA will sign with (RFC 5280 §5.1.1.2).
     /// When unset, falls back to the historical sha256WithRSAEncryption default.
     signature_algorithm: Option<ostrich_crypto::Algorithm>,
+    /// Base CRL number this is a delta against (RFC 5280 §5.2.4). When set, the
+    /// CRL is a delta CRL carrying a critical Delta CRL Indicator extension.
+    base_crl_number: Option<u64>,
+    /// URL of the delta CRL distribution point, emitted as the Freshest CRL
+    /// extension on a full (base) CRL (RFC 5280 §5.2.6).
+    freshest_crl_url: Option<String>,
+    /// Mark the CRL as an indirect CRL via the Issuing Distribution Point
+    /// extension (RFC 5280 §5.2.5).
+    indirect_crl: bool,
 }
 
 impl CrlBuilder {
@@ -38,7 +47,31 @@ impl CrlBuilder {
             revoked_certificates: Vec::new(),
             authority_key_id: None,
             signature_algorithm: None,
+            base_crl_number: None,
+            freshest_crl_url: None,
+            indirect_crl: false,
         }
+    }
+
+    /// Mark this as a delta CRL relative to `base_crl_number` (RFC 5280 §5.2.4).
+    /// Emits a critical Delta CRL Indicator extension carrying the BaseCRLNumber.
+    pub fn delta_crl_indicator(mut self, base_crl_number: u64) -> Self {
+        self.base_crl_number = Some(base_crl_number);
+        self
+    }
+
+    /// Set the delta CRL distribution URL, emitted as the Freshest CRL extension
+    /// on a full CRL so relying parties can locate the delta (RFC 5280 §5.2.6).
+    pub fn freshest_crl(mut self, url: impl Into<String>) -> Self {
+        self.freshest_crl_url = Some(url.into());
+        self
+    }
+
+    /// Mark this CRL as an indirect CRL (RFC 5280 §5.2.5): emits a critical
+    /// Issuing Distribution Point extension with the indirectCRL flag set.
+    pub fn indirect_crl(mut self) -> Self {
+        self.indirect_crl = true;
+        self
     }
 
     /// Set issuer DN
@@ -136,6 +169,9 @@ impl CrlBuilder {
             revoked_certificates: self.revoked_certificates,
             authority_key_id: self.authority_key_id,
             signature_algorithm: self.signature_algorithm,
+            base_crl_number: self.base_crl_number,
+            freshest_crl_url: self.freshest_crl_url,
+            indirect_crl: self.indirect_crl,
         })
     }
 }
@@ -171,6 +207,12 @@ pub struct TbsCrl {
     /// Signature algorithm chosen by the issuer (RFC 5280 §5.1.1.2). When
     /// `None`, [`TbsCrl::get_signature_algorithm`] uses the RSA default.
     pub signature_algorithm: Option<ostrich_crypto::Algorithm>,
+    /// Base CRL number for a delta CRL (RFC 5280 §5.2.4).
+    pub base_crl_number: Option<u64>,
+    /// Delta CRL distribution URL for the Freshest CRL extension (§5.2.6).
+    pub freshest_crl_url: Option<String>,
+    /// Whether this is an indirect CRL (§5.2.5 Issuing Distribution Point).
+    pub indirect_crl: bool,
 }
 
 impl TbsCrl {
@@ -471,9 +513,74 @@ impl TbsCrl {
             extensions.push(ext);
         }
 
-        // RFC 5280 §5.2.5 - Issuing Distribution Point (optional but recommended)
-        // Indicates scope of the CRL (which certificates this CRL covers)
-        // For now, we'll skip this as it requires more complex configuration
+        // RFC 5280 §5.2.4 - Delta CRL Indicator (critical). Carries the
+        // BaseCRLNumber: the CRL number of the full CRL this delta is relative to.
+        if let Some(base) = self.base_crl_number {
+            use x509_cert::ext::pkix::crl::BaseCrlNumber;
+
+            let base_num = der::asn1::Uint::new(&base.to_be_bytes())
+                .map_err(|e| Error::Encoding(format!("Invalid base CRL number: {}", e)))?;
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_DELTA_CRL_INDICATOR,
+                critical: true, // RFC 5280 §5.2.4: the delta CRL indicator is critical
+                extn_value: OctetString::new(BaseCrlNumber(base_num).to_der().map_err(|e| {
+                    Error::Encoding(format!("Failed to encode delta CRL indicator: {}", e))
+                })?)?,
+            };
+            extensions.push(ext);
+        }
+
+        // RFC 5280 §5.2.6 - Freshest CRL: where to find the delta CRL. Same
+        // syntax as CRL Distribution Points; placed on the full (base) CRL.
+        if let Some(url) = &self.freshest_crl_url {
+            use der::asn1::Ia5StringRef;
+            use x509_cert::ext::pkix::FreshestCrl;
+            use x509_cert::ext::pkix::crl::dp::DistributionPoint;
+            use x509_cert::ext::pkix::name::{DistributionPointName, GeneralName};
+
+            let gn = GeneralName::UniformResourceIdentifier(
+                Ia5StringRef::new(url)
+                    .map_err(|e| Error::Encoding(format!("Invalid freshest CRL URI: {}", e)))?
+                    .into(),
+            );
+            let dp = DistributionPoint {
+                distribution_point: Some(DistributionPointName::FullName(vec![gn])),
+                reasons: None,
+                crl_issuer: None,
+            };
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_FRESHEST_CRL,
+                critical: false, // RFC 5280 §5.2.6: freshest CRL is non-critical
+                extn_value: OctetString::new(FreshestCrl(vec![dp]).to_der().map_err(|e| {
+                    Error::Encoding(format!("Failed to encode freshest CRL: {}", e))
+                })?)?,
+            };
+            extensions.push(ext);
+        }
+
+        // RFC 5280 §5.2.5 - Issuing Distribution Point (critical) marking an
+        // indirect CRL: one whose entries may be for certificates issued by an
+        // authority other than the CRL issuer.
+        if self.indirect_crl {
+            use x509_cert::ext::pkix::crl::dp::IssuingDistributionPoint;
+
+            let idp = IssuingDistributionPoint {
+                distribution_point: None,
+                only_contains_user_certs: false,
+                only_contains_ca_certs: false,
+                only_some_reasons: None,
+                indirect_crl: true,
+                only_contains_attribute_certs: false,
+            };
+            let ext = Extension {
+                extn_id: rfc5280::ID_CE_ISSUING_DISTRIBUTION_POINT,
+                critical: true, // RFC 5280 §5.2.5: IDP is critical
+                extn_value: OctetString::new(idp.to_der().map_err(|e| {
+                    Error::Encoding(format!("Failed to encode IDP: {}", e))
+                })?)?,
+            };
+            extensions.push(ext);
+        }
 
         if extensions.is_empty() {
             Ok(None)
@@ -519,5 +626,81 @@ mod tests {
 
         let result = builder.build_tbs();
         assert!(result.is_err());
+    }
+
+    /// A delta CRL built with the new extensions is parsed by openssl, which
+    /// reports the Delta CRL Indicator, Freshest CRL, and Issuing Distribution
+    /// Point (indirect) extensions — RFC 5280 §5.2.4 / §5.2.5 / §5.2.6.
+    #[tokio::test]
+    async fn delta_crl_extensions_verified_by_openssl() {
+        use ostrich_crypto::{Algorithm, CryptoProvider, KeyType, software::SoftwareProvider};
+        use std::io::Write as _;
+        use std::process::Command;
+
+        if Command::new("openssl").arg("version").output().is_err() {
+            eprintln!("openssl not found; skipping");
+            return;
+        }
+
+        let provider = SoftwareProvider::new();
+        let key = provider
+            .generate_key_pair(KeyType::EcP256, "crl-key", true)
+            .await
+            .unwrap();
+        let alg = Algorithm::EcdsaP256Sha256;
+
+        let tbs = CrlBuilder::new()
+            .issuer(DistinguishedName::new_cn("OstrichPKI Delta CRL Test CA"))
+            .this_update(Utc::now())
+            .next_update_hours(24)
+            .crl_number(7)
+            .delta_crl_indicator(5)
+            .freshest_crl("http://crl.example.com/delta.crl")
+            .indirect_crl()
+            .add_revoked(
+                vec![0x12, 0x34],
+                Utc::now(),
+                Some(RevocationReason::KeyCompromise),
+            )
+            .signature_algorithm(alg)
+            .build_tbs()
+            .unwrap();
+        let tbs_der = tbs.to_der().unwrap();
+        let raw = provider.sign(&key, alg, &tbs_der).await.unwrap();
+        let sig = crate::signing::encode_x509_signature(alg, raw).unwrap();
+
+        let crl_der = {
+            use der::{Decode, Encode, asn1::BitString};
+            use x509_cert::crl::{CertificateList, TbsCertList};
+            let tbs = TbsCertList::from_der(&tbs_der).unwrap();
+            let signature_algorithm = tbs.signature.clone();
+            CertificateList {
+                tbs_cert_list: tbs,
+                signature_algorithm,
+                signature: BitString::from_bytes(&sig).unwrap(),
+            }
+            .to_der()
+            .unwrap()
+        };
+
+        let path = std::env::temp_dir().join("ostrich-delta-crl-test.crl");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&crl_der)
+            .unwrap();
+        let out = Command::new("openssl")
+            .args(["crl", "-inform", "DER", "-in", path.to_str().unwrap(), "-text", "-noout"])
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "openssl crl failed: {}", String::from_utf8_lossy(&out.stderr));
+
+        assert!(text.contains("Delta CRL Indicator"), "missing delta indicator:\n{text}");
+        assert!(text.contains("Freshest CRL"), "missing freshest CRL:\n{text}");
+        assert!(
+            text.contains("Issuing Distribution Point"),
+            "missing IDP:\n{text}"
+        );
     }
 }
