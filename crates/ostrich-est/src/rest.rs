@@ -68,7 +68,16 @@ pub struct EstState {
     pub auth_provider: Arc<dyn AuthProvider>,
     #[allow(dead_code)]
     pub rbac_policy: Arc<RbacPolicy>,
-    // TODO: Add CA client for certificate issuance (Phase 12)
+    /// CA gRPC client for certificate issuance (RFC 7030 §4.2).
+    ///
+    /// When `None`, enrollment fails closed (no fake certificate is returned).
+    /// NIST 800-53: SI-17 - Fail-secure when CA integration is unavailable.
+    pub ca_client: Option<Arc<crate::ca_integration::EstCaClient>>,
+    /// CA certificate DER, served by `/cacerts` (RFC 7030 §4.1).
+    pub ca_certificate_der: Option<Vec<u8>>,
+    /// Certificate profile used for enrollment/re-enrollment (RFC 7030 §4.2).
+    /// NIST 800-53: CM-6 - Configurable issuance profile (secure default).
+    pub enroll_profile: String,
 }
 
 impl EstState {
@@ -152,6 +161,9 @@ impl EstState {
             audit_sink,
             auth_provider: StdArc::new(NoAuthProvider),
             rbac_policy: StdArc::new(RbacPolicy::new()),
+            ca_client: None,
+            ca_certificate_der: None,
+            enroll_profile: "tls_client".to_string(),
         }
     }
 
@@ -169,7 +181,32 @@ impl EstState {
             audit_sink,
             auth_provider,
             rbac_policy,
+            ca_client: None,
+            ca_certificate_der: None,
+            enroll_profile: "tls_client".to_string(),
         }
+    }
+
+    /// Attach the CA gRPC client and CA certificate used for issuance.
+    ///
+    /// RFC 7030 §4.1 / §4.2 - CA certificate distribution and certificate issuance.
+    /// NIST 800-53: SC-17 - PKI certificate issuance via CA service.
+    pub fn with_ca(
+        mut self,
+        ca_client: Option<Arc<crate::ca_integration::EstCaClient>>,
+        ca_certificate_der: Option<Vec<u8>>,
+    ) -> Self {
+        self.ca_client = ca_client;
+        self.ca_certificate_der = ca_certificate_der;
+        self
+    }
+
+    /// Override the certificate profile used for enrollment.
+    ///
+    /// NIST 800-53: CM-6 - Configuration settings (secure default "tls_client").
+    pub fn with_profile(mut self, profile_name: impl Into<String>) -> Self {
+        self.enroll_profile = profile_name.into();
+        self
     }
 }
 
@@ -198,39 +235,42 @@ pub fn create_router(state: EstState) -> Router {
         // RFC 7030 §4.5: CSR attributes - optionally requires auth
         .route("/.well-known/est/csrattrs", get(get_csr_attrs));
 
-    // Protected endpoints requiring mTLS client authentication
-    // RFC 7030 §3.2.3: All enrollment operations require client authentication
+    // Per-permission authorization, applied to each MethodRouter individually.
+    //
+    // IMPORTANT: the permission layer must wrap the per-route MethodRouter
+    // (`post(handler).route_layer(...)`), NOT be chained via
+    // `Router::route_layer` between `.route(...)` calls. Router::route_layer
+    // wraps every route added so far, so the chained style stacked
+    // /simplereenroll's RenewCertificate check onto /simpleenroll - a RaStaff
+    // caller (who has SubmitRequest but not RenewCertificate) then got 403 on
+    // enrollment. Same bug, and same fix, as ostrich-ca's router.
+    //
+    // NIST 800-53: AC-3 (Access Enforcement) - exactly one permission per route.
+    let authz = |permission: Permission, resource: &str| {
+        middleware::from_fn_with_state(
+            (rbac_policy.clone(), permission, Some(resource.to_string())),
+            AuthzLayer::authorize,
+        )
+    };
+
+    // Protected endpoints. RFC 7030 §3.2.3: enrollment requires client auth.
     let protected_routes = Router::new()
-        // RFC 7030 §4.2.1: Simple enrollment (requires client cert)
-        .route("/.well-known/est/simpleenroll", post(simple_enroll))
-        .route_layer(middleware::from_fn_with_state(
-            (
-                rbac_policy.clone(),
-                Permission::SubmitRequest,
-                Some("est-enrollment".to_string()),
-            ),
-            AuthzLayer::authorize,
-        ))
-        // RFC 7030 §4.2.2: Simple re-enrollment (requires existing client cert)
-        .route("/.well-known/est/simplereenroll", post(simple_reenroll))
-        .route_layer(middleware::from_fn_with_state(
-            (
-                rbac_policy.clone(),
-                Permission::RenewCertificate,
-                Some("est-reenrollment".to_string()),
-            ),
-            AuthzLayer::authorize,
-        ))
-        // RFC 7030 §4.4: Server-side key generation (requires client auth)
-        .route("/.well-known/est/serverkeygen", post(server_key_gen))
-        .route_layer(middleware::from_fn_with_state(
-            (
-                rbac_policy.clone(),
-                Permission::SubmitRequest,
-                Some("est-serverkeygen".to_string()),
-            ),
-            AuthzLayer::authorize,
-        ))
+        // RFC 7030 §4.2.1: Simple enrollment - Permission::SubmitRequest
+        .route(
+            "/.well-known/est/simpleenroll",
+            post(simple_enroll).route_layer(authz(Permission::SubmitRequest, "est-enrollment")),
+        )
+        // RFC 7030 §4.2.2: Simple re-enrollment - Permission::RenewCertificate
+        .route(
+            "/.well-known/est/simplereenroll",
+            post(simple_reenroll)
+                .route_layer(authz(Permission::RenewCertificate, "est-reenrollment")),
+        )
+        // RFC 7030 §4.4: Server-side key generation - Permission::SubmitRequest
+        .route(
+            "/.well-known/est/serverkeygen",
+            post(server_key_gen).route_layer(authz(Permission::SubmitRequest, "est-serverkeygen")),
+        )
         .layer(middleware::from_fn_with_state(
             auth_provider,
             AuthLayer::authenticate,
@@ -276,11 +316,18 @@ async fn readiness_check(State(state): State<EstState>) -> impl IntoResponse {
 /// - NIST 800-53: SC-17 - PKI certificate distribution
 /// - RFC 7030 S4.1 - CA certificate retrieval
 async fn get_ca_certs(State(state): State<EstState>) -> Result<Response> {
-    // TODO: Fetch CA certificate chain from database (Phase 12 - CA integration)
-    // For now, create empty PKCS#7 certs-only structure
-    let _repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
-
-    let pkcs7_der = encode_certs_only_pkcs7(&[])?;
+    // RFC 7030 §4.1 - Return the CA certificate(s) as a degenerate PKCS#7.
+    // When no CA certificate is configured we fail safe by returning an empty
+    // (but valid) PKCS#7 so clients receive a well-formed response.
+    let pkcs7_der = match state.ca_certificate_der.as_ref() {
+        Some(der) => encode_certs_only_pkcs7(std::slice::from_ref(der))?,
+        None => {
+            tracing::warn!(
+                "EST /cacerts: no CA certificate configured; returning empty PKCS#7"
+            );
+            encode_certs_only_pkcs7(&[])?
+        }
+    };
 
     Ok((
         StatusCode::OK,
@@ -415,14 +462,59 @@ async fn simple_enroll(
         .await
         .map_err(|e| Error::Internal(format!("Failed to create enrollment: {}", e)))?;
 
-    // TODO: Audit log enrollment creation
-    // TODO: Submit to CA for issuance - Phase 12
+    // Submit the CSR to the CA service for issuance (RFC 7030 §4.2.3).
+    // NIST 800-53: SI-17 - Fail secure: if CA integration is not configured we
+    // never fabricate a certificate; we return an error and leave the
+    // enrollment row "pending" so it can be retried once the CA is available.
+    let Some(ca_client) = state.ca_client.as_ref() else {
+        emit_enrollment_audit(
+            &state,
+            client_identifier,
+            enrollment.id,
+            "simpleenroll",
+            ostrich_audit::EventOutcome::Failure,
+        )
+        .await;
+        return Err(Error::Internal(
+            "EST CA integration not configured".to_string(),
+        ));
+    };
 
-    // For now, return empty PKCS#7 structure with 202 Accepted status
-    let pkcs7_response = encode_certs_only_pkcs7(&[])?;
+    // EstCaClient::enroll issues the certificate, records the certificate id on
+    // the est_enrollments row, and transitions the enrollment to "issued".
+    // RFC 7030 §4.2.1 - CSR forwarded to CA after proof-of-possession check.
+    let certificate_id = ca_client
+        .enroll(
+            enrollment.id,
+            &csr_der,
+            client_identifier,
+            &state.enroll_profile,
+        )
+        .await?;
+
+    // Load the issued certificate and wrap it in a certs-only PKCS#7.
+    // RFC 7030 §4.2.3 - Response is a degenerate PKCS#7 with the issued cert.
+    let cert_repo = ostrich_db::repository::CertificateRepository::new(state.db_pool.clone());
+    let certificate = cert_repo
+        .find_by_id(certificate_id)
+        .await
+        .map_err(Error::Database)?
+        .ok_or_else(|| Error::Internal("Issued certificate not found".to_string()))?;
+
+    let pkcs7_response = encode_certs_only_pkcs7(std::slice::from_ref(&certificate.der_encoded))?;
+
+    // AU-2 / FAU_GEN.1 - audit the successful enrollment.
+    emit_enrollment_audit(
+        &state,
+        client_identifier,
+        enrollment.id,
+        "simpleenroll",
+        ostrich_audit::EventOutcome::Success,
+    )
+    .await;
 
     Ok((
-        StatusCode::ACCEPTED, // 202 - enrollment pending
+        StatusCode::OK, // 200 - certificate issued
         [
             (header::CONTENT_TYPE, "application/pkcs7-mime"),
             (
@@ -433,6 +525,30 @@ async fn simple_enroll(
         BASE64_STANDARD.encode(&pkcs7_response),
     )
         .into_response())
+}
+
+/// Emit an audit record for an EST enrollment / re-enrollment operation.
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FAU_GEN.1 - Audit generation for enrollment events
+/// - NIST 800-53: AU-2 - Auditable event (enrollment request)
+/// - NIST 800-53: AU-3 - Audit content (actor, resource, outcome)
+async fn emit_enrollment_audit(
+    state: &EstState,
+    actor: &str,
+    enrollment_id: uuid::Uuid,
+    action: &str,
+    outcome: ostrich_audit::EventOutcome,
+) {
+    let mut event = ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::CertificateIssuance,
+        actor,
+        format!("est:enrollment:{}", enrollment_id),
+        action,
+        outcome,
+    )
+    .build();
+    let _ = state.audit_sink.record(&mut event).await;
 }
 
 /// Simple re-enrollment (RFC 7030 S4.2.2)
@@ -481,7 +597,9 @@ async fn simple_reenroll(
         return Err(Error::InvalidCsr("Invalid CSR signature".to_string()));
     }
 
-    // TODO: When mTLS is implemented, verify CSR subject matches client certificate subject
+    // POAM: re-enrollment does not yet verify that the CSR subject DN matches
+    // the caller's existing certificate. mTLS client-identity binding is out of
+    // scope here; once mTLS is wired, enforce subject match per RFC 7030 §4.2.2:
     // if parsed_csr.subject_dn != client_cert.subject_dn {
     //     return Err(Error::Forbidden("CSR subject doesn't match client certificate".into()));
     // }
@@ -498,14 +616,55 @@ async fn simple_reenroll(
         .await
         .map_err(|e| Error::Internal(format!("Failed to create re-enrollment: {}", e)))?;
 
-    // TODO: Audit log re-enrollment
-    // TODO: Issue new certificate with same subject via CA service - Phase 12
+    // Submit the CSR to the CA service for re-issuance (RFC 7030 §4.2.2).
+    // NIST 800-53: SI-17 - Fail secure: never fabricate a certificate when the
+    // CA integration is unavailable.
+    let Some(ca_client) = state.ca_client.as_ref() else {
+        emit_enrollment_audit(
+            &state,
+            client_identifier,
+            enrollment.id,
+            "simplereenroll",
+            ostrich_audit::EventOutcome::Failure,
+        )
+        .await;
+        return Err(Error::Internal(
+            "EST CA integration not configured".to_string(),
+        ));
+    };
 
-    // For now, return empty PKCS#7 structure with 202 Accepted status
-    let pkcs7_response = encode_certs_only_pkcs7(&[])?;
+    let certificate_id = ca_client
+        .enroll(
+            enrollment.id,
+            &csr_der,
+            client_identifier,
+            &state.enroll_profile,
+        )
+        .await?;
+
+    // Load the re-issued certificate and wrap it in a certs-only PKCS#7.
+    // RFC 7030 §4.2.3 - Degenerate PKCS#7 response with the issued certificate.
+    let cert_repo = ostrich_db::repository::CertificateRepository::new(state.db_pool.clone());
+    let certificate = cert_repo
+        .find_by_id(certificate_id)
+        .await
+        .map_err(Error::Database)?
+        .ok_or_else(|| Error::Internal("Re-issued certificate not found".to_string()))?;
+
+    let pkcs7_response = encode_certs_only_pkcs7(std::slice::from_ref(&certificate.der_encoded))?;
+
+    // AU-2 / FAU_GEN.1 - audit the successful re-enrollment.
+    emit_enrollment_audit(
+        &state,
+        client_identifier,
+        enrollment.id,
+        "simplereenroll",
+        ostrich_audit::EventOutcome::Success,
+    )
+    .await;
 
     Ok((
-        StatusCode::ACCEPTED,
+        StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/pkcs7-mime"),
             (

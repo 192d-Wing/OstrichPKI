@@ -745,7 +745,26 @@ Key corrections in this phase:
 
 ### RFC 7030: Enrollment over Secure Transport (EST)
 
-**Status:** 🟡 **Partial** (70% compliant)
+**Status:** 🟢 **Enrollment working** (simpleenroll issues real certificates)
+
+**Live evidence (Phase 16):** an EST client (authenticated bearer session,
+RaStaff role) POSTed a PKCS#10 CSR to `/.well-known/est/simpleenroll` and
+received a `200 OK` PKCS#7 (RFC 5652 certs-only SignedData) containing the
+issued certificate (subject `CN=est-client.example.com`, issuer
+`CN=OstrichPKI EST Root`), which `openssl verify` accepts against the root.
+`/.well-known/est/cacerts` returns the CA certificate as PKCS#7.
+
+The enrollment handlers now call the CA gRPC service via `EstCaClient`
+(crates/ostrich-est/src/rest.rs, services/est-server/src/main.rs) instead of
+returning an empty 202 placeholder; they fail closed when CA integration is
+unconfigured. CSR proof-of-possession uses the stateless `verify_with_spki`
+path (§4.2.1). Authorization bug fixed: chained `Router::route_layer` calls
+stacked /simplereenroll's RenewCertificate check onto /simpleenroll, 403-ing
+RaStaff enrollers; permission layers are now per-route (AC-3).
+
+POAM: simplereenroll does not yet verify the CSR subject matches the
+caller's existing certificate (mTLS identity binding); server-side keygen
+still returns a placeholder.
 
 **Sections:**
 

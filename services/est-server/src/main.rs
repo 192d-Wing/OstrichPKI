@@ -25,6 +25,16 @@ struct Args {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
 
+    /// CA gRPC endpoint for certificate issuance (RFC 7030 §4.2).
+    /// NIST 800-53: SC-17 - PKI certificate issuance via CA service.
+    #[arg(long, env = "CA_GRPC_URL")]
+    ca_grpc_url: Option<String>,
+
+    /// Certificate profile used for EST enrollment / re-enrollment.
+    /// NIST 800-53: CM-6 - Configurable issuance profile (secure default).
+    #[arg(long, env = "EST_ENROLL_PROFILE", default_value = "tls_client")]
+    enroll_profile: String,
+
     /// TLS certificate file
     #[arg(long, env = "TLS_CERT_FILE")]
     tls_cert: Option<String>,
@@ -68,14 +78,85 @@ async fn main() -> Result<()> {
     let crypto_provider = ostrich_crypto::software::SoftwareProvider::new();
     let audit_sink = ostrich_audit::DatabaseAuditSink::new(db_pool.clone());
 
-    // TODO: Initialize actual auth provider and RBAC policy from configuration
-    // For now, use the backward-compatible new() method without auth
-    // Production deployments should use new_with_auth() with proper authentication
-    let state =
-        ostrich_est::rest::EstState::new(db_pool, Arc::new(crypto_provider), Arc::new(audit_sink));
+    // Authentication: database-backed password provider (argon2id) with
+    // failed-attempt lockout and bearer-token sessions, mirroring ca-server.
+    // The users table is provisioned via `ostrich-init`.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: IA-2 (Identification and Authentication)
+    // - NIST 800-53: IA-5(1) (Password-based Authentication, Argon2id)
+    // - NIST 800-53: AC-7 (Unsuccessful Logon Attempts) - lockout
+    // - NIAP PP-CA: FIA_UAU.1 / FIA_AFL.1
+    //
+    // POAM: sessions are in-memory (SessionManager); they do not survive a
+    // restart and do not replicate across instances.
+    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> =
+        Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
+            Arc::new(ostrich_db::repository::DbUserRepository::new(
+                db_pool.clone(),
+            )),
+            Arc::new(ostrich_common::auth::AuthLockout::new(
+                ostrich_common::auth::LockoutConfig::default(),
+            )),
+            Arc::new(ostrich_common::auth::SessionManager::new(
+                ostrich_common::auth::SessionConfig::default(),
+            )),
+        ));
+    let rbac_policy = Arc::new(ostrich_common::auth::RbacPolicy::new());
 
-    // Create router
-    let app = ostrich_est::rest::create_router(state);
+    // Initialize the CA client for certificate issuance (RFC 7030 §4.2).
+    // NIST 800-53: SC-17 - PKI certificate issuance via CA service.
+    // NIST 800-53: SC-8 - gRPC channel to CA (mTLS when configured).
+    let ca_client = match &args.ca_grpc_url {
+        Some(url) => {
+            tracing::info!(endpoint = %url, "Connecting to CA gRPC service");
+            let config = ostrich_common::GrpcClientConfig {
+                endpoint: url.clone(),
+                ..Default::default()
+            };
+            let client =
+                ostrich_est::ca_integration::EstCaClient::new(config, db_pool.clone()).await?;
+            Some(Arc::new(client))
+        }
+        None => {
+            // NIST 800-53: SI-17 - Fail secure: enrollment will be rejected.
+            tracing::warn!(
+                "CA_GRPC_URL not configured; EST enrollment will fail until a CA \
+                 gRPC endpoint is provided"
+            );
+            None
+        }
+    };
+
+    // Load the default CA certificate DER for /cacerts (RFC 7030 §4.1).
+    let ca_repo = ostrich_db::repository::CaRepository::new(db_pool.clone());
+    let ca_certificate_der = match ca_repo.find_default_ca_certificate().await? {
+        Some(ca_cert) => {
+            tracing::info!(ca_id = %ca_cert.id, "Loaded default CA certificate for /cacerts");
+            Some(ca_cert.der_encoded)
+        }
+        None => {
+            tracing::warn!(
+                "No default CA certificate registered; /cacerts will return an empty PKCS#7"
+            );
+            None
+        }
+    };
+
+    let state = ostrich_est::rest::EstState::new_with_auth(
+        db_pool,
+        Arc::new(crypto_provider),
+        Arc::new(audit_sink),
+        auth_provider.clone(),
+        rbac_policy,
+    )
+    .with_ca(ca_client, ca_certificate_der)
+    .with_profile(args.enroll_profile.clone());
+
+    // Create router and mount the shared session API (login/logout).
+    // Public by necessity; brute-force is mitigated by lockout (AC-7 / FIA_AFL.1).
+    let app = ostrich_est::rest::create_router(state)
+        .merge(ostrich_common::auth::auth_routes(auth_provider));
 
     // Parse bind address
     let addr: SocketAddr = args.bind_address.parse().expect("Invalid bind address");

@@ -3523,6 +3523,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tonic",
+ "tracing",
  "uuid",
  "x509-cert",
  "x509-parser",
