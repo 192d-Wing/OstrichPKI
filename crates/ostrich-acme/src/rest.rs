@@ -174,11 +174,17 @@ async fn validate_jws_new_account<T: serde::de::DeserializeOwned>(
         )));
     }
 
-    // 4. Verify nonce and consume it (replay protection - RFC 8555 §6.5)
+    // 4. Verify nonce and consume it (replay protection - RFC 8555 §6.5).
+    // consume_nonce returns false when the nonce is unknown, expired, or already
+    // used (a replay); that case MUST be rejected, not just DB errors.
     let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
-    repo.consume_nonce(&header.nonce)
+    let nonce_ok = repo
+        .consume_nonce(&header.nonce)
         .await
         .map_err(|_| Error::BadNonce)?;
+    if !nonce_ok {
+        return Err(Error::BadNonce);
+    }
 
     // 5. Extract JWK (required for new-account)
     let jwk = header
@@ -242,11 +248,16 @@ async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
         )));
     }
 
-    // 4. Verify nonce and consume it
+    // 4. Verify nonce and consume it (replay protection - RFC 8555 §6.5).
+    // A false result means the nonce was unknown/expired/already used (replay).
     let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
-    repo.consume_nonce(&header.nonce)
+    let nonce_ok = repo
+        .consume_nonce(&header.nonce)
         .await
         .map_err(|_| Error::BadNonce)?;
+    if !nonce_ok {
+        return Err(Error::BadNonce);
+    }
 
     // 5. Extract kid (required for existing account requests)
     let kid = header
@@ -963,6 +974,57 @@ async fn get_order(State(state): State<AcmeState>, Path(id): Path<String>) -> Re
 ///
 /// - **SI-10**: CSR parsing and validation.
 /// - **SC-17**: PKI certificate request processing.
+///
+/// RFC 8555 §7.4 - the CSR MUST request EXACTLY the identifiers authorized in the
+/// order. Set equality in both directions: every authorized identifier must
+/// appear in the CSR, and the CSR must request nothing the order did not
+/// authorize. Without this, a client that validated one identifier could obtain
+/// a certificate for arbitrary others (authorization bypass).
+fn validate_csr_identifiers(order_identifiers: &[Identifier], csr_sans: &[String]) -> Result<()> {
+    let normalize = |ty: &str, val: &str| -> (String, String) {
+        let ty = ty.to_ascii_lowercase();
+        // DNS names are case-insensitive (RFC 4343); IPs compared verbatim.
+        let val = if ty == "dns" {
+            val.to_ascii_lowercase()
+        } else {
+            val.to_string()
+        };
+        (ty, val)
+    };
+
+    let authorized: std::collections::BTreeSet<(String, String)> = order_identifiers
+        .iter()
+        .map(|id| normalize(&id.id_type, &id.value))
+        .collect();
+
+    let mut requested = std::collections::BTreeSet::new();
+    for san in csr_sans {
+        let entry = if let Some(dns) = san.strip_prefix("DNS:") {
+            normalize("dns", dns)
+        } else if let Some(ip) = san.strip_prefix("IP:") {
+            normalize("ip", ip)
+        } else {
+            // email/URI/otherName are not authorizable ACME identifiers; their
+            // presence means the CSR requests something the order cannot grant.
+            return Err(Error::Unauthorized(format!(
+                "CSR contains a Subject Alternative Name that is not an authorized \
+                 ACME identifier: {}",
+                san
+            )));
+        };
+        requested.insert(entry);
+    }
+
+    if authorized != requested {
+        return Err(Error::Unauthorized(format!(
+            "CSR identifiers do not match the order's authorized identifiers \
+             (RFC 8555 §7.4): authorized {:?}, requested {:?}",
+            authorized, requested
+        )));
+    }
+    Ok(())
+}
+
 async fn finalize_order(
     State(state): State<AcmeState>,
     Path(id): Path<String>,
@@ -1010,20 +1072,19 @@ async fn finalize_order(
         ));
     }
 
-    // Parse order identifiers from JSON
-    let _order_identifiers: Vec<Identifier> = serde_json::from_value(db_order.identifiers.clone())
+    // RFC 8555 §7.4 - the CSR MUST request EXACTLY the set of identifiers that
+    // were authorized in the order. Without this binding, a client that proved
+    // control of one identifier could submit a CSR for arbitrary OTHER
+    // identifiers and obtain a certificate for them (a complete domain-control /
+    // authorization bypass). The check is set equality in BOTH directions:
+    // every authorized identifier must appear in the CSR, and the CSR must not
+    // request any identifier the order did not authorize.
+    //
+    // COMPLIANCE: RFC 8555 §7.4; NIST 800-53 SI-10 / AC-3; NIAP PP-CA FIA_UAU.1.
+    let order_identifiers: Vec<Identifier> = serde_json::from_value(db_order.identifiers.clone())
         .map_err(|e| Error::ServerInternal(format!("Failed to parse order identifiers: {}", e)))?;
 
-    // Verify CSR SANs match order identifiers
-    // TODO: When SAN extraction is implemented in parser.rs, uncomment this validation
-    // for identifier in &_order_identifiers {
-    //     if !parsed_csr.subject_alternative_names.contains(&identifier.value) {
-    //         return Err(Error::BadCsr(format!(
-    //             "CSR missing required identifier: {}",
-    //             identifier.value
-    //         )));
-    //     }
-    // }
+    validate_csr_identifiers(&order_identifiers, &parsed_csr.subject_alternative_names)?;
 
     // Verify all authorizations are valid
     let db_authzs = repo.list_authorizations_by_order(db_order.id).await?;
@@ -1268,6 +1329,63 @@ fn map_db_challenge_to_service(db: ostrich_db::models::AcmeChallenge) -> Challen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RFC 8555 §7.4 - the finalize CSR identifiers must exactly match the
+    /// order's authorized identifiers (the authorization-bypass guard).
+    #[test]
+    fn test_validate_csr_identifiers() {
+        let dns = |v: &str| Identifier {
+            id_type: "dns".to_string(),
+            value: v.to_string(),
+        };
+        let order = vec![dns("Example.com"), dns("www.example.com")];
+
+        // Exact match, case-insensitive on DNS names -> accepted.
+        assert!(
+            validate_csr_identifiers(
+                &order,
+                &["DNS:example.com".into(), "DNS:WWW.Example.com".into()],
+            )
+            .is_ok()
+        );
+
+        // Missing an authorized identifier -> rejected.
+        assert!(validate_csr_identifiers(&order, &["DNS:example.com".into()]).is_err());
+
+        // Extra, UNAUTHORIZED identifier -> rejected (the bypass we are closing).
+        assert!(
+            validate_csr_identifiers(
+                &order,
+                &[
+                    "DNS:example.com".into(),
+                    "DNS:www.example.com".into(),
+                    "DNS:victim.com".into(),
+                ],
+            )
+            .is_err()
+        );
+
+        // A non-DNS/IP SAN (email/URI/...) -> rejected.
+        assert!(
+            validate_csr_identifiers(
+                &order,
+                &[
+                    "DNS:example.com".into(),
+                    "DNS:www.example.com".into(),
+                    "email:attacker@evil.test".into(),
+                ],
+            )
+            .is_err()
+        );
+
+        // IP identifiers match verbatim.
+        let ip_order = vec![Identifier {
+            id_type: "ip".to_string(),
+            value: "192.0.2.1".to_string(),
+        }];
+        assert!(validate_csr_identifiers(&ip_order, &["IP:192.0.2.1".into()]).is_ok());
+        assert!(validate_csr_identifiers(&ip_order, &["IP:192.0.2.2".into()]).is_err());
+    }
 
     #[test]
     fn test_directory_structure() {

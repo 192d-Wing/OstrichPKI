@@ -645,9 +645,35 @@ Key corrections in this phase:
 - ✅ Cryptographically random nonces (UUID v4)
 - ✅ Database storage with expiration (5 minutes)
 - ✅ Replay-Nonce header on all responses
-- ✅ Nonce consumption prevents replay (consume_nonce)
+- ✅ **Single-use enforced (RFC 8555 §6.5):** `consume_nonce` atomically deletes
+  the nonce and returns whether one was actually consumed; the JWS validation
+  path now rejects a request whose nonce was unknown/expired/already used
+  (`badNonce`). **Fixed:** previously the boolean result was ignored, so a
+  replayed (already-consumed) nonce was accepted — a replay-protection bypass.
 
 **Enhancement Needed:** Phase 15 - Use FIPS-validated DRBG instead of UUID
+
+---
+
+#### §7.4: Finalizing an Order
+
+**Status:** 🟢 **Compliant**
+
+**Requirement:** The CSR submitted at finalization MUST request exactly the set
+of identifiers authorized in the order.
+
+**Evidence:**
+
+- ✅ CSR signature verified (proof-of-possession) before issuance
+- ✅ Order ownership checked against the authenticated account
+- ✅ All authorizations must be `valid` before issuance (§7.1.6)
+- ✅ **Identifier binding (RFC 8555 §7.4):** `validate_csr_identifiers` enforces
+  set equality between the order's authorized identifiers and the CSR's
+  Subject Alternative Names (DNS case-insensitive; non-DNS/IP SANs rejected).
+  **Fixed:** this check was previously commented out (`_order_identifiers`
+  unused), so a client that validated one identifier could submit a CSR for
+  arbitrary OTHER identifiers and obtain a certificate — a domain-control /
+  authorization bypass. Unit-tested (`test_validate_csr_identifiers`).
 
 ---
 
