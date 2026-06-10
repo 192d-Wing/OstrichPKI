@@ -20,7 +20,6 @@
 //! - SC-13: Cryptographic protection
 
 use crate::{issuance::CertificateIssuer, revocation::RevocationManager};
-use ostrich_audit::AuditSink;
 use ostrich_common::types::DistinguishedName;
 use ostrich_crypto::{CryptoProvider, HsmKeyValidator, KeyHandle};
 use ostrich_db::{DatabasePool, models::Certificate};
@@ -62,7 +61,6 @@ impl CertificateAuthority {
         ca_key: KeyHandle,
         crypto_provider: Box<dyn CryptoProvider>,
         db_pool: DatabasePool,
-        audit_sink: Box<dyn AuditSink>,
         crl_validity_hours: u32,
     ) -> Result<Self, ostrich_crypto::Error> {
         // FCS_STG_EXT.1: Validate CA signing key is stored in HSM
@@ -85,12 +83,36 @@ impl CertificateAuthority {
         let crypto_provider_arc: std::sync::Arc<dyn CryptoProvider> =
             std::sync::Arc::from(crypto_provider);
 
+        // AU-10 (Non-repudiation): sign every audit record's event_hash with the
+        // CA key. The hash chain alone is not tamper-evident against an attacker
+        // with database write access (SHA-256 is public, so they can rewrite the
+        // whole chain); signing closes that gap because they cannot forge the
+        // signature. The CA key is used because it is already loaded, stable, and
+        // its public key is published in the CA certificate, so any relying party
+        // can run verify_signed_chain against the CA cert's SPKI. `signing_key_id`
+        // records the key label on each row to support future key separation /
+        // rotation. See migrations/00007_audit_signature.sql.
+        let issuer_sink = Box::new(ostrich_audit::sink::DatabaseAuditSink::with_signing_key(
+            db_pool.clone(),
+            crypto_provider_arc.clone(),
+            ca_key.clone(),
+            ca_key.algorithm,
+            ca_key.label.clone(),
+        ));
+        let revocation_sink = Box::new(ostrich_audit::sink::DatabaseAuditSink::with_signing_key(
+            db_pool.clone(),
+            crypto_provider_arc.clone(),
+            ca_key.clone(),
+            ca_key.algorithm,
+            ca_key.label.clone(),
+        ));
+
         let issuer = CertificateIssuer::new(
             ca_key.clone(),
             ca_certificate.clone(),
             crypto_provider_arc.clone(),
             db_pool.clone(),
-            audit_sink,
+            issuer_sink,
         );
 
         // The revocation manager shares the same crypto provider as the
@@ -98,14 +120,12 @@ impl CertificateAuthority {
         // a separate software provider cannot sign with it. An earlier version
         // constructed a second software provider here, which broke CRL signing
         // for HSM-backed CAs.
-        let audit_sink2 = Box::new(ostrich_audit::sink::DatabaseAuditSink::new(db_pool.clone()));
-
         let revocation_manager = RevocationManager::new(
             ca_key,
             ca_id,
             crypto_provider_arc.clone(),
             db_pool.clone(),
-            audit_sink2,
+            revocation_sink,
             crl_validity_hours,
         );
 

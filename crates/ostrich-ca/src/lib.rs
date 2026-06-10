@@ -35,6 +35,9 @@ pub mod issuance;
 pub mod rest;
 pub mod revocation;
 
+#[cfg(test)]
+mod audit_signing_e2e;
+
 pub use approval::{ApprovalEngine, ApprovalRequest, ApprovalStatus, RequestType};
 pub use ca::CertificateAuthority;
 pub use error::{Error, Result};

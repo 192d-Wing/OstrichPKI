@@ -587,7 +587,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system protects against an individual falsely denying having performed a particular action.
 
-**Implementation Status:** 🟢 **Compliant** (mechanism); 🟡 production wiring pending (POAM below)
+**Implementation Status:** 🟢 **Compliant** (mechanism + production wiring)
 
 **NIAP Mapping:**
 
@@ -601,18 +601,19 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - **Signed audit records**: each record's `event_hash` is signed with a key an attacker does not hold, making the audit trail tamper-evident even against database write access (the SHA-256 chain alone is not — an attacker can recompute it).
   - [crates/ostrich-audit/src/sink.rs](../../crates/ostrich-audit/src/sink.rs) - `DatabaseAuditSink::with_signing_key()` signs `event_hash` at write time; `verify_signed_chain(spki, algorithm)` verifies the chain AND every record's signature
   - [migrations/00007_audit_signature.sql](../../migrations/00007_audit_signature.sql) - `signature`, `signing_key_id` columns (nullable; signing is opt-in)
+  - **Production wiring**: [crates/ostrich-ca/src/ca.rs](../../crates/ostrich-ca/src/ca.rs) - `CertificateAuthority::new` constructs signed sinks for both the issuer and revocation manager, signing each audit record's `event_hash` with the HSM-backed CA key. Relying parties verify with the CA certificate's public key (already published).
 
 **Evidence:**
 
 - ✅ All CA-signed objects provide proof of origin
 - ✅ Audit events link actions to actors
-- ✅ **Live tamper-detection proof**: [crates/ostrich-audit/tests/signed_chain_tamper.rs](../../crates/ostrich-audit/tests/signed_chain_tamper.rs) writes signed records to Postgres, forges the last record's content and recomputes its `event_hash` (which fools the hash-only `verify_chain`), and shows `verify_signed_chain` still detects it because the stale signature no longer verifies over the forged hash.
+- ✅ **Live tamper-detection proof (mechanism)**: [crates/ostrich-audit/tests/signed_chain_tamper.rs](../../crates/ostrich-audit/tests/signed_chain_tamper.rs) writes signed records to Postgres, forges the last record's content and recomputes its `event_hash` (which fools the hash-only `verify_chain`), and shows `verify_signed_chain` still detects it because the stale signature no longer verifies over the forged hash.
+- ✅ **Live end-to-end proof (production wiring)**: [crates/ostrich-ca/src/audit_signing_e2e.rs](../../crates/ostrich-ca/src/audit_signing_e2e.rs) builds a `CertificateAuthority` backed by a SoftHSM (PKCS#11) ECDSA key, performs a real revocation, and asserts the resulting audit record is signed (`signature` non-null, `signing_key_id` = CA key) and that `verify_signed_chain` accepts it against the CA public key — and rejects it after a signature byte is corrupted.
 - 🔴 No CSR→Certificate linkage (missing request_id)
 
 **Gaps / POA&M:**
 
 - Cannot prove which CSR led to which certificate (Phase 15 - add request_id to certificates table)
-- POAM (AU-10): wire signed audit records into the ca-server in production via `DatabaseAuditSink::with_signing_key` — requires an audit-signing-key lifecycle decision (dedicated key vs. CA key, publish verifier SPKI). Mechanism and live proof are complete; see the POAM comment at [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs) (audit_sink construction).
 
 **Evidence Required for ATO:**
 

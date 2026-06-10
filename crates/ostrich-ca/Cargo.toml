@@ -50,3 +50,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+# audit_signing_e2e: reset + inspect the audit table around the live test
+sqlx = { workspace = true }

@@ -74,11 +74,26 @@ DATABASE_URL=... cargo test -p ostrich-audit --test signed_chain_tamper
 #     -> verify_signed_chain DETECTS it (stale signature fails over forged hash)
 ```
 
-Production wiring (POA&M): the ca-server currently uses the unsigned
-`DatabaseAuditSink::new`. Enabling `with_signing_key` requires an audit-signing-key
-lifecycle decision (dedicated key vs. CA key; publish the verifier SPKI). The
-mechanism and live proof are complete; the insertion point is marked with a POAM
-comment at `services/ca-server/src/main.rs` (audit_sink construction).
+Production wiring (live, against a real Postgres + SoftHSM PKCS#11 HSM):
+
+```
+SOFTHSM2_CONF=... DATABASE_URL=... PKCS11_MODULE_PATH=... PKCS11_SLOT=... \
+  PKCS11_PIN=... cargo test -p ostrich-ca --lib audit_signing_e2e
+# ca_emits_signed_audit_records_verifiable_with_ca_public_key:
+#  1. builds a CertificateAuthority backed by a SoftHSM (PKCS#11) ECDSA CA key
+#  2. performs a real revocation through the CA
+#  3. asserts the audit record is signed (signature non-null,
+#     signing_key_id = CA key) and verify_signed_chain accepts it against the
+#     CA certificate's public key
+#  4. corrupts a signature byte -> verify_signed_chain rejects it
+```
+
+`CertificateAuthority::new` ([crates/ostrich-ca/src/ca.rs](crates/ostrich-ca/src/ca.rs))
+constructs signed sinks for both the issuer and the revocation manager, signing
+each audit record's `event_hash` with the HSM-backed CA key. An HSM (PKCS#11)
+key is required for the live test because software ECDSA/RSA CA keys fail
+FCS_STG_EXT.1 HSM validation and the software ML-DSA exception is not yet
+verifiable through `verify_with_spki`.
 
 ## Phase 1b Gap-Closure Evidence (SCMS Audit + PIN Lockout)
 
