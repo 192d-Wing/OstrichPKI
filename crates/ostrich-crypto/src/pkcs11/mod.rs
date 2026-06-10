@@ -492,8 +492,6 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
         label: &str,
         extractable: bool,
     ) -> Result<KeyHandle> {
-        use rand::Rng;
-
         tracing::info!(
             key_type = ?key_type,
             label = %label,
@@ -501,11 +499,11 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
             "Generating key pair in HSM"
         );
 
-        // Generate unique key ID
-        let key_id: Vec<u8> = rand::thread_rng()
-            .sample_iter(rand::distributions::Standard)
-            .take(32)
-            .collect();
+        // Generate unique key ID using OS entropy (FIPS 140-3 backed via getrandom).
+        // 32 random bytes are sufficient for an opaque object identifier.
+        let mut key_id = vec![0u8; 32];
+        getrandom::fill(&mut key_id)
+            .map_err(|e| Error::Entropy(format!("Failed to generate key id: {}", e)))?;
 
         // NIST 800-53: AU-3 - Audit key generation
         tracing::info!(
@@ -1045,7 +1043,6 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
     ) -> Result<KeyHandle> {
         use cryptoki::mechanism::Mechanism;
         use cryptoki::object::{Attribute, KeyType as CkKeyType, ObjectClass};
-        use rand::Rng;
 
         tracing::info!(
             unwrapping_key = %unwrapping_key.label,
@@ -1076,11 +1073,10 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
 
         let unwrapping_key_handle = kek_objects[0];
 
-        // Generate new key ID for the recovered key
-        let key_id: Vec<u8> = rand::thread_rng()
-            .sample_iter(rand::distributions::Standard)
-            .take(32)
-            .collect();
+        // Generate new key ID for the recovered key using OS entropy.
+        let mut key_id = vec![0u8; 32];
+        getrandom::fill(&mut key_id)
+            .map_err(|e| Error::Entropy(format!("Failed to generate key id: {}", e)))?;
 
         // Determine PKCS#11 key type
         let (ck_key_type, algorithm) = match key_type {

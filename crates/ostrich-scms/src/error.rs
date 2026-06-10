@@ -61,6 +61,12 @@ pub enum Error {
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
 
+    /// Authorization denied - authenticated user lacks required permission
+    /// NIST 800-53: AC-3 - Access Enforcement
+    /// NIAP PP-CA: FMT_MTD.1 - Management of TSF Data
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     /// Database error
     #[error("Database error: {0}")]
     Database(#[from] ostrich_db::Error),
@@ -72,6 +78,12 @@ pub enum Error {
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(String),
+}
+
+impl From<ostrich_common::auth::AuthorizationError> for Error {
+    fn from(err: ostrich_common::auth::AuthorizationError) -> Self {
+        Error::Forbidden(err.to_string())
+    }
 }
 
 /// SCMS result type
@@ -96,6 +108,7 @@ impl Error {
             }
             Self::TokenAlreadyExists(_) | Self::SerialNumberExists(_) => StatusCode::CONFLICT,
             Self::TokenLocked | Self::InvalidPin | Self::PinBlocked => StatusCode::UNAUTHORIZED,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             Self::TokenOperationFailed(_)
             | Self::Pkcs11Error(_)
@@ -127,6 +140,7 @@ impl Error {
             Self::TokenOperationFailed(_) => "token_operation_failed",
             Self::Pkcs11Error(_) => "pkcs11_error",
             Self::KeyNotFound(_) => "key_not_found",
+            Self::Forbidden(_) => "forbidden",
             Self::InvalidRequest(_) => "invalid_request",
             Self::DatabaseError(_) | Self::Database(_) => "database_error",
             Self::Common(_) => "common_error",

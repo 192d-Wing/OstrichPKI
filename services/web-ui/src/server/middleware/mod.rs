@@ -7,6 +7,8 @@
 
 pub mod audit;
 pub mod csp;
+pub mod session;
 
 pub use audit::audit_middleware;
 pub use csp::{csp_middleware, CspNonce};
+pub use session::require_session;

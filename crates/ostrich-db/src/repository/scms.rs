@@ -29,6 +29,9 @@ impl ScmsRepository {
     // ====================
 
     /// Create a new token model
+    ///
+    /// Phase 1c: now persists `firmware_version`, `key_capacity`,
+    /// `cert_capacity`, `pkcs11_support` (migration 00005).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_token_model(
         &self,
@@ -39,6 +42,10 @@ impl ScmsRepository {
         max_pin_length: i32,
         min_pin_length: i32,
         supports_puk: bool,
+        firmware_version: Option<&str>,
+        key_capacity: Option<i32>,
+        cert_capacity: Option<i32>,
+        pkcs11_support: bool,
     ) -> Result<TokenModel> {
         let id = Uuid::new_v4();
         let now = Utc::now();
@@ -47,9 +54,11 @@ impl ScmsRepository {
             r#"
             INSERT INTO token_models (
                 id, manufacturer, model, atr, supported_key_types,
-                max_pin_length, min_pin_length, supports_puk, created_at
+                max_pin_length, min_pin_length, supports_puk,
+                firmware_version, key_capacity, cert_capacity, pkcs11_support,
+                created_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING *
             "#,
         )
@@ -61,6 +70,10 @@ impl ScmsRepository {
         .bind(max_pin_length)
         .bind(min_pin_length)
         .bind(supports_puk)
+        .bind(firmware_version)
+        .bind(key_capacity)
+        .bind(cert_capacity)
+        .bind(pkcs11_support)
         .bind(now)
         .fetch_one(self.pool.pool())
         .await?;
@@ -94,11 +107,18 @@ impl ScmsRepository {
     // ================
 
     /// Create a new token
+    ///
+    /// Phase 1c: now accepts an optional display label persisted via
+    /// migration 00005. The SO-PIN counter and the lifecycle timestamps
+    /// (`initialized_at`, `expires_at`) start at the column defaults and are
+    /// populated by `update_token_lifecycle` once the operator initializes /
+    /// expires the token.
     pub async fn create_token(
         &self,
         serial_number: &str,
         token_model_id: Uuid,
         status: &str,
+        label: Option<&str>,
     ) -> Result<Token> {
         let id = Uuid::new_v4();
         let now = Utc::now();
@@ -106,11 +126,11 @@ impl ScmsRepository {
         let token = sqlx::query_as::<_, Token>(
             r#"
             INSERT INTO tokens (
-                id, serial_number, token_model_id, status,
+                id, serial_number, token_model_id, status, label,
                 pin_attempts_remaining, puk_attempts_remaining,
                 created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
             "#,
         )
@@ -118,10 +138,102 @@ impl ScmsRepository {
         .bind(serial_number)
         .bind(token_model_id)
         .bind(status)
+        .bind(label)
         .bind(3) // Default PIN attempts
         .bind(10) // Default PUK attempts
         .bind(now)
         .bind(now)
+        .fetch_one(self.pool.pool())
+        .await?;
+
+        Ok(token)
+    }
+
+    /// Update lifecycle timestamps on a token.
+    ///
+    /// Used by SCMS handlers to record `initialized_at` and `expires_at`
+    /// transitions atomically with the status change. Either field set to
+    /// `Some(None)` is a sentinel meaning "leave alone"; pass `Some(Some(ts))`
+    /// to write a value.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA: FPT_STM.1 - reliable timestamps for management functions
+    /// - NIAP PP-CA: FMT_SMF.1 - lifecycle state transitions
+    pub async fn update_token_lifecycle(
+        &self,
+        id: Uuid,
+        initialized_at: Option<Option<chrono::DateTime<Utc>>>,
+        expires_at: Option<Option<chrono::DateTime<Utc>>>,
+    ) -> Result<Token> {
+        let now = Utc::now();
+        let mut query = String::from("UPDATE tokens SET updated_at = $1");
+        let mut param_num = 2;
+
+        if initialized_at.is_some() {
+            query.push_str(&format!(", initialized_at = ${}", param_num));
+            param_num += 1;
+        }
+
+        if expires_at.is_some() {
+            query.push_str(&format!(", expires_at = ${}", param_num));
+            param_num += 1;
+        }
+
+        query.push_str(&format!(" WHERE id = ${} RETURNING *", param_num));
+
+        let mut q = sqlx::query_as::<_, Token>(&query).bind(now);
+        if let Some(value) = initialized_at {
+            q = q.bind(value);
+        }
+        if let Some(value) = expires_at {
+            q = q.bind(value);
+        }
+
+        Ok(q.bind(id).fetch_one(self.pool.pool()).await?)
+    }
+
+    /// Update the SO-PIN retry counter independently of the User PIN counter.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIAP PP-CA: FIA_AFL.1 - SO-PIN failure counter is distinct from
+    ///   the User PIN counter; tracked per FMT_SMR.1 role separation.
+    pub async fn update_token_so_pin_attempts(
+        &self,
+        id: Uuid,
+        so_pin_attempts: i32,
+    ) -> Result<Token> {
+        let now = Utc::now();
+        let token = sqlx::query_as::<_, Token>(
+            r#"
+            UPDATE tokens
+            SET updated_at = $1, so_pin_attempts_remaining = $2
+            WHERE id = $3
+            RETURNING *
+            "#,
+        )
+        .bind(now)
+        .bind(so_pin_attempts)
+        .bind(id)
+        .fetch_one(self.pool.pool())
+        .await?;
+
+        Ok(token)
+    }
+
+    /// Update the operator-facing label on a token.
+    pub async fn update_token_label(&self, id: Uuid, label: Option<&str>) -> Result<Token> {
+        let now = Utc::now();
+        let token = sqlx::query_as::<_, Token>(
+            r#"
+            UPDATE tokens
+            SET updated_at = $1, label = $2
+            WHERE id = $3
+            RETURNING *
+            "#,
+        )
+        .bind(now)
+        .bind(label)
+        .bind(id)
         .fetch_one(self.pool.pool())
         .await?;
 
@@ -278,12 +390,21 @@ impl ScmsRepository {
     // ==================
 
     /// Create a new token key
+    ///
+    /// Phase 1c: persists `key_size` and `usage` flags via migration 00005.
+    /// `usage` strings should be one of the X.509 KeyUsage flag names
+    /// (RFC 5280 §4.2.1.3): `digital_signature`, `non_repudiation`,
+    /// `key_encipherment`, `data_encipherment`, `key_agreement`,
+    /// `key_cert_sign`, `crl_sign`, `encipher_only`, `decipher_only`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_token_key(
         &self,
         token_id: Uuid,
         label: &str,
         key_type: &str,
         algorithm: &str,
+        key_size: Option<i32>,
+        usage: Vec<String>,
         certificate_id: Option<Uuid>,
     ) -> Result<TokenKey> {
         let id = Uuid::new_v4();
@@ -293,9 +414,9 @@ impl ScmsRepository {
             r#"
             INSERT INTO token_keys (
                 id, token_id, label, key_type, algorithm,
-                certificate_id, created_at
+                key_size, usage, certificate_id, created_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
             "#,
         )
@@ -304,6 +425,8 @@ impl ScmsRepository {
         .bind(label)
         .bind(key_type)
         .bind(algorithm)
+        .bind(key_size)
+        .bind(&usage)
         .bind(certificate_id)
         .bind(now)
         .fetch_one(self.pool.pool())

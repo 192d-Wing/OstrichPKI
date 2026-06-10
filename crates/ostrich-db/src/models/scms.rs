@@ -9,7 +9,8 @@ use uuid::Uuid;
 
 /// Token Model
 ///
-/// Supported smartcard token types
+/// Supported smartcard token types. Phase 1c migration 00005 added
+/// `firmware_version`, `key_capacity`, `cert_capacity`, and `pkcs11_support`.
 #[derive(Debug, Clone, FromRow)]
 pub struct TokenModel {
     pub id: Uuid,
@@ -20,12 +21,17 @@ pub struct TokenModel {
     pub max_pin_length: i32,
     pub min_pin_length: i32,
     pub supports_puk: bool,
+    pub firmware_version: Option<String>,
+    pub key_capacity: Option<i32>,
+    pub cert_capacity: Option<i32>,
+    pub pkcs11_support: bool,
     pub created_at: DateTime<Utc>,
 }
 
 /// Token
 ///
-/// Physical smartcard token inventory
+/// Physical smartcard token inventory. Phase 1c migration 00005 added
+/// `label`, `so_pin_attempts_remaining`, `initialized_at`, and `expires_at`.
 #[derive(Debug, Clone, FromRow)]
 pub struct Token {
     pub id: Uuid,
@@ -35,16 +41,24 @@ pub struct Token {
     pub assigned_to: Option<String>,
     pub pin_attempts_remaining: i32,
     pub puk_attempts_remaining: i32,
+    /// SO-PIN retry counter (NIAP FMT_SMR.1 - distinct from User PIN counter)
+    pub so_pin_attempts_remaining: i32,
+    /// Operator-facing display label (mutable; distinct from serial_number)
+    pub label: Option<String>,
     pub assigned_at: Option<DateTime<Utc>>,
     pub blocked_at: Option<DateTime<Utc>>,
     pub retired_at: Option<DateTime<Utc>>,
+    /// Timestamp of first transition from uninitialized to initialized
+    pub initialized_at: Option<DateTime<Utc>>,
+    /// Token expiration (battery, contract end, etc.) - None = no limit
+    pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 /// Token Key
 ///
-/// Keys stored on tokens
+/// Keys stored on tokens. Phase 1c migration 00005 added `key_size` and `usage`.
 #[derive(Debug, Clone, FromRow)]
 pub struct TokenKey {
     pub id: Uuid,
@@ -52,6 +66,10 @@ pub struct TokenKey {
     pub label: String,
     pub key_type: String,
     pub algorithm: String,
+    /// Key size in bits (modulus for RSA, curve size for ECDSA)
+    pub key_size: Option<i32>,
+    /// Permitted X.509 KeyUsage flags (RFC 5280 §4.2.1.3)
+    pub usage: Vec<String>,
     pub certificate_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
@@ -85,6 +103,10 @@ mod tests {
             max_pin_length: 8,
             min_pin_length: 6,
             supports_puk: true,
+            firmware_version: Some("5.4.3".to_string()),
+            key_capacity: Some(24),
+            cert_capacity: Some(24),
+            pkcs11_support: true,
             created_at: now,
         };
 
@@ -111,6 +133,10 @@ mod tests {
             max_pin_length: 64,
             min_pin_length: 4,
             supports_puk: false,
+            firmware_version: None,
+            key_capacity: None,
+            cert_capacity: None,
+            pkcs11_support: true,
             created_at: now,
         };
 
@@ -129,9 +155,13 @@ mod tests {
             assigned_to: Some("john.doe@example.com".to_string()),
             pin_attempts_remaining: 3,
             puk_attempts_remaining: 10,
+            so_pin_attempts_remaining: 3,
+            label: Some("Engineering laptop token".to_string()),
             assigned_at: Some(now),
             blocked_at: None,
             retired_at: None,
+            initialized_at: Some(now),
+            expires_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -153,9 +183,13 @@ mod tests {
             assigned_to: None,
             pin_attempts_remaining: 3,
             puk_attempts_remaining: 10,
+            so_pin_attempts_remaining: 3,
+            label: None,
             assigned_at: None,
             blocked_at: None,
             retired_at: None,
+            initialized_at: None,
+            expires_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -176,9 +210,13 @@ mod tests {
             assigned_to: Some("user@example.com".to_string()),
             pin_attempts_remaining: 0,
             puk_attempts_remaining: 0,
+            so_pin_attempts_remaining: 3,
+            label: None,
             assigned_at: Some(now - chrono::Duration::days(30)),
             blocked_at: Some(now),
             retired_at: None,
+            initialized_at: Some(now - chrono::Duration::days(30)),
+            expires_at: None,
             created_at: now - chrono::Duration::days(60),
             updated_at: now,
         };
@@ -200,9 +238,13 @@ mod tests {
             assigned_to: None,
             pin_attempts_remaining: 0,
             puk_attempts_remaining: 0,
+            so_pin_attempts_remaining: 3,
+            label: None,
             assigned_at: None,
             blocked_at: None,
             retired_at: Some(now),
+            initialized_at: Some(now - chrono::Duration::days(365)),
+            expires_at: Some(now - chrono::Duration::days(1)),
             created_at: now - chrono::Duration::days(365),
             updated_at: now,
         };
@@ -220,6 +262,8 @@ mod tests {
             label: "Signing Key".to_string(),
             key_type: "EC".to_string(),
             algorithm: "ECDSA-P256".to_string(),
+            key_size: Some(256),
+            usage: vec!["digital_signature".to_string(), "non_repudiation".to_string()],
             certificate_id: Some(Uuid::new_v4()),
             created_at: now,
         };
@@ -238,6 +282,8 @@ mod tests {
             label: "Encryption Key".to_string(),
             key_type: "RSA".to_string(),
             algorithm: "RSA-2048".to_string(),
+            key_size: Some(2048),
+            usage: vec!["key_encipherment".to_string()],
             certificate_id: None,
             created_at: now,
         };
@@ -309,9 +355,13 @@ mod tests {
             assigned_to: None,
             pin_attempts_remaining: 3,
             puk_attempts_remaining: 10,
+            so_pin_attempts_remaining: 3,
+            label: None,
             assigned_at: None,
             blocked_at: None,
             retired_at: None,
+            initialized_at: None,
+            expires_at: None,
             created_at: now,
             updated_at: now,
         };

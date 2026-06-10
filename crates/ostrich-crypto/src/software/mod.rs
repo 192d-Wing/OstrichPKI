@@ -11,8 +11,14 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 // RSA operations
-use rand::rngs::OsRng;
+//
+// Note: we import OsRng via `rsa::rand_core::OsRng` rather than `rand::rngs::OsRng`.
+// The `rsa = "0.9"` crate's signing/keygen APIs require an RNG implementing the
+// `rand_core 0.6` `CryptoRng + RngCore` traits, but the workspace also pulls in
+// `rand 0.9` (which exposes only the rand_core 0.9 traits). Using the OsRng
+// re-exported by `rsa` itself guarantees trait compatibility.
 use rsa::pkcs1v15::{SigningKey as Pkcs1SigningKey, VerifyingKey as Pkcs1VerifyingKey};
+use rsa::rand_core::OsRng;
 use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
 use rsa::pss::{BlindedSigningKey, Signature as PssSignature, VerifyingKey as PssVerifyingKey};
 use rsa::signature::{RandomizedSigner, SignatureEncoding, Signer, Verifier};

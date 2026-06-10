@@ -92,16 +92,28 @@ pub fn create_router(
     ));
 
     // Public endpoints (no authentication required)
+    //
+    // Each entry below is an intentional exception to the default-authenticated
+    // policy. Any new public route MUST be justified here.
+    //
+    // - /health, /ready: orchestrator probes; no security-relevant data (NIST SI-17)
+    // - /api/v1/ca/info: CA subject DN and key id are needed by any relying party
+    //   to build an AIA reference. Equivalent to serving the CA cert chain, which
+    //   is public by definition (RFC 5280).
+    // - /api/v1/certificates/:id/status: revocation status must be reachable by any
+    //   relying party performing certificate validation (RFC 5280 §5, RFC 6960).
+    //
+    // NOTE: /api/v1/profiles was previously public; it leaked the configured profile
+    // catalog (key types, key sizes, validity periods) to unauthenticated clients.
+    // It is now protected and requires Permission::ViewConfig.
     let public_routes = Router::new()
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
         .route("/api/v1/ca/info", get(get_ca_info))
-        // Revocation status is publicly accessible per RFC 5280
         .route(
             "/api/v1/certificates/:id/status",
             get(check_revocation_status),
-        )
-        .route("/api/v1/profiles", get(list_profiles));
+        );
 
     // Protected endpoints requiring authentication and authorization
     let protected_routes = Router::new()
@@ -128,10 +140,28 @@ pub fn create_router(
             (rbac_policy.clone(), Permission::GenerateCrl, None::<String>),
             AuthzLayer::authorize,
         ))
+        // Configuration metadata
+        // Permission::ViewConfig - profile catalog is configuration data (NIAP FMT_SMF.1)
+        .route("/api/v1/profiles", get(list_profiles))
+        .route_layer(middleware::from_fn_with_state(
+            (rbac_policy.clone(), Permission::ViewConfig, None::<String>),
+            AuthzLayer::authorize,
+        ))
         // Approval workflow endpoints
+        // submit_approval_request + list + get enforce permissions inline (handlers
+        // use the authenticated user identity and role-based filtering). The
+        // approve/reject routes use middleware-based Permission::ApproveRequest below.
         .route("/api/v1/approvals", post(submit_approval_request))
+        .route_layer(middleware::from_fn_with_state(
+            (rbac_policy.clone(), Permission::SubmitRequest, None::<String>),
+            AuthzLayer::authorize,
+        ))
         .route("/api/v1/approvals", get(list_approval_requests))
         .route("/api/v1/approvals/:id", get(get_approval_request))
+        .route_layer(middleware::from_fn_with_state(
+            (rbac_policy.clone(), Permission::ViewRequests, None::<String>),
+            AuthzLayer::authorize,
+        ))
         .route("/api/v1/approvals/:id/approve", post(approve_request))
         .route_layer(middleware::from_fn_with_state(
             (

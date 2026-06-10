@@ -26,7 +26,7 @@ use tower_http::services::ServeDir;
 use super::{
     auth,
     config::WebUiConfig,
-    middleware::{audit_middleware, csp_middleware},
+    middleware::{audit_middleware, csp_middleware, require_session},
     proxy,
     template,
 };
@@ -65,7 +65,21 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
         .with_state(state.clone());
 
     // API proxy routes (require authentication)
-    let api_routes = proxy::create_proxy_routes(state.clone());
+    //
+    // The require_session middleware rejects any request that does not carry
+    // the configured session cookie. The cookie is set by the OIDC callback
+    // handler after successful authentication. This prevents unauthenticated
+    // clients from using the proxy to reach backend services directly.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: AC-3 (Access Enforcement)
+    // - NIST 800-53: IA-2 (Identification and Authentication)
+    // - NIAP PP-CA: FIA_UAU.1 (User Authentication before TSF-mediated actions)
+    let api_routes = proxy::create_proxy_routes(state.clone())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_session,
+        ));
 
     // Static file serving
     let static_routes = Router::new().nest_service(

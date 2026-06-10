@@ -77,7 +77,8 @@ pub use permissions::{
     role_has_permission,
 };
 pub use provider::{
-    AuthError, AuthProvider, AuthResult, CompositeAuthProvider, Credentials, SessionInfo,
+    AuthError, AuthProvider, AuthResult, CompositeAuthProvider, Credentials, DisabledAuthProvider,
+    SessionInfo,
 };
 pub use rbac::{AuthorizationError, AuthzResult, RbacMiddleware, RbacPolicy};
 pub use roles::{Role, RoleValidationError, validate_role_set};

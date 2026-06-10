@@ -517,6 +517,22 @@ fn extract_sans_from_csr(
                                         let hex_value = hex::encode(edi.as_bytes());
                                         sans.push(format!("ediPartyName:{}", hex_value));
                                     }
+                                    GeneralName::Invalid(tag, raw) => {
+                                        // x509-parser 0.18 added the Invalid variant to surface
+                                        // entries it could not decode. RFC 5280 §4.2.1.6 does not
+                                        // permit unknown forms; we record the raw bytes and tag in
+                                        // the SAN list so downstream profile-validation can flag
+                                        // the certificate, but we do not reject the parse here.
+                                        let hex_value = hex::encode(raw);
+                                        tracing::warn!(
+                                            tag = ?tag,
+                                            "Encountered invalid GeneralName variant in SAN extension"
+                                        );
+                                        sans.push(format!(
+                                            "invalid:tag={:?}:{}",
+                                            tag, hex_value
+                                        ));
+                                    }
                                 }
                             }
                             Err(_) => {

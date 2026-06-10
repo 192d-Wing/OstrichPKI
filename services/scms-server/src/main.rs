@@ -24,6 +24,19 @@ struct Args {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
 
+    /// TLS certificate chain file (PEM). With --tls-key, serves HTTPS (TLS 1.3).
+    /// NIST 800-53: SC-8 - Transmission Confidentiality
+    #[arg(long, env = "TLS_CERT_FILE")]
+    tls_cert: Option<String>,
+
+    /// TLS private key file (PEM)
+    #[arg(long, env = "TLS_KEY_FILE")]
+    tls_key: Option<String>,
+
+    /// Client CA bundle (PEM). When set, clients must present certificates (mTLS).
+    #[arg(long, env = "TLS_CLIENT_CA_FILE")]
+    tls_client_ca: Option<String>,
+
     /// Log level
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     log_level: String,
@@ -55,11 +68,32 @@ async fn main() -> Result<()> {
     let crypto_provider = ostrich_crypto::software::SoftwareProvider::new();
     let audit_sink = ostrich_audit::DatabaseAuditSink::new(db_pool.clone());
 
+    // Authentication provider: DisabledAuthProvider is a fail-closed placeholder
+    // that rejects every request. All protected /scms/* endpoints will return 401
+    // until a real provider (password DB, mTLS, OIDC) is wired in.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: AC-3 (fail-closed default for protected endpoints)
+    // - NIAP PP-CA: FIA_UAU.1 (no unauthenticated access to management functions)
+    tracing::warn!(
+        "SCMS is running with DisabledAuthProvider: all /scms/* endpoints will return 401. \
+         Wire a real AuthProvider (password DB, mTLS, or OIDC) for production use."
+    );
+    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> =
+        Arc::new(ostrich_common::auth::DisabledAuthProvider::new());
+
+    // RBAC policy: enforces per-permission checks at handler entry.
+    // NIST 800-53: AC-3 (Access Enforcement), AC-5 (Separation of Duties)
+    // NIAP PP-CA: FMT_MTD.1 (Management of TSF Data)
+    let rbac_policy = Arc::new(ostrich_common::auth::RbacPolicy::new());
+
     // Create SCMS state
     let state = ostrich_scms::rest::ScmsState::new(
         db_pool,
         Arc::new(crypto_provider),
         Arc::new(audit_sink),
+        auth_provider,
+        rbac_policy,
     );
 
     // Create router
@@ -70,10 +104,13 @@ async fn main() -> Result<()> {
 
     tracing::info!(%addr, "Starting SCMS server");
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // NIST 800-53: SC-8 - HTTPS when TLS is configured (HTTP fallback warns)
+    let tls = ostrich_common::tls::TlsSettings::from_options(
+        args.tls_cert,
+        args.tls_key,
+        args.tls_client_ca,
+    )?;
+    ostrich_common::tls::serve(addr, app, tls.as_ref(), shutdown_signal()).await?;
 
     tracing::info!("SCMS Server shutdown complete");
     Ok(())

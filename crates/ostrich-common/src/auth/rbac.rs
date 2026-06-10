@@ -460,4 +460,176 @@ mod tests {
                 .is_err()
         );
     }
+
+    // ===== RBAC route-wiring evidence tests =====
+    //
+    // These tests document and enforce the permission matrix used by the service
+    // routers (ostrich-ca, ostrich-scms, ostrich-est, ostrich-ocsp). Each test
+    // asserts that a specific (Role, Permission) pair either allows or denies a
+    // concrete action, so that a regression in permissions_for_role surfaces
+    // here rather than in production.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: AC-3 (Access Enforcement), AC-5 (Separation of Duties)
+    // - NIAP PP-CA: FMT_MOF.1, FMT_MTD.1
+
+    /// SCMS: token management is IA-5 Authenticator Management.
+    /// Administrator creates/modifies/deletes tokens; Auditor only views.
+    #[test]
+    fn rbac_matrix_scms_tokens() {
+        let policy = RbacPolicy::new().with_logging(false);
+        let admin = make_user(vec![Role::Administrator]);
+        let auditor = make_user(vec![Role::Auditor]);
+        let ops = make_user(vec![Role::OperationsStaff]);
+
+        // Administrator: full lifecycle
+        assert!(policy.authorize(&admin, Permission::CreateUser, "scms:tokens").is_ok());
+        assert!(policy.authorize(&admin, Permission::ModifyUser, "scms:token").is_ok());
+        assert!(policy.authorize(&admin, Permission::DeleteUser, "scms:token").is_ok());
+        assert!(policy.authorize(&admin, Permission::UnlockAccount, "scms:token").is_ok());
+        assert!(policy.authorize(&admin, Permission::ViewUsers, "scms:tokens").is_ok());
+
+        // Auditor: read-only
+        assert!(policy.authorize(&auditor, Permission::ViewUsers, "scms:tokens").is_ok());
+        assert!(policy.authorize(&auditor, Permission::CreateUser, "scms:tokens").is_err());
+        assert!(policy.authorize(&auditor, Permission::ModifyUser, "scms:token").is_err());
+        assert!(policy.authorize(&auditor, Permission::DeleteUser, "scms:token").is_err());
+
+        // OperationsStaff: cannot manage users/tokens
+        assert!(policy.authorize(&ops, Permission::CreateUser, "scms:tokens").is_err());
+        assert!(policy.authorize(&ops, Permission::ModifyUser, "scms:token").is_err());
+        assert!(policy.authorize(&ops, Permission::DeleteUser, "scms:token").is_err());
+    }
+
+    /// SCMS: only the Auditor may read token event audit logs.
+    /// NIAP PP-CA FAU_SAR.1 - restricted audit review.
+    #[test]
+    fn rbac_matrix_scms_audit_auditor_only() {
+        let policy = RbacPolicy::new().with_logging(false);
+        assert!(policy
+            .authorize(&make_user(vec![Role::Auditor]), Permission::ReadAuditLog, "scms:events")
+            .is_ok());
+        assert!(policy
+            .authorize(&make_user(vec![Role::Administrator]), Permission::ReadAuditLog, "scms:events")
+            .is_err());
+        assert!(policy
+            .authorize(&make_user(vec![Role::OperationsStaff]), Permission::ReadAuditLog, "scms:events")
+            .is_err());
+        assert!(policy
+            .authorize(&make_user(vec![Role::RaStaff]), Permission::ReadAuditLog, "scms:events")
+            .is_err());
+    }
+
+    /// SCMS: token model catalog config.
+    /// Administrator writes, Administrator + Auditor read.
+    #[test]
+    fn rbac_matrix_scms_models() {
+        let policy = RbacPolicy::new().with_logging(false);
+        let admin = make_user(vec![Role::Administrator]);
+        let auditor = make_user(vec![Role::Auditor]);
+        let ops = make_user(vec![Role::OperationsStaff]);
+
+        assert!(policy.authorize(&admin, Permission::ModifyConfig, "scms:models").is_ok());
+        assert!(policy.authorize(&admin, Permission::ViewConfig, "scms:models").is_ok());
+        assert!(policy.authorize(&auditor, Permission::ViewConfig, "scms:models").is_ok());
+        assert!(policy.authorize(&auditor, Permission::ModifyConfig, "scms:models").is_err());
+        assert!(policy.authorize(&ops, Permission::ModifyConfig, "scms:models").is_err());
+    }
+
+    /// CA: certificate lifecycle belongs to OperationsStaff.
+    /// Admin must NOT be able to issue certs (separation of duties).
+    #[test]
+    fn rbac_matrix_ca_cert_lifecycle() {
+        let policy = RbacPolicy::new().with_logging(false);
+        let ops = make_user(vec![Role::OperationsStaff]);
+        let admin = make_user(vec![Role::Administrator]);
+        let ra = make_user(vec![Role::RaStaff]);
+
+        assert!(policy.authorize(&ops, Permission::IssueCertificate, "cert").is_ok());
+        assert!(policy.authorize(&ops, Permission::RevokeCertificate, "cert").is_ok());
+        assert!(policy.authorize(&ops, Permission::GenerateCrl, "crl").is_ok());
+
+        assert!(policy.authorize(&admin, Permission::IssueCertificate, "cert").is_err());
+        assert!(policy.authorize(&admin, Permission::RevokeCertificate, "cert").is_err());
+
+        assert!(policy.authorize(&ra, Permission::IssueCertificate, "cert").is_err());
+        assert!(policy.authorize(&ra, Permission::ApproveRequest, "approvals").is_ok());
+    }
+
+    /// CA approval workflow: RaStaff + Aor approve, OperationsStaff submits.
+    #[test]
+    fn rbac_matrix_ca_approvals() {
+        let policy = RbacPolicy::new().with_logging(false);
+        let ra = make_user(vec![Role::RaStaff]);
+        let aor = make_user(vec![Role::Aor]);
+        let ops = make_user(vec![Role::OperationsStaff]);
+
+        assert!(policy.authorize(&ra, Permission::ApproveRequest, "approvals").is_ok());
+        assert!(policy.authorize(&ra, Permission::RejectRequest, "approvals").is_ok());
+        assert!(policy.authorize(&aor, Permission::ApproveRequest, "approvals").is_ok());
+
+        assert!(policy.authorize(&ra, Permission::SubmitRequest, "approvals").is_ok());
+        assert!(policy.authorize(&aor, Permission::SubmitRequest, "approvals").is_ok());
+
+        assert!(policy.authorize(&ops, Permission::ApproveRequest, "approvals").is_err());
+        assert!(policy.authorize(&ops, Permission::RejectRequest, "approvals").is_err());
+    }
+
+    /// CA configuration: /api/v1/profiles was moved from public to
+    /// Permission::ViewConfig. Validate that only authorized roles can read it.
+    #[test]
+    fn rbac_matrix_ca_profiles_gated() {
+        let policy = RbacPolicy::new().with_logging(false);
+        let admin = make_user(vec![Role::Administrator]);
+        let auditor = make_user(vec![Role::Auditor]);
+        let ra = make_user(vec![Role::RaStaff]);
+        let aor = make_user(vec![Role::Aor]);
+        let ops = make_user(vec![Role::OperationsStaff]);
+
+        assert!(policy.authorize(&admin, Permission::ViewConfig, "profiles").is_ok());
+        assert!(policy.authorize(&auditor, Permission::ViewConfig, "profiles").is_ok());
+        // OperationsStaff, RaStaff, Aor do NOT have ViewConfig per the matrix.
+        assert!(policy.authorize(&ops, Permission::ViewConfig, "profiles").is_err());
+        assert!(policy.authorize(&ra, Permission::ViewConfig, "profiles").is_err());
+        assert!(policy.authorize(&aor, Permission::ViewConfig, "profiles").is_err());
+    }
+
+    /// Separation of duties: no single role can both modify data AND read
+    /// the audit trail. This enforces AC-5 at the policy level.
+    #[test]
+    fn separation_of_duties_auditor_cannot_modify_and_admin_cannot_audit() {
+        let policy = RbacPolicy::new().with_logging(false);
+
+        for role in [
+            Role::Administrator,
+            Role::OperationsStaff,
+            Role::RaStaff,
+            Role::Aor,
+        ] {
+            let user = make_user(vec![role]);
+            assert!(
+                policy.authorize(&user, Permission::ReadAuditLog, "audit").is_err(),
+                "role {:?} must not be able to read audit logs",
+                role
+            );
+        }
+
+        let auditor = make_user(vec![Role::Auditor]);
+        for mutating in [
+            Permission::IssueCertificate,
+            Permission::RevokeCertificate,
+            Permission::ModifyConfig,
+            Permission::CreateUser,
+            Permission::ModifyUser,
+            Permission::DeleteUser,
+            Permission::ApproveRequest,
+            Permission::GenerateCaKey,
+        ] {
+            assert!(
+                policy.authorize(&auditor, mutating, "any").is_err(),
+                "Auditor must not be able to perform {:?}",
+                mutating
+            );
+        }
+    }
 }

@@ -190,12 +190,12 @@ impl Drbg {
 
         // Obtain entropy_input (384 bits = 48 bytes for AES-256)
         let mut entropy = Zeroizing::new([0u8; SEED_LENGTH]);
-        getrandom::getrandom(&mut *entropy)
+        getrandom::fill(&mut *entropy)
             .map_err(|e| Error::Entropy(format!("Failed to obtain entropy: {}", e)))?;
 
         // Obtain nonce (half the security strength = 128 bits = 16 bytes)
         let mut nonce = Zeroizing::new([0u8; 16]);
-        getrandom::getrandom(&mut *nonce)
+        getrandom::fill(&mut *nonce)
             .map_err(|e| Error::Entropy(format!("Failed to obtain nonce: {}", e)))?;
 
         // Create initial state
@@ -363,7 +363,7 @@ impl Drbg {
     pub fn reseed(&mut self) -> Result<()> {
         // Obtain fresh entropy
         let mut entropy = Zeroizing::new([0u8; SEED_LENGTH]);
-        getrandom::getrandom(&mut *entropy)
+        getrandom::fill(&mut *entropy)
             .map_err(|e| Error::Entropy(format!("Reseed failed: {}", e)))?;
 
         let mut state = self.state.lock().unwrap();

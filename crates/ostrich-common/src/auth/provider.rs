@@ -415,6 +415,72 @@ impl AuthProvider for CompositeAuthProvider {
     }
 }
 
+/// Authentication provider that rejects every request.
+///
+/// Intended as a safe placeholder for deployments that have not yet wired a
+/// real user store (password DB, mTLS CA, OIDC IdP, etc.). Every operation
+/// returns `AuthError::Internal("authentication not configured")`, so any
+/// attempt to call a protected endpoint fails closed with 401.
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3 - Access enforcement (fail-closed default)
+/// - NIST 800-53: SI-11 - Error handling (reveals no auth state to attackers)
+/// - NIAP PP-CA: FIA_UAU.1 - No user is ever authenticated by this provider
+pub struct DisabledAuthProvider;
+
+impl DisabledAuthProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DisabledAuthProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const DISABLED_AUTH_MSG: &str = "authentication not configured";
+
+#[async_trait]
+impl AuthProvider for DisabledAuthProvider {
+    async fn authenticate(&self, _credentials: &Credentials) -> AuthResult<AuthenticatedUser> {
+        Err(AuthError::Internal(DISABLED_AUTH_MSG.to_string()))
+    }
+
+    async fn validate_session(&self, _token: &str) -> AuthResult<SessionInfo> {
+        Err(AuthError::InvalidSession)
+    }
+
+    async fn create_session(&self, _user: &AuthenticatedUser) -> AuthResult<SessionInfo> {
+        Err(AuthError::Internal(DISABLED_AUTH_MSG.to_string()))
+    }
+
+    async fn invalidate_session(&self, _token: &str) -> AuthResult<()> {
+        Ok(())
+    }
+
+    async fn record_failed_attempt(&self, _username: &str, _reason: &str) -> AuthResult<()> {
+        Ok(())
+    }
+
+    async fn is_account_locked(&self, _username: &str) -> AuthResult<bool> {
+        Ok(false)
+    }
+
+    async fn unlock_account(&self, _username: &str) -> AuthResult<()> {
+        Ok(())
+    }
+
+    fn provider_name(&self) -> &str {
+        "disabled"
+    }
+
+    fn supported_methods(&self) -> &[AuthMethod] {
+        &[]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,5 +504,15 @@ mod tests {
         let creds = Credentials::api_key("my-api-key");
         assert!(matches!(creds, Credentials::ApiKey { .. }));
         assert_eq!(creds.auth_method(), AuthMethod::ApiKey);
+    }
+
+    #[tokio::test]
+    async fn test_disabled_provider_fails_closed() {
+        let provider = DisabledAuthProvider::new();
+        let creds = Credentials::password("user", "pass");
+        assert!(provider.authenticate(&creds).await.is_err());
+        assert!(provider.validate_session("anything").await.is_err());
+        assert_eq!(provider.provider_name(), "disabled");
+        assert!(provider.supported_methods().is_empty());
     }
 }

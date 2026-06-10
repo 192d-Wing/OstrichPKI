@@ -28,3 +28,8 @@ uuid = { workspace = true }
 
 # Utilities
 thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+ostrich-audit = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["macros"] }

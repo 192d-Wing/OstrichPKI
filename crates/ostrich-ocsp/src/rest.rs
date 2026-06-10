@@ -64,6 +64,23 @@ impl OcspApiState {
 pub fn create_router(responder: Arc<OcspResponder>) -> Router {
     let state = Arc::new(OcspApiState::new(responder));
 
+    // PUBLIC-ENDPOINT ALLOWLIST (intentionally unauthenticated):
+    //
+    // Every route exposed by this service is by design reachable without an
+    // authenticated session. This is a deliberate exception to the project's
+    // default-authenticated policy and is justified below. Any future routes
+    // added here MUST either remain public with an explicit justification, or
+    // be moved behind the standard AuthLayer + AuthzLayer stack used by the
+    // other services (see crates/ostrich-ca/src/rest.rs for the pattern).
+    //
+    // - POST /, GET /    - OCSP request/response endpoints. RFC 6960 §2 defines
+    //                      OCSP as a protocol for any relying party to query
+    //                      certificate status; responses are self-signed and
+    //                      verifiable. Authentication would defeat the purpose.
+    //                      NIAP PP-CA FDP_IFC.1: unauthenticated OCSP access
+    //                      permitted (PP line 358).
+    // - GET /health      - Orchestrator liveness probe. NIST SI-17.
+    // - GET /ready       - Orchestrator readiness probe. NIST SI-17.
     Router::new()
         .route("/", post(ocsp_post))
         .route("/", get(ocsp_get))

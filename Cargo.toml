@@ -88,7 +88,10 @@ x509-cert = { version = "0.2.5", features = ["builder", "pem"] }
 x509-parser = "0.18"
 der = { version = "0.7", features = ["derive", "alloc", "oid"] }
 spki = "0.7"
-const-oid = "0.10"
+# Pinned at 0.9 to match x509-cert 0.2.5's transitive dependency. Bumping to
+# 0.10 introduces a type-level split (ObjectIdentifier<39> vs the un-parameterized
+# 0.9 type) that propagates through every AttributeType / extn_id usage.
+const-oid = { version = "0.9", features = ["db"] }
 pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
 pkcs1 = { version = "0.7", features = ["pem"] }
 cms = "0.2"
@@ -156,10 +159,15 @@ reqwest = { version = "0.13", features = ["json"] }
 hickory-resolver = "0.25"
 hickory-proto = "0.25"
 
-# TLS (for ACME TLS-ALPN-01 challenge and mTLS)
-rustls = "0.23"
+# TLS (for ACME TLS-ALPN-01 challenge, mTLS, and HTTPS service binaries)
+# The "ring" feature makes the ring CryptoProvider available; ostrich-common::tls
+# selects it explicitly to keep the TLS stack on the same FIPS-track crypto
+# library the rest of the project uses (NIST 800-53: SC-13).
+rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 rustls-pki-types = "1.13"
+# HTTPS serving for axum routers (used by ostrich-common::tls::serve)
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
