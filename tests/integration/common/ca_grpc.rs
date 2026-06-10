@@ -63,6 +63,10 @@ pub fn build_issue_request(
             "test_suite".to_string(),
             "ca_core_test".to_string(),
         )]),
+        // These tests issue from a bare public key (no CSR), so the dev-stack CA
+        // runs with CA_REQUIRE_POP=false. Production defaults to requiring a CSR
+        // (proof-of-possession); see services/ca-server CA_REQUIRE_POP.
+        csr_der: Vec::new(),
     }
 }
 

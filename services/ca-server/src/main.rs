@@ -78,6 +78,12 @@ struct Args {
     #[arg(long, env = "CA_ISSUERS_URL")]
     ca_issuers_url: Option<String>,
 
+    /// Require a CSR (proof-of-possession) for end-entity issuance (RFC 2986 /
+    /// NIST 800-53 SI-10). Enabled by default; disable only for trusted internal
+    /// flows that issue against a bare public key.
+    #[arg(long, env = "CA_REQUIRE_POP", default_value = "true")]
+    require_proof_of_possession: bool,
+
     /// Require an approved request for every issuance (NIAP FDP_CER_EXT.3).
     /// Set to false for automated pipelines (e.g. ACME, dev/E2E) where
     /// challenge validation serves as the approval.
@@ -443,6 +449,15 @@ async fn bootstrap_ca(
     if let Some(ca_issuers_url) = &args.ca_issuers_url {
         tracing::info!(ca_issuers_url = %ca_issuers_url, "Embedding AIA CA Issuers URL in issued certificates");
         ca.set_ca_issuers_url(ca_issuers_url.clone());
+    }
+
+    // Proof-of-possession policy (RFC 2986 / SI-10). Secure default: required.
+    ca.set_require_proof_of_possession(args.require_proof_of_possession);
+    if !args.require_proof_of_possession {
+        tracing::warn!(
+            "CA_REQUIRE_POP=false: end-entity certificates may be issued against a \
+             bare public key without proof-of-possession (not recommended)."
+        );
     }
 
     tracing::info!(

@@ -173,6 +173,9 @@ async fn issued_certificates_carry_aia_extension_verified_by_openssl() {
         .expect("CertificateAuthority::new");
     ca.set_ocsp_responder_url(OCSP_URL);
     ca.set_ca_issuers_url(CA_ISSUERS_URL);
+    // This test issues from a bare public key; proof-of-possession is covered by
+    // the dedicated pop_e2e test, so disable it here.
+    ca.set_require_proof_of_possession(false);
     // Issue without an approval request for the test (the wiring under test is
     // AIA emission, not the approval workflow).
     ca.set_approval_config(ApprovalConfig {

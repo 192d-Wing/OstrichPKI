@@ -157,6 +157,10 @@ services:
       CA_REST_ADDRESS: 0.0.0.0:8080
       CA_GRPC_ADDRESS: 0.0.0.0:50051
       RUST_LOG: info
+      # The ca_core integration tests issue from a bare public key (no CSR), so
+      # proof-of-possession enforcement is disabled in the dev stack. Production
+      # defaults to CA_REQUIRE_POP=true.
+      CA_REQUIRE_POP: "false"
     depends_on:
       postgres:
         condition: service_healthy

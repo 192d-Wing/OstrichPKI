@@ -170,7 +170,13 @@ impl CertificateAuthorityService for CaGrpcService {
             public_key: req.public_key,
             requestor: req.requestor,
             metadata,
-            csr_der: None,             // gRPC API doesn't currently accept CSR
+            // CSR is optional on the wire; an empty field means "not provided".
+            // When present, issue() verifies proof-of-possession (RFC 2986 / SI-10).
+            csr_der: if req.csr_der.is_empty() {
+                None
+            } else {
+                Some(req.csr_der)
+            },
             approval_request_id: None, // TODO: Accept from request
             // CA generates a request_id (FDP_CER_EXT.2). TODO: carry the calling
             // protocol's id (ACME order / EST enrollment) once added to the proto.

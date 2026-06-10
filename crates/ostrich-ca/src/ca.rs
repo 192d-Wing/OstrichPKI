@@ -192,6 +192,12 @@ impl CertificateAuthority {
         self.issuer.set_ca_issuers_url(url);
     }
 
+    /// Enable/disable the proof-of-possession requirement for end-entity
+    /// issuance (enabled by default). NIST 800-53 SI-10 / SC-8(1); RFC 2986.
+    pub fn set_require_proof_of_possession(&mut self, require: bool) {
+        self.issuer.set_require_proof_of_possession(require);
+    }
+
     /// Get the certificate issuer
     ///
     /// NIAP PP-CA: FMT_SMF.1.1 - Access certificate issuance security function

@@ -166,6 +166,13 @@ pub struct CertificateIssuer {
     ///
     /// NIAP PP-CA: FMT_MSA.1.2 - Enforce secure security-attribute defaults.
     secure_defaults: ostrich_x509::SecureDefaults,
+
+    /// When true (default), end-entity issuance requires a CSR so the CA can
+    /// verify proof-of-possession of the private key. CA certificates are exempt
+    /// (their key lives in the CA provider; there is no external holder).
+    ///
+    /// NIST 800-53: SI-10 / SC-8(1); RFC 2986 - proof-of-possession.
+    require_proof_of_possession: bool,
 }
 
 impl CertificateIssuer {
@@ -191,6 +198,7 @@ impl CertificateIssuer {
             ocsp_responder_url: None,
             ca_issuers_url: None,
             secure_defaults: ostrich_x509::SecureDefaults::new(),
+            require_proof_of_possession: true,
         }
     }
 
@@ -223,6 +231,7 @@ impl CertificateIssuer {
             ocsp_responder_url: None,
             ca_issuers_url: None,
             secure_defaults: ostrich_x509::SecureDefaults::new(),
+            require_proof_of_possession: true,
         }
     }
 
@@ -299,6 +308,15 @@ impl CertificateIssuer {
     /// (e.g. `http://ca.example.com/api/v1/ca-certificate`).
     pub fn set_ca_issuers_url(&mut self, url: impl Into<String>) {
         self.ca_issuers_url = Some(url.into());
+    }
+
+    /// Enable/disable the proof-of-possession requirement for end-entity
+    /// issuance. Enabled by default; disabling it permits issuing against a bare
+    /// public key (no CSR), which should only be done for trusted internal flows.
+    ///
+    /// NIST 800-53: SI-10 / SC-8(1) - proof-of-possession.
+    pub fn set_require_proof_of_possession(&mut self, require: bool) {
+        self.require_proof_of_possession = require;
     }
 
     /// Issue a certificate
@@ -498,6 +516,30 @@ impl CertificateIssuer {
                 "CSR signature verified for subject: {}",
                 request.subject.to_string_rfc4514()
             );
+        }
+
+        // Proof-of-possession policy: an end-entity certificate must be backed by
+        // a verified CSR so the requester proves it holds the private key. CA
+        // certificates are exempt (the key lives in the CA's provider; there is
+        // no external party to prove possession). Fail secure: deny + audit.
+        //
+        // COMPLIANCE MAPPING:
+        // - NIST 800-53: SI-10 (input validation), SC-8(1) (proof of possession)
+        // - RFC 2986 - PKCS#10 certification request signature
+        if self.require_proof_of_possession
+            && !profile.basic_constraints_ca
+            && request.csr_der.is_none()
+        {
+            audit_event.outcome = EventOutcome::Failure;
+            self.audit_sink
+                .record(&mut audit_event)
+                .await
+                .map_err(Error::Audit)?;
+            return Err(Error::InvalidRequest(
+                "proof-of-possession required: end-entity issuance must include a CSR \
+                 (RFC 2986 / SI-10)"
+                    .to_string(),
+            ));
         }
 
         // Generate serial number

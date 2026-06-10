@@ -364,6 +364,19 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
 - Validates attribute structure before certificate issuance
 - Used by ACME (RFC 8555) and EST (RFC 7030) for CSR validation
 
+**Proof-of-Possession enforcement (RFC 2986 / NIST 800-53 SI-10):**
+
+- The CA issuance path (`CertificateIssuer::issue`) verifies the CSR signature
+  (stateless `verify_with_spki` over the CertificationRequestInfo) and that the
+  CSR public key matches the request, proving the requester holds the private key.
+- The direct CA API now carries the CSR end-to-end: `csr_der` added to the gRPC
+  `IssueCertificateRequest` (proto) and the REST issuance body; the ACME and EST
+  CA clients forward the client's CSR instead of only the extracted public key.
+- End-entity issuance **requires** a CSR by default (`CA_REQUIRE_POP=true`); CA
+  certificates are exempt. Configurable via `services/ca-server` `--require-proof-of-possession` / `CA_REQUIRE_POP`.
+- **Live evidence:** `pop_e2e` proves all three outcomes against a SoftHSM-backed
+  CA — no CSR → rejected, valid CSR+matching key → issued, CSR+wrong key → rejected.
+
 **Test Evidence:**
 
 - [parser.rs:417-510](../../crates/ostrich-x509/src/parser.rs#L417-L510) - 2 unit tests with OpenSSL CSRs

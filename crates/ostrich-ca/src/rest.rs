@@ -288,7 +288,7 @@ async fn issue_certificate(
         public_key: req.public_key,
         requestor: user.username.clone(), // Use authenticated identity
         metadata: req.metadata,
-        csr_der: None, // REST API doesn't currently accept CSR
+        csr_der: req.csr_der, // when present, issue() verifies proof-of-possession (RFC 2986)
         approval_request_id,
         request_id: None, // CA generates a request_id for traceability (FDP_CER_EXT.2)
     };
@@ -762,6 +762,11 @@ pub struct IssueCertificateRequest {
     pub requestor: String,
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
+    /// Optional base64 DER PKCS#10 CSR. When present the CA verifies
+    /// proof-of-possession (RFC 2986); required for end-entity issuance when the
+    /// CA enforces proof-of-possession (the secure default).
+    #[serde(default, with = "base64_opt_serde")]
+    pub csr_der: Option<Vec<u8>>,
     /// Approved request to issue against (NIAP PP-CA FDP_CER_EXT.3).
     /// Required when the CA runs with the approval workflow enabled (the
     /// secure default); the referenced request must already be Approved by a
@@ -977,6 +982,35 @@ mod base64_serde {
     {
         let s = String::deserialize(deserializer)?;
         BASE64_STANDARD.decode(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// base64 (de)serialization for an `Option<Vec<u8>>` field (None when absent/null).
+mod base64_opt_serde {
+    use base64::prelude::*;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match bytes {
+            Some(b) => serializer.serialize_some(&BASE64_STANDARD.encode(b)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt = Option::<String>::deserialize(deserializer)?;
+        match opt {
+            Some(s) => Ok(Some(
+                BASE64_STANDARD.decode(&s).map_err(serde::de::Error::custom)?,
+            )),
+            None => Ok(None),
+        }
     }
 }
 

@@ -105,6 +105,8 @@ impl AcmeCaClient {
             public_key: public_key_der,
             requestor: format!("acme::{}", account_id),
             metadata,
+            // Forward the CSR so the CA verifies proof-of-possession (RFC 2986).
+            csr_der: csr_der.to_vec(),
         };
 
         // Call CA service with retry logic

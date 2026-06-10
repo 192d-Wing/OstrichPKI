@@ -56,6 +56,12 @@ message IssueCertificateRequest {
 
   // Additional metadata (optional)
   map<string, string> metadata = 6;
+
+  // DER-encoded PKCS#10 CSR (optional). When present the CA verifies the CSR
+  // signature (proof-of-possession of the private key) and that its public key
+  // matches `public_key`. RFC 2986; required for end-entity issuance when the
+  // CA enforces proof-of-possession.
+  bytes csr_der = 7;
 }
 
 // Certificate issuance response
