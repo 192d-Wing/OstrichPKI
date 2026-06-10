@@ -40,6 +40,7 @@ impl CrlRepository {
     /// its number and validity window. The UNIQUE(ca_id, crl_number) constraint
     /// enforces RFC 5280 §5.2.3 monotonicity at the database layer.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_crl(
         &self,
         ca_id: Uuid,
@@ -48,13 +49,16 @@ impl CrlRepository {
         next_update: DateTime<Utc>,
         der_encoded: Vec<u8>,
         pem_encoded: String,
+        is_delta: bool,
+        base_crl_number: Option<i64>,
     ) -> Result<Crl> {
         let crl = sqlx::query_as::<_, Crl>(
             r#"
             INSERT INTO crls (
-                ca_id, crl_number, this_update, next_update, der_encoded, pem_encoded
+                ca_id, crl_number, this_update, next_update, der_encoded, pem_encoded,
+                is_delta, base_crl_number
             )
-            VALUES ($1, $2, $3, $4, $5, $6)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING *
             "#,
         )
@@ -64,6 +68,8 @@ impl CrlRepository {
         .bind(next_update)
         .bind(der_encoded)
         .bind(pem_encoded)
+        .bind(is_delta)
+        .bind(base_crl_number)
         .fetch_one(self.pool.pool())
         .await
         .map_err(|e| Error::Query(format!("Failed to persist CRL: {}", e)))?;
@@ -71,20 +77,31 @@ impl CrlRepository {
         Ok(crl)
     }
 
-    /// Find the latest (highest-numbered) CRL for a CA.
+    /// Find the latest (highest-numbered) FULL CRL for a CA.
     ///
-    /// RFC 5280 §5 - the most recent CRL is the one served to relying parties.
+    /// RFC 5280 §5 - the most recent full CRL is served at the distribution point
+    /// and is the base for delta CRLs.
     pub async fn find_latest_crl(&self, ca_id: Uuid) -> Result<Option<Crl>> {
+        self.find_latest(ca_id, false).await
+    }
+
+    /// Find the latest (highest-numbered) DELTA CRL for a CA (RFC 5280 §5.2.4).
+    pub async fn find_latest_delta_crl(&self, ca_id: Uuid) -> Result<Option<Crl>> {
+        self.find_latest(ca_id, true).await
+    }
+
+    async fn find_latest(&self, ca_id: Uuid, is_delta: bool) -> Result<Option<Crl>> {
         let crl = sqlx::query_as::<_, Crl>(
             r#"
             SELECT *
             FROM crls
-            WHERE ca_id = $1
+            WHERE ca_id = $1 AND is_delta = $2
             ORDER BY crl_number DESC
             LIMIT 1
             "#,
         )
         .bind(ca_id)
+        .bind(is_delta)
         .fetch_optional(self.pool.pool())
         .await
         .map_err(|e| Error::Query(format!("Failed to load latest CRL: {}", e)))?;

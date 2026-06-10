@@ -41,6 +41,8 @@ mod audit_signing_e2e;
 mod issuance_aia_e2e;
 #[cfg(test)]
 mod pop_e2e;
+#[cfg(test)]
+mod crl_delta_e2e;
 
 pub use approval::{ApprovalEngine, ApprovalRequest, ApprovalStatus, RequestType};
 pub use ca::CertificateAuthority;

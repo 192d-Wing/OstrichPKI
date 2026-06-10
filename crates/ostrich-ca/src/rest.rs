@@ -127,7 +127,8 @@ pub fn create_router(
             get(check_revocation_status),
         )
         // RFC 5280 §5 - public CRL distribution point (no auth)
-        .route("/api/v1/crl", get(get_crl));
+        .route("/api/v1/crl", get(get_crl))
+        .route("/api/v1/crl/delta", get(get_delta_crl));
 
     // Per-permission authorization middleware factory.
     //
@@ -162,6 +163,10 @@ pub fn create_router(
         .route(
             "/api/v1/crl",
             post(generate_crl).route_layer(authz(Permission::GenerateCrl)),
+        )
+        .route(
+            "/api/v1/crl/delta",
+            post(generate_delta_crl).route_layer(authz(Permission::GenerateCrl)),
         )
         // Configuration metadata
         // Permission::ViewConfig - profile catalog is configuration data (NIAP FMT_SMF.1)
@@ -421,6 +426,54 @@ async fn get_crl(State(state): State<Arc<ApiState>>) -> Result<Response> {
         None => Ok((
             StatusCode::NOT_FOUND,
             "No CRL has been generated yet".to_string(),
+        )
+            .into_response()),
+    }
+}
+
+/// Generate a delta CRL (RFC 5280 §5.2.4) listing entries revoked since the
+/// latest full (base) CRL. Requires a base full CRL to exist.
+async fn generate_delta_crl(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(_user): AuthUser,
+) -> Result<Json<GenerateCrlResponse>> {
+    let crl = state
+        .ca
+        .revocation_manager()
+        .generate_delta_crl(state.ca.ca_dn.clone())
+        .await?;
+
+    Ok(Json(GenerateCrlResponse {
+        crl_number: crl.crl_number,
+        this_update: crl.this_update.to_rfc3339(),
+        next_update: crl.next_update.to_rfc3339(),
+        revoked_count: crl.revoked_count,
+        der_encoded: BASE64_STANDARD.encode(&crl.der_encoded),
+        pem_encoded: crl.pem_encoded,
+    }))
+}
+
+/// Serve the latest delta CRL at its public distribution point (the Freshest
+/// CRL location, RFC 5280 §5.2.6). Returns 404 until a delta CRL exists.
+async fn get_delta_crl(State(state): State<Arc<ApiState>>) -> Result<Response> {
+    use axum::http::header::CONTENT_TYPE;
+
+    let crl_repo = CrlRepository::new(state.db_pool.clone());
+    let latest = crl_repo
+        .find_latest_delta_crl(state.ca.ca_id)
+        .await
+        .map_err(|e| Error::CrlGeneration(format!("Failed to load delta CRL: {}", e)))?;
+
+    match latest {
+        Some(crl) => Ok((
+            StatusCode::OK,
+            [(CONTENT_TYPE, "application/pkix-crl")],
+            crl.der_encoded,
+        )
+            .into_response()),
+        None => Ok((
+            StatusCode::NOT_FOUND,
+            "No delta CRL has been generated yet".to_string(),
         )
             .into_response()),
     }

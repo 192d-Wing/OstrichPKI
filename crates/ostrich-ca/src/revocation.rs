@@ -75,6 +75,11 @@ pub struct RevocationManager {
 
     /// CRL validity hours
     crl_validity_hours: u32,
+
+    /// Public URL of the delta CRL distribution point. When set, full CRLs carry
+    /// a Freshest CRL extension pointing here (RFC 5280 §5.2.6) so relying
+    /// parties can discover delta CRLs.
+    delta_crl_url: Option<String>,
 }
 
 impl RevocationManager {
@@ -94,7 +99,14 @@ impl RevocationManager {
             db_pool,
             audit_sink,
             crl_validity_hours,
+            delta_crl_url: None,
         }
+    }
+
+    /// Set the delta CRL distribution URL, emitted as the Freshest CRL extension
+    /// on full CRLs (RFC 5280 §5.2.6).
+    pub fn set_delta_crl_url(&mut self, url: impl Into<String>) {
+        self.delta_crl_url = Some(url.into());
     }
 
     /// Revoke a certificate
@@ -228,9 +240,14 @@ impl RevocationManager {
 
         // Generate CRL
         let crl_generator = CrlGenerator::new(issuer_dn, self.crl_validity_hours);
-        let crl_builder = crl_generator
+        let mut crl_builder = crl_generator
             .generate(current_crl_number, revoked_info)?
             .signature_algorithm(sig_alg);
+
+        // RFC 5280 §5.2.6 - point relying parties at the delta CRL when configured.
+        if let Some(delta_url) = &self.delta_crl_url {
+            crl_builder = crl_builder.freshest_crl(delta_url.clone());
+        }
 
         let tbs_crl = crl_builder.build_tbs()?;
 
@@ -271,6 +288,8 @@ impl RevocationManager {
                 tbs_crl.next_update,
                 der_encoded.clone(),
                 pem_encoded.clone(),
+                false, // full CRL
+                None,
             )
             .await?;
 
@@ -288,6 +307,125 @@ impl RevocationManager {
         tracing::info!(
             "CRL generated: number {} with {} revoked certificates",
             current_crl_number,
+            revoked_count
+        );
+
+        Ok(GeneratedCrl {
+            crl_number: current_crl_number,
+            this_update: tbs_crl.this_update,
+            next_update: tbs_crl.next_update,
+            revoked_count,
+            der_encoded,
+            pem_encoded,
+        })
+    }
+
+    /// Generate a delta CRL (RFC 5280 §5.2.4).
+    ///
+    /// Lists only certificates revoked since the latest full (base) CRL's
+    /// thisUpdate, carrying a critical Delta CRL Indicator with the base CRL
+    /// number. Delta and full CRLs share the monotonic crl_number sequence.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - RFC 5280 §5.2.4 - Delta CRL Indicator
+    /// - NIAP PP-CA: FMT_SMF.1 - CRL generation; FAU_GEN.1.1 - audit
+    pub async fn generate_delta_crl(
+        &self,
+        issuer_dn: ostrich_common::types::DistinguishedName,
+    ) -> Result<GeneratedCrl> {
+        let crl_repo = CrlRepository::new(self.db_pool.clone());
+
+        // A delta CRL is relative to a base full CRL; require one to exist.
+        let base = crl_repo
+            .find_latest_crl(self.ca_certificate_id)
+            .await?
+            .ok_or_else(|| {
+                Error::CrlGeneration(
+                    "no base CRL exists; generate a full CRL before a delta".to_string(),
+                )
+            })?;
+
+        // RFC 5280 §5.2.4 - a delta lists changes since the base CRL's thisUpdate.
+        let cert_repo = CertificateRepository::new(self.db_pool.clone());
+        let revoked_certs = cert_repo.find_revoked(&self.ca_certificate_id).await?;
+        let delta_info: Vec<RevokedCertificateInfo> = revoked_certs
+            .iter()
+            .filter_map(|cert| {
+                let revocation_time = cert.revocation_time?;
+                if revocation_time <= base.this_update {
+                    return None;
+                }
+                let reason = cert.revocation_reason.and_then(RevocationReason::from_i32);
+                Some(RevokedCertificateInfo::new(
+                    cert.serial_number.clone(),
+                    revocation_time,
+                    reason,
+                ))
+            })
+            .collect();
+        let revoked_count = delta_info.len();
+
+        let crl_number_i64 = crl_repo.next_crl_number(self.ca_certificate_id).await?;
+        let current_crl_number = crl_number_i64 as u64;
+
+        let sig_alg =
+            ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type)
+                .map_err(|e| {
+                    Error::Revocation(format!("unsupported CA key type for CRL signing: {}", e))
+                })?;
+
+        let crl_generator = CrlGenerator::new(issuer_dn, self.crl_validity_hours);
+        let crl_builder = crl_generator
+            .generate(current_crl_number, delta_info)?
+            .signature_algorithm(sig_alg)
+            .delta_crl_indicator(base.crl_number as u64);
+
+        let tbs_crl = crl_builder.build_tbs()?;
+        let tbs_der = tbs_crl.to_der()?;
+        let signature = self
+            .crypto_provider
+            .sign(&self.ca_key, sig_alg, &tbs_der)
+            .await?;
+        let signature = ostrich_x509::signing::encode_x509_signature(sig_alg, signature)
+            .map_err(|e| Error::CrlGeneration(format!("failed to encode signature: {}", e)))?;
+        let der_encoded = self.build_signed_crl(&tbs_der, &signature)?;
+        let pem_encoded = self.crl_der_to_pem(&der_encoded)?;
+
+        crl_repo
+            .create_crl(
+                self.ca_certificate_id,
+                crl_number_i64,
+                tbs_crl.this_update,
+                tbs_crl.next_update,
+                der_encoded.clone(),
+                pem_encoded.clone(),
+                true, // delta CRL
+                Some(base.crl_number),
+            )
+            .await?;
+
+        let mut audit_event = AuditEventBuilder::new(
+            EventType::CrlGeneration,
+            "system",
+            self.ca_certificate_id.to_string(),
+            "generate_delta",
+            EventOutcome::Success,
+        )
+        .with_details(serde_json::json!({
+            "crl_number": current_crl_number,
+            "base_crl_number": base.crl_number,
+            "revoked_count": revoked_count,
+        }))
+        .build();
+        self.audit_sink
+            .record(&mut audit_event)
+            .await
+            .map_err(Error::Audit)?;
+
+        tracing::info!(
+            "Delta CRL generated: number {} (base {}) with {} entries",
+            current_crl_number,
+            base.crl_number,
             revoked_count
         );
 

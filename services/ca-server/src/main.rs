@@ -63,6 +63,12 @@ struct Args {
     #[arg(long, env = "CA_CRL_URL")]
     crl_distribution_url: Option<String>,
 
+    /// Public URL of the delta CRL distribution point (RFC 5280 §5.2.6). When
+    /// set, full CRLs carry a Freshest CRL extension pointing here so relying
+    /// parties can discover delta CRLs (served at GET /api/v1/crl/delta).
+    #[arg(long, env = "CA_DELTA_CRL_URL")]
+    delta_crl_url: Option<String>,
+
     /// Public OCSP responder URL embedded into the Authority Information Access
     /// extension of every issued certificate (RFC 5280 §4.2.2.1 / RFC 6960) so
     /// relying parties can discover the OCSP responder for revocation checking.
@@ -430,6 +436,13 @@ async fn bootstrap_ca(
             "CA_CRL_URL not set: issued certificates will NOT carry a CRL \
              Distribution Points extension (RFC 5280 §4.2.1.13)."
         );
+    }
+
+    // Delta CRL distribution point (RFC 5280 §5.2.6): full CRLs gain a Freshest
+    // CRL pointer so relying parties can discover delta CRLs.
+    if let Some(delta_url) = &args.delta_crl_url {
+        tracing::info!(delta_url = %delta_url, "Full CRLs will carry a Freshest CRL pointer to the delta CRL");
+        ca.set_delta_crl_url(delta_url.clone());
     }
 
     // Authority Information Access (RFC 5280 §4.2.2.1 / RFC 6960): embed the

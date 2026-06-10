@@ -174,6 +174,13 @@ impl CertificateAuthority {
         self.issuer.set_crl_distribution_url(url);
     }
 
+    /// Set the delta CRL distribution URL. Full CRLs gain a Freshest CRL
+    /// extension pointing here so relying parties can discover delta CRLs
+    /// (RFC 5280 §5.2.6).
+    pub fn set_delta_crl_url(&mut self, url: impl Into<String>) {
+        self.revocation_manager.set_delta_crl_url(url);
+    }
+
     /// Set the OCSP responder URL embedded into issued certificates (AIA).
     ///
     /// RFC 5280 §4.2.2.1 / RFC 6960 - issued leaves gain an Authority

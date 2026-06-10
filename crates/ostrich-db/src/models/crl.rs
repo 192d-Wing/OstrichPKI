@@ -52,6 +52,13 @@ pub struct Crl {
     /// PEM-encoded signed CRL (for convenience)
     pub pem_encoded: String,
 
+    /// Whether this is a delta CRL (RFC 5280 §5.2.4).
+    pub is_delta: bool,
+
+    /// For a delta CRL, the crl_number of the full CRL it is relative to
+    /// (the BaseCRLNumber in the Delta CRL Indicator). NULL for full CRLs.
+    pub base_crl_number: Option<i64>,
+
     /// Record creation timestamp
     pub created_at: DateTime<Utc>,
 }
