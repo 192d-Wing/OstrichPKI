@@ -3654,6 +3654,7 @@ dependencies = [
  "ostrich-common",
  "ostrich-crypto",
  "ostrich-db",
+ "ostrich-x509",
  "serde",
  "serde_json",
  "sha2",

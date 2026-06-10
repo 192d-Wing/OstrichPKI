@@ -1125,10 +1125,12 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - [crates/ostrich-crypto/src/pkcs11/mod.rs:682-797](../../crates/ostrich-crypto/src/pkcs11/mod.rs#L682-L797) - HSM verification operations
 - [crates/ostrich-crypto/src/drbg/ctr_drbg.rs](../../crates/ostrich-crypto/src/drbg/ctr_drbg.rs) - **NIST SP 800-90A DRBG**
 - [crates/ostrich-crypto/src/drbg/health_tests.rs](../../crates/ostrich-crypto/src/drbg/health_tests.rs) - **FIPS 140-3 health tests**
-- [crates/ostrich-x509/src/builder/certificate.rs](../../crates/ostrich-x509/src/builder/certificate.rs) - Certificate DER encoding and signing
-- [crates/ostrich-x509/src/builder/crl.rs](../../crates/ostrich-x509/src/builder/crl.rs) - CRL DER encoding and signing
-- [crates/ostrich-ca/src/issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - Certificate signing operations
-- [crates/ostrich-ca/src/revocation.rs](../../crates/ostrich-ca/src/revocation.rs) - CRL signing operations
+- [crates/ostrich-x509/src/signing.rs](../../crates/ostrich-x509/src/signing.rs) - **Classical signature-algorithm agility** (RFC 5280 §4.1.1.2): maps CA key type to signature algorithm, emits matching AlgorithmIdentifier (RSA NULL params per RFC 4055; ECDSA/Ed25519 absent params per RFC 5758 §3.2 / RFC 8410), and re-encodes ECDSA fixed r||s into DER Ecdsa-Sig-Value
+- [crates/ostrich-x509/src/builder/certificate.rs](../../crates/ostrich-x509/src/builder/certificate.rs) - Certificate DER encoding and signing (signature_algorithm threaded into TBS)
+- [crates/ostrich-x509/src/builder/crl.rs](../../crates/ostrich-x509/src/builder/crl.rs) - CRL DER encoding and signing (signature_algorithm threaded into TBS)
+- [crates/ostrich-ca/src/issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - Certificate signing operations (RSA/ECDSA/Ed25519 CA keys)
+- [crates/ostrich-ca/src/revocation.rs](../../crates/ostrich-ca/src/revocation.rs) - CRL signing operations (RSA/ECDSA/Ed25519 CA keys)
+- [crates/ostrich-ocsp/src/responder.rs](../../crates/ostrich-ocsp/src/responder.rs) - OCSP response signing (signatureAlgorithm AlgorithmIdentifier flows from chosen algorithm, RFC 6960 §4.2.1)
 
 **Evidence:**
 
@@ -1141,6 +1143,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - ✅ RSA-PSS with SHA-256/384/512 (preferred for new signatures)
 - ✅ RSA PKCS#1 v1.5 with SHA-256/384/512 (legacy compatibility)
 - ✅ ECDSA with SHA-256/384/512
+- ✅ **Classical CA signing agility**: certificates, CRLs, and OCSP responses can be signed with RSA-PKCS1, ECDSA P-256/P-384, or Ed25519 CA keys (no longer RSA-only); declared and actual algorithms always match per RFC 5280 §4.1.1.2 (`crates/ostrich-x509/src/signing.rs`)
+- ✅ ECDSA fixed r||s signatures from the software and PKCS#11 (CKM_ECDSA) providers re-encoded to DER Ecdsa-Sig-Value for X.509/CMS/OCSP (RFC 5758 §3.2)
 - ✅ DER/ASN.1 encoding fully implemented for X.509 certificates and CRLs
 - ✅ Cryptographic signing operations integrated with CryptoProvider trait
 - ✅ Key usage enforcement through certificate extensions (FCS_COP.1)

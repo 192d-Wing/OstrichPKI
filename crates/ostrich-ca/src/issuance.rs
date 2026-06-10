@@ -29,7 +29,7 @@ use crate::{
 use chrono::{DateTime, Utc};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
 use ostrich_common::types::{DistinguishedName, SerialNumber};
-use ostrich_crypto::{Algorithm, CryptoProvider, KeyHandle};
+use ostrich_crypto::{CryptoProvider, KeyHandle};
 use ostrich_db::{
     DatabasePool,
     models::Certificate,
@@ -392,11 +392,24 @@ impl CertificateIssuer {
             .map_err(|e| {
                 Error::Issuance(format!("Failed to parse CA subject DN: {}", e))
             })?;
+        // RFC 5280 §4.1.1.2 - choose the signature algorithm from the CA key
+        // type so the TBS AlgorithmIdentifier, the outer signatureAlgorithm, and
+        // the actual signing call all agree (RSA / ECDSA P-256/P-384 / Ed25519).
+        let sig_alg =
+            ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type)
+                .map_err(|e| {
+                    Error::Issuance(format!(
+                        "unsupported CA key type for issuance: {}",
+                        e
+                    ))
+                })?;
+
         let mut builder = CertificateBuilder::from_profile(profile)
             .serial_number(serial_number.clone())
             .subject(request.subject.clone())
             .issuer(issuer_dn)
-            .public_key(request.public_key.clone());
+            .public_key(request.public_key.clone())
+            .signature_algorithm(sig_alg);
 
         // Add subject alternative names
         for san in request.subject_alt_names {
@@ -413,30 +426,19 @@ impl CertificateIssuer {
         //
         // The signing algorithm MUST match the AlgorithmIdentifier the builder
         // wrote into the TBS (RFC 5280 §4.1.1.2 requires tbsCertificate.signature
-        // and signatureAlgorithm to be identical). CertificateBuilder currently
-        // declares sha256WithRSAEncryption (PKCS#1 v1.5), so we sign with
-        // RsaPkcs1Sha256. Signing with a different scheme (the previous code
-        // used RSA-PSS here) produces certificates that fail verification.
-        //
-        // POAM: full algorithm agility (ECDSA/EdDSA/ML-DSA selection from the
-        // CA key type, propagated into the builder's AlgorithmIdentifier) is
-        // tracked as a follow-up; until then non-RSA CA keys are rejected.
-        let signature_algorithm = match self.ca_key.key_type {
-            ostrich_crypto::KeyType::Rsa2048
-            | ostrich_crypto::KeyType::Rsa3072
-            | ostrich_crypto::KeyType::Rsa4096 => Algorithm::RsaPkcs1Sha256,
-            other => {
-                return Err(Error::Issuance(format!(
-                    "CA key type {:?} not yet supported for issuance \
-                     (signature algorithm selection is RSA-only pending algorithm agility)",
-                    other
-                )));
-            }
-        };
+        // and signatureAlgorithm to be identical). Both come from `sig_alg`
+        // (the shared signing module), so RSA / ECDSA / Ed25519 CA keys all
+        // produce consistent, verifiable certificates.
         let signature = self
             .crypto_provider
-            .sign(&self.ca_key, signature_algorithm, &tbs_der)
+            .sign(&self.ca_key, sig_alg, &tbs_der)
             .await?;
+
+        // ECDSA signatures come back as fixed-length r||s from the provider;
+        // X.509 requires DER Ecdsa-Sig-Value (RFC 5758 §3.2). RSA/Ed25519 pass
+        // through unchanged. The encoded bytes go into the signature BIT STRING.
+        let signature = ostrich_x509::signing::encode_x509_signature(sig_alg, signature)
+            .map_err(|e| Error::Issuance(format!("failed to encode signature: {}", e)))?;
 
         // Construct final signed certificate
         let der_encoded = self.build_signed_certificate(&tbs_der, &signature)?;

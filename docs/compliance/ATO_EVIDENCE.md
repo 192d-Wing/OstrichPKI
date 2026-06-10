@@ -1524,6 +1524,8 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | SC-17 / FCS_STG_EXT.1 | `services/ca-server/src/main.rs::bootstrap_ca` | Code implementation (HSM-validated CA bootstrap) |
 | SC-17 / FCS_CKM.1 | `tools/ostrich-init/src/main.rs` | Code implementation (root CA generation + registration) |
 | SC-17 (RFC 5280 §4.1.1.2) | `crates/ostrich-ca/src/issuance.rs`, `crates/ostrich-ca/src/revocation.rs` | Code fix (signature algorithm matches declared AlgorithmIdentifier) |
+| SC-13 / FCS_COP.1 (RFC 5280 §4.1.1.2, RFC 5758 §3.2, RFC 8410) | `crates/ostrich-x509/src/signing.rs` | Code implementation (classical signature-algorithm agility: RSA-PKCS1, ECDSA P-256/P-384, Ed25519). `recommended_signature_algorithm`/`algorithm_identifier`/`encode_x509_signature` keep TBS AlgorithmIdentifier, outer signatureAlgorithm, and signing call consistent across cert issuance, CRL signing, and OCSP responses. ECDSA fixed r\|\|s re-encoded to DER Ecdsa-Sig-Value. |
+| SC-13 / FCS_COP.1 | `crates/ostrich-x509/src/signing.rs` unit tests (9), `crates/ostrich-ocsp/src/responder.rs` tests | Test results (algorithm mapping, AlgorithmIdentifier params, ECDSA fixed->DER round-trip + high-bit padding) |
 | AC-17 | `crates/ostrich-common/src/tls.rs` (WebPkiClientVerifier) | Code implementation (optional mTLS client verification) |
 
 ---

@@ -24,7 +24,7 @@
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
-use ostrich_crypto::{Algorithm, CryptoProvider, KeyHandle};
+use ostrich_crypto::{CryptoProvider, KeyHandle};
 use ostrich_db::{DatabasePool, Uuid, repository::CertificateRepository};
 use ostrich_x509::{
     crl::{CrlGenerator, RevokedCertificateInfo},
@@ -216,9 +216,23 @@ impl RevocationManager {
         let current_crl_number = *crl_number;
         drop(crl_number);
 
+        // RFC 5280 §5.1.1.2 - select the signature algorithm from the CA key
+        // type so the TBS AlgorithmIdentifier, the outer signatureAlgorithm, and
+        // the signing call all agree (RSA / ECDSA P-256/P-384 / Ed25519).
+        let sig_alg =
+            ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type)
+                .map_err(|e| {
+                    Error::Revocation(format!(
+                        "unsupported CA key type for CRL signing: {}",
+                        e
+                    ))
+                })?;
+
         // Generate CRL
         let crl_generator = CrlGenerator::new(issuer_dn, self.crl_validity_hours);
-        let crl_builder = crl_generator.generate(current_crl_number, revoked_info)?;
+        let crl_builder = crl_generator
+            .generate(current_crl_number, revoked_info)?
+            .signature_algorithm(sig_alg);
 
         let tbs_crl = crl_builder.build_tbs()?;
 
@@ -228,26 +242,17 @@ impl RevocationManager {
         // NIAP PP-CA: FCS_COP.1.1 - Sign TBS CRL with CA private key
         //
         // Must match the AlgorithmIdentifier CrlBuilder wrote into the TBS
-        // (sha256WithRSAEncryption, RFC 5280 §5.1.1.2/§5.1.2.2 require the
-        // inner and outer algorithm identifiers to be identical). Signing with
-        // RSA-PSS here (as the previous code did) produced CRLs that fail
-        // verification. POAM: algorithm agility tracked with issuance.rs.
-        let signature_algorithm = match self.ca_key.key_type {
-            ostrich_crypto::KeyType::Rsa2048
-            | ostrich_crypto::KeyType::Rsa3072
-            | ostrich_crypto::KeyType::Rsa4096 => Algorithm::RsaPkcs1Sha256,
-            other => {
-                return Err(Error::Revocation(format!(
-                    "CA key type {:?} not yet supported for CRL signing \
-                     (signature algorithm selection is RSA-only pending algorithm agility)",
-                    other
-                )));
-            }
-        };
+        // (RFC 5280 §5.1.1.2/§5.1.2.2 require the inner and outer algorithm
+        // identifiers to be identical). Both come from `sig_alg`.
         let signature = self
             .crypto_provider
-            .sign(&self.ca_key, signature_algorithm, &tbs_der)
+            .sign(&self.ca_key, sig_alg, &tbs_der)
             .await?;
+
+        // ECDSA signatures are fixed r||s from the provider; CRLs require DER
+        // Ecdsa-Sig-Value (RFC 5758 §3.2). RSA/Ed25519 pass through unchanged.
+        let signature = ostrich_x509::signing::encode_x509_signature(sig_alg, signature)
+            .map_err(|e| Error::CrlGeneration(format!("failed to encode signature: {}", e)))?;
 
         // Construct final signed CRL
         let der_encoded = self.build_signed_crl(&tbs_der, &signature)?;

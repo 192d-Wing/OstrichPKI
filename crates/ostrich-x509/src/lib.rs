@@ -25,6 +25,7 @@ pub mod extensions;
 pub mod parser;
 pub mod profile;
 pub mod secure_defaults;
+pub mod signing;
 pub mod validation;
 
 pub use builder::{CertificateBuilder, CrlBuilder};

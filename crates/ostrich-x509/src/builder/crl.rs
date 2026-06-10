@@ -22,6 +22,9 @@ pub struct CrlBuilder {
     revoked_certificates: Vec<RevokedEntry>,
     /// Authority key identifier
     authority_key_id: Option<Vec<u8>>,
+    /// Signature algorithm the issuing CA will sign with (RFC 5280 §5.1.1.2).
+    /// When unset, falls back to the historical sha256WithRSAEncryption default.
+    signature_algorithm: Option<ostrich_crypto::Algorithm>,
 }
 
 impl CrlBuilder {
@@ -34,6 +37,7 @@ impl CrlBuilder {
             crl_number: None,
             revoked_certificates: Vec::new(),
             authority_key_id: None,
+            signature_algorithm: None,
         }
     }
 
@@ -92,6 +96,17 @@ impl CrlBuilder {
         self
     }
 
+    /// Set the signature algorithm the issuing CA will sign with.
+    ///
+    /// RFC 5280 §5.1.1.2 / §5.1.2.2 - the inner `signature` and outer
+    /// `signatureAlgorithm` AlgorithmIdentifiers must be identical and match the
+    /// CA private key's actual signing algorithm. When unset, the builder falls
+    /// back to sha256WithRSAEncryption for backwards compatibility.
+    pub fn signature_algorithm(mut self, alg: ostrich_crypto::Algorithm) -> Self {
+        self.signature_algorithm = Some(alg);
+        self
+    }
+
     /// Build the CRL (returns TBS CRL - to be signed)
     ///
     /// RFC 5280 §5.1 - TBSCertList
@@ -120,6 +135,7 @@ impl CrlBuilder {
             crl_number: self.crl_number,
             revoked_certificates: self.revoked_certificates,
             authority_key_id: self.authority_key_id,
+            signature_algorithm: self.signature_algorithm,
         })
     }
 }
@@ -152,6 +168,9 @@ pub struct TbsCrl {
     pub crl_number: Option<u64>,
     pub revoked_certificates: Vec<RevokedEntry>,
     pub authority_key_id: Option<Vec<u8>>,
+    /// Signature algorithm chosen by the issuer (RFC 5280 §5.1.1.2). When
+    /// `None`, [`TbsCrl::get_signature_algorithm`] uses the RSA default.
+    pub signature_algorithm: Option<ostrich_crypto::Algorithm>,
 }
 
 impl TbsCrl {
@@ -377,9 +396,19 @@ impl TbsCrl {
     }
 
     /// Get signature algorithm identifier
+    ///
+    /// RFC 5280 §5.1.1.2 - when the issuer set a signature algorithm (via
+    /// `CrlBuilder::signature_algorithm`), the AlgorithmIdentifier is derived
+    /// from it through the shared `signing` module so the TBS `signature` and
+    /// the actual signing algorithm stay identical (RSA / ECDSA / Ed25519).
+    /// When unset, falls back to the historical sha256WithRSAEncryption default.
     fn get_signature_algorithm(&self) -> Result<x509_cert::spki::AlgorithmIdentifierOwned> {
-        // TODO: Determine algorithm from CA key type
-        // For now, default to RSA-PSS with SHA-256
+        if let Some(alg) = self.signature_algorithm {
+            return crate::signing::algorithm_identifier(alg)
+                .map_err(|e| Error::Encoding(format!("signature algorithm: {}", e)));
+        }
+
+        // Backwards-compatible default: sha256WithRSAEncryption (PKCS#1 v1.5).
         use const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION;
 
         Ok(x509_cert::spki::AlgorithmIdentifierOwned {

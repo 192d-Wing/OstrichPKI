@@ -39,8 +39,6 @@ use serde::{Deserialize, Serialize};
 const ID_PKIX_OCSP_BASIC: &str = "1.3.6.1.5.5.7.48.1.1";
 /// id-pkix-ocsp-nonce (RFC 6960 §4.4.1 / RFC 8954)
 const ID_PKIX_OCSP_NONCE: &str = "1.3.6.1.5.5.7.48.1.2";
-/// sha256WithRSAEncryption (RFC 5754 §3.2)
-const SHA256_WITH_RSA_OID: &str = "1.2.840.113549.1.1.11";
 
 /// OCSP Response Status
 ///
@@ -175,6 +173,12 @@ pub struct OcspResponse {
 
     /// Response signature over `tbs_response_data`
     pub signature: Vec<u8>,
+
+    /// DER-encoded BasicOCSPResponse.signatureAlgorithm AlgorithmIdentifier.
+    /// RFC 6960 §4.2.1 / RFC 5280 §4.1.1.2 - flows from the chosen signing
+    /// algorithm so the declared and actual algorithms match (RSA / ECDSA /
+    /// Ed25519). Empty for error responses (no signature).
+    pub signature_algorithm: Vec<u8>,
 
     /// Signing (CA) certificate, DER-encoded - included in the certs field of
     /// BasicOCSPResponse so verifiers have the responder certificate
@@ -340,6 +344,7 @@ impl OcspResponse {
         responses: Vec<SingleResponse>,
         tbs_response_data: Vec<u8>,
         signature: Vec<u8>,
+        signature_algorithm: Vec<u8>,
         signing_cert: Vec<u8>,
         nonce: Option<Vec<u8>>,
     ) -> Self {
@@ -348,6 +353,7 @@ impl OcspResponse {
             responses,
             tbs_response_data,
             signature,
+            signature_algorithm,
             signing_cert,
             produced_at: Utc::now(),
             nonce,
@@ -366,6 +372,7 @@ impl OcspResponse {
             responses: Vec::new(),
             tbs_response_data: Vec::new(),
             signature: Vec::new(),
+            signature_algorithm: Vec::new(),
             signing_cert: Vec::new(),
             produced_at: Utc::now(),
             nonce: None,
@@ -415,15 +422,20 @@ impl OcspResponse {
             ));
         }
 
-        // signatureAlgorithm AlgorithmIdentifier ::= SEQUENCE { OID, NULL }
-        // RFC 6960 §4.2.1 / RFC 4055: sha256WithRSAEncryption with NULL params
-        let mut sig_alg = der_util::oid(SHA256_WITH_RSA_OID)?;
-        sig_alg.extend_from_slice(&der_util::null());
-        let sig_alg = der_util::seq(&sig_alg);
+        // signatureAlgorithm AlgorithmIdentifier (RFC 6960 §4.2.1).
+        // The pre-encoded DER flows from the signing algorithm the responder
+        // chose (RSA / ECDSA / Ed25519) so the declared and actual algorithms
+        // match (RFC 5280 §4.1.1.2). Fail closed if it is missing.
+        if self.signature_algorithm.is_empty() {
+            return Err(crate::Error::InternalError(
+                "Successful OCSP response is missing signatureAlgorithm".to_string(),
+            ));
+        }
+        let sig_alg = &self.signature_algorithm;
 
         // BasicOCSPResponse - tbsResponseData embedded byte-for-byte
         let mut basic = self.tbs_response_data.clone();
-        basic.extend_from_slice(&sig_alg);
+        basic.extend_from_slice(sig_alg);
         basic.extend_from_slice(&der_util::bit_string(&self.signature));
         if !self.signing_cert.is_empty() {
             // certs [0] EXPLICIT SEQUENCE OF Certificate - include the CA
@@ -694,10 +706,16 @@ mod tests {
                 .unwrap();
 
         let fake_cert = vec![0x30, 0x03, 0x02, 0x01, 0x00]; // placeholder "certificate"
+        // sha256WithRSAEncryption AlgorithmIdentifier: SEQUENCE { OID, NULL }
+        let rsa_sig_alg = vec![
+            0x30, 0x0D, 0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B, 0x05,
+            0x00,
+        ];
         let response = OcspResponse::successful(
             vec![resp],
             tbs.clone(),
             vec![0xAA; 256], // fake signature
+            rsa_sig_alg,
             fake_cert.clone(),
             None,
         );
@@ -772,8 +790,14 @@ mod tests {
 
     #[test]
     fn test_successful_response_without_tbs_fails_closed() {
-        let response =
-            OcspResponse::successful(Vec::new(), Vec::new(), Vec::new(), Vec::new(), None);
+        let response = OcspResponse::successful(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
         assert!(response.to_der().is_err());
     }
 
@@ -804,6 +828,7 @@ mod tests {
             vec![single_response],
             vec![0x30, 0x00],       // tbs
             vec![0xAA, 0xBB, 0xCC], // signature
+            vec![0x30, 0x00],       // signatureAlgorithm (placeholder DER)
             vec![0xDE, 0xAD],       // signing_cert
             Some(vec![0x12, 0x34]), // nonce
         );
@@ -888,6 +913,7 @@ mod tests {
             vec![single_response],
             vec![0x30, 0x00],
             vec![0xAA],
+            vec![0x30, 0x00],
             vec![0xBB],
             None,
         );
@@ -928,7 +954,7 @@ mod tests {
         ];
 
         let ocsp_response =
-            OcspResponse::successful(responses, vec![0x30, 0x00], vec![], vec![], None);
+            OcspResponse::successful(responses, vec![0x30, 0x00], vec![], vec![], vec![], None);
 
         assert_eq!(ocsp_response.responses.len(), 3);
         assert!(matches!(

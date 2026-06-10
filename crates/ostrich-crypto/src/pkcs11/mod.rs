@@ -437,7 +437,7 @@ impl Pkcs11Provider {
                 Error::Encoding(format!("Failed to get EC public key attributes: {}", e))
             })?;
 
-        let ec_point = attributes
+        let ec_point_attr = attributes
             .iter()
             .find_map(|attr| {
                 if let Attribute::EcPoint(point) = attr {
@@ -447,6 +447,20 @@ impl Pkcs11Provider {
                 }
             })
             .ok_or_else(|| Error::Encoding("EC point not found".to_string()))?;
+
+        // PKCS#11 §2.3.3: CKA_EC_POINT is the ANSI X9.62 ECPoint wrapped in a
+        // DER OCTET STRING (so the bytes are `04 <len> 04 <X> <Y>`). The X.509
+        // SubjectPublicKeyInfo BIT STRING must hold the BARE uncompressed point
+        // (`04 <X> <Y>`), so unwrap the OCTET STRING first. Without this the
+        // SPKI is malformed and OpenSSL rejects the key ("X509_PUBKEY decode
+        // error"). Tolerate providers that already return the bare point.
+        let ec_point = {
+            use der::Decode;
+            match der::asn1::OctetStringRef::from_der(&ec_point_attr) {
+                Ok(os) => os.as_bytes().to_vec(),
+                Err(_) => ec_point_attr,
+            }
+        };
 
         // Determine curve OID
         let curve_oid = match key_type {
@@ -689,10 +703,15 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
             Algorithm::RsaPkcs1Sha384 => Mechanism::Sha384RsaPkcs,
             Algorithm::RsaPkcs1Sha512 => Mechanism::Sha512RsaPkcs,
 
-            // ECDSA
-            Algorithm::EcdsaP256Sha256 => Mechanism::Ecdsa,
-            Algorithm::EcdsaP384Sha384 => Mechanism::Ecdsa,
-            Algorithm::EcdsaP521Sha512 => Mechanism::Ecdsa,
+            // ECDSA - use the HASHING mechanisms (CKM_ECDSA_SHA*) so the HSM
+            // computes the digest itself. Raw CKM_ECDSA (Mechanism::Ecdsa)
+            // treats its input as an already-computed hash; passing the full
+            // TBS to it signs raw/truncated TBS bytes, producing signatures
+            // that fail verification against `ecdsa-with-SHA*` (which hash the
+            // TBS). RFC 5758 §3.2 / FIPS 186-5.
+            Algorithm::EcdsaP256Sha256 => Mechanism::EcdsaSha256,
+            Algorithm::EcdsaP384Sha384 => Mechanism::EcdsaSha384,
+            Algorithm::EcdsaP521Sha512 => Mechanism::EcdsaSha512,
 
             // EdDSA not supported in PKCS#11
             Algorithm::Ed25519 | Algorithm::Ed448 => {
@@ -815,9 +834,10 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
             Algorithm::RsaPkcs1Sha256 => Mechanism::Sha256RsaPkcs,
             Algorithm::RsaPkcs1Sha384 => Mechanism::Sha384RsaPkcs,
             Algorithm::RsaPkcs1Sha512 => Mechanism::Sha512RsaPkcs,
-            Algorithm::EcdsaP256Sha256
-            | Algorithm::EcdsaP384Sha384
-            | Algorithm::EcdsaP521Sha512 => Mechanism::Ecdsa,
+            // Hashing mechanisms - must match the sign path above
+            Algorithm::EcdsaP256Sha256 => Mechanism::EcdsaSha256,
+            Algorithm::EcdsaP384Sha384 => Mechanism::EcdsaSha384,
+            Algorithm::EcdsaP521Sha512 => Mechanism::EcdsaSha512,
             Algorithm::Ed25519 | Algorithm::Ed448 => {
                 return Err(Error::UnsupportedAlgorithm(format!(
                     "{:?} not supported by PKCS#11",

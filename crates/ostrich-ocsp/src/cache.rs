@@ -275,6 +275,7 @@ mod tests {
             produced_at: Utc::now(),
             tbs_response_data: vec![0x30, 0x00],
             signature: vec![],
+            signature_algorithm: vec![],
             signing_cert: vec![],
             nonce: None,
         }

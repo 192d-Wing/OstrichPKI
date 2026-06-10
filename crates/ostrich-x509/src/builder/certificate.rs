@@ -46,6 +46,9 @@ pub struct CertificateBuilder {
     authority_key_id: Option<Vec<u8>>,
     /// Subject key identifier
     subject_key_id: Option<Vec<u8>>,
+    /// Signature algorithm the issuing CA will sign with (RFC 5280 §4.1.1.2).
+    /// When unset, falls back to the historical sha256WithRSAEncryption default.
+    signature_algorithm: Option<ostrich_crypto::Algorithm>,
 }
 
 impl CertificateBuilder {
@@ -68,6 +71,7 @@ impl CertificateBuilder {
             certificate_policies: Vec::new(),
             authority_key_id: None,
             subject_key_id: None,
+            signature_algorithm: None,
         }
     }
 
@@ -181,6 +185,18 @@ impl CertificateBuilder {
         self
     }
 
+    /// Set the signature algorithm the issuing CA will sign with.
+    ///
+    /// RFC 5280 §4.1.1.2 - this drives the AlgorithmIdentifier written into
+    /// `tbsCertificate.signature` (and, downstream, the outer
+    /// `signatureAlgorithm`), so it MUST match the algorithm the CA private key
+    /// actually signs with. When unset, the builder falls back to
+    /// sha256WithRSAEncryption for backwards compatibility.
+    pub fn signature_algorithm(mut self, alg: ostrich_crypto::Algorithm) -> Self {
+        self.signature_algorithm = Some(alg);
+        self
+    }
+
     /// Build the certificate (returns TBS certificate - to be signed)
     ///
     /// RFC 5280 §4.1 - TBSCertificate
@@ -234,6 +250,7 @@ impl CertificateBuilder {
             certificate_policies: self.certificate_policies,
             authority_key_id: self.authority_key_id,
             subject_key_id: self.subject_key_id,
+            signature_algorithm: self.signature_algorithm,
         })
     }
 }
@@ -265,6 +282,9 @@ pub struct TbsCertificate {
     pub certificate_policies: Vec<CertificatePolicy>,
     pub authority_key_id: Option<Vec<u8>>,
     pub subject_key_id: Option<Vec<u8>>,
+    /// Signature algorithm chosen by the issuer (RFC 5280 §4.1.1.2). When
+    /// `None`, [`TbsCertificate::get_signature_algorithm`] uses the RSA default.
+    pub signature_algorithm: Option<ostrich_crypto::Algorithm>,
 }
 
 impl TbsCertificate {
@@ -448,13 +468,21 @@ impl TbsCertificate {
     }
 
     /// Get signature algorithm identifier
+    ///
+    /// RFC 5280 §4.1.1.2 - when the issuer set a signature algorithm (via
+    /// `CertificateBuilder::signature_algorithm`), the AlgorithmIdentifier is
+    /// derived from it through the shared `signing` module so the TBS
+    /// `signature` and the actual signing algorithm stay identical (RSA / ECDSA
+    /// P-256/P-384 / Ed25519). When unset, it falls back to the historical
+    /// sha256WithRSAEncryption default so existing RSA callers/tests keep
+    /// working. ML-DSA selection plugs in via `signing::algorithm_identifier`.
     fn get_signature_algorithm(&self) -> Result<x509_cert::spki::AlgorithmIdentifierOwned> {
-        // sha256WithRSAEncryption (PKCS#1 v1.5). The CA signing path
-        // (ostrich-ca issuance/revocation) selects the matching Algorithm so
-        // tbsCertificate.signature and signatureAlgorithm stay identical per
-        // RFC 5280 §4.1.1.2.
-        // POAM: algorithm agility - derive this from the CA key type to
-        // support ECDSA/EdDSA/ML-DSA issuers.
+        if let Some(alg) = self.signature_algorithm {
+            return crate::signing::algorithm_identifier(alg)
+                .map_err(|e| Error::Encoding(format!("signature algorithm: {}", e)));
+        }
+
+        // Backwards-compatible default: sha256WithRSAEncryption (PKCS#1 v1.5).
         use const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION;
 
         Ok(x509_cert::spki::AlgorithmIdentifierOwned {

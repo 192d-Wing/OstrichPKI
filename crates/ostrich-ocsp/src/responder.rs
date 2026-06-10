@@ -34,7 +34,7 @@ use crate::{
 };
 use chrono::{Duration, Utc};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
-use ostrich_crypto::{Algorithm, CryptoProvider, KeyHandle, KeyType};
+use ostrich_crypto::{Algorithm, CryptoProvider, KeyHandle};
 use ostrich_db::{DatabasePool, repository::CertificateRepository};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -85,33 +85,23 @@ impl Default for OcspConfig {
 ///
 /// Fails closed when no key is configured (NIST 800-53 CM-6: secure default).
 ///
-/// The declared signatureAlgorithm in BasicOCSPResponse is
-/// sha256WithRSAEncryption (1.2.840.113549.1.1.11), so RSA keys MUST be
-/// signed with PKCS#1 v1.5 / SHA-256 - signing with a different scheme (e.g.
-/// RSA-PSS) would make every response unverifiable (RFC 6960 §4.2.1; same
-/// pattern as certificate issuance in crates/ostrich-ca/src/issuance.rs).
+/// The chosen algorithm drives both the BasicOCSPResponse signatureAlgorithm
+/// AlgorithmIdentifier (RFC 6960 §4.2.1) and the actual signing call; the two
+/// MUST match (RFC 5280 §4.1.1.2). Algorithm selection (RSA-PKCS1, ECDSA
+/// P-256/P-384, Ed25519) is delegated to the shared signing module so it stays
+/// consistent with certificate issuance and CRL signing. ML-DSA plugs in there.
 ///
 /// # COMPLIANCE MAPPING:
 /// - NIST 800-53: SC-13 (Cryptographic Protection) - declared and actual
 ///   algorithms must match
 /// - NIAP PP-CA: FCS_COP.1(1) - approved signature algorithm selection
 /// - RFC 6960 §4.3: responders MUST support sha256WithRSAEncryption
-//
-// POAM: algorithm agility - ECDSA/EdDSA/ML-DSA OCSP signing requires
-// emitting the matching AlgorithmIdentifier in BasicOCSPResponse; until
-// then non-RSA keys are rejected rather than producing broken responses.
 pub(crate) fn signing_algorithm_for_key(signing_key: Option<&KeyHandle>) -> Result<Algorithm> {
     let key = signing_key
         .ok_or_else(|| crate::Error::SigningError("OCSP signing key not configured".to_string()))?;
 
-    match key.key_type {
-        KeyType::Rsa2048 | KeyType::Rsa3072 | KeyType::Rsa4096 => Ok(Algorithm::RsaPkcs1Sha256),
-        other => Err(crate::Error::SigningError(format!(
-            "OCSP signing with key type {:?} is not supported yet; only RSA keys \
-             (sha256WithRSAEncryption) are implemented (POAM: algorithm agility)",
-            other
-        ))),
-    }
+    ostrich_x509::signing::recommended_signature_algorithm(key.key_type)
+        .map_err(|e| crate::Error::SigningError(format!("OCSP signing key not supported: {}", e)))
 }
 
 /// OCSP Responder
@@ -427,10 +417,30 @@ impl OcspResponder {
                 crate::Error::SigningError(format!("Failed to sign OCSP response: {}", e))
             })?;
 
+        // ECDSA signatures come back fixed r||s from the provider; OCSP requires
+        // DER Ecdsa-Sig-Value (RFC 5758 §3.2). RSA/Ed25519 pass through.
+        let signature = ostrich_x509::signing::encode_x509_signature(algorithm, signature)
+            .map_err(|e| {
+                crate::Error::SigningError(format!("Failed to encode OCSP signature: {}", e))
+            })?;
+
+        // RFC 6960 §4.2.1 / RFC 5280 §4.1.1.2 - the BasicOCSPResponse
+        // signatureAlgorithm AlgorithmIdentifier MUST match the signing
+        // algorithm. Derive its DER from the chosen algorithm so RSA / ECDSA /
+        // Ed25519 all emit the correct OID and parameters.
+        let signature_algorithm = ostrich_x509::signing::algorithm_identifier_der(algorithm)
+            .map_err(|e| {
+                crate::Error::SigningError(format!(
+                    "Failed to encode OCSP signatureAlgorithm: {}",
+                    e
+                ))
+            })?;
+
         Ok(OcspResponse::successful(
             responses,
             tbs_der,
             signature,
+            signature_algorithm,
             ca_cert_der.to_vec(),
             nonce,
         ))
@@ -445,6 +455,7 @@ impl OcspResponder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ostrich_crypto::KeyType;
 
     #[test]
     fn test_ocsp_config_default() {
@@ -491,15 +502,37 @@ mod tests {
         }
     }
 
-    /// POAM: algorithm agility - non-RSA keys are rejected rather than
-    /// producing responses whose declared and actual algorithms differ
+    /// RFC 5758 §3.2 / RFC 8410 - classical algorithm agility: ECDSA and
+    /// Ed25519 OCSP signing keys are now supported and map to the matching
+    /// signature algorithm.
     #[test]
-    fn test_non_rsa_keys_rejected() {
+    fn test_classical_non_rsa_keys_supported() {
+        let cases = [
+            (KeyType::EcP256, Algorithm::EcdsaP256Sha256),
+            (KeyType::EcP384, Algorithm::EcdsaP384Sha384),
+            (KeyType::Ed25519, Algorithm::Ed25519),
+        ];
+        for (key_type, expected) in cases {
+            let key = KeyHandle::new(
+                ostrich_crypto::key::ProviderId::Software,
+                vec![1, 2, 3],
+                key_type,
+                expected,
+                "ocsp-test".to_string(),
+            );
+            assert_eq!(signing_algorithm_for_key(Some(&key)).unwrap(), expected);
+        }
+    }
+
+    /// Unsupported key types (e.g. P-521, where the software provider lacks
+    /// signing support) are rejected rather than producing broken responses.
+    #[test]
+    fn test_unsupported_keys_rejected() {
         let key = KeyHandle::new(
             ostrich_crypto::key::ProviderId::Software,
             vec![1, 2, 3],
-            KeyType::EcP256,
-            Algorithm::EcdsaP256Sha256,
+            KeyType::EcP521,
+            Algorithm::EcdsaP521Sha512,
             "ocsp-test".to_string(),
         );
         assert!(matches!(

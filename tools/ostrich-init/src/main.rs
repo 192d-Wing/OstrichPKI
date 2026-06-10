@@ -23,7 +23,7 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use ostrich_common::types::{DistinguishedName, SerialNumber};
-use ostrich_crypto::{Algorithm, CryptoProviderFactory, KeyType};
+use ostrich_crypto::{CryptoProviderFactory, KeyType};
 use ostrich_x509::CertificateBuilder;
 use ostrich_x509::profile::KeyUsage;
 
@@ -102,20 +102,15 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    // RFC 5280 §4.1.1.2: the builder declares sha256WithRSAEncryption, so the
-    // key must be RSA for the self-signature to verify.
+    // The self-signature algorithm is derived from the CA key type via the
+    // shared agility module (RSA, ECDSA P-256/P-384, Ed25519). The builder's
+    // declared AlgorithmIdentifier and the signing call both come from it, so
+    // tbsCertificate.signature == signatureAlgorithm (RFC 5280 §4.1.1.2).
     let key_type: KeyType =
         serde_json::from_value(serde_json::Value::String(args.key_type.clone()))
             .with_context(|| format!("Unknown key type '{}'", args.key_type))?;
-    if !matches!(
-        key_type,
-        KeyType::Rsa2048 | KeyType::Rsa3072 | KeyType::Rsa4096
-    ) {
-        bail!(
-            "Key type {:?} is not yet supported (RSA only until algorithm agility lands)",
-            key_type
-        );
-    }
+    let sig_alg = ostrich_x509::signing::recommended_signature_algorithm(key_type)
+        .with_context(|| format!("Key type {:?} not supported for CA signing", key_type))?;
 
     // Database
     let db_config = ostrich_db::PoolConfig::from_url(&args.database_url)?;
@@ -216,18 +211,21 @@ async fn main() -> Result<()> {
         .add_key_usage(KeyUsage::KeyCertSign)
         .add_key_usage(KeyUsage::CrlSign)
         .add_key_usage(KeyUsage::DigitalSignature)
+        .signature_algorithm(sig_alg)
         .build_tbs()?;
     let not_before = tbs.not_before;
     let not_after = tbs.not_after;
     let tbs_der = tbs.to_der()?;
 
-    // Self-sign. Must be PKCS#1 v1.5 SHA-256 to match the AlgorithmIdentifier
-    // the builder wrote (RFC 5280 §4.1.1.2).
-    // NIAP PP-CA: FCS_COP.1 - signature generation
-    let signature = crypto
-        .sign(&key_handle, Algorithm::RsaPkcs1Sha256, &tbs_der)
+    // Self-sign with the algorithm the builder declared, then encode the
+    // signature into the X.509 form (ECDSA fixed r||s -> DER; RSA/Ed25519
+    // pass through). RFC 5280 §4.1.1.2 / NIAP PP-CA: FCS_COP.1.
+    let raw_signature = crypto
+        .sign(&key_handle, sig_alg, &tbs_der)
         .await
         .context("Self-signing failed")?;
+    let signature = ostrich_x509::signing::encode_x509_signature(sig_alg, raw_signature)
+        .context("Failed to encode signature")?;
     let der_encoded = assemble_certificate(&tbs_der, &signature)?;
     let pem_encoded =
         pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &der_encoded)
@@ -236,7 +234,7 @@ async fn main() -> Result<()> {
     // Register key + certificate in the database
     // NIST 800-53: CM-2 - CA identity as configuration data
     let key_type_str = enum_name(&key_handle.key_type)?;
-    let algorithm_str = enum_name(&Algorithm::RsaPkcs1Sha256)?;
+    let algorithm_str = enum_name(&sig_alg)?;
     let ca_key_row = ca_repo
         .create_ca_key(
             &args.key_label,
