@@ -134,6 +134,12 @@ pub struct CertificateIssuer {
 
     /// Approval configuration
     approval_config: ApprovalConfig,
+
+    /// Public CRL distribution URL embedded into issued certificates.
+    ///
+    /// RFC 5280 §4.2.1.13 - when set, issued leaves carry a CRL Distribution
+    /// Points extension pointing relying parties at the public GET CRL endpoint.
+    crl_distribution_url: Option<String>,
 }
 
 impl CertificateIssuer {
@@ -155,6 +161,7 @@ impl CertificateIssuer {
             approval_engine: None,
             approval_repo: None,
             approval_config: ApprovalConfig::default(),
+            crl_distribution_url: None,
         }
     }
 
@@ -183,6 +190,7 @@ impl CertificateIssuer {
             approval_engine: Some(approval_engine),
             approval_repo: Some(approval_repo),
             approval_config,
+            crl_distribution_url: None,
         }
     }
 
@@ -220,6 +228,20 @@ impl CertificateIssuer {
         self.approval_engine = Some(engine);
         self.approval_repo = Some(repo);
         self.approval_config = config;
+    }
+
+    /// Set the public CRL distribution URL embedded into issued certificates.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - RFC 5280 §4.2.1.13 - CRL Distribution Points extension
+    /// - NIAP PP-CA: FMT_SMF.1 - CRL distribution configuration
+    /// - NIST 800-53: SC-17 - PKI certificate status (points relying parties at
+    ///   the public CRL GET endpoint)
+    ///
+    /// Should be the externally reachable URL of the public CRL GET endpoint
+    /// (e.g. `https://ca.example.com/api/v1/crl`).
+    pub fn set_crl_distribution_url(&mut self, url: impl Into<String>) {
+        self.crl_distribution_url = Some(url.into());
     }
 
     /// Issue a certificate
@@ -469,6 +491,19 @@ impl CertificateIssuer {
         // Add subject alternative names
         for san in request.subject_alt_names {
             builder = builder.add_subject_alt_name(san);
+        }
+
+        // COMPLIANCE MAPPING:
+        // - RFC 5280 §4.2.1.13 - CRL Distribution Points: point relying parties
+        //   at the public CRL GET endpoint so they can fetch revocation status.
+        // - NIAP PP-CA: FMT_SMF.1 - CRL distribution
+        // - NIST 800-53: SC-17 - PKI certificate status
+        //
+        // Only emitted when the CA is configured with a public CRL URL.
+        if let Some(crl_url) = &self.crl_distribution_url {
+            builder = builder.add_crl_distribution_point(
+                ostrich_x509::extensions::CrlDistributionPoint::new(crl_url.clone()),
+            );
         }
 
         // Build TBS certificate

@@ -54,6 +54,15 @@ struct Args {
     #[arg(long, env = "CRL_VALIDITY_HOURS", default_value = "24")]
     crl_validity_hours: u32,
 
+    /// Public, externally-reachable URL of the CRL distribution point.
+    /// When set, it is embedded into the CRL Distribution Points extension of
+    /// every issued certificate (RFC 5280 §4.2.1.13) so relying parties can
+    /// fetch revocation status. This MUST be the URL of the public GET CRL
+    /// endpoint, e.g. https://ca.example.com/api/v1/crl
+    /// NIST 800-53: SC-17 - PKI certificate status distribution
+    #[arg(long, env = "CA_CRL_URL")]
+    crl_distribution_url: Option<String>,
+
     /// Require an approved request for every issuance (NIAP FDP_CER_EXT.3).
     /// Set to false for automated pipelines (e.g. ACME, dev/E2E) where
     /// challenge validation serves as the approval.
@@ -183,6 +192,7 @@ async fn main() -> Result<()> {
                 rbac_policy,
                 approval_engine,
                 approval_repo,
+                db_pool.clone(),
             )
         }
         None => {
@@ -380,6 +390,21 @@ async fn bootstrap_ca(
              workflow. Acceptable for automated pipelines (ACME) and dev/E2E only."
         );
         ca.set_approval_config(approval_config);
+    }
+
+    // RFC 5280 §4.2.1.13 - embed the public CRL distribution point into issued
+    // certificates so relying parties can fetch revocation status. Must be the
+    // externally-reachable URL of the public GET CRL endpoint
+    // (e.g. https://ca.example.com/api/v1/crl).
+    // NIST 800-53: SC-17 - PKI certificate status distribution.
+    if let Some(crl_url) = &args.crl_distribution_url {
+        tracing::info!(crl_url = %crl_url, "Embedding CRL Distribution Point in issued certificates");
+        ca.set_crl_distribution_url(crl_url.clone());
+    } else {
+        tracing::warn!(
+            "CA_CRL_URL not set: issued certificates will NOT carry a CRL \
+             Distribution Points extension (RFC 5280 §4.2.1.13)."
+        );
     }
 
     tracing::info!(

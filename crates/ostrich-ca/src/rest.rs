@@ -35,7 +35,8 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use ostrich_common::auth::provider::AuthProvider;
 use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy};
 use ostrich_common::types::DistinguishedName;
-use ostrich_db::repository::ApprovalRepository;
+use ostrich_db::DatabasePool;
+use ostrich_db::repository::{ApprovalRepository, CrlRepository};
 use ostrich_x509::{extensions::SubjectAltName, parser::RevocationReason};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -49,6 +50,9 @@ pub struct ApiState {
     rbac_policy: Arc<RbacPolicy>,
     approval_engine: Arc<ApprovalEngine>,
     approval_repo: Arc<ApprovalRepository>,
+    /// Database pool, used to serve the latest persisted CRL at the public
+    /// distribution point (RFC 5280 §5).
+    db_pool: DatabasePool,
 }
 
 impl ApiState {
@@ -59,6 +63,7 @@ impl ApiState {
         rbac_policy: Arc<RbacPolicy>,
         approval_engine: Arc<ApprovalEngine>,
         approval_repo: Arc<ApprovalRepository>,
+        db_pool: DatabasePool,
     ) -> Self {
         Self {
             ca,
@@ -66,6 +71,7 @@ impl ApiState {
             rbac_policy,
             approval_engine,
             approval_repo,
+            db_pool,
         }
     }
 }
@@ -82,6 +88,7 @@ pub fn create_router(
     rbac_policy: Arc<RbacPolicy>,
     approval_engine: Arc<ApprovalEngine>,
     approval_repo: Arc<ApprovalRepository>,
+    db_pool: DatabasePool,
 ) -> Router {
     let state = Arc::new(ApiState::new(
         ca,
@@ -89,6 +96,7 @@ pub fn create_router(
         rbac_policy.clone(),
         approval_engine,
         approval_repo,
+        db_pool,
     ));
 
     // Public endpoints (no authentication required)
@@ -102,6 +110,10 @@ pub fn create_router(
     //   is public by definition (RFC 5280).
     // - /api/v1/certificates/:id/status: revocation status must be reachable by any
     //   relying party performing certificate validation (RFC 5280 §5, RFC 6960).
+    // - GET /api/v1/crl: the signed CRL is public status data by definition
+    //   (RFC 5280 §5). Relying parties fetch it (via the CDP extension in issued
+    //   certs, RFC 5280 §4.2.1.13) with no authentication. The authenticated
+    //   POST /api/v1/crl (generation) stays in protected_routes below.
     //
     // NOTE: /api/v1/profiles was previously public; it leaked the configured profile
     // catalog (key types, key sizes, validity periods) to unauthenticated clients.
@@ -113,7 +125,9 @@ pub fn create_router(
         .route(
             "/api/v1/certificates/{id}/status",
             get(check_revocation_status),
-        );
+        )
+        // RFC 5280 §5 - public CRL distribution point (no auth)
+        .route("/api/v1/crl", get(get_crl));
 
     // Per-permission authorization middleware factory.
     //
@@ -375,6 +389,40 @@ async fn generate_crl(
         der_encoded: BASE64_STANDARD.encode(&crl.der_encoded),
         pem_encoded: crl.pem_encoded,
     }))
+}
+
+/// Serve the latest CRL at the public distribution point.
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 5280 §5 - CRLs are public certificate status data; served without auth
+/// - RFC 5280 §4.2.1.13 - this is the endpoint referenced by issued certs' CDP
+/// - NIAP PP-CA: FMT_SMF.1 - CRL publication/distribution function
+/// - NIST 800-53: SC-17 - PKI certificate status distribution
+///
+/// Returns the DER-encoded CRL with `Content-Type: application/pkix-crl`
+/// (RFC 5280). Returns 404 if no CRL has been generated yet.
+async fn get_crl(State(state): State<Arc<ApiState>>) -> Result<Response> {
+    use axum::http::header::CONTENT_TYPE;
+
+    let crl_repo = CrlRepository::new(state.db_pool.clone());
+    let latest = crl_repo
+        .find_latest_crl(state.ca.ca_id)
+        .await
+        .map_err(|e| Error::CrlGeneration(format!("Failed to load CRL: {}", e)))?;
+
+    match latest {
+        Some(crl) => Ok((
+            StatusCode::OK,
+            [(CONTENT_TYPE, "application/pkix-crl")],
+            crl.der_encoded,
+        )
+            .into_response()),
+        None => Ok((
+            StatusCode::NOT_FOUND,
+            "No CRL has been generated yet".to_string(),
+        )
+            .into_response()),
+    }
 }
 
 /// List certificate profiles
@@ -986,6 +1034,27 @@ impl IntoResponse for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // axum 0.8: GET (public) and POST (protected) live on the same path
+    // `/api/v1/crl` but in two separate routers that are `.merge`d. axum merges
+    // these into one MethodRouter as long as the methods don't overlap. This
+    // test pins that coexistence so a regression (e.g. moving POST to the public
+    // group, creating a duplicate method) fails loudly at build/test time rather
+    // than panicking at server startup.
+    #[test]
+    fn test_crl_get_post_same_path_coexist() {
+        use axum::routing::{get, post};
+
+        async fn noop() -> &'static str {
+            "ok"
+        }
+
+        let public: Router<()> = Router::new().route("/api/v1/crl", get(noop));
+        let protected: Router<()> = Router::new().route("/api/v1/crl", post(noop));
+
+        // Must not panic: overlapping path, disjoint methods.
+        let _merged = Router::new().merge(public).merge(protected);
+    }
 
     #[test]
     fn test_profile_info_conversion() {

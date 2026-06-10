@@ -25,7 +25,7 @@ use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
 use ostrich_crypto::{CryptoProvider, KeyHandle};
-use ostrich_db::{DatabasePool, Uuid, repository::CertificateRepository};
+use ostrich_db::{DatabasePool, Uuid, repository::{CertificateRepository, CrlRepository}};
 use ostrich_x509::{
     crl::{CrlGenerator, RevokedCertificateInfo},
     parser::RevocationReason,
@@ -75,9 +75,6 @@ pub struct RevocationManager {
 
     /// CRL validity hours
     crl_validity_hours: u32,
-
-    /// Current CRL number
-    crl_number: std::sync::Arc<tokio::sync::Mutex<u64>>,
 }
 
 impl RevocationManager {
@@ -97,7 +94,6 @@ impl RevocationManager {
             db_pool,
             audit_sink,
             crl_validity_hours,
-            crl_number: std::sync::Arc::new(tokio::sync::Mutex::new(0)),
         }
     }
 
@@ -210,11 +206,13 @@ impl RevocationManager {
         // Count revoked certificates before moving
         let revoked_count = revoked_info.len();
 
-        // Increment CRL number
-        let mut crl_number = self.crl_number.lock().await;
-        *crl_number += 1;
-        let current_crl_number = *crl_number;
-        drop(crl_number);
+        // RFC 5280 §5.2.3 - CRL numbers MUST be monotonically increasing.
+        // Derive the next number from persisted CRLs (MAX(crl_number)+1) so it
+        // survives process restarts; an in-memory counter would reset to 0 and
+        // collide with the UNIQUE(ca_id, crl_number) constraint on the next run.
+        let crl_repo = CrlRepository::new(self.db_pool.clone());
+        let crl_number_i64 = crl_repo.next_crl_number(self.ca_certificate_id).await?;
+        let current_crl_number = crl_number_i64 as u64;
 
         // RFC 5280 §5.1.1.2 - select the signature algorithm from the CA key
         // type so the TBS AlgorithmIdentifier, the outer signatureAlgorithm, and
@@ -259,6 +257,22 @@ impl RevocationManager {
 
         // Convert DER to PEM
         let pem_encoded = self.crl_der_to_pem(&der_encoded)?;
+
+        // RFC 5280 §5 - Persist the signed CRL so the latest one can be served
+        // at the public distribution point and so the CRL number stays
+        // monotonic across restarts (RFC 5280 §5.2.3). The signed bytes are
+        // stored verbatim; nothing about the signing/encoding changes here.
+        // NIAP PP-CA: FMT_SMF.1 - CRL publication management function.
+        crl_repo
+            .create_crl(
+                self.ca_certificate_id,
+                crl_number_i64,
+                tbs_crl.this_update,
+                tbs_crl.next_update,
+                der_encoded.clone(),
+                pem_encoded.clone(),
+            )
+            .await?;
 
         // NIAP PP-CA: FAU_GEN.1.1 - Record CRL generation audit event
         audit_event.details = Some(serde_json::json!({

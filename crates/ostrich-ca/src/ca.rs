@@ -145,6 +145,15 @@ impl CertificateAuthority {
         self.issuer.set_approval(engine, repo, config);
     }
 
+    /// Set the public CRL distribution URL embedded into issued certificates.
+    ///
+    /// RFC 5280 §4.2.1.13 - issued leaves gain a CRL Distribution Points
+    /// extension pointing relying parties at the public CRL GET endpoint.
+    /// NIAP PP-CA: FMT_SMF.1 - CRL distribution configuration.
+    pub fn set_crl_distribution_url(&mut self, url: impl Into<String>) {
+        self.issuer.set_crl_distribution_url(url);
+    }
+
     /// Get the certificate issuer
     ///
     /// NIAP PP-CA: FMT_SMF.1.1 - Access certificate issuance security function

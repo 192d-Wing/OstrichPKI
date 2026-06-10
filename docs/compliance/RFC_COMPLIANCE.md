@@ -218,13 +218,26 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
 - [builder/crl.rs:160-230](../../crates/ostrich-x509/src/builder/crl.rs#L160-L230) - CRL entry building with revocation reasons
 - [builder/crl.rs:392-451](../../crates/ostrich-x509/src/builder/crl.rs#L392-L451) - CRL extension building (CRL Number, AKI)
 
+**CRL persistence, distribution, and CDP (implemented):**
+
+- ✅ §5.2.3 - CRL number is now DB-derived (`MAX(crl_number)+1` per CA) so it is
+  monotonic and restart-stable, enforced by `UNIQUE(ca_id, crl_number)`:
+  - [repository/crl.rs](../../crates/ostrich-db/src/repository/crl.rs) - `CrlRepository::next_crl_number` / `create_crl` / `find_latest_crl`
+  - [revocation.rs](../../crates/ostrich-ca/src/revocation.rs) - `generate_crl` derives the number from the DB and persists the signed CRL (signing/encoding unchanged)
+- ✅ §5 - Latest signed CRL served at a **public** distribution point
+  `GET /api/v1/crl` with `Content-Type: application/pkix-crl` (404 when none yet):
+  - [rest.rs](../../crates/ostrich-ca/src/rest.rs) - `get_crl` handler (public route)
+- ✅ §4.2.1.13 - Issued leaves carry a CRL Distribution Points extension pointing
+  at the public CRL endpoint when the CA is configured with a public CRL URL:
+  - [issuance.rs](../../crates/ostrich-ca/src/issuance.rs) - `set_crl_distribution_url` + `add_crl_distribution_point` in `issue`
+  - [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs) - `--crl-distribution-url` / `CA_CRL_URL`
+
 **Gaps:**
 
 - ⚪ Delta CRL support (§5.2.4 - selection-based, not required for basic operation)
 - ⚪ Indirect CRL support (§5.2.5, §5.3.3 - rarely needed, complex)
-- ⏳ CRL number tracking in database (implementation needed in Phase 12)
 
-**Remediation:** CRL distribution and number tracking in Phase 12/14
+**Remediation:** Delta/indirect CRLs deferred (optional, low priority)
 
 ---
 
