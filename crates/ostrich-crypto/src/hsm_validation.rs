@@ -65,11 +65,31 @@ impl HsmKeyValidator {
     /// * `Ok(())` if key meets all requirements
     /// * `Err` with detailed error message if validation fails
     pub fn validate_ca_signing_key(key: &KeyHandle) -> Result<()> {
-        // FCS_STG_EXT.1: Must be HSM-backed
-        Self::verify_hsm_storage(key)?;
+        use crate::KeyType;
+
+        // FCS_STG_EXT.1: CA signing keys must be HSM-backed.
+        //
+        // EXCEPTION - ML-DSA (FIPS 204): no PKCS#11 HSM ships validated ML-DSA
+        // support yet, and our ML-DSA implementation is the aws-lc-rs software
+        // provider. Permitting software storage for ML-DSA CA keys is the only
+        // way to operate a post-quantum CA today.
+        // POAM: require HSM storage for ML-DSA once a FIPS 140-3 HSM (or
+        // AWS-LC's FIPS module) provides ML-DSA, then delete this exception.
+        let is_ml_dsa = matches!(
+            key.key_type,
+            KeyType::MlDsa44 | KeyType::MlDsa65 | KeyType::MlDsa87
+        );
+        if !is_ml_dsa {
+            Self::verify_hsm_storage(key)?;
+        } else if matches!(key.provider_id, ProviderId::Software) {
+            tracing::warn!(
+                key_label = %key.label,
+                "ML-DSA CA key is software-backed: no HSM supports ML-DSA yet \
+                 (FCS_STG_EXT.1 exception, tracked as POAM)"
+            );
+        }
 
         // Verify key type is suitable for signing
-        use crate::KeyType;
         match key.key_type {
             // Classical RSA key types
             KeyType::Rsa2048 | KeyType::Rsa3072 | KeyType::Rsa4096 |

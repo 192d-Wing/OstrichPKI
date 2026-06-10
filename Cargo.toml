@@ -113,10 +113,14 @@ cipher = "0.4"
 argon2 = { version = "0.5", features = ["std"] }
 
 # Post-Quantum Cryptography
-# Note: These are placeholders - RustCrypto PQC crates are still in development
-# ml-kem = "0.1"
-# ml-dsa = "0.1"
-# slh-dsa = "0.1"
+# ML-DSA (FIPS 204) via AWS's aws-lc-rs (AWS Libcrypto for Rust, backed by
+# AWS-LC). Chosen over RustCrypto because AWS-LC is on the FIPS 140-3
+# validation track including its PQC algorithms (aligns with the FIPS 204
+# mandate). The `unstable` feature exposes ML-DSA; it is mutually exclusive
+# with the `fips` feature today (AWS-LC's FIPS module does not yet include
+# ML-DSA) and has no semver guarantee, so the version is pinned.
+# POAM: switch to the `fips` feature once AWS-LC ships FIPS-validated ML-DSA.
+aws-lc-rs = { version = "1.13", features = ["unstable"] }
 
 # PKCS#11
 cryptoki = "0.11"

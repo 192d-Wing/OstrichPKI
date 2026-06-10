@@ -33,6 +33,9 @@ hex = { workspace = true }
 # PKCS#11 HSM support
 cryptoki = { workspace = true }
 
+# Post-quantum (ML-DSA) via AWS aws-lc-rs
+aws-lc-rs = { workspace = true }
+
 # Utilities
 zeroize = { workspace = true }
 secrecy = { workspace = true }

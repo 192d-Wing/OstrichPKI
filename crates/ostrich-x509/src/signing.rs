@@ -67,11 +67,14 @@ pub fn recommended_signature_algorithm(key_type: KeyType) -> Result<Algorithm> {
                 .to_string(),
         )),
 
-        // ML-DSA extension point: KeyType::MlDsa44/65/87 map to Algorithm::MlDsa*
-        // once post-quantum signing lands (handled by a separate task).
+        // Post-quantum - FIPS 204 ML-DSA (via AWS aws-lc-rs in the provider).
+        KeyType::MlDsa44 => Ok(Algorithm::MlDsa44),
+        KeyType::MlDsa65 => Ok(Algorithm::MlDsa65),
+        KeyType::MlDsa87 => Ok(Algorithm::MlDsa87),
+
         other => Err(Error::UnsupportedAlgorithm(format!(
-            "key type {:?} is not a supported classical signing algorithm \
-             (post-quantum/KEM/Ed448 signing is out of scope here)",
+            "key type {:?} is not a supported signing algorithm \
+             (KEM/SLH-DSA/Ed448 signing is not supported here)",
             other
         ))),
     }
@@ -102,6 +105,14 @@ pub fn algorithm_identifier(
         ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
     // RFC 8410 - id-Ed25519
     const ID_ED25519: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
+    // NIST CSOR id-ml-dsa-* (FIPS 204), parameters absent. These match the
+    // OIDs aws-lc-rs writes into the ML-DSA SubjectPublicKeyInfo.
+    const ID_ML_DSA_44: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.17");
+    const ID_ML_DSA_65: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.18");
+    const ID_ML_DSA_87: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.19");
 
     let (oid, parameters) = match alg {
         // RFC 4055: RSA PKCS#1 v1.5 requires explicit NULL parameters.
@@ -125,8 +136,12 @@ pub fn algorithm_identifier(
         // RFC 8410: id-Ed25519, parameters absent.
         Algorithm::Ed25519 => (ID_ED25519, None),
 
-        // ML-DSA extension point: add id-ML-DSA-44/65/87 (parameters absent)
-        // when post-quantum signing lands.
+        // FIPS 204: id-ml-dsa-*, parameters absent
+        // (draft-ietf-lamps-dilithium-certificates).
+        Algorithm::MlDsa44 => (ID_ML_DSA_44, None),
+        Algorithm::MlDsa65 => (ID_ML_DSA_65, None),
+        Algorithm::MlDsa87 => (ID_ML_DSA_87, None),
+
         other => {
             return Err(Error::UnsupportedAlgorithm(format!(
                 "no X.509 AlgorithmIdentifier mapping for {:?} \
@@ -169,10 +184,8 @@ pub fn encode_x509_signature(alg: Algorithm, raw_signature: Vec<u8>) -> Result<V
         Algorithm::EcdsaP256Sha256 | Algorithm::EcdsaP384Sha384 => {
             ecdsa_fixed_to_der(&raw_signature)
         }
-        // RSA (PKCS#1) and Ed25519 (raw) signatures are used verbatim.
-        //
-        // ML-DSA extension point: ML-DSA / SLH-DSA signatures are also emitted
-        // raw, so they will fall through here unchanged once added above.
+        // RSA (PKCS#1), Ed25519 (raw 64-byte), and ML-DSA (raw FIPS 204)
+        // signatures are already in their final X.509 form and pass through.
         _ => Ok(raw_signature),
     }
 }
@@ -246,11 +259,25 @@ mod tests {
     }
 
     #[test]
+    fn ml_dsa_key_types_supported() {
+        // FIPS 204 ML-DSA signing (via aws-lc-rs) maps to the ML-DSA algorithms
+        // and the NIST CSOR id-ml-dsa-* OIDs with absent parameters.
+        for (kt, alg, oid) in [
+            (KeyType::MlDsa44, Algorithm::MlDsa44, "2.16.840.1.101.3.4.3.17"),
+            (KeyType::MlDsa65, Algorithm::MlDsa65, "2.16.840.1.101.3.4.3.18"),
+            (KeyType::MlDsa87, Algorithm::MlDsa87, "2.16.840.1.101.3.4.3.19"),
+        ] {
+            assert_eq!(recommended_signature_algorithm(kt).unwrap(), alg);
+            let ai = algorithm_identifier(alg).unwrap();
+            assert_eq!(ai.oid.to_string(), oid);
+            assert!(ai.parameters.is_none(), "ML-DSA AlgId omits parameters");
+        }
+    }
+
+    #[test]
     fn unsupported_key_types_error() {
         // P-521: software provider lacks signing support.
         assert!(recommended_signature_algorithm(KeyType::EcP521).is_err());
-        // Post-quantum signing is handled by a separate task.
-        assert!(recommended_signature_algorithm(KeyType::MlDsa65).is_err());
         // KEM key types cannot sign.
         assert!(recommended_signature_algorithm(KeyType::MlKem768).is_err());
         // Ed448 is not supported by the providers.

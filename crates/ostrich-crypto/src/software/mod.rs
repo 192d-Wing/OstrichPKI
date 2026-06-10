@@ -71,11 +71,25 @@ struct Ed25519KeyPairInternal {
     public_key: Vec<u8>, // 32 bytes
 }
 
+/// ML-DSA (FIPS 204) key pair, backed by AWS aws-lc-rs.
+///
+/// Holds the aws-lc-rs keypair (for signing) and the cached SPKI DER (for
+/// public-key export). The OID inside the SPKI is the NIST CSOR id-ml-dsa-*
+/// produced by aws-lc-rs, so it drops straight into an X.509
+/// SubjectPublicKeyInfo.
+struct MlDsaKeyPairInternal {
+    key_pair: aws_lc_rs::unstable::signature::PqdsaKeyPair,
+    spki_der: Vec<u8>,
+    /// Which ML-DSA parameter set, for selecting the verification algorithm
+    key_type: KeyType,
+}
+
 /// Internal key pair storage
 enum KeyPair {
     Rsa(Box<RsaKeyPair>), // Boxed to reduce enum size
     Ecdsa(EcdsaKeyPairInternal),
     Ed25519(Ed25519KeyPairInternal),
+    MlDsa(Box<MlDsaKeyPairInternal>), // Boxed: aws-lc-rs keypair is large
 }
 
 // Implement Drop to manually zeroize private key material
@@ -90,6 +104,9 @@ impl Drop for KeyPair {
             }
             KeyPair::Ed25519(_) => {
                 // Ed25519KeyPair zeroizes itself on drop (ring implementation)
+            }
+            KeyPair::MlDsa(_) => {
+                // PqdsaKeyPair zeroizes its private key on drop (aws-lc-rs)
             }
         }
     }
@@ -512,6 +529,95 @@ impl SoftwareProvider {
         spki.to_der()
             .map_err(|e| Error::Encoding(format!("Ed25519 SPKI encoding failed: {}", e)))
     }
+
+    // ========== ML-DSA Operations (FIPS 204, via AWS aws-lc-rs) ==========
+
+    /// Map an ML-DSA KeyType to the aws-lc-rs signing algorithm.
+    fn ml_dsa_signing_alg(
+        key_type: KeyType,
+    ) -> Result<&'static aws_lc_rs::unstable::signature::PqdsaSigningAlgorithm> {
+        use aws_lc_rs::unstable::signature::{
+            ML_DSA_44_SIGNING, ML_DSA_65_SIGNING, ML_DSA_87_SIGNING,
+        };
+        match key_type {
+            KeyType::MlDsa44 => Ok(&ML_DSA_44_SIGNING),
+            KeyType::MlDsa65 => Ok(&ML_DSA_65_SIGNING),
+            KeyType::MlDsa87 => Ok(&ML_DSA_87_SIGNING),
+            _ => Err(Error::UnsupportedAlgorithm(format!(
+                "{:?} is not an ML-DSA key type",
+                key_type
+            ))),
+        }
+    }
+
+    /// Map an ML-DSA KeyType to the aws-lc-rs verification algorithm.
+    fn ml_dsa_verification_alg(
+        key_type: KeyType,
+    ) -> Result<&'static aws_lc_rs::unstable::signature::PqdsaVerificationAlgorithm> {
+        use aws_lc_rs::unstable::signature::{ML_DSA_44, ML_DSA_65, ML_DSA_87};
+        match key_type {
+            KeyType::MlDsa44 => Ok(&ML_DSA_44),
+            KeyType::MlDsa65 => Ok(&ML_DSA_65),
+            KeyType::MlDsa87 => Ok(&ML_DSA_87),
+            _ => Err(Error::UnsupportedAlgorithm(format!(
+                "{:?} is not an ML-DSA key type",
+                key_type
+            ))),
+        }
+    }
+
+    /// Generate an ML-DSA key pair (FIPS 204).
+    ///
+    /// NIAP PP-CA: FCS_CKM.1 - cryptographic key generation
+    /// FIPS 204: ML-DSA key generation via AWS-LC
+    fn generate_ml_dsa_key_pair(key_type: KeyType) -> Result<MlDsaKeyPairInternal> {
+        use aws_lc_rs::encoding::AsDer;
+        use aws_lc_rs::signature::KeyPair as _; // for .public_key()
+        let alg = Self::ml_dsa_signing_alg(key_type)?;
+        let key_pair = aws_lc_rs::unstable::signature::PqdsaKeyPair::generate(alg)
+            .map_err(|e| Error::KeyGeneration(format!("ML-DSA key generation failed: {}", e)))?;
+        // aws-lc-rs produces a standard SubjectPublicKeyInfo with the NIST
+        // CSOR id-ml-dsa-* OID, ready to embed in an X.509 certificate.
+        let spki_der = key_pair
+            .public_key()
+            .as_der()
+            .map_err(|e| Error::Encoding(format!("ML-DSA SPKI export failed: {}", e)))?
+            .as_ref()
+            .to_vec();
+        Ok(MlDsaKeyPairInternal {
+            key_pair,
+            spki_der,
+            key_type,
+        })
+    }
+
+    /// Sign with ML-DSA. The signature is the raw FIPS 204 signature, which
+    /// X.509 places directly in the signature BIT STRING (no DER wrapping).
+    fn sign_ml_dsa(key_pair: &MlDsaKeyPairInternal, data: &[u8]) -> Result<Vec<u8>> {
+        // ML-DSA signature sizes: ML-DSA-44 ~2420, -65 ~3309, -87 ~4627 bytes.
+        // 8192 is a safe upper bound for all parameter sets.
+        let mut signature = vec![0u8; 8192];
+        let n = key_pair
+            .key_pair
+            .sign(data, &mut signature)
+            .map_err(|e| Error::Signing(format!("ML-DSA signing failed: {}", e)))?;
+        signature.truncate(n);
+        Ok(signature)
+    }
+
+    /// Verify an ML-DSA signature against the key pair's public key.
+    fn verify_ml_dsa(
+        key_pair: &MlDsaKeyPairInternal,
+        data: &[u8],
+        signature: &[u8],
+    ) -> Result<bool> {
+        // Use aws-lc-rs's UnparsedPublicKey (NOT ring's, which this module also
+        // imports) - the ML-DSA verification algorithm is an aws-lc-rs type.
+        let alg = Self::ml_dsa_verification_alg(key_pair.key_type)?;
+        let public_key =
+            aws_lc_rs::signature::UnparsedPublicKey::new(alg, &key_pair.spki_der);
+        Ok(public_key.verify(data, signature).is_ok())
+    }
 }
 
 impl Default for SoftwareProvider {
@@ -570,7 +676,21 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
                 ));
             }
 
-            // Post-quantum algorithms - deferred
+            // Post-quantum signatures - FIPS 204 ML-DSA (via AWS aws-lc-rs)
+            KeyType::MlDsa44 => (
+                KeyPair::MlDsa(Box::new(Self::generate_ml_dsa_key_pair(KeyType::MlDsa44)?)),
+                Algorithm::MlDsa44,
+            ),
+            KeyType::MlDsa65 => (
+                KeyPair::MlDsa(Box::new(Self::generate_ml_dsa_key_pair(KeyType::MlDsa65)?)),
+                Algorithm::MlDsa65,
+            ),
+            KeyType::MlDsa87 => (
+                KeyPair::MlDsa(Box::new(Self::generate_ml_dsa_key_pair(KeyType::MlDsa87)?)),
+                Algorithm::MlDsa87,
+            ),
+
+            // ML-KEM (encapsulation, not signing) and SLH-DSA - not yet implemented
             _ => {
                 return Err(Error::NotImplemented(format!(
                     "Key type {:?} not yet implemented in software provider",
@@ -625,6 +745,18 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
                 }
                 Self::sign_ed25519(ed_kp, data)
             }
+            KeyPair::MlDsa(ml_kp) => {
+                if !matches!(
+                    algorithm,
+                    Algorithm::MlDsa44 | Algorithm::MlDsa65 | Algorithm::MlDsa87
+                ) {
+                    return Err(Error::UnsupportedAlgorithm(format!(
+                        "Algorithm {:?} not compatible with an ML-DSA key",
+                        algorithm
+                    )));
+                }
+                Self::sign_ml_dsa(ml_kp, data)
+            }
         }
     }
 
@@ -661,6 +793,18 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
                 }
                 Self::verify_ed25519(ed_kp, data, signature)
             }
+            KeyPair::MlDsa(ml_kp) => {
+                if !matches!(
+                    algorithm,
+                    Algorithm::MlDsa44 | Algorithm::MlDsa65 | Algorithm::MlDsa87
+                ) {
+                    return Err(Error::UnsupportedAlgorithm(format!(
+                        "Algorithm {:?} not compatible with an ML-DSA key",
+                        algorithm
+                    )));
+                }
+                Self::verify_ml_dsa(ml_kp, data, signature)
+            }
         }
     }
 
@@ -683,6 +827,8 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
             KeyPair::Rsa(rsa_kp) => Self::export_rsa_spki(rsa_kp),
             KeyPair::Ecdsa(ecdsa_kp) => Self::export_ecdsa_spki(ecdsa_kp),
             KeyPair::Ed25519(ed_kp) => Self::export_ed25519_spki(ed_kp),
+            // ML-DSA SPKI is produced (and cached) by aws-lc-rs at keygen.
+            KeyPair::MlDsa(ml_kp) => Ok(ml_kp.spki_der.clone()),
         }
     }
 
@@ -841,6 +987,12 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
                     EcCurve::P521 => continue, // Not implemented
                 },
                 KeyPair::Ed25519(_) => (KeyType::Ed25519, Algorithm::Ed25519),
+                KeyPair::MlDsa(ml_kp) => match ml_kp.key_type {
+                    KeyType::MlDsa44 => (KeyType::MlDsa44, Algorithm::MlDsa44),
+                    KeyType::MlDsa65 => (KeyType::MlDsa65, Algorithm::MlDsa65),
+                    KeyType::MlDsa87 => (KeyType::MlDsa87, Algorithm::MlDsa87),
+                    _ => continue,
+                },
             };
 
             handles.push(KeyHandle::new(
@@ -853,5 +1005,65 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
         }
 
         Ok(handles)
+    }
+}
+
+#[cfg(test)]
+mod ml_dsa_tests {
+    use super::*;
+    use crate::provider::CryptoProvider;
+
+    /// FIPS 204 ML-DSA generate -> export SPKI -> sign -> verify round-trip
+    /// through the public CryptoProvider API (backed by AWS aws-lc-rs).
+    async fn ml_dsa_roundtrip(key_type: KeyType, sig_alg: Algorithm) {
+        let provider = SoftwareProvider::new();
+        let handle = provider
+            .generate_key_pair(key_type, "ml-dsa-test", false)
+            .await
+            .expect("ML-DSA keygen");
+        assert_eq!(handle.key_type, key_type);
+
+        // Exported SPKI must carry the NIST id-ml-dsa-* OID so it parses as a
+        // standard SubjectPublicKeyInfo.
+        let spki = provider
+            .export_public_key(&handle)
+            .await
+            .expect("ML-DSA SPKI export");
+        assert!(!spki.is_empty());
+
+        let msg = b"post-quantum certificate TBS bytes";
+        let sig = provider.sign(&handle, sig_alg, msg).await.expect("ML-DSA sign");
+        assert!(!sig.is_empty());
+
+        assert!(
+            provider
+                .verify(&handle, sig_alg, msg, &sig)
+                .await
+                .expect("ML-DSA verify"),
+            "valid ML-DSA signature must verify"
+        );
+        // A tampered message must NOT verify.
+        assert!(
+            !provider
+                .verify(&handle, sig_alg, b"different message", &sig)
+                .await
+                .expect("ML-DSA verify (tampered)"),
+            "ML-DSA signature must fail against a different message"
+        );
+    }
+
+    #[tokio::test]
+    async fn ml_dsa_44_roundtrip() {
+        ml_dsa_roundtrip(KeyType::MlDsa44, Algorithm::MlDsa44).await;
+    }
+
+    #[tokio::test]
+    async fn ml_dsa_65_roundtrip() {
+        ml_dsa_roundtrip(KeyType::MlDsa65, Algorithm::MlDsa65).await;
+    }
+
+    #[tokio::test]
+    async fn ml_dsa_87_roundtrip() {
+        ml_dsa_roundtrip(KeyType::MlDsa87, Algorithm::MlDsa87).await;
     }
 }

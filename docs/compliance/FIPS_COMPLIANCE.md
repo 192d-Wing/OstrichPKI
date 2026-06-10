@@ -367,7 +367,22 @@ This document tracks OstrichPKI's compliance with Federal Information Processing
 
 ### FIPS 204: Module-Lattice-Based Digital Signature Algorithm (ML-DSA)
 
-**Status:** 🟡 **Designed** (Not implemented)
+**Status:** 🟢 **Implemented** (ML-DSA-44/65/87 signing, via AWS aws-lc-rs)
+
+**Live evidence:** `ostrich-init --key-type MlDsa65` produces a self-signed
+ML-DSA-65 root CA whose post-quantum self-signature **OpenSSL 3.6 verifies
+under `openssl verify -check_ss_sig`** (forced self-signature check). The
+certificate shows `Public Key Algorithm: ML-DSA-65` and
+`Signature Algorithm: ML-DSA-65`. Provider round-trip (generate/export/
+sign/verify) is covered by `crates/ostrich-crypto/src/software/mod.rs`
+(`ml_dsa_44/65/87_roundtrip` tests).
+
+**Implementation library:** AWS `aws-lc-rs` (AWS Libcrypto for Rust, backed
+by AWS-LC) under its `unstable` feature - chosen over RustCrypto because
+AWS-LC is on the FIPS 140-3 validation track including its PQC algorithms.
+POAM: the `unstable` ML-DSA API is mutually exclusive with aws-lc-rs's `fips`
+feature today, so the PQC build is currently non-FIPS; switch to the `fips`
+feature once AWS-LC ships FIPS-validated ML-DSA.
 
 **Publication Date:** August 2024 (finalized)
 
@@ -405,19 +420,19 @@ This document tracks OstrichPKI's compliance with Federal Information Processing
 
 **Implementation:**
 
-- [crates/ostrich-common/src/oid.rs:74](../../crates/ostrich-common/src/oid.rs#L74) - OID placeholder
-- [crates/ostrich-crypto/src/algorithm.rs](../../crates/ostrich-crypto/src/algorithm.rs) - ML-DSA variants defined
+- [crates/ostrich-crypto/src/software/mod.rs](../../crates/ostrich-crypto/src/software/mod.rs) - ML-DSA keygen/sign/verify/SPKI export via aws-lc-rs (`generate_ml_dsa_key_pair`, `sign_ml_dsa`, `verify_ml_dsa`)
+- [crates/ostrich-x509/src/signing.rs](../../crates/ostrich-x509/src/signing.rs) - id-ml-dsa-* OIDs (NIST CSOR 2.16.840.1.101.3.4.3.17/.18/.19, parameters absent) wired into the X.509 AlgorithmIdentifier path
+- [crates/ostrich-crypto/src/hsm_validation.rs](../../crates/ostrich-crypto/src/hsm_validation.rs) - FCS_STG_EXT.1 exception permitting software-backed ML-DSA CA keys (no HSM supports ML-DSA yet; POAM)
 
 **Evidence:**
 
 - ✅ Algorithm types: `MlDsa44`, `MlDsa65`, `MlDsa87`
-- ✅ Hybrid types: `EcdsaP256_MlDsa44`, `EcdsaP384_MlDsa65`
-- 🔴 No implementation
+- ✅ Signing/verification implemented and OpenSSL-verified (see above)
+- ⏳ Hybrid (classical+PQC) composite signatures: types defined, not implemented
 
-**Rust Crates:**
-
-- `ml-dsa` - Pure Rust implementation (RustCrypto)
-- `pqcrypto-dilithium` - Bindings to PQClean
+**Implementation library:** `aws-lc-rs` (`unstable` feature). RustCrypto
+`ml-dsa` was deliberately NOT used (AWS-LC's FIPS-track validation is the
+rationale).
 
 **Compliance Notes:**
 

@@ -6,9 +6,9 @@
 //! `ca_certificates`). The printed certificate ID is what `ca-server` consumes
 //! via `CA_CERTIFICATE_ID`.
 //!
-//! Current limitation: RSA only. The certificate builder declares
-//! sha256WithRSAEncryption; algorithm agility (ECDSA/EdDSA/ML-DSA roots) is a
-//! tracked follow-up (see POAM notes in ostrich-x509 builder).
+//! Supports RSA, ECDSA (P-256/P-384), Ed25519, and ML-DSA (FIPS 204) CA keys
+//! via the shared ostrich-x509 signing module (algorithm derived from key type).
+//! ML-DSA keys are software-backed (no HSM supports ML-DSA yet).
 //!
 //! COMPLIANCE MAPPING:
 //! - NIST 800-53: SC-12 (Key Establishment) - CA key generated in provider
@@ -49,7 +49,7 @@ struct Args {
     #[arg(long)]
     country: Option<String>,
 
-    /// CA key type (RSA only for now: Rsa2048, Rsa3072, Rsa4096)
+    /// CA key type: Rsa2048/3072/4096, EcP256, EcP384, Ed25519, MlDsa44/65/87
     #[arg(long, default_value = "Rsa3072")]
     key_type: String,
 
