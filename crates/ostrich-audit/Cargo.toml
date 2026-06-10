@@ -16,6 +16,7 @@ testing = []
 # Internal
 ostrich-common = { workspace = true }
 ostrich-db = { workspace = true }
+ostrich-crypto = { workspace = true }
 
 # Async
 async-trait = { workspace = true }
@@ -39,3 +40,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+# Live tamper-detection integration test (tests/signed_chain_tamper.rs)
+sqlx = { workspace = true }

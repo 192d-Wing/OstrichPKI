@@ -78,20 +78,21 @@ impl AuditRepository {
     /// - NIAP PP-CA v2.1: FAU_STG.2 - Guarantees of audit data availability
     /// - NIAP PP-CA v2.1: FPT_STM.1 - Reliable time stamps (timestamp field)
     pub async fn append(&self, event: &AuditEvent) -> Result<AuditEvent> {
-        // Get the previous event's hash to create chain
-        let prev_hash = self.get_last_hash().await?;
-
+        // The caller (sink) is responsible for setting `previous_hash` BEFORE it
+        // computes and signs `event_hash`, so the chain link is covered by both
+        // the hash and the signature. We persist exactly what was hashed/signed;
+        // re-deriving it here would store a link the event_hash never covered,
+        // breaking verify_chain (and any signature over event_hash).
         let created = sqlx::query_as::<_, AuditEvent>(
             r#"
             INSERT INTO audit_events (
                 id, event_type, actor, target, action, outcome,
                 details, ip_address, user_agent, session_id,
-                previous_hash, event_hash, timestamp
+                previous_hash, event_hash, timestamp,
+                signature, signing_key_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            RETURNING id, event_type, actor, target, action, outcome,
-                      details, ip_address, user_agent, session_id,
-                      previous_hash, event_hash, timestamp
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            RETURNING *
             "#,
         )
         .bind(event.id)
@@ -104,9 +105,11 @@ impl AuditRepository {
         .bind(&event.ip_address)
         .bind(&event.user_agent)
         .bind(&event.session_id)
-        .bind(&prev_hash)
+        .bind(&event.previous_hash)
         .bind(&event.event_hash)
         .bind(event.timestamp)
+        .bind(&event.signature)
+        .bind(&event.signing_key_id)
         .fetch_one(self.pool.pool())
         .await
         .map_err(|e| Error::Query(e.to_string()))?;
@@ -131,7 +134,7 @@ impl AuditRepository {
     /// - NIST 800-53: AU-9(3) - Maintain hash chain
     /// - NIAP PP-CA v2.1: FAU_STG.4 - Prevention of audit data loss
     /// - FIPS 180-4: SHA-256 hash algorithm for chain integrity
-    async fn get_last_hash(&self) -> Result<Option<Vec<u8>>> {
+    pub async fn get_last_hash(&self) -> Result<Option<Vec<u8>>> {
         let result = sqlx::query(
             r#"
             SELECT event_hash
@@ -145,6 +148,22 @@ impl AuditRepository {
         .map_err(|e| Error::Query(e.to_string()))?;
 
         Ok(result.map(|row| row.get("event_hash")))
+    }
+
+    /// Return all audit events in chain order (oldest first).
+    ///
+    /// Used by signature verification (AU-10) to check each record's signature.
+    pub async fn all_events_ordered(&self) -> Result<Vec<AuditEvent>> {
+        sqlx::query_as::<_, AuditEvent>(
+            r#"
+            SELECT *
+            FROM audit_events
+            ORDER BY timestamp ASC
+            "#,
+        )
+        .fetch_all(self.pool.pool())
+        .await
+        .map_err(|e| Error::Query(e.to_string()))
     }
 
     /// Verify the integrity of the audit log chain
@@ -169,9 +188,7 @@ impl AuditRepository {
     pub async fn verify_chain(&self) -> Result<bool> {
         let events = sqlx::query_as::<_, AuditEvent>(
             r#"
-            SELECT id, event_type, actor, target, action, outcome,
-                   details, ip_address, user_agent, session_id,
-                   previous_hash, event_hash, timestamp
+            SELECT *
             FROM audit_events
             ORDER BY timestamp ASC
             "#,
@@ -330,9 +347,7 @@ impl AuditRepository {
 
         let events = sqlx::query_as::<_, AuditEvent>(
             r#"
-            SELECT id, event_type, actor, target, action, outcome,
-                   details, ip_address, user_agent, session_id,
-                   previous_hash, event_hash, timestamp
+            SELECT *
             FROM audit_events
             WHERE actor = $1
             ORDER BY timestamp DESC
@@ -361,9 +376,7 @@ impl AuditRepository {
 
         let events = sqlx::query_as::<_, AuditEvent>(
             r#"
-            SELECT id, event_type, actor, target, action, outcome,
-                   details, ip_address, user_agent, session_id,
-                   previous_hash, event_hash, timestamp
+            SELECT *
             FROM audit_events
             WHERE event_type = $1
             ORDER BY timestamp DESC
@@ -403,9 +416,7 @@ impl AuditRepository {
 
         let events = sqlx::query_as::<_, AuditEvent>(
             r#"
-            SELECT id, event_type, actor, target, action, outcome,
-                   details, ip_address, user_agent, session_id,
-                   previous_hash, event_hash, timestamp
+            SELECT *
             FROM audit_events
             WHERE timestamp >= $1 AND timestamp <= $2
             ORDER BY timestamp DESC
@@ -443,9 +454,7 @@ impl AuditRepository {
 
         let events = sqlx::query_as::<_, AuditEvent>(
             r#"
-            SELECT id, event_type, actor, target, action, outcome,
-                   details, ip_address, user_agent, session_id,
-                   previous_hash, event_hash, timestamp
+            SELECT *
             FROM audit_events
             WHERE outcome = 'failure'
                OR event_type IN ('authentication', 'authorization', 'access_violation')
@@ -468,9 +477,7 @@ impl super::Repository<AuditEvent> for AuditRepository {
     async fn find_by_id(&self, id: &Uuid) -> Result<Option<AuditEvent>> {
         let event = sqlx::query_as::<_, AuditEvent>(
             r#"
-            SELECT id, event_type, actor, target, action, outcome,
-                   details, ip_address, user_agent, session_id,
-                   previous_hash, event_hash, timestamp
+            SELECT *
             FROM audit_events
             WHERE id = $1
             "#,
@@ -520,9 +527,7 @@ impl super::Repository<AuditEvent> for AuditRepository {
 
         let events = sqlx::query_as::<_, AuditEvent>(
             r#"
-            SELECT id, event_type, actor, target, action, outcome,
-                   details, ip_address, user_agent, session_id,
-                   previous_hash, event_hash, timestamp
+            SELECT *
             FROM audit_events
             ORDER BY timestamp DESC
             LIMIT $1 OFFSET $2

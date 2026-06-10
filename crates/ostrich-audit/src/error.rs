@@ -35,6 +35,10 @@ pub enum Error {
     /// Common error
     #[error("Common error: {0}")]
     Common(#[from] ostrich_common::Error),
+
+    /// Record signing / signature verification error (AU-10)
+    #[error("Audit signing error: {0}")]
+    Signing(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

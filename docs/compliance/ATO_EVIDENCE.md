@@ -50,6 +50,36 @@ Phase 1c-hardware (next iteration):
 
 ---
 
+## Audit Trail Tamper-Evidence Evidence (AU-9(3) / AU-10)
+
+The audit hash chain was made genuinely verifiable and a signing layer was added
+so the trail is tamper-evident even against an attacker with database write
+access (the SHA-256 chain alone is not — such an attacker can recompute it).
+
+| Control / SFR | Framework  | Evidence |
+|---------------|------------|----------|
+| AU-9(3)       | NIST 800-53 | `DatabaseAuditSink::record()` links `previous_hash` and truncates the timestamp to microseconds before hashing; `AuditRepository::verify_chain()` recomputes every hash and checks continuity. Both integrity bugs that made the DB chain unverifiable (nanosecond timestamp, missing chain link) are fixed. |
+| AU-10         | NIST 800-53 | `DatabaseAuditSink::with_signing_key()` signs each `event_hash`; `verify_signed_chain(spki, algorithm)` verifies the chain AND every signature. `signature` / `signing_key_id` columns added in `migrations/00007_audit_signature.sql`. |
+| FAU_STG.4     | NIAP PP-CA  | Signed records: a modified record's signature no longer verifies and cannot be re-signed without the key — undetected modification is prevented even after a full hash-chain rewrite. |
+
+Test evidence (live, against a real Postgres):
+
+```
+DATABASE_URL=... cargo test -p ostrich-audit --test signed_chain_tamper
+# 1 test passed — signature_catches_tamper_that_hash_chain_misses:
+#  1. writes 3 signed audit records to Postgres
+#  2. verify_integrity (hash chain) AND verify_signed_chain both pass
+#  3. forges the LAST record's actor and recomputes its event_hash
+#     -> verify_integrity is FOOLED (returns true) — the gap AU-10 closes
+#     -> verify_signed_chain DETECTS it (stale signature fails over forged hash)
+```
+
+Production wiring (POA&M): the ca-server currently uses the unsigned
+`DatabaseAuditSink::new`. Enabling `with_signing_key` requires an audit-signing-key
+lifecycle decision (dedicated key vs. CA key; publish the verifier SPKI). The
+mechanism and live proof are complete; the insertion point is marked with a POAM
+comment at `services/ca-server/src/main.rs` (audit_sink construction).
+
 ## Phase 1b Gap-Closure Evidence (SCMS Audit + PIN Lockout)
 
 The following moved from 🟡 Partial to 🟢 Implemented in the Phase 1b SCMS

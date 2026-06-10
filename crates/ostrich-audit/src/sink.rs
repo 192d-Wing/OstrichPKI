@@ -92,14 +92,108 @@ impl Default for QueryCriteria {
 /// NIAP PP-CA: FAU_STG.4 - Hash chain prevents undetected modification
 pub struct DatabaseAuditSink {
     repository: AuditRepository,
+    /// Optional record signer (AU-10 non-repudiation). When set, every record's
+    /// event_hash is signed at write time; verification then detects tampering
+    /// even by an attacker who rewrites the whole SHA-256 chain.
+    signer: Option<AuditSigner>,
+}
+
+/// Holds the key material used to sign audit records.
+struct AuditSigner {
+    crypto: std::sync::Arc<dyn ostrich_crypto::CryptoProvider>,
+    key_handle: ostrich_crypto::KeyHandle,
+    algorithm: ostrich_crypto::Algorithm,
+    /// Stored on each record so verifiers know which key to check.
+    key_label: String,
 }
 
 impl DatabaseAuditSink {
-    /// Create a new database audit sink
+    /// Create a new database audit sink WITHOUT record signing (hash chain
+    /// only). Backward-compatible default.
     pub fn new(pool: DatabasePool) -> Self {
         Self {
             repository: AuditRepository::new(pool),
+            signer: None,
         }
+    }
+
+    /// Create a database audit sink that SIGNS each record's event_hash
+    /// (AU-10 non-repudiation). The signing key should be HSM-backed in
+    /// production; `key_label` is recorded on each row so verifiers know which
+    /// public key to check against.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AU-10 (Non-repudiation), AU-9(3) (Cryptographic protection)
+    /// - NIAP PP-CA: FAU_STG.1.2 / FAU_STG.4 - undetected modification prevented
+    pub fn with_signing_key(
+        pool: DatabasePool,
+        crypto: std::sync::Arc<dyn ostrich_crypto::CryptoProvider>,
+        key_handle: ostrich_crypto::KeyHandle,
+        algorithm: ostrich_crypto::Algorithm,
+        key_label: impl Into<String>,
+    ) -> Self {
+        Self {
+            repository: AuditRepository::new(pool),
+            signer: Some(AuditSigner {
+                crypto,
+                key_handle,
+                algorithm,
+                key_label: key_label.into(),
+            }),
+        }
+    }
+
+    /// Verify the audit chain AND every signed record's signature against the
+    /// given public key (DER SubjectPublicKeyInfo).
+    ///
+    /// Returns Ok(true) only if the hash chain is intact AND every record that
+    /// carries a signature verifies. A record whose contents were modified
+    /// fails here even if the attacker recomputed the entire hash chain,
+    /// because they cannot forge the signature (AU-10).
+    ///
+    /// `algorithm` is the signature algorithm of the signing key (e.g. the CA
+    /// key's algorithm). The audit signer stores the crypto provider's RAW
+    /// signature, so for ECDSA keys this is fixed `r||s` (ecdsa_fixed=true);
+    /// RSA/Ed25519 are unaffected.
+    pub async fn verify_signed_chain(
+        &self,
+        signer_public_key_spki: &[u8],
+        algorithm: ostrich_crypto::Algorithm,
+    ) -> Result<bool> {
+        // First the structural checks (continuity + hash recomputation).
+        if !self.repository.verify_chain().await.map_err(Error::Database)? {
+            return Ok(false);
+        }
+
+        // Then verify each signed record's signature over its event_hash. A
+        // tampered record fails here even after a full hash-chain rewrite,
+        // because the attacker cannot forge the signature (AU-10).
+        let events = self
+            .repository
+            .all_events_ordered()
+            .await
+            .map_err(Error::Database)?;
+        for db_event in events {
+            let Some(sig) = &db_event.signature else {
+                continue; // unsigned record - structural check already covered it
+            };
+            let ok = ostrich_crypto::verify_with_spki(
+                signer_public_key_spki,
+                algorithm,
+                &db_event.event_hash,
+                sig,
+                true, // provider emits raw fixed r||s for ECDSA
+            )
+            .map_err(|e| Error::Signing(format!("Audit signature verify error: {}", e)))?;
+            if !ok {
+                tracing::error!(
+                    event_id = %db_event.id,
+                    "Audit record signature verification FAILED (tampering or wrong key)"
+                );
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Convert database model to audit event
@@ -148,6 +242,8 @@ impl DatabaseAuditSink {
             previous_hash: db_event.previous_hash,
             event_hash: db_event.event_hash,
             timestamp: db_event.timestamp,
+            signature: db_event.signature,
+            signing_key_id: db_event.signing_key_id,
         }
     }
 }
@@ -157,9 +253,40 @@ impl AuditSink for DatabaseAuditSink {
     // NIAP PP-CA: FAU_STG.1 - Protected audit trail storage implementation
 
     async fn record(&self, event: &mut AuditEvent) -> Result<()> {
+        // Truncate to microsecond precision BEFORE hashing. Postgres timestamptz
+        // stores microseconds, so a nanosecond-precision Utc::now() would hash to
+        // one value here but recompute to a different value after the DB
+        // round-trip, breaking verify_chain. Truncating up front makes the stored
+        // hash match what the verifier recomputes from the persisted timestamp.
+        use chrono::SubsecRound;
+        event.timestamp = event.timestamp.trunc_subsecs(6);
+
+        // NIAP PP-CA: FAU_STG.4 - Link to the prior record BEFORE hashing so the
+        // chain link is covered by event_hash (and the signature below). The
+        // repository persists this previous_hash verbatim; it does not re-derive
+        // it. Without this, event_hash would be computed with previous_hash=None
+        // while the verifier recomputes with the stored link -> mismatch.
+        event.previous_hash = self
+            .repository
+            .get_last_hash()
+            .await
+            .map_err(Error::Database)?;
+
         // NIAP PP-CA: FAU_STG.4 - Compute hash for tamper detection
         // Compute event hash with chain integrity
         event.event_hash = event.compute_hash();
+
+        // AU-10: sign the event_hash so tampering is detectable even if the
+        // attacker recomputes the whole hash chain (they cannot forge this).
+        if let Some(signer) = &self.signer {
+            let signature = signer
+                .crypto
+                .sign(&signer.key_handle, signer.algorithm, &event.event_hash)
+                .await
+                .map_err(|e| Error::Signing(format!("Failed to sign audit record: {}", e)))?;
+            event.signature = Some(signature);
+            event.signing_key_id = Some(signer.key_label.clone());
+        }
 
         // Store in database (repository will handle previous_hash linking)
         let db_event = event.to_db_model();

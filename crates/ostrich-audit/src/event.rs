@@ -274,6 +274,15 @@ pub struct AuditEvent {
     /// NIST 800-53: AU-3 - Date and time of event
     /// NIAP PP-CA: FAU_GEN.1.2 - Date and time of the event
     pub timestamp: DateTime<Utc>,
+
+    /// Signature over `event_hash` (AU-10 non-repudiation). Set by the sink at
+    /// record time when a signing key is configured; None otherwise.
+    #[serde(default)]
+    pub signature: Option<Vec<u8>>,
+
+    /// Label of the key that produced `signature`.
+    #[serde(default)]
+    pub signing_key_id: Option<String>,
 }
 
 impl AuditEvent {
@@ -340,6 +349,8 @@ impl AuditEvent {
             previous_hash: self.previous_hash.clone(),
             event_hash: self.event_hash.clone(),
             timestamp: self.timestamp,
+            signature: self.signature.clone(),
+            signing_key_id: self.signing_key_id.clone(),
         }
     }
 }
@@ -429,6 +440,8 @@ impl AuditEventBuilder {
             previous_hash: None,    // Will be set by sink
             event_hash: Vec::new(), // Will be computed by sink
             timestamp: Utc::now(),
+            signature: None,        // Will be set by sink if signing is configured
+            signing_key_id: None,
         }
     }
 }

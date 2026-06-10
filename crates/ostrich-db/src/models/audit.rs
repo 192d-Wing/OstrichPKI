@@ -72,6 +72,13 @@ pub struct AuditEvent {
     ///
     /// NIST 800-53: AU-3 - Date and time of event
     pub timestamp: DateTime<Utc>,
+
+    /// Signature over `event_hash` (AU-10 non-repudiation). NULL when the
+    /// sink was not configured with a signing key.
+    pub signature: Option<Vec<u8>>,
+
+    /// Label of the key that produced `signature` (for verification + rotation).
+    pub signing_key_id: Option<String>,
 }
 
 impl AuditEvent {
@@ -97,6 +104,8 @@ impl AuditEvent {
             previous_hash: None,
             event_hash: Vec::new(), // Will be computed by ostrich-audit
             timestamp: Utc::now(),
+            signature: None,
+            signing_key_id: None,
         }
     }
 

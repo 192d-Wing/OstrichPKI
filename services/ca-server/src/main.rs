@@ -347,6 +347,18 @@ async fn bootstrap_ca(
         updated_at: ca_cert_row.updated_at,
     };
 
+    // Hash-chain-only audit sink. The chain detects accidental corruption,
+    // reordering, and deletion, but is not tamper-evident against an attacker
+    // with DB write access (they can recompute the SHA-256 chain).
+    //
+    // POAM: AU-10 - enable signed audit records in production via
+    // DatabaseAuditSink::with_signing_key(...). The mechanism is implemented and
+    // proven (crates/ostrich-audit/tests/signed_chain_tamper.rs). Wiring it here
+    // requires an audit-signing-key lifecycle decision: share `crypto_provider` /
+    // `key_handle` (would need Arc instead of Box through CertificateAuthority),
+    // or provision a dedicated audit key, and publish its public key (SPKI) so
+    // verifiers can run verify_signed_chain. Tracked separately to avoid coupling
+    // the CA signing key to audit signing without that decision.
     let audit_sink = Box::new(ostrich_audit::DatabaseAuditSink::new(db_pool.clone()));
 
     let mut ca = ostrich_ca::CertificateAuthority::new(

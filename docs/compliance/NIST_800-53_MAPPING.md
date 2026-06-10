@@ -559,23 +559,27 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Implementation:**
 
-- [crates/ostrich-audit/src/event.rs:60-61](../../crates/ostrich-audit/src/event.rs#L60-L61) - Hash chain fields (previous_hash, event_hash)
-- [crates/ostrich-audit/src/event.rs:145-150](../../crates/ostrich-audit/src/event.rs#L145-L150) - Hash computation
+- [crates/ostrich-audit/src/event.rs](../../crates/ostrich-audit/src/event.rs) - Hash chain fields (previous_hash, event_hash) and SHA-256 `compute_hash()`
+- [crates/ostrich-audit/src/sink.rs](../../crates/ostrich-audit/src/sink.rs) - `DatabaseAuditSink::record()` links `previous_hash` BEFORE hashing so the chain link is covered by `event_hash`
+- [crates/ostrich-db/src/repository/audit.rs](../../crates/ostrich-db/src/repository/audit.rs) - `verify_chain()` recomputes every event hash and checks continuity; `append()` persists the caller-supplied `previous_hash` verbatim
+- Signed verification: `DatabaseAuditSink::verify_signed_chain()` (see AU-10)
 
 **Evidence:**
 
 - ✅ Each audit event includes hash of previous event
-- ✅ Chain integrity verifiable
-- ✅ SHA-256 hashing
+- ✅ Chain integrity verifiable end-to-end (`verify_chain()` / `verify_integrity()`)
+- ✅ SHA-256 hashing (FIPS 180-4)
+- ✅ Live integrity test against Postgres: [crates/ostrich-audit/tests/signed_chain_tamper.rs](../../crates/ostrich-audit/tests/signed_chain_tamper.rs)
 
-**Enhancement:**
+**Integrity fixes (chain now verifiable for DB-backed sinks):**
 
-- Phase 13 - Implement hash chain verification function ([db/repository/audit.rs:132](../../crates/ostrich-db/src/repository/audit.rs#L132) TODO)
+- Timestamp precision: `record()` truncates to microseconds (`trunc_subsecs(6)`) before hashing so the stored hash matches the value recomputed after the Postgres `timestamptz` round-trip (previously nanosecond `Utc::now()` made every DB-backed hash unverifiable).
+- Chain linkage: the sink now sets `previous_hash` before computing `event_hash` (previously the hash was computed with `previous_hash=None` while the verifier recomputed with the stored link, so verification failed for every event after the first).
 
 **Evidence Required for ATO:**
 
-- Hash chain algorithm specification
-- Integrity verification test results
+- Hash chain algorithm specification ✅ (documented above)
+- Integrity verification test results ✅ (signed_chain_tamper.rs passes against live DB)
 
 ---
 
@@ -583,7 +587,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system protects against an individual falsely denying having performed a particular action.
 
-**Implementation Status:** 🟡 **Partial**
+**Implementation Status:** 🟢 **Compliant** (mechanism); 🟡 production wiring pending (POAM below)
 
 **NIAP Mapping:**
 
@@ -594,23 +598,26 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 - Digital signatures on all issued certificates, CRLs, OCSP responses
 - Audit trail with actor identity
+- **Signed audit records**: each record's `event_hash` is signed with a key an attacker does not hold, making the audit trail tamper-evident even against database write access (the SHA-256 chain alone is not — an attacker can recompute it).
+  - [crates/ostrich-audit/src/sink.rs](../../crates/ostrich-audit/src/sink.rs) - `DatabaseAuditSink::with_signing_key()` signs `event_hash` at write time; `verify_signed_chain(spki, algorithm)` verifies the chain AND every record's signature
+  - [migrations/00007_audit_signature.sql](../../migrations/00007_audit_signature.sql) - `signature`, `signing_key_id` columns (nullable; signing is opt-in)
 
 **Evidence:**
 
 - ✅ All CA-signed objects provide proof of origin
 - ✅ Audit events link actions to actors
+- ✅ **Live tamper-detection proof**: [crates/ostrich-audit/tests/signed_chain_tamper.rs](../../crates/ostrich-audit/tests/signed_chain_tamper.rs) writes signed records to Postgres, forges the last record's content and recomputes its `event_hash` (which fools the hash-only `verify_chain`), and shows `verify_signed_chain` still detects it because the stale signature no longer verifies over the forged hash.
 - 🔴 No CSR→Certificate linkage (missing request_id)
 
-**Gaps:**
+**Gaps / POA&M:**
 
-- Cannot prove which CSR led to which certificate
-
-**Remediation:** Phase 15 - Add request_id field to certificates table
+- Cannot prove which CSR led to which certificate (Phase 15 - add request_id to certificates table)
+- POAM (AU-10): wire signed audit records into the ca-server in production via `DatabaseAuditSink::with_signing_key` — requires an audit-signing-key lifecycle decision (dedicated key vs. CA key, publish verifier SPKI). Mechanism and live proof are complete; see the POAM comment at [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs) (audit_sink construction).
 
 **Evidence Required for ATO:**
 
-- Non-repudiation mechanisms documentation
-- Digital signature verification procedures
+- Non-repudiation mechanisms documentation ✅ (signed audit records documented above)
+- Digital signature verification procedures ✅ (`verify_signed_chain` + signed_chain_tamper.rs)
 
 ---
 
