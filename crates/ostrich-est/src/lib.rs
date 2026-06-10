@@ -65,4 +65,4 @@ pub use enrollment::{
 pub use error::{Error, Result};
 pub use mtls::{ClientCertExtractor, MtlsClientCert, validate_client};
 pub use rest::create_router;
-pub use serverkeygen::{ServerKeyGenRequest, ServerKeyGenResponse, generate_key_pair_for_client};
+pub use serverkeygen::{ServerKeyGenMaterial, ServerKeyGenRequest, generate_key_pair_for_client};

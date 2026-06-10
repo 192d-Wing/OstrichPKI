@@ -813,55 +813,109 @@ async fn server_key_gen(
 ) -> Result<Response> {
     use crate::serverkeygen::{ServerKeyGenRequest, generate_key_pair_for_client};
     use ostrich_crypto::KeyType;
-    use zeroize::Zeroizing;
 
-    // Use authenticated user identity as client identifier
     let client_identifier = &user.username;
 
-    // Decode base64-encoded request body
+    // The client POSTs a base64 PKCS#10 CSR conveying the desired subject/SANs
+    // (RFC 7030 §4.4.1); the server generates the key, so the CSR's own key and
+    // signature are not used for proof-of-possession.
     let request_der = BASE64_STANDARD
         .decode(&body)
         .map_err(|e| Error::BadRequest(format!("Invalid base64: {}", e)))?;
+    let parsed = ostrich_x509::parser::parse_csr(&request_der)
+        .map_err(|e| Error::InvalidCsr(format!("Failed to parse serverkeygen CSR: {}", e)))?;
+    let subject = ostrich_x509::parser::parse_csr_subject_dn(&request_der)
+        .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR subject: {}", e)))?;
+    let dns_sans: Vec<String> = parsed
+        .subject_alternative_names
+        .iter()
+        .filter_map(|s| s.strip_prefix("DNS:").map(String::from))
+        .collect();
 
-    if request_der.len() < 10 {
-        return Err(Error::BadRequest("Request too short".to_string()));
-    }
-
-    // TODO: Parse CSR-like structure to extract subject DN and requested key type
-    // For Phase 13, use defaults
-    let subject_dn = "CN=ServerKeyGen Client,O=OstrichPKI".to_string();
-    let key_type = KeyType::Rsa2048; // Default to RSA 2048
-    let profile_name = "default".to_string();
-
-    let request = ServerKeyGenRequest {
-        subject_dn: subject_dn.clone(),
-        key_type,
-        subject_alt_names: vec![],
-        profile_name,
+    // CA integration is required (fail closed, never fabricate).
+    let Some(ca_client) = state.ca_client.as_ref() else {
+        return Err(Error::Internal(
+            "EST CA integration not configured".to_string(),
+        ));
     };
 
-    // Default PKCS#12 password (in production, this should be client-provided or generated)
-    // RFC 7030 §4.4.2 - Password may be provided via HTTP Basic Auth or other mechanism
-    let pkcs12_password = Zeroizing::new("changeit".to_string());
-
-    // Generate key pair, issue certificate, create PKCS#12 bundle
-    let pkcs12_bundle = generate_key_pair_for_client(
-        request,
+    // Generate the key pair + a CSR signed by it (proof-of-possession).
+    let request = ServerKeyGenRequest {
+        subject,
+        key_type: KeyType::EcP256, // server-chosen; modern default
+        dns_sans,
+        profile_name: state.enroll_profile.clone(),
+    };
+    let material = generate_key_pair_for_client(
+        &request,
         client_identifier,
-        state.crypto_provider.clone(),
-        state.audit_sink.clone(),
-        pkcs12_password,
+        &state.crypto_provider,
+        &state.audit_sink,
     )
     .await?;
 
-    // Audit log successful key generation
-    // (Additional audit already done in generate_key_pair_for_client)
+    // Record the enrollment and submit the server-built CSR to the CA, which
+    // verifies proof-of-possession and issues the certificate.
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let enrollment = repo
+        .create_enrollment(
+            client_identifier,
+            "server-keygen",
+            material.csr_der.clone(),
+            "pending",
+        )
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to create enrollment: {}", e)))?;
 
-    // RFC 7030 §4.4.2 - Response is PKCS#12 (application/pkcs12)
+    let issue_result = ca_client
+        .enroll(
+            enrollment.id,
+            &material.csr_der,
+            client_identifier,
+            &state.enroll_profile,
+        )
+        .await;
+
+    // Always destroy the server-held private key handle (FCS_CKM.4); the PKCS#8
+    // copy returned to the client is zeroized when `material` drops.
+    let _ = state.crypto_provider.destroy_key(&material.key_handle).await;
+
+    let certificate_id = issue_result?;
+
+    // Fetch the issued certificate and encode it as a certs-only PKCS#7.
+    let cert = ostrich_db::repository::CertificateRepository::new(state.db_pool.clone())
+        .find_by_id(certificate_id)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to load issued certificate: {}", e)))?
+        .ok_or_else(|| Error::Internal("Issued certificate not found".to_string()))?;
+    let pkcs7 = encode_certs_only_pkcs7(&[cert.der_encoded])
+        .map_err(|e| Error::Internal(format!("PKCS#7 encoding failed: {}", e)))?;
+
+    // RFC 7030 §4.4.2 - multipart/mixed: the private key (application/pkcs8) and
+    // the certificate (application/pkcs7-mime; certs-only). Both base64.
+    const BOUNDARY: &str = "estServerKeyGenBoundary";
+    let body = format!(
+        "--{b}\r\n\
+         Content-Type: application/pkcs8\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n\
+         {key}\r\n\
+         --{b}\r\n\
+         Content-Type: application/pkcs7-mime; smime-type=certs-only\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n\
+         {cert}\r\n\
+         --{b}--\r\n",
+        b = BOUNDARY,
+        key = BASE64_STANDARD.encode(material.private_key_pkcs8.as_slice()),
+        cert = BASE64_STANDARD.encode(&pkcs7),
+    );
+
     Ok((
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/pkcs12")],
-        BASE64_STANDARD.encode(&pkcs12_bundle),
+        [(
+            header::CONTENT_TYPE,
+            format!("multipart/mixed; boundary=\"{}\"", BOUNDARY),
+        )],
+        body,
     )
         .into_response())
 }

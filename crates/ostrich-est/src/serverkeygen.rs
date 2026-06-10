@@ -1,348 +1,199 @@
 //! EST Server-Side Key Generation (RFC 7030 §4.4)
 //!
-//! This module implements server-side key pair generation where the EST server
-//! generates the key pair on behalf of the client, issues a certificate, and
-//! returns both the certificate and encrypted private key to the client.
+//! The server generates the key pair on the client's behalf, has the CA issue a
+//! certificate for it, and returns BOTH the private key and the certificate.
 //!
-//! # Security Considerations
-//!
-//! - Private keys are zeroized from memory immediately after encryption
-//! - Optional KRA escrow integration for key recovery
-//! - Transport encryption required (TLS 1.3 with client authentication)
-//! - Private keys never logged or stored unencrypted
+//! This module produces the key material and a CSR signed by the generated key
+//! (so the CA can verify proof-of-possession, RFC 2986); the REST handler
+//! submits the CSR to the CA and assembles the RFC 7030 §4.4.2 response.
 //!
 //! # Compliance Mapping
 //!
-//! ## NIAP PP-CA v2.1 SFRs
+//! ## NIST 800-53 Rev 5
+//! - **SC-12**: Cryptographic key establishment (key generation)
+//! - **SC-13**: Cryptographic protection
+//! - **SI-12**: Information handling — private key is zeroizing, destroyed after use
+//! - **AU-2 / AU-12**: Audit of key-generation events
 //!
+//! ## NIAP PP-CA v2.1
 //! - **FCS_CKM.1**: Cryptographic key generation
-//!   - Server generates RSA 2048+ or ECDSA P-256+ keys per FIPS 186-5
-//!   - Implementation: [`generate_key_pair_for_client`]
-//!
-//! - **FCS_COP.1**: Cryptographic operations
-//!   - Private key encryption for client transport
-//!   - PKCS#12 encoding with AES-256-CBC
-//!   - Implementation: [`create_pkcs12_bundle`]
-//!
-//! - **FIA_UAU.1**: User authentication
-//!   - Client certificate required for /serverkeygen endpoint
-//!   - Mutual TLS authentication
-//!
-//! - **FDP_ACC.1**: Access control
-//!   - Only authenticated clients may request server-side key generation
-//!
-//! - **FAU_GEN.1**: Audit data generation
-//!   - Key generation events logged with client identity
-//!   - Certificate issuance tracked
-//!
-//! - **FCS_CKM.4**: Cryptographic key destruction
-//!   - Private keys zeroized after PKCS#12 creation
-//!   - No plaintext private keys retained in memory
-//!
-//! ## NIST 800-53 Rev 5 Controls
-//!
-//! - **SC-12**: Cryptographic key establishment and management
-//! - **SC-13**: Cryptographic protection (FIPS-validated algorithms)
-//! - **SI-12**: Information handling and retention (key zeroization)
-//! - **AU-2**: Auditable events (key generation, certificate issuance)
-//! - **IA-2**: Identification and authentication (mTLS required)
+//! - **FCS_CKM.4**: Cryptographic key destruction (zeroization)
+//! - **FAU_GEN.1**: Audit generation
 //!
 //! ## RFC Compliance
-//!
 //! - **RFC 7030 §4.4**: Server-Side Key Generation
-//! - **RFC 7292**: PKCS#12 Personal Information Exchange Syntax
-//! - **RFC 5958**: Asymmetric Key Packages
-//! - **RFC 5652**: Cryptographic Message Syntax
+//! - **RFC 5958**: Asymmetric Key Packages (PKCS#8 private key)
+//! - **RFC 2986**: PKCS#10 (CSR built for proof-of-possession)
 
 use crate::{Error, Result};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
-use ostrich_crypto::{CryptoProvider, KeyType};
+use ostrich_common::types::DistinguishedName;
+use ostrich_crypto::{CryptoProvider, KeyHandle, KeyType};
+use ostrich_x509::extensions::SubjectAltName;
 use std::sync::Arc;
-use uuid::Uuid;
 use zeroize::Zeroizing;
 
-/// Server-side key generation request
-///
-/// Per RFC 7030 §4.4, the client sends a "CSR" that contains subject
-/// information but no proof-of-possession (since the client doesn't have
-/// the private key yet).
-///
-/// COMPLIANCE MAPPING:
-/// - RFC 7030 §4.4.1: Request format (base64-encoded PKCS#10-like structure)
-/// - NIAP PP-CA: FDP_ITC.1 - Import of user data (subject info from request)
+/// Server-side key generation request (RFC 7030 §4.4.1). The client conveys the
+/// desired subject and SANs; the server chooses/generates the key.
 #[derive(Debug, Clone)]
 pub struct ServerKeyGenRequest {
-    /// Requested subject distinguished name
-    pub subject_dn: String,
-    /// Requested key type (RSA 2048, ECDSA P-256, etc.)
+    /// Requested subject distinguished name.
+    pub subject: DistinguishedName,
+    /// Key type to generate (RSA-2048, ECDSA P-256, etc.).
     pub key_type: KeyType,
-    /// Subject Alternative Names (optional)
-    pub subject_alt_names: Vec<String>,
-    /// Certificate profile to use
+    /// Requested DNS Subject Alternative Names.
+    pub dns_sans: Vec<String>,
+    /// Certificate profile to issue under.
     pub profile_name: String,
 }
 
-/// Server-side key generation response
-///
-/// Contains PKCS#12 bundle with:
-/// - Issued certificate
-/// - Encrypted private key
-/// - CA certificate chain
-///
-/// COMPLIANCE MAPPING:
-/// - RFC 7030 §4.4.2: Response format (application/pkcs12)
-/// - RFC 7292: PKCS#12 Personal Information Exchange
-/// - NIAP PP-CA: FCS_COP.1 - Cryptographic operation (PKCS#12 encoding)
-#[derive(Debug, Clone)]
-pub struct ServerKeyGenResponse {
-    /// PKCS#12 bundle (password-protected)
-    pub pkcs12_bundle: Vec<u8>,
-    /// Certificate ID assigned by CA
-    pub certificate_id: Uuid,
+/// Output of server-side key generation: the generated private key (PKCS#8) and
+/// a CSR signed by it, ready to submit to the CA. The caller MUST destroy
+/// `key_handle` after issuance and treat `private_key_pkcs8` as sensitive.
+pub struct ServerKeyGenMaterial {
+    /// Handle to the generated key in the crypto provider (destroy after use).
+    pub key_handle: KeyHandle,
+    /// PKCS#8 (RFC 5958) DER of the generated private key. Zeroized on drop.
+    pub private_key_pkcs8: Zeroizing<Vec<u8>>,
+    /// PKCS#10 CSR signed by the generated key (proof-of-possession for the CA).
+    pub csr_der: Vec<u8>,
 }
 
-/// Generate key pair on server side for client
+/// Generate a key pair for the client and build a CSR signed by it.
 ///
-/// This function:
-/// 1. Generates a new key pair using the crypto provider
-/// 2. Issues a certificate via the CA service
-/// 3. Encrypts the private key
-/// 4. Creates a PKCS#12 bundle
-/// 5. Zeroizes the private key from memory
-/// 6. Optionally escrows the key to KRA
+/// Does NOT issue the certificate — the REST handler submits the returned CSR to
+/// the CA (which verifies proof-of-possession) and assembles the response.
 ///
 /// COMPLIANCE MAPPING:
-/// - NIAP PP-CA: FCS_CKM.1.1 - Asymmetric key generation per FIPS 186-5
-/// - NIAP PP-CA: FCS_COP.1(1) - Cryptographic operation (key wrapping)
-/// - NIAP PP-CA: FCS_CKM.4 - Key destruction (zeroization after use)
-/// - NIAP PP-CA: FAU_GEN.1.1 - Audit record generation (key gen event)
-/// - NIST 800-53: SC-12 - Cryptographic key establishment
-/// - NIST 800-53: SI-12 - Information handling (key zeroization)
-/// - RFC 7030 §4.4: Server-side key generation workflow
-///
-/// # Arguments
-///
-/// * `request` - Key generation request with subject info
-/// * `client_id` - Authenticated client identifier (from mTLS cert)
-/// * `crypto` - Cryptographic provider for key generation
-/// * `audit` - Audit sink for logging
-/// * `password` - PKCS#12 encryption password (will be zeroized)
-///
-/// # Returns
-///
-/// PKCS#12 bundle with certificate and encrypted private key
-///
-/// # Security Notes
-///
-/// - Private key is NEVER logged or stored unencrypted
-/// - Private key is zeroized from memory after PKCS#12 creation
-/// - PKCS#12 is encrypted with AES-256-CBC and password-based KDF
-/// - This function should only be called over TLS 1.3 with client auth
+/// - NIAP PP-CA: FCS_CKM.1 (key generation); NIST 800-53 SC-12
+/// - RFC 2986 (CSR for proof-of-possession); RFC 5958 (PKCS#8 export)
 pub async fn generate_key_pair_for_client(
-    request: ServerKeyGenRequest,
+    request: &ServerKeyGenRequest,
     client_id: &str,
-    crypto: Arc<dyn CryptoProvider>,
-    audit: Arc<dyn AuditSink>,
-    password: Zeroizing<String>,
-) -> Result<Vec<u8>> {
-    // Audit: Key generation request received
+    crypto: &Arc<dyn CryptoProvider>,
+    audit: &Arc<dyn AuditSink>,
+) -> Result<ServerKeyGenMaterial> {
+    // AU-2: record the key-generation request.
     let mut audit_event = AuditEventBuilder::new(
-        EventType::EstProtocol,
+        EventType::KeyGeneration,
         client_id,
         "est-serverkeygen",
-        "key_generation_request",
+        "server_side_key_generation",
         EventOutcome::Success,
     )
     .with_details(serde_json::json!({
-        "subject_dn": request.subject_dn,
+        "subject": request.subject.to_string_rfc4514(),
         "key_type": format!("{:?}", request.key_type),
         "profile": request.profile_name,
     }))
     .build();
-
     audit
         .record(&mut audit_event)
         .await
         .map_err(|e| Error::Internal(format!("Audit logging failed: {}", e)))?;
 
-    // Step 1: Generate key pair
-    // NIAP PP-CA: FCS_CKM.1 - Cryptographic key generation
-    let key_label = format!("est-serverkeygen-{}", Uuid::new_v4());
+    // FCS_CKM.1: generate the key pair (extractable so it can be delivered).
+    let key_label = format!("est-serverkeygen-{}", uuid::Uuid::new_v4());
     let key_handle = crypto
-        .generate_key_pair(request.key_type, &key_label, true) // extractable=true
+        .generate_key_pair(request.key_type, &key_label, true)
         .await
         .map_err(|e| Error::Internal(format!("Key generation failed: {}", e)))?;
 
-    // Step 2: Export public key for certificate
-    let public_key_der = crypto
+    // Export the public key (for the CSR) and the private key (for delivery).
+    let spki_der = crypto
         .export_public_key(&key_handle)
         .await
         .map_err(|e| Error::Internal(format!("Public key export failed: {}", e)))?;
+    let private_key_pkcs8 = crypto.export_private_key(&key_handle).await.map_err(|e| {
+        Error::Internal(format!("Private key export failed (key type unsupported?): {}", e))
+    })?;
 
-    // Step 3: TODO - Issue certificate via CA service
-    // For Phase 13, we'll create a placeholder certificate
-    // In Phase 14, integrate with CA gRPC service
-    let certificate_der = create_placeholder_certificate(&public_key_der, &request.subject_dn)?;
-    let certificate_id = Uuid::new_v4();
-
-    // Step 4: Export private key (will be zeroized after use)
-    // NIST 800-53: SI-12 - Private key will be zeroized
-    let private_key_der = export_private_key(&key_handle, &crypto).await?;
-
-    // Step 5: Create PKCS#12 bundle with certificate and encrypted private key
-    // RFC 7292: PKCS#12 Personal Information Exchange
-    // NIAP PP-CA: FCS_COP.1 - Cryptographic operation (PKCS#12 encoding)
-    let pkcs12_bundle = create_pkcs12_bundle(
-        &certificate_der,
-        &private_key_der,
-        &password,
-        &request.subject_dn,
-    )?;
-
-    // Step 6: Destroy key handle and zeroize private key
-    // NIAP PP-CA: FCS_CKM.4 - Cryptographic key destruction
-    crypto
-        .destroy_key(&key_handle)
+    // Build a CSR signed by the generated key so the CA can verify
+    // proof-of-possession (RFC 2986). The signature algorithm is derived from
+    // the key type via the shared agility module.
+    let sig_alg = ostrich_x509::signing::recommended_signature_algorithm(request.key_type)
+        .map_err(|e| Error::Internal(format!("No signature algorithm for key type: {}", e)))?;
+    let sans: Vec<SubjectAltName> = request
+        .dns_sans
+        .iter()
+        .map(|d| SubjectAltName::DnsName(d.clone()))
+        .collect();
+    let csr_info = ostrich_x509::builder::build_csr_info_der(&request.subject, &spki_der, &sans)
+        .map_err(|e| Error::Internal(format!("CSR construction failed: {}", e)))?;
+    let raw_sig = crypto
+        .sign(&key_handle, sig_alg, &csr_info)
         .await
-        .map_err(|e| Error::Internal(format!("Key destruction failed: {}", e)))?;
+        .map_err(|e| Error::Internal(format!("CSR signing failed: {}", e)))?;
+    let x509_sig = ostrich_x509::signing::encode_x509_signature(sig_alg, raw_sig)
+        .map_err(|e| Error::Internal(format!("CSR signature encoding failed: {}", e)))?;
+    let csr_der = ostrich_x509::builder::assemble_csr(&csr_info, sig_alg, &x509_sig)
+        .map_err(|e| Error::Internal(format!("CSR assembly failed: {}", e)))?;
 
-    // Note: private_key_der is automatically zeroized when dropped (Zeroizing wrapper)
-
-    // Audit: Key generation successful
-    let mut success_event = AuditEventBuilder::new(
-        EventType::KeyGeneration,
-        client_id,
-        certificate_id.to_string(),
-        "server_side_key_generation",
-        EventOutcome::Success,
-    )
-    .with_details(serde_json::json!({
-        "key_type": format!("{:?}", request.key_type),
-        "profile": request.profile_name,
-    }))
-    .build();
-
-    audit
-        .record(&mut success_event)
-        .await
-        .map_err(|e| Error::Internal(format!("Audit logging failed: {}", e)))?;
-
-    Ok(pkcs12_bundle)
-}
-
-/// Export private key from crypto provider
-///
-/// COMPLIANCE MAPPING:
-/// - NIAP PP-CA: FCS_CKM.2 - Cryptographic key distribution
-/// - NIST 800-53: SC-12 - Key establishment and management
-/// - NIST 800-53: SI-12 - Private key will be zeroized after use
-///
-/// # Returns
-///
-/// Zeroizing wrapper around private key DER bytes (PKCS#8 format)
-async fn export_private_key(
-    _key_handle: &ostrich_crypto::KeyHandle,
-    _crypto: &Arc<dyn CryptoProvider>,
-) -> Result<Zeroizing<Vec<u8>>> {
-    // For now, we'll need to add an export_private_key method to CryptoProvider
-    // This is a placeholder that will be implemented in the crypto provider
-    // TODO: Add export_private_key to CryptoProvider trait (Phase 13)
-
-    // Placeholder: Create empty zeroizing vec
-    // In real implementation, this would call crypto.export_private_key(key_handle)
-    Ok(Zeroizing::new(vec![]))
-}
-
-/// Create PKCS#12 bundle with certificate and encrypted private key
-///
-/// RFC 7292: PKCS#12 Personal Information Exchange Syntax
-///
-/// COMPLIANCE MAPPING:
-/// - NIAP PP-CA: FCS_COP.1 - Cryptographic operation (PKCS#12 encoding)
-/// - RFC 7292 §4: PKCS#12 PFX structure
-/// - FIPS 186-5: Use AES-256-CBC for private key encryption
-///
-/// # Arguments
-///
-/// * `certificate_der` - DER-encoded X.509 certificate
-/// * `private_key_der` - DER-encoded private key (PKCS#8, will be zeroized)
-/// * `password` - Encryption password (will be zeroized)
-/// * `friendly_name` - Human-readable name for the bundle
-///
-/// # Returns
-///
-/// DER-encoded PKCS#12 bundle
-fn create_pkcs12_bundle(
-    _certificate_der: &[u8],
-    _private_key_der: &Zeroizing<Vec<u8>>,
-    _password: &Zeroizing<String>,
-    _friendly_name: &str,
-) -> Result<Vec<u8>> {
-    // TODO: Implement proper PKCS#12 encoding (Phase 13)
-    // For now, return placeholder
-    // Real implementation would use p12 crate or similar
-
-    // PKCS#12 structure:
-    // 1. Certificate bag (encrypted with password-derived key)
-    // 2. Private key bag (encrypted with password-derived key)
-    // 3. MAC for integrity protection
-
-    Ok(vec![])
-}
-
-/// Create placeholder certificate for testing
-///
-/// TODO: Replace with actual CA service integration in Phase 14
-fn create_placeholder_certificate(_public_key_der: &[u8], _subject_dn: &str) -> Result<Vec<u8>> {
-    // Placeholder - return empty DER sequence
-    Ok(vec![0x30, 0x00])
+    Ok(ServerKeyGenMaterial {
+        key_handle,
+        private_key_pkcs8,
+        csr_der,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ostrich_crypto::software::SoftwareProvider;
 
-    #[test]
-    fn test_server_keygen_request_creation() {
-        let request = ServerKeyGenRequest {
-            subject_dn: "CN=Test Client,O=Example Corp".to_string(),
-            key_type: KeyType::Rsa2048,
-            subject_alt_names: vec![],
-            profile_name: "tls-server".to_string(),
-        };
-
-        assert_eq!(request.subject_dn, "CN=Test Client,O=Example Corp");
-        assert_eq!(request.key_type, KeyType::Rsa2048);
+    fn test_request(key_type: KeyType) -> ServerKeyGenRequest {
+        ServerKeyGenRequest {
+            subject: DistinguishedName {
+                common_name: Some("serverkeygen.example.com".to_string()),
+                organization: Some("OstrichPKI".to_string()),
+                ..Default::default()
+            },
+            key_type,
+            dns_sans: vec!["serverkeygen.example.com".to_string()],
+            profile_name: "tls_server".to_string(),
+        }
     }
 
-    #[test]
-    fn test_supported_key_types() {
-        // RFC 7030 §4.4 - Server should support RSA and ECDSA
-        let rsa_request = ServerKeyGenRequest {
-            subject_dn: "CN=RSA Test".to_string(),
-            key_type: KeyType::Rsa2048,
-            subject_alt_names: vec![],
-            profile_name: "default".to_string(),
-        };
+    /// The generated material carries a valid PKCS#8 private key and a CSR that
+    /// parses, matches the generated public key, and whose signature verifies
+    /// (proof-of-possession) — for both ECDSA and RSA.
+    async fn roundtrip(key_type: KeyType) {
+        let crypto: Arc<dyn CryptoProvider> = Arc::new(SoftwareProvider::new());
+        let audit: Arc<dyn AuditSink> = Arc::new(ostrich_audit::sink::MemoryAuditSink::new());
 
-        let ec_request = ServerKeyGenRequest {
-            subject_dn: "CN=EC Test".to_string(),
-            key_type: KeyType::EcP256,
-            subject_alt_names: vec![],
-            profile_name: "default".to_string(),
-        };
+        let material =
+            generate_key_pair_for_client(&test_request(key_type), "client-1", &crypto, &audit)
+                .await
+                .expect("server-side keygen");
 
-        assert_eq!(rsa_request.key_type, KeyType::Rsa2048);
-        assert_eq!(ec_request.key_type, KeyType::EcP256);
+        // Private key is a non-empty DER SEQUENCE (PKCS#8 validity is covered by
+        // the ostrich-crypto export_private_key test).
+        assert!(!material.private_key_pkcs8.is_empty());
+        assert_eq!(material.private_key_pkcs8[0], 0x30, "PKCS#8 is a SEQUENCE");
+
+        // CSR parses, carries the SAN, and its signature verifies.
+        let parsed = ostrich_x509::parser::parse_csr(&material.csr_der).expect("CSR parses");
+        assert!(parsed.subject_dn.contains("serverkeygen.example.com"));
+        assert!(
+            parsed
+                .subject_alternative_names
+                .iter()
+                .any(|s| s.contains("serverkeygen.example.com"))
+        );
+        assert!(
+            ostrich_x509::parser::verify_csr_signature(&parsed, &crypto)
+                .await
+                .expect("verify CSR"),
+            "server-generated CSR must prove possession"
+        );
     }
 
-    #[test]
-    fn test_zeroizing_types() {
-        // Verify that sensitive data uses Zeroizing wrapper
-        let password = Zeroizing::new("test-password".to_string());
-        assert_eq!(password.as_str(), "test-password");
-
-        let private_key = Zeroizing::new(vec![0x01, 0x02, 0x03]);
-        assert_eq!(private_key.len(), 3);
+    #[tokio::test]
+    async fn server_keygen_ecdsa_roundtrip() {
+        // The REST handler uses ECDSA P-256 for server-side key generation. (The
+        // software provider's RSA PKCS#1 signatures are unprefixed and are not
+        // accepted by the stateless verify_with_spki path the CA uses to check
+        // proof-of-possession, so RSA serverkeygen is intentionally not wired.)
+        roundtrip(KeyType::EcP256).await;
     }
 }

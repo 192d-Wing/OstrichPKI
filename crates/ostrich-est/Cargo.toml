@@ -50,3 +50,7 @@ thiserror = { workspace = true }
 hex = { workspace = true }
 zeroize = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# MemoryAuditSink for serverkeygen unit tests
+ostrich-audit = { workspace = true, features = ["testing"] }

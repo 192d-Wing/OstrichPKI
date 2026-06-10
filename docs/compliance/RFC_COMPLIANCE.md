@@ -808,7 +808,15 @@ with no existing certificate to renew — is denied (403) and audited as an
 AccessViolation. Structured DN comparison (`parse_csr_subject_dn` vs.
 `parse_subject_dn`) avoids string-format false mismatches.
 
-POAM: server-side keygen (/serverkeygen) still returns a placeholder.
+Server-side key generation (RFC 7030 §4.4): `/serverkeygen` is implemented. The
+server parses the client's CSR for the requested subject/SANs, generates an
+ECDSA P-256 key pair, builds a CSR signed by that key (so the CA verifies
+proof-of-possession, RFC 2986), issues via the CA gRPC service, destroys the
+server-held key handle (FCS_CKM.4), and returns an RFC 7030 §4.4.2
+`multipart/mixed` response carrying the private key (`application/pkcs8`,
+RFC 5958) and the certificate (`application/pkcs7-mime`, certs-only). The
+private key is exported via `CryptoProvider::export_private_key` (software
+provider only) and zeroized after the response is built.
 
 **Sections:**
 
@@ -819,7 +827,7 @@ POAM: server-side keygen (/serverkeygen) still returns a placeholder.
 - ✅ §3.2.2 - CA Certificates (/cacerts)
 - ✅ §3.3.1 - Simple Enrollment (/simpleenroll)
 - ✅ §3.3.2 - Simple Re-enrollment (/simplereenroll)
-- ⚠️ §3.4 - Server-Side Key Generation (/serverkeygen) - stub exists, not implemented
+- ✅ §3.4 - Server-Side Key Generation (/serverkeygen) - implemented (ECDSA P-256; CSR-based PoP; PKCS#8 + PKCS#7 multipart per §4.4.2)
 
 **Implementation:**
 
@@ -830,7 +838,7 @@ POAM: server-side keygen (/serverkeygen) still returns a placeholder.
 - [rest.rs:50-63](../../crates/ostrich-est/src/rest.rs#L50-L63) - cacerts endpoint
 - [rest.rs:72-103](../../crates/ostrich-est/src/rest.rs#L72-L103) - simpleenroll endpoint
 - [rest.rs:107-141](../../crates/ostrich-est/src/rest.rs#L107-L141) - simplereenroll endpoint
-- [rest.rs:168-173](../../crates/ostrich-est/src/rest.rs#L168-L173) - serverkeygen stub (optional)
+- [serverkeygen.rs](../../crates/ostrich-est/src/serverkeygen.rs) + [rest.rs](../../crates/ostrich-est/src/rest.rs) `server_key_gen` - server-side key generation (RFC 7030 §4.4)
 
 ---
 
