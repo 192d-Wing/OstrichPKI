@@ -38,3 +38,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 tokio-test = { workspace = true }
 ostrich-audit = { workspace = true, features = ["testing"] }
+ostrich-crypto = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

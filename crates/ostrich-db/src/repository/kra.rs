@@ -32,7 +32,7 @@ impl KraRepository {
         &self,
         certificate_id: Uuid,
         wrapped_key: Vec<u8>,
-        wrapping_key_id: Uuid,
+        wrapping_key_id: Option<Uuid>,
         key_type: &str,
         algorithm: &str,
     ) -> Result<EscrowedKey> {

@@ -1071,6 +1071,20 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   after use (FCS_CKM.4). Recovery (`complete_recovery`) reconstructs the KEK,
   unwraps the escrowed key, and returns it in a `Zeroizing` buffer; unwrap
   failures are audited as Failure outcomes (AU-2)
+- ✅ **Escrow → recover round-trip verified live** (SC-12(1) availability,
+  FCS_CKM.2): a known key is escrowed (KEK split into 5 shares), recovery is
+  initiated, and a 3-of-5 threshold of shares recovers the key
+  byte-identically; 2 shares are insufficient. Test:
+  `crates/ostrich-kra/tests/recovery_roundtrip.rs`. Two bugs were fixed to
+  make this work: `escrow_key` split the KEK but **dropped the shares** (only
+  audit-logging them), leaving every escrowed key permanently unrecoverable -
+  it now returns the shares for secure distribution; and
+  `escrowed_keys.wrapping_key_id` was a `NOT NULL` FK to `kra_storage_keys`
+  that no escrow ever populated (the KEK is ephemeral, not a stored key), so
+  every escrow insert failed the FK - migration 00006 makes it nullable and
+  drops the FK. POAM: shares are not yet persisted/distributed to specific
+  recovery agents (`recovery_agents`/`recovery_shares` tables); the caller
+  owns distribution today.
 - ✅ CA bootstrap from database: `ca_keys`/`ca_certificates` repository
   (`crates/ostrich-db/src/repository/ca.rs`), loaded by
   `services/ca-server/src/main.rs::bootstrap_ca` with FCS_STG_EXT.1 HSM

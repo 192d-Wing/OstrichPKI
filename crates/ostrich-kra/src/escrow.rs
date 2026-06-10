@@ -34,6 +34,7 @@
 //!
 //! - Key escrow and recovery procedures per Part 2
 
+use crate::shamir::Share;
 use crate::{Error, Result, ShamirSecretSharing};
 use chrono::{DateTime, Utc};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
@@ -141,7 +142,22 @@ impl KeyEscrow {
     ///
     /// - **SC-12**: Cryptographic key establishment for key escrow.
     /// - **AU-3**: Audit record contains who, what, when, where, outcome.
-    pub async fn escrow_key(&self, request: KeyEscrowRequest) -> Result<EscrowedKey> {
+    /// Escrow a private key.
+    ///
+    /// Returns the escrow record AND the M-of-N Shamir shares of the KEK. The
+    /// caller MUST distribute the shares to the recovery agents through a
+    /// secure, out-of-band channel (in production, each share is encrypted to
+    /// its agent's public key) and MUST NOT persist them in plaintext. The KEK
+    /// itself is never stored - the shares are the ONLY way to recover the key,
+    /// so losing them makes the escrowed key unrecoverable.
+    ///
+    /// An earlier version split the KEK but dropped the shares (only audit-
+    /// logging that they were "distributed"), which made every escrowed key
+    /// permanently unrecoverable.
+    pub async fn escrow_key(
+        &self,
+        request: KeyEscrowRequest,
+    ) -> Result<(EscrowedKey, Vec<Share>)> {
         // Validate request
         if request.threshold > request.num_agents {
             return Err(Error::InvalidRequest(format!(
@@ -188,15 +204,16 @@ impl KeyEscrow {
         // The KEK itself is never persisted; once `kek` drops it is zeroized.
         let shares = ShamirSecretSharing::split(&kek, request.threshold, request.num_agents)?;
 
-        // Store escrowed key in database
+        // Store escrowed key in database. There is no stored wrapping key:
+        // the KEK is ephemeral and split into the shares returned below
+        // (migration 00006 made wrapping_key_id nullable / dropped its FK).
         let repo = ostrich_db::repository::KraRepository::new(self.db.clone());
-        let wrapping_key_id = Uuid::new_v4(); // TODO: Use actual wrapping key ID from crypto provider (Phase 10)
 
         let db_escrowed_key = repo
             .create_escrowed_key(
                 request.certificate_id,
                 encrypted_key.clone(),
-                wrapping_key_id,
+                None, // no stored wrapping key (ephemeral, Shamir-split KEK)
                 &request.key_type,
                 &request.key_type, // TODO: Use actual algorithm from crypto provider (Phase 10)
             )
@@ -239,7 +256,10 @@ impl KeyEscrow {
             self.audit.record(&mut event).await.ok();
         }
 
-        Ok(escrowed_key)
+        // Return the shares to the caller for secure distribution to agents.
+        // They are NOT persisted here (plaintext shares in the DB would defeat
+        // split-knowledge); the caller owns distribution.
+        Ok((escrowed_key, shares))
     }
 
 }
