@@ -114,14 +114,18 @@ cipher = "0.4"
 argon2 = { version = "0.5", features = ["std"] }
 
 # Post-Quantum Cryptography
-# ML-DSA (FIPS 204) via AWS's aws-lc-rs (AWS Libcrypto for Rust, backed by
-# AWS-LC). Chosen over RustCrypto because AWS-LC is on the FIPS 140-3
-# validation track including its PQC algorithms (aligns with the FIPS 204
-# mandate). The `unstable` feature exposes ML-DSA; it is mutually exclusive
-# with the `fips` feature today (AWS-LC's FIPS module does not yet include
-# ML-DSA) and has no semver guarantee, so the version is pinned.
+# ML-DSA (FIPS 204) and ML-KEM (FIPS 203) via AWS's aws-lc-rs (AWS Libcrypto
+# for Rust, backed by AWS-LC). Chosen over RustCrypto because AWS-LC is on the
+# FIPS 140-3 validation track including its PQC algorithms.
+#   - ML-KEM lives in the STABLE `aws_lc_rs::kem` module (no feature gate) and
+#     is present in AWS-LC's FIPS module (aws-lc-fips-sys), so it is the
+#     FIPS-validatable PQC path today. >=1.16 is required for
+#     DecapsulationKey::key_bytes()/new() (private-key escrow round-trip).
+#   - ML-DSA is exposed only by the `unstable` feature, which is mutually
+#     exclusive with `fips` (AWS-LC's FIPS module does not yet include ML-DSA)
+#     and has no semver guarantee, so the version is pinned.
 # POAM: switch to the `fips` feature once AWS-LC ships FIPS-validated ML-DSA.
-aws-lc-rs = { version = "1.13", features = ["unstable"] }
+aws-lc-rs = { version = "1.16", features = ["unstable"] }
 
 # PKCS#11
 cryptoki = "0.11"

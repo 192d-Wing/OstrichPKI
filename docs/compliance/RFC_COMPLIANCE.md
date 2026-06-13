@@ -1122,15 +1122,23 @@ plus a CA-issued certificate for it, end to end.
 
 ### draft-ietf-lamps-kyber-certificates: ML-KEM in X.509
 
-**Status:** 🟡 **Designed** (not implemented)
+**Status:** 🟢 **Partial** — FIPS 203 KEM operations implemented; X.509
+SubjectPublicKey/OID encoding pending.
 
 **Implementation:**
 
+- [crates/ostrich-crypto/src/kem.rs](../../crates/ostrich-crypto/src/kem.rs) - ML-KEM-512/768/1024 KeyGen/Encaps/Decaps and raw `ek`/`dk` (the values the draft's SubjectPublicKey/private-key carry)
 - [crates/ostrich-common/src/oid.rs:80](../../crates/ostrich-common/src/oid.rs#L80) - ML-KEM OID placeholder
+
+**Evidence:** the raw `ek` exported by `public_key_bytes()` is the exact
+SubjectPublicKey body OpenSSL 3.6 emits/consumes for ML-KEM — confirmed by
+splicing it into an OpenSSL SPKI for bidirectional interop
+([tests/integration/mlkem_openssl_interop.rs](../../tests/integration/mlkem_openssl_interop.rs)).
 
 **Usage:** Key encapsulation for KRA transport keys, hybrid TLS
 
-**Remediation:** Phase 13 - Update OID when NIST publishes final value
+**Remediation:** wrap raw `ek`/`dk` in the draft's SPKI/PKCS#8 with the NIST
+`id-alg-ml-kem-*` OIDs (2.16.840.1.101.3.4.4.1–3) for X.509 certificate use.
 
 ---
 

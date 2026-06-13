@@ -1099,6 +1099,12 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   validation; `tools/ostrich-init` generates and registers the root CA
 - ✅ Comprehensive integration test suite (18 tests) plus 6 KEK wrap/unwrap
   unit tests (roundtrip, wrong-KEK, tamper, AAD mismatch, nonce uniqueness)
+- ✅ **Post-quantum key establishment (FIPS 203 ML-KEM)** implemented in
+  [crates/ostrich-crypto/src/kem.rs](../../crates/ostrich-crypto/src/kem.rs):
+  ML-KEM-512/768/1024 KeyGen/Encaps/Decaps plus raw `dk` escrow export/import for
+  KRA recovery, on the FIPS-track aws-lc-rs `kem` backend. Verified by live
+  cross-implementation interop with OpenSSL 3.6 in both directions
+  ([tests/integration/mlkem_openssl_interop.rs](../../tests/integration/mlkem_openssl_interop.rs)).
 - ⚠️  Key destruction not yet implemented
 - ⚠️  Key lifecycle procedures partially documented
 
@@ -1106,6 +1112,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 - RSA-2048, RSA-3072, RSA-4096 (FIPS 186-5)
 - ECDSA P-256, P-384, P-521 (FIPS 186-5)
+- ML-KEM-512/768/1024 key encapsulation (FIPS 203)
 - Extractable/non-extractable key control
 - Persistent token storage in HSM
 - Public exponent 65537 for RSA (FIPS 186-5)

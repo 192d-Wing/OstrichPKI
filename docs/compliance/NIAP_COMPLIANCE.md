@@ -311,6 +311,7 @@ cargo test --package ostrich-crypto
 - [crates/ostrich-crypto/src/provider.rs:43-61](../../crates/ostrich-crypto/src/provider.rs#L43-L61) - `generate_key_pair()` trait method
 - [crates/ostrich-crypto/src/pkcs11/mod.rs](../../crates/ostrich-crypto/src/pkcs11/mod.rs) - PKCS#11 HSM key generation
 - [crates/ostrich-crypto/src/software.rs](../../crates/ostrich-crypto/src/software.rs) - Software key generation (ring-based)
+- [crates/ostrich-crypto/src/kem.rs](../../crates/ostrich-crypto/src/kem.rs) - ML-KEM (FIPS 203) key-pair generation (`MlKemKeyPair::generate`)
 - [crates/ostrich-crypto/src/drbg/mod.rs](../../crates/ostrich-crypto/src/drbg/mod.rs) - NIST SP 800-90A DRBG for entropy
 
 **Evidence:**
@@ -342,6 +343,28 @@ cargo test --package ostrich-crypto -- test_key
 ```
 
 **Related FIPS:** FIPS 186-5 (DSS), FIPS 203 (ML-KEM), FIPS 204 (ML-DSA), FIPS 205 (SLH-DSA), NIST SP 800-90A (DRBG)
+
+---
+
+### FCS_CKM.2 - Cryptographic Key Establishment
+
+**Status:** 🟢 **Compliant** (post-quantum KEM); classical AES-KW key transport for KRA escrow.
+
+**Requirement:** The TSF shall perform cryptographic key establishment in accordance with a specified key-establishment method.
+
+**Implementation:**
+
+- [crates/ostrich-crypto/src/kem.rs](../../crates/ostrich-crypto/src/kem.rs) - FIPS 203 ML-KEM key establishment: `encapsulate()` (sender derives and transmits a shared secret) and `MlKemKeyPair::decapsulate()` (receiver recovers it). Raw `dk` import/export supports KRA escrow of the establishment key.
+- [crates/ostrich-kra/src/wrap.rs](../../crates/ostrich-kra/src/wrap.rs) - AES-256 key wrap (NIST SP 800-38F/38D) for escrowed-key transport.
+
+**Evidence:**
+
+- ✅ **ML-KEM-512/768/1024** encapsulation/decapsulation (FIPS 203 §6.2/§6.3); shared secret is 32 bytes and zeroized on drop (SI-12).
+- ✅ Sizes (`ek`/`dk`/ciphertext) asserted against FIPS 203 Table 3 — `crates/ostrich-crypto/src/kem.rs` unit tests.
+- ✅ **Live interop with OpenSSL 3.6, both directions** (our Encaps ↔ OpenSSL Decaps and vice-versa) — [tests/integration/mlkem_openssl_interop.rs](../../tests/integration/mlkem_openssl_interop.rs).
+- ✅ FIPS 203 implicit-rejection behaviour verified (tampered ciphertext yields a divergent secret, no error).
+
+**Related FIPS:** FIPS 203 (ML-KEM), NIST SP 800-38F (AES-KW)
 
 ---
 

@@ -294,7 +294,7 @@ This document tracks OstrichPKI's compliance with Federal Information Processing
 
 ### FIPS 203: Module-Lattice-Based Key-Encapsulation Mechanism (ML-KEM)
 
-**Status:** 🟡 **Designed** (Not implemented)
+**Status:** ✅ **Implemented** (software provider; FIPS-validatable backend)
 
 **Publication Date:** August 2024 (finalized)
 
@@ -332,34 +332,47 @@ This document tracks OstrichPKI's compliance with Federal Information Processing
 
 **Implementation:**
 
-- [crates/ostrich-common/src/oid.rs:80](../../crates/ostrich-common/src/oid.rs#L80) - OID placeholder (TODO: update when finalized)
-- [crates/ostrich-crypto/src/algorithm.rs](../../crates/ostrich-crypto/src/algorithm.rs) - Algorithm enum includes ML-KEM variants
+- [crates/ostrich-crypto/src/kem.rs](../../crates/ostrich-crypto/src/kem.rs) - `MlKemKeyPair` (KeyGen/Decaps), `encapsulate()` (Encaps), and raw `ek`/`dk` import/export for KRA escrow
+- [crates/ostrich-crypto/src/algorithm.rs](../../crates/ostrich-crypto/src/algorithm.rs) - `KeyType::MlKem512/768/1024`
+
+**Backend:** AWS `aws-lc-rs` STABLE `kem` module (`ML_KEM_512/768/1024`). Unlike
+our ML-DSA path (which requires the non-FIPS `unstable` feature), ML-KEM is NOT
+gated by `unstable` and the same algorithm IDs are present inside AWS-LC's FIPS
+module (`aws-lc-fips-sys`). ML-KEM is therefore the one PQC primitive that can
+run inside the FIPS 140-3 boundary today by enabling the `fips` feature; see the
+ML-DSA caveat below.
 
 **Evidence:**
 
 - ✅ Algorithm types defined: `MlKem512`, `MlKem768`, `MlKem1024`
-- 🔴 No implementation
+- ✅ FIPS 203 KeyGen / Encaps / Decaps implemented in `kem.rs`
+- ✅ Exact ek/dk/ciphertext sizes asserted against FIPS 203 Table 3 — `crates/ostrich-crypto/src/kem.rs` unit tests
+- ✅ Private-key (`dk`) escrow export/import round-trip — `private_key_escrow_round_trip`
+- ✅ **Live cross-implementation interop with OpenSSL 3.6** (both directions) — [tests/integration/mlkem_openssl_interop.rs](../../tests/integration/mlkem_openssl_interop.rs)
 
 **Rust Crates:**
 
-- `ml-kem` - Pure Rust implementation (RustCrypto)
-- `pqcrypto-kyber` - Bindings to PQClean reference
+- `aws-lc-rs` (≥1.16, `kem` module) - implementation in use (AWS-LC backend, FIPS-track)
 
 **Compliance Notes:**
 
 - FIPS 203 is now final (August 2024)
 - Use ML-KEM-768 for general applications
-- Hybrid mode recommended: ML-KEM + ECDH
+- Hybrid mode recommended: ML-KEM + ECDH (classical key exchange retained until
+  the AWS-LC FIPS module is certified for ML-KEM on the deployed platform)
 
 **NIAP Mapping:**
 
-- FCS_CDP_EXT.1 - Cryptographic Dependencies (future)
+- FCS_CKM.1 - cryptographic key generation (`MlKemKeyPair::generate`)
+- FCS_CKM.2 - cryptographic key establishment (`encapsulate` / `decapsulate`)
 
-**Remediation:**
+**Remaining work:**
 
-- Phase 13 - Implement ML-KEM using `ml-kem` crate
-- Phase 13 - Update OID to final NIST value
-- Phase 13 - Add to CryptoProvider trait
+- Wire ML-KEM into KRA transport-key escrow and EST encrypted key delivery
+- Finalize X.509 SubjectPublicKey/OID encoding per draft-ietf-lamps-kyber-certificates
+- Enable the `fips` feature for production once AWS-LC's FIPS module is certified
+  for ML-KEM on the target platform (note: `fips` is currently mutually exclusive
+  with the `unstable` feature our ML-DSA path needs)
 
 **Priority:** Medium (for future quantum resistance)
 
@@ -741,8 +754,8 @@ let random_bytes = drbg.generate(32)?;  // Generate 32 bytes of random data
 | **FIPS 197** | AES-KW | 🟡 Designed | Not impl | aes-kw | MEDIUM |
 | **FIPS 180-4** | SHA-256/384/512 | 🟢 Compliant | Active | ring | DONE |
 | **FIPS 202** | SHA-3 | ⚪ Optional | Not impl | sha3 | LOW |
-| **FIPS 203** | ML-KEM-512/768/1024 | 🟡 Designed | Not impl | ml-kem | MEDIUM |
-| **FIPS 204** | ML-DSA-44/65/87 | 🟡 Designed | Not impl | ml-dsa | MEDIUM |
+| **FIPS 203** | ML-KEM-512/768/1024 | 🟢 Implemented | KeyGen/Encaps/Decaps (OpenSSL interop) | aws-lc-rs `kem` | MEDIUM |
+| **FIPS 204** | ML-DSA-44/65/87 | 🟢 Implemented | Sign/verify (non-FIPS `unstable`) | aws-lc-rs | MEDIUM |
 | **FIPS 205** | SLH-DSA-SHA2 | 🟡 Designed | Not impl | slh-dsa | LOW |
 | **SP 800-90A** | DRBG | 🔴 Missing | Not impl | ring::rand | CRITICAL |
 
