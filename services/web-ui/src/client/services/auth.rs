@@ -25,6 +25,10 @@ pub struct AuthState {
     pub is_authenticated: bool,
     pub user: Option<UserInfo>,
     pub session_locked: bool,
+    /// True while the initial `/auth/userinfo` probe is in flight. Lets guards
+    /// show a spinner instead of bouncing to login before the session (an
+    /// httpOnly cookie the client can't read directly) has been verified.
+    pub checking: bool,
 }
 
 impl Default for AuthState {
@@ -33,6 +37,7 @@ impl Default for AuthState {
             is_authenticated: false,
             user: None,
             session_locked: false,
+            checking: true,
         }
     }
 }
@@ -41,29 +46,37 @@ impl Default for AuthState {
 fn role_permissions() -> HashMap<&'static str, Vec<&'static str>> {
     let mut map = HashMap::new();
 
-    map.insert("admin", vec![
+    // Keys are the CA's role names (Role enum variants, as returned by
+    // /auth/userinfo): Administrator, OperationsStaff, RaOfficer, Auditor, …
+    let admin = vec![
         "view_certificates", "issue_certificates", "revoke_certificates",
         "view_approvals", "approve_requests",
         "read_audit_log",
         "view_tokens", "manage_tokens",
         "manage_users",
         "admin",
-    ]);
+    ];
+    map.insert("Administrator", admin.clone());
+    map.insert("admin", admin); // legacy/alias
 
-    map.insert("ra_staff", vec![
+    let ops = vec![
+        "view_certificates", "issue_certificates", "revoke_certificates",
+        "view_approvals", "view_tokens", "manage_tokens",
+    ];
+    map.insert("OperationsStaff", ops);
+
+    let ra = vec![
         "view_certificates", "issue_certificates",
-        "view_approvals",
-        "read_audit_log",
-    ]);
+        "view_approvals", "approve_requests",
+    ];
+    map.insert("RaOfficer", ra.clone());
+    map.insert("ra_staff", ra); // legacy/alias
 
-    map.insert("auditor", vec![
-        "view_certificates",
-        "read_audit_log",
-    ]);
+    let auditor = vec!["view_certificates", "read_audit_log"];
+    map.insert("Auditor", auditor.clone());
+    map.insert("auditor", auditor); // legacy/alias
 
-    map.insert("user", vec![
-        "view_certificates",
-    ]);
+    map.insert("user", vec!["view_certificates"]);
 
     map
 }
@@ -78,6 +91,11 @@ impl AuthContext {
     /// Check if the user is authenticated
     pub fn is_authenticated(&self) -> bool {
         self.state.is_authenticated
+    }
+
+    /// True while the initial session check is still running.
+    pub fn is_checking(&self) -> bool {
+        self.state.checking
     }
 
     /// Get the current user
@@ -121,6 +139,7 @@ impl AuthContext {
             is_authenticated: true,
             user: Some(user),
             session_locked: false,
+            checking: false,
         });
     }
 }
@@ -151,11 +170,17 @@ pub fn auth_provider(props: &AuthProviderProps) -> Html {
                             is_authenticated: true,
                             user: Some(user),
                             session_locked: false,
+                            checking: false,
                         });
                     }
                     Err(e) => {
                         tracing::debug!("Not authenticated: {}", e);
-                        // Leave in unauthenticated state
+                        state.set(AuthState {
+                            is_authenticated: false,
+                            user: None,
+                            session_locked: false,
+                            checking: false,
+                        });
                     }
                 }
             });

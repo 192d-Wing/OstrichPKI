@@ -31,6 +31,17 @@ pub fn protected(props: &ProtectedProps) -> Html {
     let auth = use_auth();
     let navigator = use_navigator().expect("Navigator not available");
 
+    // While the initial session probe (/auth/userinfo) is in flight, show a
+    // spinner rather than redirecting — otherwise a freshly loaded page would
+    // bounce to login before the httpOnly session cookie has been verified.
+    if auth.is_checking() {
+        return html! {
+            <div class="flex items-center justify-center h-64">
+                <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-600 border-t-transparent"></div>
+            </div>
+        };
+    }
+
     // Check authentication
     if !auth.is_authenticated() {
         // Redirect to login
