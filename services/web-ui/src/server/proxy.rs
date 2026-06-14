@@ -37,7 +37,18 @@ pub fn create_proxy_routes(state: AppState) -> Router {
         .route("/kra/{*path}", any(proxy_kra))
         // Audit API
         .route("/audit/{*path}", any(proxy_audit))
+        // EST API (RFC 7030)
+        .route("/est/{*path}", any(proxy_est))
         .with_state(state)
+}
+
+/// Proxy requests to the EST service
+async fn proxy_est(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+    request: Request<Body>,
+) -> impl IntoResponse {
+    proxy_to_service(&state.config.backend.est_url, &path, request).await
 }
 
 /// Proxy requests to the CA service

@@ -31,6 +31,10 @@ pub enum Route {
     #[at("/profiles")]
     Profiles,
 
+    /// EST enrollment (RFC 7030)
+    #[at("/est")]
+    Est,
+
     /// Approval queue
     #[at("/approvals")]
     Approvals,
@@ -71,6 +75,7 @@ impl Route {
             Route::CertificateDetail { .. } => "Certificate Details",
             Route::Crl => "Revocation Lists",
             Route::Profiles => "Certificate Profiles",
+            Route::Est => "EST Enrollment",
             Route::Approvals => "Approvals",
             Route::AuditLogs => "Audit Logs",
             Route::Scms => "Token Management",
@@ -90,6 +95,7 @@ impl Route {
             Route::CertificateDetail { .. } => "document",
             Route::Crl => "ban",
             Route::Profiles => "template",
+            Route::Est => "device",
             Route::Approvals => "clipboard-check",
             Route::AuditLogs => "document-text",
             Route::Scms => "credit-card",
@@ -116,6 +122,7 @@ impl Route {
             Route::CertificateIssue => Some("issue_certificates"),
             Route::Crl => Some("view_crl"),
             Route::Profiles => Some("view_config"),
+            Route::Est => Some("view_config"),
             Route::Approvals => Some("view_approvals"),
             Route::AuditLogs => Some("read_audit_log"),
             Route::Scms => Some("view_tokens"),

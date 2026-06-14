@@ -59,6 +59,7 @@ fn switch_route(route: Route) -> Html {
         Route::CertificateDetail { id } => html! { <pages::CertificateDetail {id} /> },
         Route::Crl => html! { <pages::Crl /> },
         Route::Profiles => html! { <pages::Profiles /> },
+        Route::Est => html! { <pages::Est /> },
         Route::Approvals => html! { <pages::Approvals /> },
         Route::AuditLogs => html! { <pages::AuditLogs /> },
         Route::Scms => html! { <pages::Scms /> },

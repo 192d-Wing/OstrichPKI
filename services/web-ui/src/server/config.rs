@@ -107,6 +107,14 @@ pub struct BackendConfig {
 
     /// Audit service URL (or database connection)
     pub audit_url: String,
+
+    /// EST service URL (RFC 7030 enrollment server)
+    #[serde(default = "default_est_url")]
+    pub est_url: String,
+}
+
+fn default_est_url() -> String {
+    "http://localhost:8087".to_string()
 }
 
 /// Session management configuration
@@ -256,6 +264,7 @@ impl Default for WebUiConfig {
                 scms_url: "http://localhost:8084".to_string(),
                 kra_url: "http://localhost:8085".to_string(),
                 audit_url: "http://localhost:8086".to_string(),
+                est_url: default_est_url(),
             },
             session: SessionConfig {
                 cookie_name: default_cookie_name(),
