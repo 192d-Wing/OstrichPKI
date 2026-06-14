@@ -36,7 +36,7 @@ use crate::server::router::AppState;
 pub async fn require_session(
     State(state): State<AppState>,
     jar: CookieJar,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let reject = |path: &str, reason: &str| -> Response {
@@ -63,7 +63,12 @@ pub async fn require_session(
         Some(session) if session.locked => {
             reject(&path, "session locked (inactivity); re-authentication required")
         }
-        Some(_) => next.run(request).await,
+        Some(session) => {
+            // Make the validated session available to downstream proxy handlers
+            // so they can attach the bound backend credential (internal mode).
+            request.extensions_mut().insert(session);
+            next.run(request).await
+        }
         None => reject(&path, "invalid or expired session"),
     }
 }

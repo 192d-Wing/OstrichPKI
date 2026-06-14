@@ -26,17 +26,17 @@ use super::router::AppState;
 pub fn create_proxy_routes(state: AppState) -> Router {
     Router::new()
         // CA API
-        .route("/ca/*path", any(proxy_ca))
+        .route("/ca/{*path}", any(proxy_ca))
         // ACME API
-        .route("/acme/*path", any(proxy_acme))
+        .route("/acme/{*path}", any(proxy_acme))
         // OCSP API
-        .route("/ocsp/*path", any(proxy_ocsp))
+        .route("/ocsp/{*path}", any(proxy_ocsp))
         // SCMS API
-        .route("/scms/*path", any(proxy_scms))
+        .route("/scms/{*path}", any(proxy_scms))
         // KRA API
-        .route("/kra/*path", any(proxy_kra))
+        .route("/kra/{*path}", any(proxy_kra))
         // Audit API
-        .route("/audit/*path", any(proxy_audit))
+        .route("/audit/{*path}", any(proxy_audit))
         .with_state(state)
 }
 
@@ -111,6 +111,16 @@ async fn proxy_to_service(
     // Build the proxied request
     let (parts, body) = original_request.into_parts();
 
+    // Internal-auth mode: the session (injected by `require_session`) carries
+    // the CA's own bearer token. Present it upstream so the backend
+    // independently authenticates the actual admin, rather than trusting the
+    // proxy's network position (closes the confused-deputy gap). Any
+    // client-supplied Authorization header is dropped below and replaced.
+    let backend_token = parts
+        .extensions
+        .get::<super::auth::SessionData>()
+        .and_then(|s| s.backend_token.clone());
+
     let uri: hyper::Uri = match target_url.parse() {
         Ok(uri) => uri,
         Err(e) => {
@@ -127,15 +137,21 @@ async fn proxy_to_service(
         .method(parts.method.clone())
         .uri(uri);
 
-    // Copy headers, excluding hop-by-hop headers
+    // Copy headers, excluding hop-by-hop headers and any client-supplied
+    // Authorization (the proxy is the sole authority for the upstream credential).
     for (key, value) in parts.headers.iter() {
-        if !is_hop_by_hop_header(key.as_str()) {
-            proxy_request = proxy_request.header(key, value);
+        if is_hop_by_hop_header(key.as_str())
+            || key.as_str().eq_ignore_ascii_case("authorization")
+        {
+            continue;
         }
+        proxy_request = proxy_request.header(key, value);
     }
 
-    // Add X-Forwarded headers
-    // TODO: Extract actual user info from session and add X-Forwarded-User header
+    // Attach the session-bound backend credential (internal-auth mode).
+    if let Some(token) = backend_token {
+        proxy_request = proxy_request.header("authorization", format!("Bearer {token}"));
+    }
 
     let proxy_request = match proxy_request.body(body) {
         Ok(req) => req,

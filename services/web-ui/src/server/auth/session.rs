@@ -53,6 +53,19 @@ pub struct SessionData {
 
     /// Whether the session is locked (requires re-authentication)
     pub locked: bool,
+
+    /// Backend credential to present to upstream services when proxying.
+    ///
+    /// In internal-auth mode this holds the CA's own bearer token (obtained
+    /// from `POST /api/v1/auth/login`), so the proxy authenticates each request
+    /// to the CA as the actual admin rather than relying on network position
+    /// (closes the confused-deputy gap). `None` in OIDC mode.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AC-3 (Access Enforcement) - end-to-end authenticated proxy
+    /// - NIST 800-53: IA-2 - the upstream call carries the user's own credential
+    #[serde(default, skip_serializing)]
+    pub backend_token: Option<String>,
 }
 
 impl SessionData {
@@ -103,13 +116,29 @@ impl SessionManager {
         BASE64.encode(&bytes)
     }
 
-    /// Create a new session
+    /// Create a new session (OIDC mode; no backend token).
     pub async fn create_session(
         &self,
         user_subject: String,
         username: Option<String>,
         email: Option<String>,
         roles: Vec<String>,
+    ) -> (String, SessionData) {
+        self.create_session_with_token(user_subject, username, email, roles, None)
+            .await
+    }
+
+    /// Create a new session carrying a backend credential.
+    ///
+    /// Used by internal-auth mode to bind the CA's own bearer token to the web
+    /// session so the proxy can authenticate upstream as the actual admin.
+    pub async fn create_session_with_token(
+        &self,
+        user_subject: String,
+        username: Option<String>,
+        email: Option<String>,
+        roles: Vec<String>,
+        backend_token: Option<String>,
     ) -> (String, SessionData) {
         let token = Self::generate_token();
         let now = Utc::now();
@@ -124,6 +153,7 @@ impl SessionManager {
             last_activity: now,
             expires_at: now + self.absolute_timeout,
             locked: false,
+            backend_token,
         };
 
         {
@@ -305,6 +335,7 @@ mod tests {
             last_activity: now - Duration::hours(1),
             expires_at: now - Duration::minutes(1), // Expired
             locked: false,
+            backend_token: None,
         };
 
         assert!(expired_session.is_expired());
@@ -323,6 +354,7 @@ mod tests {
             last_activity: now - Duration::minutes(20), // Inactive
             expires_at: now + Duration::hours(7),
             locked: false,
+            backend_token: None,
         };
 
         assert!(inactive_session.should_lock(Duration::minutes(15)));

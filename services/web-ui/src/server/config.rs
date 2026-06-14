@@ -8,11 +8,31 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Authentication mode for the Web UI.
+///
+/// - `Oidc`: human SSO via an external IdP (Keycloak). Convenient, but places
+///   the IdP in the admin auth path.
+/// - `Internal`: authenticate directly against the CA's own account store
+///   (argon2id + RBAC, `POST /api/v1/auth/login`). No external IdP — the CA is
+///   the sole authority for admin authentication, keeping the trust boundary
+///   self-contained (preferred for high-assurance / ATO deployments).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMode {
+    #[default]
+    Oidc,
+    Internal,
+}
+
 /// Main configuration for the Web UI service
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebUiConfig {
-    /// OIDC/OAuth configuration for Keycloak
+    /// Authentication mode: external OIDC SSO or the CA's internal accounts.
+    #[serde(default)]
+    pub auth_mode: AuthMode,
+
+    /// OIDC/OAuth configuration for Keycloak (used only in `oidc` mode)
     pub oidc: OidcConfig,
 
     /// Backend service URLs for API proxying
@@ -220,6 +240,7 @@ impl WebUiConfig {
 impl Default for WebUiConfig {
     fn default() -> Self {
         Self {
+            auth_mode: AuthMode::default(),
             oidc: OidcConfig {
                 issuer_url: "http://localhost:8081/realms/ostrich".to_string(),
                 client_id: "ostrich-web-ui".to_string(),

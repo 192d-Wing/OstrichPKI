@@ -44,6 +44,150 @@ pub struct UserInfoResponse {
     pub session_locked: bool,
 }
 
+/// Response used when an OIDC-only route is hit while running in internal mode.
+fn oidc_disabled() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(AuthError {
+            error: "oidc_disabled".to_string(),
+            message: "OIDC is disabled; this deployment uses internal CA authentication".to_string(),
+        }),
+    )
+        .into_response()
+}
+
+/// Credentials posted to the internal-login endpoint.
+#[derive(Debug, Deserialize)]
+pub struct InternalLoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+/// Shape of the CA's `POST /api/v1/auth/login` success response.
+#[derive(Debug, Deserialize)]
+struct CaLoginResponse {
+    token: String,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    roles: Vec<String>,
+}
+
+/// What the web UI returns to the browser after a successful internal login.
+#[derive(Debug, Serialize)]
+pub struct InternalLoginResponse {
+    pub username: Option<String>,
+    pub roles: Vec<String>,
+}
+
+/// Internal-auth login handler (no external IdP).
+///
+/// Authenticates the supplied credentials directly against the CA's own account
+/// store (`POST {ca_url}/api/v1/auth/login`, argon2id + lockout + RBAC). On
+/// success it binds the CA's bearer token to a server-side web session and sets
+/// the session cookie; the proxy then presents that token upstream, so the CA
+/// independently authenticates every admin action (no confused deputy, no IdP).
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: IA-2 (Identification and Authentication) - CA-enforced
+/// - NIST 800-53: AC-3 (Access Enforcement) - credential carried end-to-end
+/// - NIAP PP-CA: FIA_UAU.1 / FIA_AFL.1 (CA-side authentication + lockout)
+pub async fn internal_login(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<InternalLoginRequest>,
+) -> Response {
+    if state.config.auth_mode != super::super::config::AuthMode::Internal {
+        return oidc_disabled();
+    }
+
+    let url = format!(
+        "{}/api/v1/auth/login",
+        state.config.backend.ca_url.trim_end_matches('/')
+    );
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({ "username": req.username, "password": req.password }))
+        .send()
+        .await;
+
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "internal login: CA auth endpoint unreachable");
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(AuthError {
+                    error: "backend_error".to_string(),
+                    message: "Authentication service unavailable".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if !resp.status().is_success() {
+        // NIAP PP-CA: FIA_AFL.1 - failed authentication (lockout enforced CA-side)
+        tracing::warn!(status = %resp.status(), user = %req.username, "internal login rejected by CA");
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(AuthError {
+                error: "auth_failed".to_string(),
+                message: "Invalid username or password".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let ca: CaLoginResponse = match resp.json().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "internal login: malformed CA login response");
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(AuthError {
+                    error: "backend_error".to_string(),
+                    message: "Malformed authentication response".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let username = ca.username.or(Some(req.username.clone()));
+    let (session_token, _session) = state
+        .session_manager
+        .create_session_with_token(
+            username.clone().unwrap_or_default(),
+            username.clone(),
+            None,
+            ca.roles.clone(),
+            Some(ca.token),
+        )
+        .await;
+
+    tracing::info!(user = ?username, roles = ?ca.roles, "User authenticated via internal CA auth");
+
+    let cookie_name = state.config.session.cookie_name.clone();
+    let session_cookie = Cookie::build((cookie_name, session_token))
+        .path("/")
+        .http_only(true)
+        .secure(state.config.session.secure_cookies)
+        .same_site(SameSite::Lax)
+        .max_age(cookie::time::Duration::seconds(
+            state.config.session.absolute_timeout_secs,
+        ));
+
+    (
+        jar.add(session_cookie),
+        Json(InternalLoginResponse {
+            username,
+            roles: ca.roles,
+        }),
+    )
+        .into_response()
+}
+
 /// Login handler - initiates OAuth flow
 ///
 /// Redirects the user to the Keycloak authorization endpoint.
@@ -51,9 +195,10 @@ pub async fn login(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<impl IntoResponse, Response> {
+    let oidc_client = state.oidc_client.as_ref().ok_or_else(oidc_disabled)?;
+
     // Generate authorization URL with PKCE
-    let (auth_url, csrf_state) = state
-        .oidc_client
+    let (auth_url, csrf_state) = oidc_client
         .authorize_url()
         .await
         .map_err(|e| {
@@ -120,9 +265,10 @@ pub async fn callback(
             .into_response());
     }
 
+    let oidc_client = state.oidc_client.as_ref().ok_or_else(oidc_disabled)?;
+
     // Exchange authorization code for tokens
-    let user_info = state
-        .oidc_client
+    let user_info = oidc_client
         .exchange_code(&params.code, &params.state)
         .await
         .map_err(|e| {

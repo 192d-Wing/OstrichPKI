@@ -25,7 +25,7 @@ use tower_http::services::ServeDir;
 
 use super::{
     auth,
-    config::WebUiConfig,
+    config::{AuthMode, WebUiConfig},
     middleware::{audit_middleware, csp_middleware, require_session},
     proxy,
     template,
@@ -35,7 +35,10 @@ use super::{
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<WebUiConfig>,
-    pub oidc_client: Arc<auth::OidcClient>,
+    /// OIDC client, present only in `oidc` auth mode. `None` in `internal`
+    /// mode, where authentication goes directly to the CA and no external IdP
+    /// is contacted.
+    pub oidc_client: Option<Arc<auth::OidcClient>>,
     /// Server-side session store. Sessions are created by the OIDC callback
     /// and validated by `require_session` on every proxied request, so a
     /// session cookie is meaningful only if it maps to a live server session.
@@ -50,8 +53,20 @@ pub struct AppState {
 pub async fn create_router(config: WebUiConfig) -> Result<Router> {
     let config = Arc::new(config);
 
-    // Initialize OIDC client
-    let oidc_client = Arc::new(auth::OidcClient::new(&config.oidc).await?);
+    // Initialize the OIDC client only in OIDC mode. In internal mode no
+    // external IdP is contacted; authentication is delegated to the CA's own
+    // account store, so we never perform OIDC discovery (which would require a
+    // reachable Keycloak).
+    let oidc_client = match config.auth_mode {
+        AuthMode::Oidc => Some(Arc::new(auth::OidcClient::new(&config.oidc).await?)),
+        AuthMode::Internal => {
+            tracing::info!(
+                "Auth mode: INTERNAL — authenticating against the CA's account store \
+                 (POST /api/v1/auth/login); Keycloak/OIDC is disabled"
+            );
+            None
+        }
+    };
 
     // Server-side session manager (in-memory).
     // POAM: in-memory sessions do not survive a restart and do not replicate
@@ -73,10 +88,13 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
         .route("/ready", get(readiness_check))
         .with_state(state.clone());
 
-    // Auth routes (OIDC login/callback/logout)
+    // Auth routes. OIDC login/callback are used in `oidc` mode; internal-login
+    // is used in `internal` mode. Both are always mounted (the handlers reject
+    // calls that don't match the active mode), so logout/userinfo work in both.
     let auth_routes = Router::new()
         .route("/auth/login", get(auth::handlers::login))
         .route("/auth/callback", get(auth::handlers::callback))
+        .route("/auth/internal-login", post(auth::handlers::internal_login))
         .route("/auth/logout", post(auth::handlers::logout))
         .route("/auth/userinfo", get(auth::handlers::userinfo))
         .with_state(state.clone());
@@ -146,28 +164,27 @@ async fn health_check() -> impl IntoResponse {
 /// Returns 200 OK if the service is ready to accept traffic.
 /// Checks OIDC provider connectivity.
 async fn readiness_check(State(state): State<AppState>) -> Response {
-    // Check OIDC provider is reachable
-    let oidc_ready = state.oidc_client.is_ready().await;
-
-    if oidc_ready {
-        Json(json!({
+    // In internal-auth mode there is no IdP to probe; the service is ready as
+    // soon as it is serving. In OIDC mode, readiness reflects IdP reachability.
+    match &state.oidc_client {
+        None => Json(json!({
             "status": "ready",
-            "checks": {
-                "oidc": "ok"
-            }
+            "checks": { "auth": "internal" }
         }))
-        .into_response()
-    } else {
-        (
+        .into_response(),
+        Some(oidc) if oidc.is_ready().await => Json(json!({
+            "status": "ready",
+            "checks": { "oidc": "ok" }
+        }))
+        .into_response(),
+        Some(_) => (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
                 "status": "not_ready",
-                "checks": {
-                    "oidc": "unreachable"
-                }
+                "checks": { "oidc": "unreachable" }
             })),
         )
-            .into_response()
+            .into_response(),
     }
 }
 
