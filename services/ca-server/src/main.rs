@@ -173,9 +173,20 @@ async fn main() -> Result<()> {
             Arc::new(ostrich_common::auth::AuthLockout::new(
                 ostrich_common::auth::LockoutConfig::default(),
             )),
-            Arc::new(ostrich_common::auth::SessionManager::new(
-                ostrich_common::auth::SessionConfig::default(),
-            )),
+            Arc::new(ostrich_common::auth::SessionManager::new({
+                // Max concurrent sessions per user. Defaults to the secure
+                // SessionConfig default; CA_MAX_CONCURRENT_SESSIONS raises it
+                // for dev/UI testing (a single admin opening several tabs or
+                // re-logging-in would otherwise exhaust the default quota).
+                let cfg = ostrich_common::auth::SessionConfig::default();
+                match std::env::var("CA_MAX_CONCURRENT_SESSIONS")
+                    .ok()
+                    .and_then(|v| v.parse::<u32>().ok())
+                {
+                    Some(n) => cfg.with_max_concurrent(n),
+                    None => cfg,
+                }
+            })),
         ));
 
     let app = match &ca {

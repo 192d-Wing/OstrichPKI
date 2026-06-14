@@ -267,6 +267,24 @@ async fn get_ca_info(State(state): State<Arc<ApiState>>) -> Result<Json<CaInfoRe
 /// NIAP PP-CA: FIA_UAU.1 - Authenticated user required
 /// NIST 800-53: AC-3 - Access enforcement (checked by middleware)
 /// NIST 800-53: AU-2 - Auditable event (actor identity logged)
+/// Convert the prefixed SAN strings produced by `ostrich_x509::parser::parse_csr`
+/// (`"DNS:.."`, `"IP:.."`, `"email:.."`, `"URI:.."`) into structured
+/// [`SubjectAltName`] values. Unrecognized/unparsable entries are dropped.
+fn sans_from_strings(sans: &[String]) -> Vec<SubjectAltName> {
+    sans.iter()
+        .filter_map(|s| {
+            let (kind, value) = s.split_once(':')?;
+            match kind.to_ascii_uppercase().as_str() {
+                "DNS" => Some(SubjectAltName::dns(value)),
+                "EMAIL" => Some(SubjectAltName::email(value)),
+                "URI" => Some(SubjectAltName::uri(value)),
+                "IP" => value.parse::<std::net::IpAddr>().ok().map(SubjectAltName::ip),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 async fn issue_certificate(
     State(state): State<Arc<ApiState>>,
     AuthUser(user): AuthUser,
@@ -284,13 +302,44 @@ async fn issue_certificate(
         None => None,
     };
 
+    // Resolve subject / public key / SANs. When a CSR is supplied, any of
+    // these that the caller omitted are derived from it (the "paste a CSR"
+    // admin flow); explicit values still take precedence.
+    let (subject, public_key, subject_alt_names) = match &req.csr_der {
+        Some(csr_der) => {
+            let parsed = ostrich_x509::parser::parse_csr(csr_der)
+                .map_err(|e| Error::InvalidRequest(format!("Invalid CSR: {e}")))?;
+            let subject = match req.subject {
+                Some(s) => s,
+                None => ostrich_x509::parser::parse_csr_subject_dn(csr_der)
+                    .map_err(|e| Error::InvalidRequest(format!("Invalid CSR subject: {e}")))?,
+            };
+            let public_key = req.public_key.unwrap_or(parsed.public_key);
+            let subject_alt_names = if req.subject_alt_names.is_empty() {
+                sans_from_strings(&parsed.subject_alternative_names)
+            } else {
+                req.subject_alt_names
+            };
+            (subject, public_key, subject_alt_names)
+        }
+        None => {
+            let subject = req.subject.ok_or_else(|| {
+                Error::InvalidRequest("subject is required when no CSR is supplied".to_string())
+            })?;
+            let public_key = req.public_key.ok_or_else(|| {
+                Error::InvalidRequest("public_key is required when no CSR is supplied".to_string())
+            })?;
+            (subject, public_key, req.subject_alt_names)
+        }
+    };
+
     // Convert REST request to internal request
     // Use authenticated user's identity as requestor (override client-provided value)
     let issuance_req = IssuanceRequest {
         profile_name: req.profile_name,
-        subject: req.subject,
-        subject_alt_names: req.subject_alt_names,
-        public_key: req.public_key,
+        subject,
+        subject_alt_names,
+        public_key,
         requestor: user.username.clone(), // Use authenticated identity
         metadata: req.metadata,
         csr_der: req.csr_der, // when present, issue() verifies proof-of-possession (RFC 2986)
@@ -807,17 +856,27 @@ pub struct CaInfoResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IssueCertificateRequest {
     pub profile_name: String,
-    pub subject: DistinguishedName,
+    /// Subject DN. Optional: when omitted and a `csr_der` is supplied, the CA
+    /// derives the subject from the CSR (the usual "paste a CSR" admin flow).
+    #[serde(default)]
+    pub subject: Option<DistinguishedName>,
+    /// Subject alternative names. When empty and a `csr_der` is supplied, the
+    /// SANs are taken from the CSR's requested extensions.
     #[serde(default)]
     pub subject_alt_names: Vec<SubjectAltName>,
-    #[serde(with = "base64_serde")]
-    pub public_key: Vec<u8>,
+    /// SubjectPublicKeyInfo (DER). Optional: when omitted and a `csr_der` is
+    /// supplied, the CA uses the CSR's public key.
+    #[serde(default, with = "base64_opt_serde")]
+    pub public_key: Option<Vec<u8>>,
+    /// Ignored; the authenticated identity is always used as the requestor.
+    #[serde(default)]
     pub requestor: String,
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     /// Optional base64 DER PKCS#10 CSR. When present the CA verifies
     /// proof-of-possession (RFC 2986); required for end-entity issuance when the
-    /// CA enforces proof-of-possession (the secure default).
+    /// CA enforces proof-of-possession (the secure default). When `subject` /
+    /// `public_key` are omitted they are derived from this CSR.
     #[serde(default, with = "base64_opt_serde")]
     pub csr_der: Option<Vec<u8>>,
     /// Approved request to issue against (NIAP PP-CA FDP_CER_EXT.3).
