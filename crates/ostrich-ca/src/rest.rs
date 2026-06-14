@@ -950,6 +950,10 @@ pub struct ProfileInfo {
     pub basic_constraints_ca: bool,
     pub basic_constraints_path_len: Option<u8>,
     pub subject_alt_name_required: bool,
+    #[serde(default)]
+    pub key_usages: Vec<String>,
+    #[serde(default)]
+    pub extended_key_usages: Vec<String>,
 }
 
 impl ProfileInfo {
@@ -964,6 +968,12 @@ impl ProfileInfo {
             basic_constraints_ca: profile.basic_constraints_ca,
             basic_constraints_path_len: profile.basic_constraints_path_len,
             subject_alt_name_required: profile.subject_alt_name_required,
+            key_usages: profile.key_usage.iter().map(|k| format!("{k:?}")).collect(),
+            extended_key_usages: profile
+                .extended_key_usage
+                .iter()
+                .map(|e| format!("{e:?}"))
+                .collect(),
         }
     }
 }
