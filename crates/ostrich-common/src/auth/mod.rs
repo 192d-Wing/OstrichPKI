@@ -56,6 +56,7 @@
 //! policy.authorize(&user, Permission::IssueCertificate, "cert:123")?;
 //! ```
 
+pub mod basic;
 pub mod lockout;
 pub mod middleware;
 pub mod mtls;
@@ -69,6 +70,7 @@ pub mod session;
 pub mod user;
 
 // Re-export commonly used types
+pub use basic::{BasicAuthLayer, MtlsOrBasicAuthLayer};
 pub use lockout::{AuthLockout, LockoutConfig, LockoutStatus};
 pub use middleware::{AuthLayer, AuthResponse, AuthUser, AuthzLayer, MtlsAuthLayer};
 pub use mtls::{CertificateAuthConfig, CertificateAuthProvider, CertificateUserRepository};

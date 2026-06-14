@@ -890,6 +890,48 @@ plus a CA-issued certificate for it, end to end.
 
 ---
 
+#### §3.2.3: Client Authentication
+
+**Status:** 🟢 **Compliant** (TLS client certificate + HTTP Basic)
+
+**Requirement:** RFC 7030 §3.2.3 - the EST server authenticates the client by a
+TLS client certificate (§3.3) and/or by HTTP-based client authentication, which
+the server MAY request "in addition to or instead of" the TLS client
+certificate.
+
+**Implementation:** the EST server selects a client-authentication mode for the
+protected enrollment endpoints (`EstAuthMode`):
+
+- **mTLS (§3.3):** the verified TLS client certificate is mapped to an account
+  (`MtlsAuthLayer`). Default when a TLS client CA (`--tls-ca-cert`) is set.
+- **mTLS + HTTP Basic fallback (§3.2.3):** the verified client certificate is
+  preferred; when no client certificate is presented, the request must carry
+  `Authorization: Basic` (`MtlsOrBasicAuthLayer`). Enabled with
+  `--allow-basic-auth` (requires `--tls-ca-cert`; rejected otherwise, since
+  Basic transmits a reusable password and is only safe on a TLS listener). This
+  is intended for **bootstrap enrollment** — a client without a certificate
+  authenticates its first enrollment with a username/password, then uses mTLS.
+- **Bearer session token:** non-RFC backward-compatibility fallback when no TLS
+  client CA is configured.
+
+Basic credentials are verified through the same `AuthProvider` used for password
+login (Argon2id, account lockout / AC-7), and a failed/missing Basic challenge
+returns `401` with `WWW-Authenticate: Basic realm="EST"` (RFC 7235 §4.1). On
+success the resolved identity flows through the same RBAC permission checks
+(`AuthzLayer`) as mTLS.
+
+**Implementation:**
+
+- [crates/ostrich-common/src/auth/basic.rs](../../crates/ostrich-common/src/auth/basic.rs) - `BasicAuthLayer`, `MtlsOrBasicAuthLayer`
+- [crates/ostrich-est/src/rest.rs](../../crates/ostrich-est/src/rest.rs) - `EstAuthMode` + protected-route layer selection
+- [services/est-server/src/main.rs](../../services/est-server/src/main.rs) - `--allow-basic-auth`, composite provider, TLS-only guard
+
+**Evidence:**
+
+- Unit tests: [crates/ostrich-common/src/auth/basic.rs](../../crates/ostrich-common/src/auth/basic.rs) `mod tests` - valid/invalid credentials, missing header → challenge, malformed base64, missing colon, locked account → 403, RFC 7617 first-colon split
+
+---
+
 #### §3.2: PKCS#7 Encoding
 
 **Status:** 🟢 **Compliant** (Phase 15)
@@ -1183,10 +1225,11 @@ splicing it into an OpenSSL SPKI for bidirectional interop
    - Phase: 16 (DRBG implementation)
    - Effort: 2-3 days
 
-2. **RFC 7030 §3.6 - EST mTLS** (🟡 Partial)
-   - Impact: EST client authentication not enforced
+2. **RFC 7030 §3.6 - EST mTLS** (🟢 Implemented)
+   - EST client authentication is enforced on the protected enrollment
+     endpoints: mTLS client certificate (§3.3), or mTLS with an HTTP Basic
+     fallback for bootstrap enrollment (§3.2.3). See §3.2.3 above.
    - Phase: 16
-   - Effort: 1 week
 
 ### Priority 2 (Important, Non-blocking)
 

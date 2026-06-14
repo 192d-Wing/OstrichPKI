@@ -30,6 +30,43 @@ struct Args {
     #[arg(long, env = "CA_GRPC_URL")]
     ca_grpc_url: Option<String>,
 
+    /// Client certificate (PEM) for mTLS to the CA gRPC service.
+    /// NIST 800-53: SC-8 / AC-17 - mutually authenticated inter-service channel.
+    #[arg(long, env = "CA_GRPC_CLIENT_CERT_FILE")]
+    ca_grpc_client_cert: Option<String>,
+
+    /// Client private key (PEM) for mTLS to the CA gRPC service.
+    #[arg(long, env = "CA_GRPC_CLIENT_KEY_FILE")]
+    ca_grpc_client_key: Option<String>,
+
+    /// CA certificate (PEM) used to verify the CA gRPC server.
+    #[arg(long, env = "CA_GRPC_CA_CERT_FILE")]
+    ca_grpc_ca_cert: Option<String>,
+
+    /// How a CSR's requested identity is authorized against the authenticated
+    /// account (H1):
+    ///   - "username"  (default): the CSR must name the account username in its
+    ///     CN or a SAN.
+    ///   - "allowlist": every identity the CSR asserts (CN + SAN values) must be
+    ///     present in the account's allow-list (`est_account_identities`),
+    ///     supporting delegated enrollment.
+    ///
+    /// NIST 800-53: AC-3 / AC-6.
+    #[arg(long, env = "EST_IDENTITY_POLICY", default_value = "username")]
+    enroll_identity_policy: String,
+
+    /// Allow bearer-token authentication for EST enrollment when no TLS client
+    /// CA (--tls-ca-cert) is configured. RFC 7030 §3.3 expects mTLS; this is an
+    /// explicit, non-default opt-in to the weaker posture (NIST 800-53: CM-6).
+    #[arg(long, env = "EST_ALLOW_BEARER_AUTH", default_value = "false")]
+    allow_bearer_auth: bool,
+
+    /// Allow a plaintext (non-mTLS) gRPC channel to a non-loopback CA endpoint.
+    /// DEVELOPMENT ONLY - the EST→CA channel carries issuance requests and must
+    /// be mutually authenticated in production (NIST 800-53: SC-8, AC-17).
+    #[arg(long, env = "CA_GRPC_INSECURE", default_value = "false")]
+    ca_insecure: bool,
+
     /// Certificate profile used for EST enrollment / re-enrollment.
     /// NIST 800-53: CM-6 - Configurable issuance profile (secure default).
     #[arg(long, env = "EST_ENROLL_PROFILE", default_value = "tls_client")]
@@ -46,6 +83,13 @@ struct Args {
     /// TLS CA certificate for client authentication
     #[arg(long, env = "TLS_CA_CERT_FILE")]
     tls_ca_cert: Option<String>,
+
+    /// Accept HTTP Basic authentication (RFC 7030 §3.2.3) as a fallback when a
+    /// client does not present a TLS client certificate. Intended for bootstrap
+    /// enrollment. Requires --tls-ca-cert (mTLS); Basic is rejected otherwise
+    /// because it transmits a reusable password.
+    #[arg(long, env = "EST_ALLOW_BASIC_AUTH", default_value = "false")]
+    allow_basic_auth: bool,
 
     /// Log level
     #[arg(long, env = "RUST_LOG", default_value = "info")]
@@ -94,7 +138,40 @@ async fn main() -> Result<()> {
     // certificate. When mTLS is configured (--tls-ca-cert), authenticate by the
     // verified client certificate (mapped to an account by certificate_subject);
     // otherwise fall back to bearer/password auth.
+    use ostrich_est::rest::EstAuthMode;
+
     let use_mtls_auth = args.tls_ca_cert.is_some();
+
+    // HTTP Basic transmits a reusable password; only offer it alongside mTLS on
+    // a TLS listener (RFC 7030 §3.2.3). Fail closed on a misconfiguration rather
+    // than silently exposing Basic on a non-mTLS endpoint.
+    // NIST 800-53: SC-8 / CM-6 - secure default, no Basic without TLS client CA.
+    if args.allow_basic_auth && !use_mtls_auth {
+        anyhow::bail!(
+            "--allow-basic-auth requires --tls-ca-cert (mTLS); HTTP Basic is not \
+             permitted without a TLS client CA configured"
+        );
+    }
+
+    // M2 - fail closed on the auth posture. RFC 7030 §3.3 expects mTLS client
+    // authentication; bearer-token auth is a non-RFC fallback. Refuse to start
+    // the enrollment endpoints in bearer mode unless the operator has explicitly
+    // opted in with --allow-bearer-auth, so the weaker posture is never the
+    // silent default. NIST 800-53: CM-6 / AC-3 - secure default.
+    if !use_mtls_auth && !args.allow_bearer_auth {
+        anyhow::bail!(
+            "EST has no TLS client CA configured (--tls-ca-cert) for mTLS client \
+             authentication (RFC 7030 §3.3). To run with bearer-token auth instead, \
+             pass --allow-bearer-auth explicitly (not recommended for production)."
+        );
+    }
+
+    let auth_mode = match (use_mtls_auth, args.allow_basic_auth) {
+        (true, true) => EstAuthMode::MtlsWithBasicFallback,
+        (true, false) => EstAuthMode::Mtls,
+        (false, _) => EstAuthMode::BearerToken,
+    };
+
     let user_repo = Arc::new(ostrich_db::repository::DbUserRepository::new(db_pool.clone()));
     let lockout = Arc::new(ostrich_common::auth::AuthLockout::new(
         ostrich_common::auth::LockoutConfig::default(),
@@ -102,22 +179,49 @@ async fn main() -> Result<()> {
     let sessions = Arc::new(ostrich_common::auth::SessionManager::new(
         ostrich_common::auth::SessionConfig::default(),
     ));
-    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> = if use_mtls_auth {
-        tracing::info!("EST mTLS client-certificate authentication enabled (RFC 7030 §3.3)");
-        Arc::new(ostrich_common::auth::CertificateAuthProvider::new(
-            ostrich_common::auth::CertificateAuthConfig::default(),
-            user_repo.clone(),
-            lockout,
-            sessions,
-        ))
-    } else {
-        tracing::warn!(
-            "EST using bearer/password authentication (no --tls-ca-cert configured); \
-             RFC 7030 §3.3 expects mTLS client authentication."
-        );
-        Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
-            user_repo, lockout, sessions,
-        ))
+    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> = match auth_mode {
+        EstAuthMode::MtlsWithBasicFallback => {
+            tracing::info!(
+                "EST mTLS authentication with HTTP Basic fallback enabled \
+                 (RFC 7030 §3.3 + §3.2.3 bootstrap enrollment)"
+            );
+            // Composite: certificate identity preferred, password (Basic) fallback.
+            // Both providers share the same lockout and session managers.
+            let cert_provider = ostrich_common::auth::CertificateAuthProvider::new(
+                ostrich_common::auth::CertificateAuthConfig::default(),
+                user_repo.clone(),
+                lockout.clone(),
+                sessions.clone(),
+            );
+            let password_provider = ostrich_common::auth::PasswordAuthProvider::new(
+                user_repo.clone(),
+                lockout,
+                sessions,
+            );
+            Arc::new(
+                ostrich_common::auth::CompositeAuthProvider::new()
+                    .add_provider(Box::new(cert_provider))
+                    .add_provider(Box::new(password_provider)),
+            )
+        }
+        EstAuthMode::Mtls => {
+            tracing::info!("EST mTLS client-certificate authentication enabled (RFC 7030 §3.3)");
+            Arc::new(ostrich_common::auth::CertificateAuthProvider::new(
+                ostrich_common::auth::CertificateAuthConfig::default(),
+                user_repo.clone(),
+                lockout,
+                sessions,
+            ))
+        }
+        EstAuthMode::BearerToken => {
+            tracing::warn!(
+                "EST using bearer/password authentication (no --tls-ca-cert configured); \
+                 RFC 7030 §3.3 expects mTLS client authentication."
+            );
+            Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
+                user_repo, lockout, sessions,
+            ))
+        }
     };
     let rbac_policy = Arc::new(ostrich_common::auth::RbacPolicy::new());
 
@@ -127,12 +231,43 @@ async fn main() -> Result<()> {
     let ca_client = match &args.ca_grpc_url {
         Some(url) => {
             tracing::info!(endpoint = %url, "Connecting to CA gRPC service");
+            // Load CA mTLS material when configured (SC-8 / AC-17). All three
+            // (client cert, client key, CA cert) are required for mTLS; partial
+            // configuration is rejected so the channel can't silently degrade.
+            let read_pem = |path: &Option<String>| -> Result<String> {
+                match path {
+                    Some(p) => Ok(std::fs::read_to_string(p)?),
+                    None => Ok(String::new()),
+                }
+            };
+            let client_cert_pem = read_pem(&args.ca_grpc_client_cert)?;
+            let client_key_pem = read_pem(&args.ca_grpc_client_key)?;
+            let ca_cert_pem = read_pem(&args.ca_grpc_ca_cert)?;
+            let any = !client_cert_pem.is_empty()
+                || !client_key_pem.is_empty()
+                || !ca_cert_pem.is_empty();
+            let all = !client_cert_pem.is_empty()
+                && !client_key_pem.is_empty()
+                && !ca_cert_pem.is_empty();
+            if any && !all {
+                anyhow::bail!(
+                    "CA gRPC mTLS requires all of --ca-grpc-client-cert, \
+                     --ca-grpc-client-key, --ca-grpc-ca-cert"
+                );
+            }
             let config = ostrich_common::GrpcClientConfig {
                 endpoint: url.clone(),
+                client_cert_pem,
+                client_key_pem,
+                ca_cert_pem,
                 ..Default::default()
             };
-            let client =
-                ostrich_est::ca_integration::EstCaClient::new(config, db_pool.clone()).await?;
+            let client = ostrich_est::ca_integration::EstCaClient::new(
+                config,
+                db_pool.clone(),
+                args.ca_insecure,
+            )
+            .await?;
             Some(Arc::new(client))
         }
         None => {
@@ -169,9 +304,22 @@ async fn main() -> Result<()> {
     )
     .with_ca(ca_client, ca_certificate_der)
     .with_profile(args.enroll_profile.clone());
-    if use_mtls_auth {
-        state = state.with_mtls_auth();
-    }
+    state = match auth_mode {
+        EstAuthMode::Mtls => state.with_mtls_auth(),
+        EstAuthMode::MtlsWithBasicFallback => state.with_mtls_basic_fallback(),
+        EstAuthMode::BearerToken => state,
+    };
+
+    // H1 - certificate identity authorization policy.
+    let identity_policy = match args.enroll_identity_policy.to_ascii_lowercase().as_str() {
+        "username" => ostrich_est::rest::EstIdentityPolicy::MatchUsername,
+        "allowlist" | "allow-list" => ostrich_est::rest::EstIdentityPolicy::AccountAllowList,
+        other => anyhow::bail!(
+            "invalid --enroll-identity-policy '{other}' (expected 'username' or 'allowlist')"
+        ),
+    };
+    tracing::info!(?identity_policy, "EST certificate identity policy");
+    state = state.with_identity_policy(identity_policy);
 
     // Create router and mount the shared session API (login/logout).
     // Public by necessity; brute-force is mitigated by lockout (AC-7 / FIA_AFL.1).

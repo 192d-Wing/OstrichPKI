@@ -51,6 +51,27 @@ use x509_cert::der::Decode;
 use x509_cert::request::CertReq;
 use x509_parser::der_parser::asn1_rs::FromDer;
 
+/// Whether a gRPC endpoint targets the local loopback interface.
+///
+/// Used to decide whether a plaintext CA channel is acceptable: loopback traffic
+/// does not leave the host, so it is the only case (besides an explicit dev
+/// override) where running without mTLS is tolerated. Anything that does not
+/// clearly resolve to loopback is treated as remote (fail secure).
+fn endpoint_is_loopback(endpoint: &str) -> bool {
+    // Strip scheme, any userinfo, and the port/path to isolate the host.
+    let after_scheme = endpoint.split("://").last().unwrap_or(endpoint);
+    let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+    let host_port = host_port.rsplit('@').next().unwrap_or(host_port);
+    // IPv6 literal: [::1]:port
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+
+    matches!(host, "localhost" | "127.0.0.1" | "::1") || host.starts_with("127.")
+}
+
 /// CA client for EST service
 ///
 /// COMPLIANCE MAPPING:
@@ -64,14 +85,51 @@ pub struct EstCaClient {
 }
 
 impl EstCaClient {
-    /// Create a new EST CA client
+    /// Create a new EST CA client.
     ///
     /// COMPLIANCE MAPPING:
     /// - NIAP PP-CA: FTP_ITC.1.1 - Initiate trusted channel to CA service
     /// - NIAP PP-CA: FTP_ITC.1.2 - Establish mTLS mutual authentication
     /// - NIST 800-53: SC-8(1) - Establish mTLS connection to CA
     /// - NIST 800-53: SC-23 - Session authenticity
-    pub async fn new(config: GrpcClientConfig, db_pool: DatabasePool) -> Result<Self> {
+    ///
+    /// SECURITY (C1 / SC-8 / AC-17 / FTP_ITC.1): the EST→CA gRPC channel carries
+    /// issuance requests, so it MUST be mutually authenticated in production. This
+    /// constructor fails closed: a non-loopback endpoint without TLS client
+    /// material is rejected unless `allow_insecure` is explicitly set (a
+    /// dev/E2E escape hatch). Previously the channel silently degraded to
+    /// plaintext with only a warning, letting anyone on the network path read
+    /// CSRs and forge issuance calls directly to the CA.
+    pub async fn new(
+        config: GrpcClientConfig,
+        db_pool: DatabasePool,
+        allow_insecure: bool,
+    ) -> Result<Self> {
+        let has_tls_material = !config.client_cert_pem.is_empty()
+            && !config.client_key_pem.is_empty()
+            && !config.ca_cert_pem.is_empty();
+        let is_loopback = endpoint_is_loopback(&config.endpoint);
+
+        if !has_tls_material && !is_loopback && !allow_insecure {
+            // NIST 800-53: SI-17 - fail secure rather than expose a plaintext
+            // issuance channel to a non-loopback CA endpoint.
+            return Err(Error::Internal(format!(
+                "refusing to open a plaintext gRPC channel to non-loopback CA endpoint '{}'; \
+                 configure CA mTLS (client cert/key + CA cert) or set --ca-insecure for \
+                 development only",
+                config.endpoint
+            )));
+        }
+
+        if !has_tls_material {
+            tracing::warn!(
+                endpoint = %config.endpoint,
+                allow_insecure,
+                "EST→CA gRPC channel is NOT mutually authenticated (loopback/dev only); \
+                 configure CA mTLS for production (NIST 800-53: SC-8, AC-17)"
+            );
+        }
+
         let grpc_client = CaGrpcClient::new(config)
             .await
             .map_err(|e| Error::Internal(format!("Failed to create CA client: {}", e)))?;
@@ -155,15 +213,16 @@ impl EstCaClient {
             request_id: enrollment_id.to_string(),
         };
 
-        // Call CA service with retry logic
+        // H3 - issue_certificate is a NON-IDEMPOTENT mutation, so it must NOT be
+        // blanket-retried: a retry after the CA already committed (e.g. the
+        // response was lost to a timeout) would mint a DUPLICATE certificate.
+        // `request_id` (the enrollment id) is supplied so the CA can dedupe, but
+        // we still issue exactly one client-side attempt and surface transient
+        // failures to the caller rather than silently re-driving the mutation.
         let channel = self.grpc_client.channel();
-        let response = self
-            .grpc_client
-            .with_retry(|| {
-                let mut client = CertificateAuthorityServiceClient::new(channel.clone());
-                let req = request.clone();
-                async move { client.issue_certificate(tonic::Request::new(req)).await }
-            })
+        let mut client = CertificateAuthorityServiceClient::new(channel);
+        let response = client
+            .issue_certificate(tonic::Request::new(request))
             .await
             .map_err(|e| Error::Internal(format!("CA service call failed: {}", e)))?;
 
@@ -173,16 +232,12 @@ impl EstCaClient {
         let certificate_id = Uuid::parse_str(&issued.certificate_id)
             .map_err(|_| Error::Internal("Invalid certificate ID from CA".to_string()))?;
 
-        // Update EST enrollment with certificate ID
+        // L2 - record the certificate id and the "issued" status in a single
+        // atomic UPDATE, so a partial failure cannot leave the enrollment with a
+        // certificate id but a non-"issued" status.
         let est_repo = ostrich_db::repository::EstRepository::new(self.db_pool.clone());
         est_repo
-            .update_enrollment_certificate(enrollment_id, certificate_id, profile_name)
-            .await
-            .map_err(Error::Database)?;
-
-        // Update enrollment status to "issued"
-        est_repo
-            .update_enrollment_status(enrollment_id, "issued")
+            .mark_enrollment_issued(enrollment_id, certificate_id, profile_name)
             .await
             .map_err(Error::Database)?;
 
@@ -304,6 +359,19 @@ impl EstCaClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_endpoint_is_loopback() {
+        assert!(endpoint_is_loopback("http://localhost:50051"));
+        assert!(endpoint_is_loopback("https://127.0.0.1:50051"));
+        assert!(endpoint_is_loopback("http://[::1]:50051"));
+        assert!(endpoint_is_loopback("http://127.5.6.7:50051/path"));
+        assert!(!endpoint_is_loopback("https://ca.internal:50051"));
+        assert!(!endpoint_is_loopback("http://10.0.0.5:50051"));
+        assert!(!endpoint_is_loopback("https://ca-service:50051"));
+        // userinfo must not let a remote host masquerade as loopback
+        assert!(!endpoint_is_loopback("http://localhost@evil.com:50051"));
+    }
 
     #[test]
     fn test_convert_sans_to_proto() {

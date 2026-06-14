@@ -1202,6 +1202,7 @@ pub enum Credentials {
 - [crates/ostrich-est/src/rest.rs:283-300](../../crates/ostrich-est/src/rest.rs#L283-L300) - EST API public routes per RFC 7030
 - [crates/ostrich-est/src/rest.rs:302-360](../../crates/ostrich-est/src/rest.rs#L302-L360) - EST API protected routes per RFC 7030 §3.2.3
 - [crates/ostrich-common/src/auth/middleware.rs:68-98](../../crates/ostrich-common/src/auth/middleware.rs#L68-L98) - Authentication enforcement middleware
+- [crates/ostrich-common/src/auth/basic.rs](../../crates/ostrich-common/src/auth/basic.rs) - EST HTTP Basic / mTLS-or-Basic authentication (RFC 7030 §3.2.3); password verification reuses the Argon2id provider with account lockout (FIA_AFL.1)
 
 **Evidence:**
 

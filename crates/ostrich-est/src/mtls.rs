@@ -219,6 +219,14 @@ impl ClientCertExtractor {
     ///
     /// For development/testing, this accepts a base64-encoded certificate in the
     /// `X-Client-Certificate-Der` header.
+    ///
+    /// SECURITY (F2): this turns an attacker-controllable HTTP header into an
+    /// authenticated client identity with NO chain/signature/EKU/revocation
+    /// verification — anyone could present a self-signed `CN=admin` certificate.
+    /// It is therefore compiled ONLY under the `insecure-dev-auth` feature and
+    /// MUST NEVER be enabled in production. Production identity must come solely
+    /// from the verified TLS client certificate of a completed mTLS handshake.
+    #[cfg(feature = "insecure-dev-auth")]
     pub fn from_header(header_value: &str) -> Result<Self> {
         use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 

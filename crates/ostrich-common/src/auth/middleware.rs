@@ -277,14 +277,29 @@ pub enum AuthResponse {
     Forbidden,
     /// 401 Unauthorized - Session expired
     SessionExpired,
+    /// 401 Unauthorized with an HTTP Basic challenge.
+    ///
+    /// Emits `WWW-Authenticate: Basic` (RFC 7235 §4.1) so EST clients
+    /// (RFC 7030 §3.2.3) know to retry with `Authorization: Basic`.
+    BasicChallenge,
 }
 
 impl IntoResponse for AuthResponse {
     fn into_response(self) -> Response {
+        // The Basic challenge needs an extra WWW-Authenticate header.
+        if let AuthResponse::BasicChallenge = self {
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header(header::WWW_AUTHENTICATE, "Basic realm=\"EST\"")
+                .body(Body::from("Unauthorized"))
+                .unwrap();
+        }
+
         let (status, message) = match self {
             AuthResponse::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized"),
             AuthResponse::Forbidden => (StatusCode::FORBIDDEN, "Forbidden"),
             AuthResponse::SessionExpired => (StatusCode::UNAUTHORIZED, "Session expired"),
+            AuthResponse::BasicChallenge => unreachable!("handled above"),
         };
 
         let body = Body::from(message);
