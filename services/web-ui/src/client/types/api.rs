@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 // =============================================================================
 
 /// Dashboard statistics for overview cards
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardStats {
     pub active_certificates: u64,
@@ -28,7 +28,7 @@ pub struct DashboardStats {
 }
 
 /// Recent activity item for dashboard
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityItem {
     pub id: String,
@@ -40,7 +40,7 @@ pub struct ActivityItem {
 }
 
 /// Dashboard data response combining stats and activity
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardData {
     pub stats: DashboardStats,
@@ -73,7 +73,7 @@ impl std::fmt::Display for CertificateStatus {
 }
 
 /// Certificate summary for list views
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CertificateSummary {
     pub id: String,
@@ -87,7 +87,7 @@ pub struct CertificateSummary {
 }
 
 /// Paginated certificate list response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CertificateListResponse {
     pub certificates: Vec<CertificateSummary>,
@@ -97,7 +97,7 @@ pub struct CertificateListResponse {
 }
 
 /// Certificate filter/query parameters
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CertificateFilter {
     pub search: Option<String>,
@@ -107,7 +107,7 @@ pub struct CertificateFilter {
 }
 
 /// X.509 Extension information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CertificateExtension {
     pub oid: String,
@@ -117,7 +117,7 @@ pub struct CertificateExtension {
 }
 
 /// Subject Alternative Name entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubjectAltName {
     pub name_type: String,
@@ -126,7 +126,7 @@ pub struct SubjectAltName {
 
 /// Full certificate details for detail view
 /// COMPLIANCE: RFC 5280 §4.1 - Certificate Structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CertificateDetails {
     // Basic fields
@@ -209,7 +209,7 @@ impl std::fmt::Display for RevocationReason {
 }
 
 /// Revocation request body
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RevocationRequest {
     pub reason: RevocationReason,
@@ -222,7 +222,7 @@ pub struct RevocationRequest {
 
 /// Audit event for display
 /// COMPLIANCE: NIST 800-53 AU-3 - Content of Audit Records
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditEvent {
     pub id: String,
@@ -241,7 +241,7 @@ pub struct AuditEvent {
 // =============================================================================
 
 /// Approval request summary
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalRequestSummary {
     pub id: String,
@@ -257,7 +257,7 @@ pub struct ApprovalRequestSummary {
 // =============================================================================
 
 /// Generic API error response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiErrorResponse {
     pub error: String,
     pub message: String,
@@ -265,7 +265,7 @@ pub struct ApiErrorResponse {
 }
 
 /// Generic success response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuccessResponse {
     pub success: bool,
     pub message: String,
