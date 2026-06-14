@@ -23,6 +23,10 @@ pub enum Route {
     #[at("/certificates/:id")]
     CertificateDetail { id: String },
 
+    /// Certificate Revocation Lists (CRL management)
+    #[at("/crl")]
+    Crl,
+
     /// Approval queue
     #[at("/approvals")]
     Approvals,
@@ -61,6 +65,7 @@ impl Route {
             Route::Certificates => "Certificates",
             Route::CertificateIssue => "Issue Certificate",
             Route::CertificateDetail { .. } => "Certificate Details",
+            Route::Crl => "Revocation Lists",
             Route::Approvals => "Approvals",
             Route::AuditLogs => "Audit Logs",
             Route::Scms => "Token Management",
@@ -78,6 +83,7 @@ impl Route {
             Route::Certificates => "document-check",
             Route::CertificateIssue => "document-plus",
             Route::CertificateDetail { .. } => "document",
+            Route::Crl => "ban",
             Route::Approvals => "clipboard-check",
             Route::AuditLogs => "document-text",
             Route::Scms => "credit-card",
@@ -102,6 +108,7 @@ impl Route {
         match self {
             Route::Certificates | Route::CertificateDetail { .. } => Some("view_certificates"),
             Route::CertificateIssue => Some("issue_certificates"),
+            Route::Crl => Some("view_crl"),
             Route::Approvals => Some("view_approvals"),
             Route::AuditLogs => Some("read_audit_log"),
             Route::Scms => Some("view_tokens"),

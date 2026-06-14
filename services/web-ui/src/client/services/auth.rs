@@ -51,7 +51,7 @@ fn role_permissions() -> HashMap<&'static str, Vec<&'static str>> {
     // the CA will actually authorize (separation of duties: the Administrator
     // manages the system but does NOT issue/revoke — that is OperationsStaff).
     let admin = vec![
-        "view_certificates", "view_approvals", "view_tokens",
+        "view_certificates", "view_approvals", "view_tokens", "view_crl",
         "manage_users", "admin",
     ];
     map.insert("Administrator", admin.clone());
@@ -60,7 +60,7 @@ fn role_permissions() -> HashMap<&'static str, Vec<&'static str>> {
     // OperationsStaff: certificate issuance, revocation, CRL, tokens.
     let ops = vec![
         "view_certificates", "issue_certificates", "revoke_certificates",
-        "view_tokens", "manage_tokens",
+        "view_tokens", "manage_tokens", "view_crl", "generate_crl",
     ];
     map.insert("OperationsStaff", ops);
 
