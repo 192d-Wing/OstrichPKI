@@ -16,11 +16,12 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 
 # Cryptography
-ring = { workspace = true }
-rsa = { workspace = true }
-# `oid` provides Sha256/384/512: AssociatedOid, required by the prefixed
-# (standard, RFC 8017) RSASSA-PKCS1-v1_5 SigningKey/VerifyingKey::new.
-sha2 = { workspace = true, features = ["oid"] }
+# All classical signature/hash/keygen primitives run inside the FIPS 140-3
+# validated AWS-LC module via aws-lc-rs (`fips` feature); see the aws-lc-rs
+# entry below. `ring` and the pure-Rust `rsa` crate were removed so no
+# non-FIPS signature backend remains in the build. `sha2` is retained only for
+# the power-on self-test KAT comparisons in `self_test.rs`.
+sha2 = { workspace = true }
 digest = { workspace = true }
 getrandom = { workspace = true }
 aes = { workspace = true }
@@ -29,13 +30,20 @@ cipher = { workspace = true }
 # Encoding
 spki = { workspace = true }
 der = { workspace = true }
+# pkcs1 is pure ASN.1 (RFC 8017 RSAPublicKey DER) — encoding only, no crypto —
+# used to wrap an HSM-extracted RSA modulus/exponent into SPKI.
+pkcs1 = { workspace = true }
 pkcs8 = { workspace = true }
 hex = { workspace = true }
 
 # PKCS#11 HSM support
 cryptoki = { workspace = true }
 
-# Post-quantum (ML-DSA) via AWS aws-lc-rs
+# FIPS 140-3 validated cryptography (AWS-LC FIPS module, `fips` feature set at
+# the workspace level): RSA, ECDSA, Ed25519, SHA-2, the SP 800-90A DRBG, and
+# ML-KEM (FIPS 203) all run inside the validated boundary. NOTE: the `fips`
+# feature is mutually exclusive with `unstable`, so ML-DSA (FIPS 204) is NOT
+# available in this build (AWS-LC's FIPS module does not yet include ML-DSA).
 aws-lc-rs = { workspace = true }
 
 # Utilities

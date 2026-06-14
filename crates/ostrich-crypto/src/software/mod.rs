@@ -1,7 +1,20 @@
-//! Software cryptography provider using ring
+//! Software cryptography provider backed by the AWS-LC FIPS 140-3 module
 //!
 //! NIST 800-53: SC-13 - Cryptographic protection
-//! Note: For development/testing only. Production should use HSM.
+//! NIST 800-53: SC-12 - Cryptographic key generation
+//! NIAP PP-CA: FCS_CKM.1 / FCS_COP.1 / FCS_RBG_EXT.1
+//!
+//! All classical signature, hashing, key-generation, and random-bit operations
+//! run inside the FIPS-validated AWS-LC module via `aws-lc-rs` (the workspace
+//! enables its `fips` feature). The previous `ring` (ECDSA/Ed25519) and
+//! pure-Rust `rsa` backends — neither FIPS-validated — have been removed.
+//!
+//! ML-DSA (FIPS 204) is NOT available here: it requires `aws-lc-rs`'s
+//! `unstable` feature, which is mutually exclusive with `fips`. ML-KEM
+//! (FIPS 203) remains available via [`crate::kem`] (stable, in-FIPS-module).
+//!
+//! Note: for production CA signing keys, prefer the PKCS#11 HSM provider; this
+//! software provider keeps private keys in process memory.
 
 use crate::{Algorithm, Error, KeyHandle, KeyType, Result, key::ProviderId};
 use async_trait::async_trait;
@@ -10,36 +23,17 @@ use std::sync::RwLock;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-// RSA operations
-//
-// Note: we import OsRng via `rsa::rand_core::OsRng` rather than `rand::rngs::OsRng`.
-// The `rsa = "0.9"` crate's signing/keygen APIs require an RNG implementing the
-// `rand_core 0.6` `CryptoRng + RngCore` traits, but the workspace also pulls in
-// `rand 0.9` (which exposes only the rand_core 0.9 traits). Using the OsRng
-// re-exported by `rsa` itself guarantees trait compatibility.
-use rsa::pkcs1v15::{SigningKey as Pkcs1SigningKey, VerifyingKey as Pkcs1VerifyingKey};
-use rsa::rand_core::OsRng;
-use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey};
-use rsa::pss::{BlindedSigningKey, Signature as PssSignature, VerifyingKey as PssVerifyingKey};
-use rsa::signature::{RandomizedSigner, SignatureEncoding, Signer, Verifier};
-use rsa::traits::PublicKeyParts;
-use rsa::{RsaPrivateKey, RsaPublicKey};
-use sha2::{Sha256, Sha384, Sha512};
-
-// ECDSA operations (ring)
-use ring::signature::{
-    ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED,
-    ECDSA_P384_SHA384_FIXED_SIGNING, EcdsaKeyPair,
+// FIPS-validated cryptography via AWS-LC (aws-lc-rs `fips` feature).
+use aws_lc_rs::encoding::AsDer;
+use aws_lc_rs::rand::SystemRandom;
+use aws_lc_rs::rsa::{KeyPair as AwsRsaKeyPair, KeySize};
+use aws_lc_rs::signature::{
+    self, ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED,
+    ECDSA_P384_SHA384_FIXED_SIGNING, ED25519, EcdsaKeyPair, Ed25519KeyPair,
+    KeyPair as AwsKeyPairTrait, UnparsedPublicKey,
 };
 
-// EdDSA operations (ring)
-use ring::signature::UnparsedPublicKey;
-use ring::signature::{ED25519, Ed25519KeyPair, KeyPair as Ed25519KeyPairTrait};
-
-// NIST SP 800-90A compliant DRBG (replaces SystemRandom)
-use crate::drbg::SecureRng;
-
-// SPKI/DER encoding
+// SPKI/DER encoding for ECDSA/Ed25519 public keys (raw key bytes -> SPKI).
 use der::{Encode, asn1::BitString};
 use spki::{AlgorithmIdentifier, ObjectIdentifier, SubjectPublicKeyInfo};
 
@@ -52,10 +46,16 @@ enum EcCurve {
     P521, // Deferred to Phase 8 Part 2
 }
 
-/// RSA key pair with algorithm tracking
-struct RsaKeyPair {
-    private_key: RsaPrivateKey,
-    public_key: RsaPublicKey,
+/// RSA key pair, backed by the AWS-LC FIPS module.
+///
+/// Holds the signing key plus cached public-key encodings: the RFC 8017
+/// `RSAPublicKey` (PKCS#1) bytes used for verification, and the
+/// SubjectPublicKeyInfo (SPKI) DER used for certificate issuance.
+struct RsaKeyPairInternal {
+    key_pair: AwsRsaKeyPair,
+    public_pkcs1_der: Vec<u8>,
+    spki_der: Vec<u8>,
+    bits: usize,
 }
 
 /// ECDSA key pair
@@ -71,25 +71,11 @@ struct Ed25519KeyPairInternal {
     public_key: Vec<u8>, // 32 bytes
 }
 
-/// ML-DSA (FIPS 204) key pair, backed by AWS aws-lc-rs.
-///
-/// Holds the aws-lc-rs keypair (for signing) and the cached SPKI DER (for
-/// public-key export). The OID inside the SPKI is the NIST CSOR id-ml-dsa-*
-/// produced by aws-lc-rs, so it drops straight into an X.509
-/// SubjectPublicKeyInfo.
-struct MlDsaKeyPairInternal {
-    key_pair: aws_lc_rs::unstable::signature::PqdsaKeyPair,
-    spki_der: Vec<u8>,
-    /// Which ML-DSA parameter set, for selecting the verification algorithm
-    key_type: KeyType,
-}
-
 /// Internal key pair storage
 enum KeyPair {
-    Rsa(Box<RsaKeyPair>), // Boxed to reduce enum size
+    Rsa(Box<RsaKeyPairInternal>), // Boxed to reduce enum size
     Ecdsa(EcdsaKeyPairInternal),
     Ed25519(Ed25519KeyPairInternal),
-    MlDsa(Box<MlDsaKeyPairInternal>), // Boxed: aws-lc-rs keypair is large
 }
 
 // Implement Drop to manually zeroize private key material
@@ -97,206 +83,164 @@ impl Drop for KeyPair {
     fn drop(&mut self) {
         match self {
             KeyPair::Rsa(_) => {
-                // RsaPrivateKey zeroizes itself on drop
+                // aws-lc-rs KeyPair zeroizes its private key on drop
             }
             KeyPair::Ecdsa(_) => {
                 // Zeroizing<Vec<u8>> zeroizes itself on drop
             }
             KeyPair::Ed25519(_) => {
-                // Ed25519KeyPair zeroizes itself on drop (ring implementation)
-            }
-            KeyPair::MlDsa(_) => {
-                // PqdsaKeyPair zeroizes its private key on drop (aws-lc-rs)
+                // aws-lc-rs Ed25519KeyPair zeroizes its private key on drop
             }
         }
     }
 }
 
-/// Software provider using ring for cryptographic operations
+/// Software provider using the AWS-LC FIPS module for cryptographic operations
 ///
-/// NIAP PP-CA: FCS_RBG_EXT.1 - Uses NIST SP 800-90A compliant DRBG
+/// NIAP PP-CA: FCS_RBG_EXT.1 - Random bit generation via the FIPS DRBG
 pub struct SoftwareProvider {
     /// Map: key_id -> KeyPair
     keys: RwLock<HashMap<Vec<u8>, KeyPair>>,
-
-    /// NIST SP 800-90A compliant DRBG
-    /// NIAP PP-CA: FCS_RBG_EXT.1 - Random bit generation
-    rng: SecureRng,
 }
 
 impl SoftwareProvider {
     /// Create a new software provider
-    ///
-    /// NIAP PP-CA: FCS_RBG_EXT.1 - Initializes NIST SP 800-90A compliant DRBG
     pub fn new() -> Self {
         tracing::warn!("Using software crypto provider - NOT RECOMMENDED for production");
-        let rng = SecureRng::new().expect("Failed to initialize NIST SP 800-90A DRBG");
         Self {
             keys: RwLock::new(HashMap::new()),
-            rng,
         }
     }
 
-    // ========== RSA Operations ==========
+    // ========== RSA Operations (FIPS, via AWS-LC) ==========
 
-    /// Generate RSA key pair
-    fn generate_rsa_key_pair(bits: usize) -> Result<RsaKeyPair> {
-        let mut rng = OsRng;
-        let private_key = RsaPrivateKey::new(&mut rng, bits)
-            .map_err(|e| Error::KeyGeneration(format!("RSA key generation failed: {}", e)))?;
-        let public_key = RsaPublicKey::from(&private_key);
-
-        Ok(RsaKeyPair {
-            private_key,
-            public_key,
-        })
-    }
-
-    /// Sign with RSA
-    fn sign_rsa(key_pair: &RsaKeyPair, data: &[u8], algorithm: Algorithm) -> Result<Vec<u8>> {
-        match algorithm {
-            // RSA-PSS signatures
-            Algorithm::RsaPssSha256 => {
-                let signing_key = BlindedSigningKey::<Sha256>::new(key_pair.private_key.clone());
-                let signature = signing_key.sign_with_rng(&mut OsRng, data);
-                Ok(signature.to_bytes().to_vec())
-            }
-            Algorithm::RsaPssSha384 => {
-                let signing_key = BlindedSigningKey::<Sha384>::new(key_pair.private_key.clone());
-                let signature = signing_key.sign_with_rng(&mut OsRng, data);
-                Ok(signature.to_bytes().to_vec())
-            }
-            Algorithm::RsaPssSha512 => {
-                let signing_key = BlindedSigningKey::<Sha512>::new(key_pair.private_key.clone());
-                let signature = signing_key.sign_with_rng(&mut OsRng, data);
-                Ok(signature.to_bytes().to_vec())
-            }
-
-            // RSA PKCS#1 v1.5 signatures
-            Algorithm::RsaPkcs1Sha256 => {
-                let signing_key =
-                    Pkcs1SigningKey::<Sha256>::new(key_pair.private_key.clone());
-                let signature = signing_key.sign(data);
-                Ok(signature.to_bytes().to_vec())
-            }
-            Algorithm::RsaPkcs1Sha384 => {
-                let signing_key =
-                    Pkcs1SigningKey::<Sha384>::new(key_pair.private_key.clone());
-                let signature = signing_key.sign(data);
-                Ok(signature.to_bytes().to_vec())
-            }
-            Algorithm::RsaPkcs1Sha512 => {
-                let signing_key =
-                    Pkcs1SigningKey::<Sha512>::new(key_pair.private_key.clone());
-                let signature = signing_key.sign(data);
-                Ok(signature.to_bytes().to_vec())
-            }
-
-            _ => Err(Error::UnsupportedAlgorithm(format!(
-                "Algorithm {:?} not supported for RSA signing",
-                algorithm
+    /// Map a key size in bits to the aws-lc-rs `KeySize`.
+    fn rsa_key_size(bits: usize) -> Result<KeySize> {
+        match bits {
+            2048 => Ok(KeySize::Rsa2048),
+            3072 => Ok(KeySize::Rsa3072),
+            4096 => Ok(KeySize::Rsa4096),
+            other => Err(Error::UnsupportedAlgorithm(format!(
+                "Unsupported RSA modulus size: {other} bits"
             ))),
         }
     }
 
-    /// Verify RSA signature
+    /// Build the internal RSA representation (cached public encodings) from an
+    /// aws-lc-rs key pair.
+    fn rsa_internal(key_pair: AwsRsaKeyPair, bits: usize) -> Result<RsaKeyPairInternal> {
+        let public_key = AwsKeyPairTrait::public_key(&key_pair);
+        // `AsRef<[u8]>` on the RSA public key yields RFC 8017 `RSAPublicKey`
+        // (PKCS#1) DER, which the aws-lc-rs RSA verifiers consume directly.
+        let public_pkcs1_der = public_key.as_ref().to_vec();
+        // `AsDer<PublicKeyX509Der>` yields the SubjectPublicKeyInfo for X.509.
+        let spki_der = public_key
+            .as_der()
+            .map_err(|e| Error::Encoding(format!("RSA SPKI export failed: {e}")))?
+            .as_ref()
+            .to_vec();
+        Ok(RsaKeyPairInternal {
+            key_pair,
+            public_pkcs1_der,
+            spki_der,
+            bits,
+        })
+    }
+
+    /// Generate an RSA key pair using the FIPS key-generation path (includes the
+    /// FIPS pairwise consistency test).
+    ///
+    /// NIAP PP-CA: FCS_CKM.1 - cryptographic key generation
+    fn generate_rsa_key_pair(bits: usize) -> Result<RsaKeyPairInternal> {
+        let size = Self::rsa_key_size(bits)?;
+        // Under the `fips` feature, `generate` is the FIPS-validated key
+        // generation path (the separate `generate_fips` is deprecated/redundant).
+        let key_pair = AwsRsaKeyPair::generate(size)
+            .map_err(|e| Error::KeyGeneration(format!("RSA key generation failed: {e}")))?;
+        Self::rsa_internal(key_pair, bits)
+    }
+
+    /// Map an RSA `Algorithm` to the aws-lc-rs signing padding.
+    fn rsa_padding(algorithm: Algorithm) -> Result<&'static dyn signature::RsaEncoding> {
+        match algorithm {
+            Algorithm::RsaPkcs1Sha256 => Ok(&signature::RSA_PKCS1_SHA256),
+            Algorithm::RsaPkcs1Sha384 => Ok(&signature::RSA_PKCS1_SHA384),
+            Algorithm::RsaPkcs1Sha512 => Ok(&signature::RSA_PKCS1_SHA512),
+            Algorithm::RsaPssSha256 => Ok(&signature::RSA_PSS_SHA256),
+            Algorithm::RsaPssSha384 => Ok(&signature::RSA_PSS_SHA384),
+            Algorithm::RsaPssSha512 => Ok(&signature::RSA_PSS_SHA512),
+            _ => Err(Error::UnsupportedAlgorithm(format!(
+                "Algorithm {algorithm:?} not supported for RSA signing"
+            ))),
+        }
+    }
+
+    /// Sign with RSA (PKCS#1 v1.5 or PSS, per `algorithm`).
+    fn sign_rsa(
+        key_pair: &RsaKeyPairInternal,
+        data: &[u8],
+        algorithm: Algorithm,
+    ) -> Result<Vec<u8>> {
+        let padding = Self::rsa_padding(algorithm)?;
+        let rng = SystemRandom::new();
+        let mut signature = vec![0u8; key_pair.key_pair.public_modulus_len()];
+        key_pair
+            .key_pair
+            .sign(padding, &rng, data, &mut signature)
+            .map_err(|e| Error::Signing(format!("RSA signing failed: {e}")))?;
+        Ok(signature)
+    }
+
+    /// Verify an RSA signature against the key pair's public key.
     fn verify_rsa(
-        key_pair: &RsaKeyPair,
+        key_pair: &RsaKeyPairInternal,
         data: &[u8],
         signature: &[u8],
         algorithm: Algorithm,
     ) -> Result<bool> {
-        match algorithm {
-            // RSA-PSS verification
-            Algorithm::RsaPssSha256 => {
-                let verifying_key = PssVerifyingKey::<Sha256>::new(key_pair.public_key.clone());
-                let sig = PssSignature::try_from(signature)
-                    .map_err(|_| Error::Verification("Invalid PSS signature format".into()))?;
-                Ok(verifying_key.verify(data, &sig).is_ok())
+        let alg: &'static dyn signature::VerificationAlgorithm = match algorithm {
+            Algorithm::RsaPkcs1Sha256 => &signature::RSA_PKCS1_2048_8192_SHA256,
+            Algorithm::RsaPkcs1Sha384 => &signature::RSA_PKCS1_2048_8192_SHA384,
+            Algorithm::RsaPkcs1Sha512 => &signature::RSA_PKCS1_2048_8192_SHA512,
+            Algorithm::RsaPssSha256 => &signature::RSA_PSS_2048_8192_SHA256,
+            Algorithm::RsaPssSha384 => &signature::RSA_PSS_2048_8192_SHA384,
+            Algorithm::RsaPssSha512 => &signature::RSA_PSS_2048_8192_SHA512,
+            _ => {
+                return Err(Error::UnsupportedAlgorithm(format!(
+                    "Algorithm {algorithm:?} not supported for RSA verification"
+                )));
             }
-            Algorithm::RsaPssSha384 => {
-                let verifying_key = PssVerifyingKey::<Sha384>::new(key_pair.public_key.clone());
-                let sig = PssSignature::try_from(signature)
-                    .map_err(|_| Error::Verification("Invalid PSS signature format".into()))?;
-                Ok(verifying_key.verify(data, &sig).is_ok())
-            }
-            Algorithm::RsaPssSha512 => {
-                let verifying_key = PssVerifyingKey::<Sha512>::new(key_pair.public_key.clone());
-                let sig = PssSignature::try_from(signature)
-                    .map_err(|_| Error::Verification("Invalid PSS signature format".into()))?;
-                Ok(verifying_key.verify(data, &sig).is_ok())
-            }
-
-            // RSA PKCS#1 v1.5 verification
-            Algorithm::RsaPkcs1Sha256 => {
-                let verifying_key =
-                    Pkcs1VerifyingKey::<Sha256>::new(key_pair.public_key.clone());
-                let sig = rsa::pkcs1v15::Signature::try_from(signature)
-                    .map_err(|_| Error::Verification("Invalid PKCS#1 signature format".into()))?;
-                Ok(verifying_key.verify(data, &sig).is_ok())
-            }
-            Algorithm::RsaPkcs1Sha384 => {
-                let verifying_key =
-                    Pkcs1VerifyingKey::<Sha384>::new(key_pair.public_key.clone());
-                let sig = rsa::pkcs1v15::Signature::try_from(signature)
-                    .map_err(|_| Error::Verification("Invalid PKCS#1 signature format".into()))?;
-                Ok(verifying_key.verify(data, &sig).is_ok())
-            }
-            Algorithm::RsaPkcs1Sha512 => {
-                let verifying_key =
-                    Pkcs1VerifyingKey::<Sha512>::new(key_pair.public_key.clone());
-                let sig = rsa::pkcs1v15::Signature::try_from(signature)
-                    .map_err(|_| Error::Verification("Invalid PKCS#1 signature format".into()))?;
-                Ok(verifying_key.verify(data, &sig).is_ok())
-            }
-
-            _ => Err(Error::UnsupportedAlgorithm(format!(
-                "Algorithm {:?} not supported for RSA verification",
-                algorithm
-            ))),
-        }
+        };
+        Ok(UnparsedPublicKey::new(alg, &key_pair.public_pkcs1_der)
+            .verify(data, signature)
+            .is_ok())
     }
 
-    /// Export RSA public key as SPKI DER
-    fn export_rsa_spki(key_pair: &RsaKeyPair) -> Result<Vec<u8>> {
-        key_pair
-            .public_key
-            .to_public_key_der()
-            .map(|doc| doc.as_bytes().to_vec())
-            .map_err(|e| Error::Encoding(format!("RSA SPKI encoding failed: {}", e)))
+    /// Export RSA public key as SPKI DER (cached at key generation/import).
+    fn export_rsa_spki(key_pair: &RsaKeyPairInternal) -> Result<Vec<u8>> {
+        Ok(key_pair.spki_der.clone())
     }
 
-    // ========== ECDSA Operations ==========
+    // ========== ECDSA Operations (FIPS, via AWS-LC) ==========
 
-    /// Generate ECDSA key pair
+    /// Generate ECDSA key pair.
     ///
-    /// NIAP PP-CA: FCS_RBG_EXT.1 - Uses NIST SP 800-90A compliant DRBG via SystemRandom
-    ///
-    /// Note: ring::rand::SystemRandom internally uses the OS's cryptographically
-    /// secure RNG (getrandom on Linux, BCryptGenRandom on Windows). For production
-    /// HSM-based key generation, use the PKCS#11 provider instead.
+    /// NIAP PP-CA: FCS_CKM.1 - key generation using the FIPS module's DRBG.
     fn generate_ecdsa_key_pair(&self, curve: EcCurve) -> Result<EcdsaKeyPairInternal> {
-        use ring::rand::SystemRandom;
         let rng = SystemRandom::new();
 
         match curve {
             EcCurve::P256 => {
-                let pkcs8_bytes = EcdsaKeyPair::generate_pkcs8(
-                    &ECDSA_P256_SHA256_FIXED_SIGNING,
-                    &rng,
-                )
-                .map_err(|e| {
-                    Error::KeyGeneration(format!("ECDSA P-256 key generation failed: {:?}", e))
-                })?;
+                let pkcs8_bytes =
+                    EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).map_err(
+                        |e| Error::KeyGeneration(format!("ECDSA P-256 key generation failed: {e:?}")),
+                    )?;
 
                 let key_pair = EcdsaKeyPair::from_pkcs8(
                     &ECDSA_P256_SHA256_FIXED_SIGNING,
                     pkcs8_bytes.as_ref(),
-                    &rng,
                 )
-                .map_err(|e| {
-                    Error::KeyGeneration(format!("ECDSA P-256 key parse failed: {:?}", e))
-                })?;
+                .map_err(|e| Error::KeyGeneration(format!("ECDSA P-256 key parse failed: {e:?}")))?;
 
                 let public_key = key_pair.public_key().as_ref().to_vec();
 
@@ -308,22 +252,16 @@ impl SoftwareProvider {
             }
 
             EcCurve::P384 => {
-                let pkcs8_bytes = EcdsaKeyPair::generate_pkcs8(
-                    &ECDSA_P384_SHA384_FIXED_SIGNING,
-                    &rng,
-                )
-                .map_err(|e| {
-                    Error::KeyGeneration(format!("ECDSA P-384 key generation failed: {:?}", e))
-                })?;
+                let pkcs8_bytes =
+                    EcdsaKeyPair::generate_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, &rng).map_err(
+                        |e| Error::KeyGeneration(format!("ECDSA P-384 key generation failed: {e:?}")),
+                    )?;
 
                 let key_pair = EcdsaKeyPair::from_pkcs8(
                     &ECDSA_P384_SHA384_FIXED_SIGNING,
                     pkcs8_bytes.as_ref(),
-                    &rng,
                 )
-                .map_err(|e| {
-                    Error::KeyGeneration(format!("ECDSA P-384 key parse failed: {:?}", e))
-                })?;
+                .map_err(|e| Error::KeyGeneration(format!("ECDSA P-384 key parse failed: {e:?}")))?;
 
                 let public_key = key_pair.public_key().as_ref().to_vec();
 
@@ -340,34 +278,43 @@ impl SoftwareProvider {
         }
     }
 
-    /// Sign with ECDSA
-    ///
-    /// NIAP PP-CA: FCS_RBG_EXT.1 - Uses NIST SP 800-90A compliant DRBG for nonce generation via SystemRandom
+    /// Recover the raw ECDSA public key from a stored PKCS#8 private key.
+    fn ecdsa_public_from_pkcs8(curve: EcCurve, pkcs8: &[u8]) -> Result<Vec<u8>> {
+        let alg = match curve {
+            EcCurve::P256 => &ECDSA_P256_SHA256_FIXED_SIGNING,
+            EcCurve::P384 => &ECDSA_P384_SHA384_FIXED_SIGNING,
+            EcCurve::P521 => {
+                return Err(Error::NotImplemented(
+                    "ECDSA P-521 deferred to Phase 8 Part 2".into(),
+                ));
+            }
+        };
+        let key_pair = EcdsaKeyPair::from_pkcs8(alg, pkcs8)
+            .map_err(|_| Error::InvalidKeyType("Failed to parse ECDSA PKCS#8".into()))?;
+        Ok(key_pair.public_key().as_ref().to_vec())
+    }
+
+    /// Sign with ECDSA.
     fn sign_ecdsa(
         &self,
         key_pair: &EcdsaKeyPairInternal,
         data: &[u8],
         algorithm: Algorithm,
     ) -> Result<Vec<u8>> {
-        use ring::rand::SystemRandom;
         let rng = SystemRandom::new();
 
         match key_pair.curve {
             EcCurve::P256 => {
                 if !matches!(algorithm, Algorithm::EcdsaP256Sha256) {
                     return Err(Error::UnsupportedAlgorithm(format!(
-                        "Algorithm {:?} not compatible with P-256",
-                        algorithm
+                        "Algorithm {algorithm:?} not compatible with P-256"
                     )));
                 }
 
-                let ring_key_pair = EcdsaKeyPair::from_pkcs8(
-                    &ECDSA_P256_SHA256_FIXED_SIGNING,
-                    &key_pair.private_key,
-                    &rng,
-                )
-                .map_err(|_| Error::Signing("Failed to parse ECDSA P-256 key".into()))?;
-                let signature = ring_key_pair
+                let ecdsa_key_pair =
+                    EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &key_pair.private_key)
+                        .map_err(|_| Error::Signing("Failed to parse ECDSA P-256 key".into()))?;
+                let signature = ecdsa_key_pair
                     .sign(&rng, data)
                     .map_err(|_| Error::Signing("ECDSA P-256 signing failed".into()))?;
 
@@ -377,18 +324,14 @@ impl SoftwareProvider {
             EcCurve::P384 => {
                 if !matches!(algorithm, Algorithm::EcdsaP384Sha384) {
                     return Err(Error::UnsupportedAlgorithm(format!(
-                        "Algorithm {:?} not compatible with P-384",
-                        algorithm
+                        "Algorithm {algorithm:?} not compatible with P-384"
                     )));
                 }
 
-                let ring_key_pair = EcdsaKeyPair::from_pkcs8(
-                    &ECDSA_P384_SHA384_FIXED_SIGNING,
-                    &key_pair.private_key,
-                    &rng,
-                )
-                .map_err(|_| Error::Signing("Failed to parse ECDSA P-384 key".into()))?;
-                let signature = ring_key_pair
+                let ecdsa_key_pair =
+                    EcdsaKeyPair::from_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, &key_pair.private_key)
+                        .map_err(|_| Error::Signing("Failed to parse ECDSA P-384 key".into()))?;
+                let signature = ecdsa_key_pair
                     .sign(&rng, data)
                     .map_err(|_| Error::Signing("ECDSA P-384 signing failed".into()))?;
 
@@ -401,7 +344,8 @@ impl SoftwareProvider {
         }
     }
 
-    /// Verify ECDSA signature
+    /// Verify ECDSA signature (X.509/CMS ASN.1 form is produced by `sign`; this
+    /// verifies the fixed r||s form emitted by aws-lc-rs `*_FIXED` signing).
     fn verify_ecdsa(
         key_pair: &EcdsaKeyPairInternal,
         data: &[u8],
@@ -412,8 +356,7 @@ impl SoftwareProvider {
             EcCurve::P256 => {
                 if !matches!(algorithm, Algorithm::EcdsaP256Sha256) {
                     return Err(Error::UnsupportedAlgorithm(format!(
-                        "Algorithm {:?} not compatible with P-256",
-                        algorithm
+                        "Algorithm {algorithm:?} not compatible with P-256"
                     )));
                 }
 
@@ -425,8 +368,7 @@ impl SoftwareProvider {
             EcCurve::P384 => {
                 if !matches!(algorithm, Algorithm::EcdsaP384Sha384) {
                     return Err(Error::UnsupportedAlgorithm(format!(
-                        "Algorithm {:?} not compatible with P-384",
-                        algorithm
+                        "Algorithm {algorithm:?} not compatible with P-384"
                     )));
                 }
 
@@ -443,8 +385,7 @@ impl SoftwareProvider {
 
     /// Export ECDSA public key as SPKI DER
     fn export_ecdsa_spki(key_pair: &EcdsaKeyPairInternal) -> Result<Vec<u8>> {
-        // ECDSA public key from ring is raw bytes, need to wrap in SPKI
-
+        // ECDSA public key from aws-lc-rs is the raw uncompressed point; wrap in SPKI.
         let curve_oid = match key_pair.curve {
             EcCurve::P256 => ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7"), // secp256r1
             EcCurve::P384 => ObjectIdentifier::new_unwrap("1.3.132.0.34"),        // secp384r1
@@ -461,7 +402,7 @@ impl SoftwareProvider {
         };
 
         let subject_public_key = BitString::from_bytes(&key_pair.public_key)
-            .map_err(|e| Error::Encoding(format!("Failed to create BitString: {}", e)))?;
+            .map_err(|e| Error::Encoding(format!("Failed to create BitString: {e}")))?;
 
         let spki = SubjectPublicKeyInfo {
             algorithm,
@@ -469,16 +410,13 @@ impl SoftwareProvider {
         };
 
         spki.to_der()
-            .map_err(|e| Error::Encoding(format!("ECDSA SPKI encoding failed: {}", e)))
+            .map_err(|e| Error::Encoding(format!("ECDSA SPKI encoding failed: {e}")))
     }
 
-    // ========== Ed25519 Operations ==========
+    // ========== Ed25519 Operations (FIPS, via AWS-LC) ==========
 
-    /// Generate Ed25519 key pair
-    ///
-    /// NIAP PP-CA: FCS_RBG_EXT.1 - Uses NIST SP 800-90A compliant DRBG via SystemRandom
+    /// Generate Ed25519 key pair.
     fn generate_ed25519_key_pair(&self) -> Result<Ed25519KeyPairInternal> {
-        use ring::rand::SystemRandom;
         let rng = SystemRandom::new();
 
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
@@ -519,7 +457,7 @@ impl SoftwareProvider {
         };
 
         let subject_public_key = BitString::from_bytes(&key_pair.public_key)
-            .map_err(|e| Error::Encoding(format!("Failed to create BitString: {}", e)))?;
+            .map_err(|e| Error::Encoding(format!("Failed to create BitString: {e}")))?;
 
         let spki = SubjectPublicKeyInfo {
             algorithm,
@@ -527,96 +465,7 @@ impl SoftwareProvider {
         };
 
         spki.to_der()
-            .map_err(|e| Error::Encoding(format!("Ed25519 SPKI encoding failed: {}", e)))
-    }
-
-    // ========== ML-DSA Operations (FIPS 204, via AWS aws-lc-rs) ==========
-
-    /// Map an ML-DSA KeyType to the aws-lc-rs signing algorithm.
-    fn ml_dsa_signing_alg(
-        key_type: KeyType,
-    ) -> Result<&'static aws_lc_rs::unstable::signature::PqdsaSigningAlgorithm> {
-        use aws_lc_rs::unstable::signature::{
-            ML_DSA_44_SIGNING, ML_DSA_65_SIGNING, ML_DSA_87_SIGNING,
-        };
-        match key_type {
-            KeyType::MlDsa44 => Ok(&ML_DSA_44_SIGNING),
-            KeyType::MlDsa65 => Ok(&ML_DSA_65_SIGNING),
-            KeyType::MlDsa87 => Ok(&ML_DSA_87_SIGNING),
-            _ => Err(Error::UnsupportedAlgorithm(format!(
-                "{:?} is not an ML-DSA key type",
-                key_type
-            ))),
-        }
-    }
-
-    /// Map an ML-DSA KeyType to the aws-lc-rs verification algorithm.
-    fn ml_dsa_verification_alg(
-        key_type: KeyType,
-    ) -> Result<&'static aws_lc_rs::unstable::signature::PqdsaVerificationAlgorithm> {
-        use aws_lc_rs::unstable::signature::{ML_DSA_44, ML_DSA_65, ML_DSA_87};
-        match key_type {
-            KeyType::MlDsa44 => Ok(&ML_DSA_44),
-            KeyType::MlDsa65 => Ok(&ML_DSA_65),
-            KeyType::MlDsa87 => Ok(&ML_DSA_87),
-            _ => Err(Error::UnsupportedAlgorithm(format!(
-                "{:?} is not an ML-DSA key type",
-                key_type
-            ))),
-        }
-    }
-
-    /// Generate an ML-DSA key pair (FIPS 204).
-    ///
-    /// NIAP PP-CA: FCS_CKM.1 - cryptographic key generation
-    /// FIPS 204: ML-DSA key generation via AWS-LC
-    fn generate_ml_dsa_key_pair(key_type: KeyType) -> Result<MlDsaKeyPairInternal> {
-        use aws_lc_rs::encoding::AsDer;
-        use aws_lc_rs::signature::KeyPair as _; // for .public_key()
-        let alg = Self::ml_dsa_signing_alg(key_type)?;
-        let key_pair = aws_lc_rs::unstable::signature::PqdsaKeyPair::generate(alg)
-            .map_err(|e| Error::KeyGeneration(format!("ML-DSA key generation failed: {}", e)))?;
-        // aws-lc-rs produces a standard SubjectPublicKeyInfo with the NIST
-        // CSOR id-ml-dsa-* OID, ready to embed in an X.509 certificate.
-        let spki_der = key_pair
-            .public_key()
-            .as_der()
-            .map_err(|e| Error::Encoding(format!("ML-DSA SPKI export failed: {}", e)))?
-            .as_ref()
-            .to_vec();
-        Ok(MlDsaKeyPairInternal {
-            key_pair,
-            spki_der,
-            key_type,
-        })
-    }
-
-    /// Sign with ML-DSA. The signature is the raw FIPS 204 signature, which
-    /// X.509 places directly in the signature BIT STRING (no DER wrapping).
-    fn sign_ml_dsa(key_pair: &MlDsaKeyPairInternal, data: &[u8]) -> Result<Vec<u8>> {
-        // ML-DSA signature sizes: ML-DSA-44 ~2420, -65 ~3309, -87 ~4627 bytes.
-        // 8192 is a safe upper bound for all parameter sets.
-        let mut signature = vec![0u8; 8192];
-        let n = key_pair
-            .key_pair
-            .sign(data, &mut signature)
-            .map_err(|e| Error::Signing(format!("ML-DSA signing failed: {}", e)))?;
-        signature.truncate(n);
-        Ok(signature)
-    }
-
-    /// Verify an ML-DSA signature against the key pair's public key.
-    fn verify_ml_dsa(
-        key_pair: &MlDsaKeyPairInternal,
-        data: &[u8],
-        signature: &[u8],
-    ) -> Result<bool> {
-        // Use aws-lc-rs's UnparsedPublicKey (NOT ring's, which this module also
-        // imports) - the ML-DSA verification algorithm is an aws-lc-rs type.
-        let alg = Self::ml_dsa_verification_alg(key_pair.key_type)?;
-        let public_key =
-            aws_lc_rs::signature::UnparsedPublicKey::new(alg, &key_pair.spki_der);
-        Ok(public_key.verify(data, signature).is_ok())
+            .map_err(|e| Error::Encoding(format!("Ed25519 SPKI encoding failed: {e}")))
     }
 }
 
@@ -676,25 +525,13 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
                 ));
             }
 
-            // Post-quantum signatures - FIPS 204 ML-DSA (via AWS aws-lc-rs)
-            KeyType::MlDsa44 => (
-                KeyPair::MlDsa(Box::new(Self::generate_ml_dsa_key_pair(KeyType::MlDsa44)?)),
-                Algorithm::MlDsa44,
-            ),
-            KeyType::MlDsa65 => (
-                KeyPair::MlDsa(Box::new(Self::generate_ml_dsa_key_pair(KeyType::MlDsa65)?)),
-                Algorithm::MlDsa65,
-            ),
-            KeyType::MlDsa87 => (
-                KeyPair::MlDsa(Box::new(Self::generate_ml_dsa_key_pair(KeyType::MlDsa87)?)),
-                Algorithm::MlDsa87,
-            ),
-
-            // ML-KEM (encapsulation, not signing) and SLH-DSA - not yet implemented
+            // ML-DSA (FIPS 204) is unavailable in a FIPS build: it requires
+            // aws-lc-rs's `unstable` feature, mutually exclusive with `fips`.
+            // ML-KEM (FIPS 203) is a KEM, not a signing key — see crate::kem.
+            // SLH-DSA (FIPS 205) is not implemented.
             _ => {
-                return Err(Error::NotImplemented(format!(
-                    "Key type {:?} not yet implemented in software provider",
-                    key_type
+                return Err(Error::UnsupportedAlgorithm(format!(
+                    "Key type {key_type:?} is not available in the FIPS software provider"
                 )));
             }
         };
@@ -739,23 +576,10 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
             KeyPair::Ed25519(ed_kp) => {
                 if !matches!(algorithm, Algorithm::Ed25519) {
                     return Err(Error::UnsupportedAlgorithm(format!(
-                        "Algorithm {:?} not compatible with Ed25519",
-                        algorithm
+                        "Algorithm {algorithm:?} not compatible with Ed25519"
                     )));
                 }
                 Self::sign_ed25519(ed_kp, data)
-            }
-            KeyPair::MlDsa(ml_kp) => {
-                if !matches!(
-                    algorithm,
-                    Algorithm::MlDsa44 | Algorithm::MlDsa65 | Algorithm::MlDsa87
-                ) {
-                    return Err(Error::UnsupportedAlgorithm(format!(
-                        "Algorithm {:?} not compatible with an ML-DSA key",
-                        algorithm
-                    )));
-                }
-                Self::sign_ml_dsa(ml_kp, data)
             }
         }
     }
@@ -787,23 +611,10 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
             KeyPair::Ed25519(ed_kp) => {
                 if !matches!(algorithm, Algorithm::Ed25519) {
                     return Err(Error::UnsupportedAlgorithm(format!(
-                        "Algorithm {:?} not compatible with Ed25519",
-                        algorithm
+                        "Algorithm {algorithm:?} not compatible with Ed25519"
                     )));
                 }
                 Self::verify_ed25519(ed_kp, data, signature)
-            }
-            KeyPair::MlDsa(ml_kp) => {
-                if !matches!(
-                    algorithm,
-                    Algorithm::MlDsa44 | Algorithm::MlDsa65 | Algorithm::MlDsa87
-                ) {
-                    return Err(Error::UnsupportedAlgorithm(format!(
-                        "Algorithm {:?} not compatible with an ML-DSA key",
-                        algorithm
-                    )));
-                }
-                Self::verify_ml_dsa(ml_kp, data, signature)
             }
         }
     }
@@ -827,15 +638,13 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
             KeyPair::Rsa(rsa_kp) => Self::export_rsa_spki(rsa_kp),
             KeyPair::Ecdsa(ecdsa_kp) => Self::export_ecdsa_spki(ecdsa_kp),
             KeyPair::Ed25519(ed_kp) => Self::export_ed25519_spki(ed_kp),
-            // ML-DSA SPKI is produced (and cached) by aws-lc-rs at keygen.
-            KeyPair::MlDsa(ml_kp) => Ok(ml_kp.spki_der.clone()),
         }
     }
 
     /// Export the private key as PKCS#8 DER (RFC 5958). Supported for software
     /// RSA and ECDSA keys (used by EST server-side key generation, RFC 7030
-    /// §4.4); Ed25519 / ML-DSA export is not supported here. SI-12: the result
-    /// is zeroizing and the caller must treat it as sensitive.
+    /// §4.4); Ed25519 export is not supported here. SI-12: the result is
+    /// zeroizing and the caller must treat it as sensitive.
     async fn export_private_key(&self, key: &KeyHandle) -> Result<Zeroizing<Vec<u8>>> {
         if !matches!(key.provider_id, ProviderId::Software) {
             return Err(Error::InvalidKeyHandle(
@@ -850,14 +659,15 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
 
         match key_pair {
             KeyPair::Rsa(rsa_kp) => {
-                let doc = rsa_kp.private_key.to_pkcs8_der().map_err(|e| {
-                    Error::Encoding(format!("RSA PKCS#8 export failed: {}", e))
-                })?;
-                Ok(Zeroizing::new(doc.as_bytes().to_vec()))
+                let doc = rsa_kp
+                    .key_pair
+                    .as_der()
+                    .map_err(|e| Error::Encoding(format!("RSA PKCS#8 export failed: {e}")))?;
+                Ok(Zeroizing::new(doc.as_ref().to_vec()))
             }
             // ECDSA private keys are already stored as PKCS#8 DER.
             KeyPair::Ecdsa(ecdsa_kp) => Ok(Zeroizing::new(ecdsa_kp.private_key.to_vec())),
-            KeyPair::Ed25519(_) | KeyPair::MlDsa(_) => Err(Error::NotImplemented(
+            KeyPair::Ed25519(_) => Err(Error::NotImplemented(
                 "private key export for this key type is not supported".to_string(),
             )),
         }
@@ -873,25 +683,22 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
         let (key_pair, algorithm) = match key_type {
             // RSA keys
             KeyType::Rsa2048 | KeyType::Rsa3072 | KeyType::Rsa4096 => {
-                let rsa_private = RsaPrivateKey::from_pkcs8_der(&private_key).map_err(|e| {
-                    Error::KeyGeneration(format!("Failed to parse RSA PKCS#8: {}", e))
+                let aws_key_pair = AwsRsaKeyPair::from_pkcs8(&private_key).map_err(|e| {
+                    Error::KeyGeneration(format!("Failed to parse RSA PKCS#8: {e}"))
                 })?;
-                let rsa_public = RsaPublicKey::from(&rsa_private);
-
+                let bits = aws_key_pair.public_modulus_len() * 8;
                 (
-                    KeyPair::Rsa(Box::new(RsaKeyPair {
-                        private_key: rsa_private,
-                        public_key: rsa_public,
-                    })),
+                    KeyPair::Rsa(Box::new(Self::rsa_internal(aws_key_pair, bits)?)),
                     Algorithm::RsaPssSha256, // Default
                 )
             }
 
-            // ECDSA keys (stored as PKCS#8)
+            // ECDSA keys (stored as PKCS#8); recover the public key now so
+            // verification works after import.
             KeyType::EcP256 => (
                 KeyPair::Ecdsa(EcdsaKeyPairInternal {
+                    public_key: Self::ecdsa_public_from_pkcs8(EcCurve::P256, &private_key)?,
                     private_key: private_key.clone(),
-                    public_key: Vec::new(), // Will be populated from PKCS#8
                     curve: EcCurve::P256,
                 }),
                 Algorithm::EcdsaP256Sha256,
@@ -899,8 +706,8 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
 
             KeyType::EcP384 => (
                 KeyPair::Ecdsa(EcdsaKeyPairInternal {
+                    public_key: Self::ecdsa_public_from_pkcs8(EcCurve::P384, &private_key)?,
                     private_key: private_key.clone(),
-                    public_key: Vec::new(),
                     curve: EcCurve::P384,
                 }),
                 Algorithm::EcdsaP384Sha384,
@@ -923,8 +730,7 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
 
             _ => {
                 return Err(Error::NotImplemented(format!(
-                    "Key import for {:?} not yet implemented",
-                    key_type
+                    "Key import for {key_type:?} not yet implemented"
                 )));
             }
         };
@@ -987,9 +793,12 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
     }
 
     async fn generate_random_bytes(&self, len: usize) -> Result<Vec<u8>> {
-        // NIAP PP-CA: FCS_RBG_EXT.1 - Random bit generation using NIST SP 800-90A DRBG
-        // NIST 800-53: SC-13 - Cryptographic protection
-        self.rng.fill_bytes(len)
+        // NIAP PP-CA: FCS_RBG_EXT.1 - random bits from the AWS-LC FIPS DRBG
+        // NIST 800-53: SC-13 - FIPS-validated random number generation
+        let mut buf = vec![0u8; len];
+        aws_lc_rs::rand::fill(&mut buf)
+            .map_err(|_| Error::Entropy("AWS-LC FIPS DRBG fill failed".into()))?;
+        Ok(buf)
     }
 
     fn provider_id(&self) -> ProviderId {
@@ -1003,8 +812,7 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
         for (key_id, key_pair) in keys.iter() {
             let (key_type, algorithm) = match key_pair {
                 KeyPair::Rsa(rsa_kp) => {
-                    let bits = rsa_kp.private_key.size() * 8;
-                    let key_type = match bits {
+                    let key_type = match rsa_kp.bits {
                         2048 => KeyType::Rsa2048,
                         3072 => KeyType::Rsa3072,
                         4096 => KeyType::Rsa4096,
@@ -1018,12 +826,6 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
                     EcCurve::P521 => continue, // Not implemented
                 },
                 KeyPair::Ed25519(_) => (KeyType::Ed25519, Algorithm::Ed25519),
-                KeyPair::MlDsa(ml_kp) => match ml_kp.key_type {
-                    KeyType::MlDsa44 => (KeyType::MlDsa44, Algorithm::MlDsa44),
-                    KeyType::MlDsa65 => (KeyType::MlDsa65, Algorithm::MlDsa65),
-                    KeyType::MlDsa87 => (KeyType::MlDsa87, Algorithm::MlDsa87),
-                    _ => continue,
-                },
             };
 
             handles.push(KeyHandle::new(
@@ -1040,69 +842,14 @@ impl crate::provider::CryptoProvider for SoftwareProvider {
 }
 
 #[cfg(test)]
-mod ml_dsa_tests {
+mod tests {
     use super::*;
-    use crate::provider::CryptoProvider;
-
-    /// FIPS 204 ML-DSA generate -> export SPKI -> sign -> verify round-trip
-    /// through the public CryptoProvider API (backed by AWS aws-lc-rs).
-    async fn ml_dsa_roundtrip(key_type: KeyType, sig_alg: Algorithm) {
-        let provider = SoftwareProvider::new();
-        let handle = provider
-            .generate_key_pair(key_type, "ml-dsa-test", false)
-            .await
-            .expect("ML-DSA keygen");
-        assert_eq!(handle.key_type, key_type);
-
-        // Exported SPKI must carry the NIST id-ml-dsa-* OID so it parses as a
-        // standard SubjectPublicKeyInfo.
-        let spki = provider
-            .export_public_key(&handle)
-            .await
-            .expect("ML-DSA SPKI export");
-        assert!(!spki.is_empty());
-
-        let msg = b"post-quantum certificate TBS bytes";
-        let sig = provider.sign(&handle, sig_alg, msg).await.expect("ML-DSA sign");
-        assert!(!sig.is_empty());
-
-        assert!(
-            provider
-                .verify(&handle, sig_alg, msg, &sig)
-                .await
-                .expect("ML-DSA verify"),
-            "valid ML-DSA signature must verify"
-        );
-        // A tampered message must NOT verify.
-        assert!(
-            !provider
-                .verify(&handle, sig_alg, b"different message", &sig)
-                .await
-                .expect("ML-DSA verify (tampered)"),
-            "ML-DSA signature must fail against a different message"
-        );
-    }
-
-    #[tokio::test]
-    async fn ml_dsa_44_roundtrip() {
-        ml_dsa_roundtrip(KeyType::MlDsa44, Algorithm::MlDsa44).await;
-    }
-
-    #[tokio::test]
-    async fn ml_dsa_65_roundtrip() {
-        ml_dsa_roundtrip(KeyType::MlDsa65, Algorithm::MlDsa65).await;
-    }
-
-    #[tokio::test]
-    async fn ml_dsa_87_roundtrip() {
-        ml_dsa_roundtrip(KeyType::MlDsa87, Algorithm::MlDsa87).await;
-    }
+    use crate::CryptoProvider;
 
     /// export_private_key returns valid PKCS#8 for software RSA and ECDSA keys
     /// (used by EST server-side keygen), and errors for unsupported types.
     #[tokio::test]
     async fn export_private_key_pkcs8() {
-        use crate::CryptoProvider;
         use pkcs8::PrivateKeyInfo;
 
         let provider = SoftwareProvider::new();
@@ -1112,10 +859,11 @@ mod ml_dsa_tests {
             let handle = provider.generate_key_pair(kt, label, true).await.unwrap();
             let pkcs8 = provider.export_private_key(&handle).await.unwrap();
             PrivateKeyInfo::try_from(pkcs8.as_slice())
-                .unwrap_or_else(|e| panic!("{:?} export is not valid PKCS#8: {e}", kt));
+                .unwrap_or_else(|e| panic!("{kt:?} export is not valid PKCS#8: {e}"));
         }
 
-        // RSA PKCS#8 additionally round-trips through the rsa parser.
+        // RSA PKCS#8 additionally round-trips through the rsa parser (dev-dep).
+        use rsa::pkcs8::DecodePrivateKey;
         let rsa_key = provider
             .generate_key_pair(KeyType::Rsa2048, "exp-rsa2", true)
             .await
@@ -1133,11 +881,10 @@ mod ml_dsa_tests {
 
     /// Software RSA PKCS#1 v1.5 signatures are standard (prefixed, RFC 8017) and
     /// verify through the stateless `verify_with_spki` path used by the CA, OCSP,
-    /// CSR proof-of-possession, and audit signing — they were previously
-    /// unprefixed and rejected by that verifier (and by openssl).
+    /// CSR proof-of-possession, and audit signing.
     #[tokio::test]
     async fn rsa_pkcs1_signature_verifies_with_spki() {
-        use crate::{CryptoProvider, verify_with_spki};
+        use crate::verify_with_spki;
 
         let provider = SoftwareProvider::new();
         let data = b"server-side keygen proof-of-possession payload";
@@ -1153,17 +900,37 @@ mod ml_dsa_tests {
             // The provider's own verify still round-trips.
             assert!(
                 provider.verify(&key, alg, data, &sig).await.unwrap(),
-                "{:?} provider self-verify",
-                alg
+                "{alg:?} provider self-verify"
             );
-            // And the standard stateless verifier now accepts it.
+            // And the standard stateless verifier accepts it.
             assert!(
                 verify_with_spki(&spki, alg, data, &sig, false).unwrap(),
-                "{:?} must verify via verify_with_spki (prefixed PKCS#1)",
-                alg
+                "{alg:?} must verify via verify_with_spki (prefixed PKCS#1)"
             );
             // A tampered message is rejected.
             assert!(!verify_with_spki(&spki, alg, b"other", &sig, false).unwrap());
+        }
+    }
+
+    /// ECDSA and Ed25519 generate -> sign -> verify round-trip through the
+    /// provider, all backed by the AWS-LC FIPS module.
+    #[tokio::test]
+    async fn ecdsa_ed25519_roundtrip() {
+        let provider = SoftwareProvider::new();
+        let msg = b"certificate TBS bytes";
+
+        for (kt, alg) in [
+            (KeyType::EcP256, Algorithm::EcdsaP256Sha256),
+            (KeyType::EcP384, Algorithm::EcdsaP384Sha384),
+            (KeyType::Ed25519, Algorithm::Ed25519),
+        ] {
+            let key = provider.generate_key_pair(kt, "sig", false).await.unwrap();
+            let sig = provider.sign(&key, alg, msg).await.unwrap();
+            assert!(provider.verify(&key, alg, msg, &sig).await.unwrap(), "{kt:?} verify");
+            assert!(
+                !provider.verify(&key, alg, b"tampered", &sig).await.unwrap(),
+                "{kt:?} must reject a different message"
+            );
         }
     }
 }

@@ -667,33 +667,27 @@ impl Clone for SecureRng {
 }
 
 /// Process-wide FIPS DRBG, lazily instantiated on first use.
+/// Generate `len` random bytes from the AWS-LC FIPS 140-3 module's
+/// NIST SP 800-90A DRBG.
 ///
-/// `Mutex::new(None)` is a const initializer, so no `OnceLock`/`LazyLock` is
-/// needed. The DRBG is instantiated (drawing OS entropy) the first time
-/// [`fips_random_bytes`] is called, then reused for the process lifetime.
-static GLOBAL_RNG: Mutex<Option<SecureRng>> = Mutex::new(None);
-
-/// Generate `len` random bytes from the process-wide NIST SP 800-90A CTR_DRBG.
-///
-/// This is the FIPS-validated-DRBG source that security-sensitive randomness
+/// This is the FIPS-validated random source that security-sensitive randomness
 /// (e.g. X.509 certificate serial numbers) must use instead of the `rand`
-/// crate, which is not a NIST SP 800-90A DRBG.
+/// crate. It draws directly from the same validated DRBG that backs all key
+/// generation and signing in the crypto provider, so the entire system shares
+/// one FIPS entropy source.
+///
+/// (The standalone [`SecureRng`] CTR_DRBG in this module remains available with
+/// its power-on KAT self-tests, but is no longer the production entropy path.)
 ///
 /// COMPLIANCE MAPPING:
-/// - NIAP PP-CA: FCS_RBG_EXT.1 - Random Bit Generation (CTR_DRBG, AES-256)
-/// - NIST SP 800-90A Rev 1 §10.2 - CTR_DRBG
-/// - NIST 800-53: SC-13 - Cryptographic protection
+/// - NIAP PP-CA: FCS_RBG_EXT.1 - Random Bit Generation (FIPS-validated DRBG)
+/// - NIST SP 800-90A Rev 1 - CTR_DRBG inside the AWS-LC FIPS module
+/// - NIST 800-53: SC-13 - Cryptographic protection (FIPS-validated module)
 pub fn fips_random_bytes(len: usize) -> Result<Vec<u8>> {
-    // Instantiate (or reuse) the global RNG, then drop the outer lock before
-    // generating so concurrent callers only contend on the DRBG's own mutex.
-    let rng = {
-        let mut guard = GLOBAL_RNG.lock().unwrap();
-        if guard.is_none() {
-            *guard = Some(SecureRng::new()?);
-        }
-        guard.as_ref().unwrap().clone()
-    };
-    rng.fill_bytes(len)
+    let mut buf = vec![0u8; len];
+    aws_lc_rs::rand::fill(&mut buf)
+        .map_err(|_| Error::Entropy("AWS-LC FIPS DRBG fill failed".to_string()))?;
+    Ok(buf)
 }
 
 #[cfg(test)]

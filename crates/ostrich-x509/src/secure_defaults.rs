@@ -139,10 +139,9 @@ impl SecureDefaults {
             // EdDSA (RFC 8410)
             "ed25519".to_string(),
             "ed448".to_string(),
-            // ML-DSA (FIPS 204)
-            "ml_dsa_44".to_string(),
-            "ml_dsa_65".to_string(),
-            "ml_dsa_87".to_string(),
+            // ML-DSA (FIPS 204) is NOT allowed: it requires aws-lc-rs's
+            // `unstable` feature, which is mutually exclusive with the `fips`
+            // feature this build uses (AWS-LC's FIPS module lacks ML-DSA).
             // SLH-DSA (FIPS 205)
             "slh_dsa_sha2_128s".to_string(),
             "slh_dsa_sha2_128f".to_string(),
@@ -167,14 +166,12 @@ impl SecureDefaults {
             // EdDSA
             "ed25519".to_string(),
             "ed448".to_string(),
-            // ML-KEM (FIPS 203)
+            // ML-KEM (FIPS 203) — key encapsulation, FIPS-validated via aws-lc-rs
             "ml_kem_512".to_string(),
             "ml_kem_768".to_string(),
             "ml_kem_1024".to_string(),
-            // ML-DSA (FIPS 204)
-            "ml_dsa_44".to_string(),
-            "ml_dsa_65".to_string(),
-            "ml_dsa_87".to_string(),
+            // ML-DSA (FIPS 204) is NOT allowed in this FIPS build (see the
+            // allowed-signature-algorithms list above).
             // SLH-DSA (FIPS 205)
             "slh_dsa_sha2_128s".to_string(),
             "slh_dsa_sha2_256f".to_string(),
@@ -647,11 +644,12 @@ mod tests {
         assert!(defaults.is_algorithm_allowed("rsa_pss_sha256"));
         assert!(defaults.is_algorithm_allowed("ecdsa_p256_sha256"));
         assert!(defaults.is_algorithm_allowed("ed25519"));
-        assert!(defaults.is_algorithm_allowed("ml_dsa_65"));
 
         // Not allowed
         assert!(!defaults.is_algorithm_allowed("sha1_rsa"));
         assert!(!defaults.is_algorithm_allowed("md5_rsa"));
+        // ML-DSA is not available in the FIPS build (unstable feature absent).
+        assert!(!defaults.is_algorithm_allowed("ml_dsa_65"));
     }
 
     /// FMT_MSA.1.2 - Test key type allowlist
@@ -663,11 +661,13 @@ mod tests {
         assert!(defaults.is_key_type_allowed("rsa_2048"));
         assert!(defaults.is_key_type_allowed("ec_p256"));
         assert!(defaults.is_key_type_allowed("ed25519"));
-        assert!(defaults.is_key_type_allowed("ml_dsa_65"));
+        assert!(defaults.is_key_type_allowed("ml_kem_768"));
 
         // Not allowed
         assert!(!defaults.is_key_type_allowed("rsa_1024"));
         assert!(!defaults.is_key_type_allowed("unknown"));
+        // ML-DSA is not available in the FIPS build.
+        assert!(!defaults.is_key_type_allowed("ml_dsa_65"));
     }
 
     /// FMT_MSA.1.2 - Test builder pattern

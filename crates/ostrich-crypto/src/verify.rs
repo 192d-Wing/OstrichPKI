@@ -7,14 +7,14 @@
 //! than a `CryptoProvider` keystore operation.
 //!
 //! COMPLIANCE MAPPING:
-//! - NIST 800-53: SC-13 (Cryptographic Protection) - ring verification
+//! - NIST 800-53: SC-13 (Cryptographic Protection) - AWS-LC FIPS verification
 //! - NIST 800-53: IA-5 - authenticator (public key) verification
 //! - NIST 800-53: SI-10 - input validation of attacker-supplied key material
 //! - RFC 7515 §5.2 - JWS signature validation (ECDSA signatures are the raw
 //!   fixed-size r||s concatenation, not ASN.1 DER)
 
 use crate::{Algorithm, Error, Result};
-use ring::signature::{self, UnparsedPublicKey};
+use aws_lc_rs::signature::{self, UnparsedPublicKey};
 
 /// Verify a signature with a DER-encoded SubjectPublicKeyInfo.
 ///

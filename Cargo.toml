@@ -125,7 +125,7 @@ argon2 = { version = "0.5", features = ["std"] }
 #     exclusive with `fips` (AWS-LC's FIPS module does not yet include ML-DSA)
 #     and has no semver guarantee, so the version is pinned.
 # POAM: switch to the `fips` feature once AWS-LC ships FIPS-validated ML-DSA.
-aws-lc-rs = { version = "1.16", features = ["unstable"] }
+aws-lc-rs = { version = "1.16", features = ["fips"] }
 
 # PKCS#11
 cryptoki = "0.11"

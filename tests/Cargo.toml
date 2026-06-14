@@ -44,6 +44,10 @@ path = "integration/mtls_peercert_e2e.rs"
 name = "mlkem_openssl_interop"
 path = "integration/mlkem_openssl_interop.rs"
 
+[[test]]
+name = "fips_signature_openssl_interop"
+path = "integration/fips_signature_openssl_interop.rs"
+
 [dependencies]
 # OstrichPKI crates
 ostrich-common = { path = "../crates/ostrich-common" }

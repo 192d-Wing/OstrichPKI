@@ -1177,8 +1177,18 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Evidence:**
 
-- ✅ FIPS 186-5 algorithms fully implemented (RSA-PSS, RSA PKCS#1, ECDSA P-256/P-384/P-521, Ed25519, Ed448)
-- ✅ Post-quantum algorithms defined (ML-DSA-44/65/87, ML-KEM, SLH-DSA)
+- ✅ **All classical algorithms run inside the AWS-LC FIPS 140-3 module** via
+  `aws-lc-rs` (workspace `fips` feature): RSA (PKCS#1/PSS), ECDSA P-256/P-384,
+  Ed25519, SHA-2, and the SP 800-90A DRBG. The non-FIPS `ring` and pure-Rust
+  `rsa` backends were removed from `ostrich-crypto`
+  ([crates/ostrich-crypto/src/software/mod.rs](../../crates/ostrich-crypto/src/software/mod.rs),
+  [verify.rs](../../crates/ostrich-crypto/src/verify.rs)). Verified by live
+  OpenSSL interop for RSA-2048/3072 and ECDSA P-256/P-384
+  ([tests/integration/fips_signature_openssl_interop.rs](../../tests/integration/fips_signature_openssl_interop.rs)).
+- ✅ ML-KEM-512/768/1024 (FIPS 203) key encapsulation, FIPS-validated via aws-lc-rs.
+- ⛔ ML-DSA (FIPS 204) **removed**: its aws-lc-rs `unstable` API is mutually
+  exclusive with `fips`, and AWS-LC's FIPS module does not yet include ML-DSA.
+  SLH-DSA (FIPS 205) remains unimplemented.
 - ✅ **NIST SP 800-90A Rev 1 CTR_DRBG (AES-256) fully implemented**
 - ✅ **FIPS 140-3 health tests (repetition count, adaptive proportion)**
 - ✅ **Certificate serial number generation with ≥20 bits random (RFC 5280)**

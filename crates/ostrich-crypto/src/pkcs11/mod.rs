@@ -355,7 +355,7 @@ impl Pkcs11Provider {
     ) -> Result<Vec<u8>> {
         use cryptoki::object::{Attribute, AttributeType};
         use der::Encode;
-        use rsa::pkcs1::RsaPublicKey;
+        use pkcs1::RsaPublicKey;
         use spki::{AlgorithmIdentifierOwned, ObjectIdentifier, SubjectPublicKeyInfoOwned};
 
         // Get RSA modulus (n) and public exponent (e)

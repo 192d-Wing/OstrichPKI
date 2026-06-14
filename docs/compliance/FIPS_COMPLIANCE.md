@@ -23,7 +23,12 @@ This document tracks OstrichPKI's compliance with Federal Information Processing
 
 ### FIPS 186-5: Digital Signature Standard (DSS)
 
-**Status:** 🟡 **Partial** (Designed, not implemented)
+**Status:** 🟢 **FIPS-backed** — RSA, ECDSA (P-256/P-384), and Ed25519
+signing/verification/key-generation run inside the AWS-LC FIPS 140-3 module via
+`aws-lc-rs` (workspace `fips` feature). The previous non-FIPS backends — `ring`
+(ECDSA/Ed25519) and the pure-Rust `rsa` crate — have been removed from
+`ostrich-crypto`. Verified by live OpenSSL interop
+([tests/integration/fips_signature_openssl_interop.rs](../../tests/integration/fips_signature_openssl_interop.rs)).
 
 **Publication Date:** February 2023 (supersedes FIPS 186-4)
 
@@ -49,8 +54,10 @@ This document tracks OstrichPKI's compliance with Federal Information Processing
 
 **Evidence:**
 
-- ✅ Algorithm types defined: `Rsa2048PssSha256`, `Rsa3072PssSha384`, `Rsa4096PssSha512`
-- 🔴 Implementation incomplete (PKCS#11 stubbed, software provider not implemented)
+- ✅ RSA PKCS#1 v1.5 and PSS (SHA-256/384/512) signing/verification via the AWS-LC FIPS module — [crates/ostrich-crypto/src/software/mod.rs](../../crates/ostrich-crypto/src/software/mod.rs) (`sign_rsa`/`verify_rsa`, `generate` keygen)
+- ✅ RSA-2048 (PKCS#1/SHA-256) and RSA-3072 (PKCS#1/SHA-384) signatures verified externally by OpenSSL 3.6
+- ✅ ECDSA P-256/P-384 and Ed25519 sign/verify/keygen via the FIPS module (ECDSA verified externally by OpenSSL)
+- ✅ FIPS-validated DRBG supplies all key-generation and signing entropy (passed RNG args are ignored by aws-lc-rs in favour of the module's DRBG)
 
 **Hash Functions (for RSA signatures):**
 
@@ -380,22 +387,24 @@ ML-DSA caveat below.
 
 ### FIPS 204: Module-Lattice-Based Digital Signature Algorithm (ML-DSA)
 
-**Status:** 🟢 **Implemented** (ML-DSA-44/65/87 signing, via AWS aws-lc-rs)
+**Status:** ⛔ **Removed from the build** (incompatible with the FIPS posture)
 
-**Live evidence:** `ostrich-init --key-type MlDsa65` produces a self-signed
-ML-DSA-65 root CA whose post-quantum self-signature **OpenSSL 3.6 verifies
-under `openssl verify -check_ss_sig`** (forced self-signature check). The
-certificate shows `Public Key Algorithm: ML-DSA-65` and
-`Signature Algorithm: ML-DSA-65`. Provider round-trip (generate/export/
-sign/verify) is covered by `crates/ostrich-crypto/src/software/mod.rs`
-(`ml_dsa_44/65/87_roundtrip` tests).
+ML-DSA was previously implemented (ML-DSA-44/65/87) via `aws-lc-rs`'s `unstable`
+feature. To make all classical algorithms FIPS-backed, the workspace now enables
+`aws-lc-rs`'s **`fips`** feature, which is **mutually exclusive with `unstable`**
+(`#[cfg(all(feature = "unstable", not(feature = "fips")))]` in aws-lc-rs through
+1.17). AWS-LC's FIPS 140-3 module does not yet include ML-DSA, so there is no
+FIPS-validated ML-DSA path. Rather than ship a non-FIPS signature algorithm
+alongside FIPS-validated ones, ML-DSA key generation and signing have been
+removed from the software provider, and `ml_dsa_*` is no longer an allowed
+key type or signature algorithm (`crates/ostrich-x509/src/secure_defaults.rs`).
 
-**Implementation library:** AWS `aws-lc-rs` (AWS Libcrypto for Rust, backed
-by AWS-LC) under its `unstable` feature - chosen over RustCrypto because
-AWS-LC is on the FIPS 140-3 validation track including its PQC algorithms.
-POAM: the `unstable` ML-DSA API is mutually exclusive with aws-lc-rs's `fips`
-feature today, so the PQC build is currently non-FIPS; switch to the `fips`
-feature once AWS-LC ships FIPS-validated ML-DSA.
+The `KeyType::MlDsa*` / `Algorithm::MlDsa*` enum variants and their CSOR OID
+mappings (`crates/ostrich-x509/src/signing.rs`) are retained as reserved
+metadata; attempting to generate or sign with them returns `UnsupportedAlgorithm`.
+
+POAM: restore ML-DSA (FIPS 204) once AWS-LC's FIPS module is certified for it and
+`aws-lc-rs` exposes it under the `fips` feature.
 
 **Publication Date:** August 2024 (finalized)
 
@@ -747,17 +756,17 @@ let random_bytes = drbg.generate(32)?;  // Generate 32 bytes of random data
 
 | FIPS Standard | Algorithm | Status | Implementation | Library | Priority |
 |---------------|-----------|--------|----------------|---------|----------|
-| **FIPS 186-5** | RSA-2048/3072/4096 | 🟡 Designed | Stubbed | PKCS#11, ring | HIGH |
-| **FIPS 186-5** | ECDSA P-256/384/521 | 🟡 Designed | Stubbed | PKCS#11, ring | HIGH |
-| **FIPS 186-5** | EdDSA Ed25519/448 | 🟡 Designed | Stubbed | PKCS#11, ring | HIGH |
+| **FIPS 186-5** | RSA-2048/3072/4096 | 🟢 FIPS-backed | Sign/verify/keygen (OpenSSL interop) | aws-lc-rs `fips` | HIGH |
+| **FIPS 186-5** | ECDSA P-256/384 | 🟢 FIPS-backed | Sign/verify/keygen (OpenSSL interop) | aws-lc-rs `fips` | HIGH |
+| **FIPS 186-5** | EdDSA Ed25519 | 🟢 FIPS-backed | Sign/verify/keygen | aws-lc-rs `fips` | HIGH |
 | **FIPS 197** | AES-128/256-GCM | 🟢 In Use | TLS library | rustls | DONE |
 | **FIPS 197** | AES-KW | 🟡 Designed | Not impl | aes-kw | MEDIUM |
-| **FIPS 180-4** | SHA-256/384/512 | 🟢 Compliant | Active | ring | DONE |
+| **FIPS 180-4** | SHA-256/384/512 | 🟢 FIPS-backed | Active | aws-lc-rs `fips` | DONE |
 | **FIPS 202** | SHA-3 | ⚪ Optional | Not impl | sha3 | LOW |
-| **FIPS 203** | ML-KEM-512/768/1024 | 🟢 Implemented | KeyGen/Encaps/Decaps (OpenSSL interop) | aws-lc-rs `kem` | MEDIUM |
-| **FIPS 204** | ML-DSA-44/65/87 | 🟢 Implemented | Sign/verify (non-FIPS `unstable`) | aws-lc-rs | MEDIUM |
+| **FIPS 203** | ML-KEM-512/768/1024 | 🟢 FIPS-backed | KeyGen/Encaps/Decaps (OpenSSL interop) | aws-lc-rs `kem` | MEDIUM |
+| **FIPS 204** | ML-DSA-44/65/87 | ⛔ Removed | Unavailable under `fips` (needs `unstable`) | — | DEFERRED |
 | **FIPS 205** | SLH-DSA-SHA2 | 🟡 Designed | Not impl | slh-dsa | LOW |
-| **SP 800-90A** | DRBG | 🔴 Missing | Not impl | ring::rand | CRITICAL |
+| **SP 800-90A** | DRBG | 🟢 FIPS-backed | `fips_random_bytes` + keygen entropy | aws-lc-rs `fips` | DONE |
 
 ---
 
