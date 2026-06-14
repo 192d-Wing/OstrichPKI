@@ -139,16 +139,13 @@ impl SecureDefaults {
             // EdDSA (RFC 8410)
             "ed25519".to_string(),
             "ed448".to_string(),
-            // ML-DSA (FIPS 204) is NOT allowed: it requires aws-lc-rs's
-            // `unstable` feature, which is mutually exclusive with the `fips`
-            // feature this build uses (AWS-LC's FIPS module lacks ML-DSA).
-            // SLH-DSA (FIPS 205)
-            "slh_dsa_sha2_128s".to_string(),
-            "slh_dsa_sha2_128f".to_string(),
-            "slh_dsa_sha2_192s".to_string(),
-            "slh_dsa_sha2_192f".to_string(),
-            "slh_dsa_sha2_256s".to_string(),
-            "slh_dsa_sha2_256f".to_string(),
+            // Post-quantum signatures are NOT allowed in this FIPS build:
+            // - ML-DSA (FIPS 204) requires aws-lc-rs's `unstable` feature, which
+            //   is mutually exclusive with `fips` (AWS-LC's FIPS module lacks it).
+            // - SLH-DSA (FIPS 205) has no AWS-LC implementation at all (FIPS or
+            //   otherwise), so no signature can be produced.
+            // The only FIPS-validated PQC primitive available is ML-KEM (a KEM,
+            // not a signature algorithm).
         ]
     }
 
@@ -170,11 +167,9 @@ impl SecureDefaults {
             "ml_kem_512".to_string(),
             "ml_kem_768".to_string(),
             "ml_kem_1024".to_string(),
-            // ML-DSA (FIPS 204) is NOT allowed in this FIPS build (see the
-            // allowed-signature-algorithms list above).
-            // SLH-DSA (FIPS 205)
-            "slh_dsa_sha2_128s".to_string(),
-            "slh_dsa_sha2_256f".to_string(),
+            // ML-DSA (FIPS 204) and SLH-DSA (FIPS 205) are NOT allowed in this
+            // FIPS build (see the allowed-signature-algorithms list above);
+            // neither has a FIPS-validated AWS-LC backend.
         ]
     }
 

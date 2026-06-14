@@ -481,7 +481,19 @@ rationale).
 
 ### FIPS 205: Stateless Hash-Based Digital Signature Algorithm (SLH-DSA)
 
-**Status:** 🟡 **Designed** (Not implemented)
+**Status:** ⛔ **No backend** (not implementable on the current crypto stack)
+
+AWS-LC has **no SLH-DSA implementation at all** — neither in the FIPS 140-3
+module (`aws-lc-fips-sys` 0.13.14 contains zero `slh_dsa`/`sphincs` symbols; its
+only PQC algorithm is ML-KEM) nor in the non-FIPS build (`aws-lc-sys` 0.41.0),
+and `aws-lc-rs` exposes no SLH-DSA API. Since the project standardized on
+aws-lc-rs for cryptography, SLH-DSA cannot be produced. It has accordingly been
+removed from the CA's allowed signature algorithms and key types
+(`crates/ostrich-x509/src/secure_defaults.rs`). The `KeyType`/`Algorithm` enum
+variants remain as reserved metadata only.
+
+POAM: revisit if/when AWS-LC adds (and FIPS-validates) SLH-DSA, or introduce a
+separate validated provider for hash-based signatures.
 
 **Publication Date:** August 2024 (finalized)
 
@@ -765,7 +777,7 @@ let random_bytes = drbg.generate(32)?;  // Generate 32 bytes of random data
 | **FIPS 202** | SHA-3 | ⚪ Optional | Not impl | sha3 | LOW |
 | **FIPS 203** | ML-KEM-512/768/1024 | 🟢 FIPS-backed | KeyGen/Encaps/Decaps (OpenSSL interop) | aws-lc-rs `kem` | MEDIUM |
 | **FIPS 204** | ML-DSA-44/65/87 | ⛔ Removed | Unavailable under `fips` (needs `unstable`) | — | DEFERRED |
-| **FIPS 205** | SLH-DSA-SHA2 | 🟡 Designed | Not impl | slh-dsa | LOW |
+| **FIPS 205** | SLH-DSA-SHA2 | ⛔ No backend | No AWS-LC impl (FIPS or otherwise) | — | DEFERRED |
 | **SP 800-90A** | DRBG | 🟢 FIPS-backed | `fips_random_bytes` + keygen entropy | aws-lc-rs `fips` | DONE |
 
 ---
