@@ -2,8 +2,10 @@
 # https://trunkrs.dev/
 
 [build]
-# Target architecture for WASM
-target = "wasm32-unknown-unknown"
+# HTML entry point (NOT the Rust target — Trunk always targets wasm32). The
+# previous value here ("wasm32-unknown-unknown") made Trunk look for an HTML
+# file by that name and fail.
+target = "index.html"
 
 # Output directory for compiled assets
 dist = "dist"

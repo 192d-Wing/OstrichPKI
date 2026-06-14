@@ -55,7 +55,8 @@
     <div id="app"></div>
 
     <!-- Yew WASM application (Trunk handles this) -->
-    <link data-trunk rel="rust" href="Cargo.toml" data-wasm-opt="z" data-bin="ostrich_web_ui_client" />
+    <!-- No data-bin: builds the cdylib `ostrich_web_ui_client` lib (the WASM client). -->
+    <link data-trunk rel="rust" href="Cargo.toml" data-wasm-opt="z" />
 
     <!-- No-script fallback -->
     <noscript>

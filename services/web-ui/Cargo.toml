@@ -17,7 +17,18 @@ name = "ostrich_web_ui_client"
 crate-type = ["cdylib", "rlib"]
 path = "src/client/lib.rs"
 
+# Dependencies shared by BOTH the server binary and the WASM client. Keep this
+# list to crates that compile for wasm32 — anything server-only belongs in the
+# `cfg(not(target_arch = "wasm32"))` table below, or `trunk build` will try to
+# compile server crates (tokio-net/mio/axum) for the browser and fail.
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+# Server-only dependencies. Excluded from the wasm32 (client) build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Internal crates
 ostrich-common = { workspace = true }
 ostrich-audit = { workspace = true }
@@ -43,12 +54,7 @@ cookie = { workspace = true }
 # HTTP client
 reqwest = { workspace = true }
 
-# Serialization
-serde = { workspace = true }
-serde_json = { workspace = true }
-
 # Logging/Tracing
-tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 # Configuration
@@ -62,7 +68,6 @@ thiserror = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-url = { workspace = true }
 sha2 = { workspace = true }
 
 # TLS
