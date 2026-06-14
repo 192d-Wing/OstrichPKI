@@ -52,7 +52,7 @@ fn role_permissions() -> HashMap<&'static str, Vec<&'static str>> {
     // manages the system but does NOT issue/revoke — that is OperationsStaff).
     let admin = vec![
         "view_certificates", "view_approvals", "view_tokens", "view_crl",
-        "manage_users", "admin",
+        "view_config", "manage_users", "admin",
     ];
     map.insert("Administrator", admin.clone());
     map.insert("admin", admin); // legacy/alias
