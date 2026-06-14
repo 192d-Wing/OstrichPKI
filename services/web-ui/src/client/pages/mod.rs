@@ -4,6 +4,7 @@
 
 mod dashboard;
 mod certificates;
+mod certificate_issue;
 mod approvals;
 mod audit;
 mod scms;
@@ -14,6 +15,7 @@ mod not_found;
 
 pub use dashboard::Dashboard;
 pub use certificates::{Certificates, CertificateDetail};
+pub use certificate_issue::CertificateIssue;
 pub use approvals::Approvals;
 pub use audit::AuditLogs;
 pub use scms::Scms;

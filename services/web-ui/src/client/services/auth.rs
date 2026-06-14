@@ -47,31 +47,31 @@ fn role_permissions() -> HashMap<&'static str, Vec<&'static str>> {
     let mut map = HashMap::new();
 
     // Keys are the CA's role names (Role enum variants, as returned by
-    // /auth/userinfo): Administrator, OperationsStaff, RaOfficer, Auditor, …
+    // /auth/userinfo). Mirrors the server-side RBAC so the UI gates match what
+    // the CA will actually authorize (separation of duties: the Administrator
+    // manages the system but does NOT issue/revoke — that is OperationsStaff).
     let admin = vec![
-        "view_certificates", "issue_certificates", "revoke_certificates",
-        "view_approvals", "approve_requests",
-        "read_audit_log",
-        "view_tokens", "manage_tokens",
-        "manage_users",
-        "admin",
+        "view_certificates", "view_approvals", "view_tokens",
+        "manage_users", "admin",
     ];
     map.insert("Administrator", admin.clone());
     map.insert("admin", admin); // legacy/alias
 
+    // OperationsStaff: certificate issuance, revocation, CRL, tokens.
     let ops = vec![
         "view_certificates", "issue_certificates", "revoke_certificates",
-        "view_approvals", "view_tokens", "manage_tokens",
+        "view_tokens", "manage_tokens",
     ];
     map.insert("OperationsStaff", ops);
 
-    let ra = vec![
-        "view_certificates", "issue_certificates",
-        "view_approvals", "approve_requests",
-    ];
-    map.insert("RaOfficer", ra.clone());
-    map.insert("ra_staff", ra); // legacy/alias
+    // RaStaff: registration authority — submit/view requests.
+    let ra = vec!["view_certificates", "view_approvals"];
+    map.insert("RaStaff", ra);
 
+    // Aor: approve certificate requests.
+    map.insert("Aor", vec!["view_approvals", "approve_requests"]);
+
+    // Auditor: read-only audit access.
     let auditor = vec!["view_certificates", "read_audit_log"];
     map.insert("Auditor", auditor.clone());
     map.insert("auditor", auditor); // legacy/alias

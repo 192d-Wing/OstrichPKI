@@ -55,6 +55,7 @@ fn switch_route(route: Route) -> Html {
     match route {
         Route::Dashboard => html! { <pages::Dashboard /> },
         Route::Certificates => html! { <pages::Certificates /> },
+        Route::CertificateIssue => html! { <pages::CertificateIssue /> },
         Route::CertificateDetail { id } => html! { <pages::CertificateDetail {id} /> },
         Route::Approvals => html! { <pages::Approvals /> },
         Route::AuditLogs => html! { <pages::AuditLogs /> },
