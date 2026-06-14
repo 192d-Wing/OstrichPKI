@@ -1,0 +1,26 @@
+{
+  "$schema": "./schema/est-server.schema.json",
+
+  "bindAddress": "0.0.0.0:8443",
+
+  "databaseUrl": "postgresql://ostrich@db.example.com:5432/ostrich?sslmode=require",
+
+  "caGrpcUrl": "https://ostrich-ca:50051",
+  "caGrpcClientCert": "/etc/ostrich/est/ca-client.crt",
+  "caGrpcClientKey": "/etc/ostrich/est/ca-client.key",
+  "caGrpcCaCert": "/etc/ostrich/est/ca-server-ca.crt",
+  "caInsecure": false,
+
+  "enrollProfile": "tls_client",
+  "enrollIdentityPolicy": "username",
+
+  "tlsCert": "/etc/ostrich/est/server.crt",
+  "tlsKey": "/etc/ostrich/est/server.key",
+  "tlsCaCert": "/etc/ostrich/est/client-ca.crt",
+
+  "allowBasicAuth": false,
+  "allowBearerAuth": false,
+
+  "logLevel": "info",
+  "logJson": true
+}

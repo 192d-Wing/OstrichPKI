@@ -7,6 +7,12 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+# DANGEROUS: enables `ClientCertExtractor::from_header`, which derives a client
+# identity from an unverified HTTP header. Development/testing ONLY — never
+# enable in production (see crates/ostrich-est/src/mtls.rs).
+insecure-dev-auth = []
+
 [dependencies]
 # Internal
 ostrich-common = { workspace = true }

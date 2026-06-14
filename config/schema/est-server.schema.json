@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ostrichpki.dev/schema/est-server.schema.json",
+  "title": "OstrichPKI EST Server Configuration",
+  "description": "Configuration file for ostrich-est-server (RFC 7030). Every key is optional; an omitted key falls back to the matching CLI flag / environment variable, then to the built-in default. Precedence: CLI/env > config file > default.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional reference to this schema, for editor support."
+    },
+    "bindAddress": {
+      "type": "string",
+      "description": "HTTPS listen address (host:port).",
+      "examples": ["0.0.0.0:8443", "[::]:8443"]
+    },
+    "databaseUrl": {
+      "type": "string",
+      "description": "PostgreSQL connection URL. Prefer supplying this via the DATABASE_URL environment variable rather than committing it to a file.",
+      "pattern": "^postgres(ql)?://"
+    },
+    "caGrpcUrl": {
+      "type": "string",
+      "description": "CA gRPC endpoint used for certificate issuance (RFC 7030 §4.2)."
+    },
+    "caGrpcClientCert": {
+      "type": "string",
+      "description": "Path to the client certificate (PEM) for mTLS to the CA gRPC service."
+    },
+    "caGrpcClientKey": {
+      "type": "string",
+      "description": "Path to the client private key (PEM) for mTLS to the CA gRPC service."
+    },
+    "caGrpcCaCert": {
+      "type": "string",
+      "description": "Path to the CA certificate (PEM) that verifies the CA gRPC server."
+    },
+    "caInsecure": {
+      "type": "boolean",
+      "description": "DEVELOPMENT ONLY. Allow a plaintext (non-mTLS) gRPC channel to a non-loopback CA endpoint. Never enable in production (NIST 800-53: SC-8, AC-17).",
+      "default": false
+    },
+    "enrollProfile": {
+      "type": "string",
+      "description": "Certificate profile used for enrollment / re-enrollment.",
+      "default": "tls_client"
+    },
+    "enrollIdentityPolicy": {
+      "type": "string",
+      "description": "How a CSR's requested identity is authorized against the authenticated account (H1). 'username': the CSR must name the account username in its CN or a SAN. 'allowlist': every asserted identity must be in the account's est_account_identities allow-list.",
+      "enum": ["username", "allowlist"],
+      "default": "username"
+    },
+    "tlsCert": {
+      "type": "string",
+      "description": "Path to the server TLS certificate (PEM)."
+    },
+    "tlsKey": {
+      "type": "string",
+      "description": "Path to the server TLS private key (PEM)."
+    },
+    "tlsCaCert": {
+      "type": "string",
+      "description": "Path to the trust anchor (PEM) for mTLS client authentication. Its presence enables mTLS (RFC 7030 §3.3)."
+    },
+    "allowBasicAuth": {
+      "type": "boolean",
+      "description": "Accept HTTP Basic authentication as a fallback for bootstrap enrollment (RFC 7030 §3.2.3). Requires tlsCaCert (mTLS).",
+      "default": false
+    },
+    "allowBearerAuth": {
+      "type": "boolean",
+      "description": "Permit bearer-token authentication when no TLS client CA is configured. Explicit, non-default opt-in to a weaker, non-RFC posture.",
+      "default": false
+    },
+    "logLevel": {
+      "type": "string",
+      "description": "Log level / filter (e.g. info, debug, ostrich_est=debug).",
+      "default": "info"
+    },
+    "logJson": {
+      "type": "boolean",
+      "description": "Emit logs as JSON.",
+      "default": false
+    }
+  }
+}

@@ -836,6 +836,12 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   enumerate accounts (SI-11)
 - Wired into ca-server and scms-server (replaces the fail-closed
   `DisabledAuthProvider` placeholder)
+- `crates/ostrich-common/src/auth/basic.rs` - EST HTTP Basic authentication
+  (RFC 7030 §3.2.3): `Authorization: Basic` credentials are verified through the
+  same `PasswordAuthProvider` (Argon2id + lockout). `MtlsOrBasicAuthLayer`
+  prefers the TLS client certificate and falls back to Basic for bootstrap
+  enrollment; the est-server only enables it alongside `--tls-ca-cert` (SC-8:
+  Basic never offered without TLS)
 - Initial Administrator provisioned via
   `ostrich-init --admin-username/--admin-password` (CM-6: the previous
   hardcoded seed user was removed from migration 00003)

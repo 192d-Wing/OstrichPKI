@@ -47,7 +47,7 @@ use crate::{
 use axum::{
     Router,
     body::Bytes,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
@@ -60,6 +60,39 @@ use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPoli
 use ostrich_crypto::CryptoProvider;
 use ostrich_db::DatabasePool;
 use std::sync::Arc;
+
+/// Client authentication mode for EST protected (enrollment) endpoints.
+///
+/// RFC 7030 §3.3 expects mTLS client authentication; §3.2.3 additionally
+/// permits HTTP-based (Basic) authentication, primarily for bootstrap
+/// enrollment before a client holds a certificate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EstAuthMode {
+    /// Bearer session token (default; not an RFC 7030 method, kept for
+    /// backward compatibility when no TLS client CA is configured).
+    #[default]
+    BearerToken,
+    /// mTLS client certificate only (RFC 7030 §3.3).
+    Mtls,
+    /// mTLS client certificate, falling back to HTTP Basic (RFC 7030 §3.2.3)
+    /// when no client certificate is presented. Basic is intended for
+    /// bootstrap enrollment and is only safe on a TLS listener.
+    MtlsWithBasicFallback,
+}
+
+/// How the requested certificate identity is authorized against the
+/// authenticated principal on enrollment (H1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EstIdentityPolicy {
+    /// The CSR must name the authenticated username in its CommonName or a SAN.
+    /// Secure default; suits one-account-per-identity deployments.
+    #[default]
+    MatchUsername,
+    /// Every identity the CSR asserts (CN + each SAN value) must appear in the
+    /// account's allow-list (`est_account_identities`). Supports delegated
+    /// enrollment where an account may request several distinct identities.
+    AccountAllowList,
+}
 
 /// EST service state
 #[derive(Clone)]
@@ -81,10 +114,14 @@ pub struct EstState {
     /// Certificate profile used for enrollment/re-enrollment (RFC 7030 §4.2).
     /// NIST 800-53: CM-6 - Configurable issuance profile (secure default).
     pub enroll_profile: String,
-    /// When true, protected endpoints authenticate by the verified TLS client
-    /// certificate (RFC 7030 §3.3 mTLS) using `MtlsAuthLayer` + the certificate
-    /// `auth_provider`, instead of bearer tokens.
-    pub use_mtls_auth: bool,
+    /// How protected (enrollment) endpoints authenticate the client.
+    ///
+    /// RFC 7030 §3.2.3 / §3.3 - selects bearer token, mTLS, or mTLS with an
+    /// HTTP Basic fallback for bootstrap enrollment.
+    pub auth_mode: EstAuthMode,
+    /// How the requested certificate identity is authorized against the
+    /// authenticated principal (H1). Defaults to `MatchUsername`.
+    pub identity_policy: EstIdentityPolicy,
 }
 
 impl EstState {
@@ -171,7 +208,8 @@ impl EstState {
             ca_client: None,
             ca_certificate_der: None,
             enroll_profile: "tls_client".to_string(),
-            use_mtls_auth: false,
+            auth_mode: EstAuthMode::BearerToken,
+            identity_policy: EstIdentityPolicy::MatchUsername,
         }
     }
 
@@ -192,7 +230,8 @@ impl EstState {
             ca_client: None,
             ca_certificate_der: None,
             enroll_profile: "tls_client".to_string(),
-            use_mtls_auth: false,
+            auth_mode: EstAuthMode::BearerToken,
+            identity_policy: EstIdentityPolicy::MatchUsername,
         }
     }
 
@@ -221,7 +260,26 @@ impl EstState {
     /// Authenticate protected endpoints by the TLS client certificate (mTLS,
     /// RFC 7030 §3.3). `auth_provider` must be a certificate auth provider.
     pub fn with_mtls_auth(mut self) -> Self {
-        self.use_mtls_auth = true;
+        self.auth_mode = EstAuthMode::Mtls;
+        self
+    }
+
+    /// Authenticate protected endpoints by the TLS client certificate (RFC 7030
+    /// §3.3), falling back to HTTP Basic (RFC 7030 §3.2.3) when no client
+    /// certificate is presented. `auth_provider` must support both certificate
+    /// and password credentials (e.g. a `CompositeAuthProvider`).
+    ///
+    /// Only safe on a TLS listener; the EST server enables this only when a TLS
+    /// client CA is configured.
+    pub fn with_mtls_basic_fallback(mut self) -> Self {
+        self.auth_mode = EstAuthMode::MtlsWithBasicFallback;
+        self
+    }
+
+    /// Select how the requested certificate identity is authorized against the
+    /// authenticated principal (H1). Defaults to [`EstIdentityPolicy::MatchUsername`].
+    pub fn with_identity_policy(mut self, policy: EstIdentityPolicy) -> Self {
+        self.identity_policy = policy;
         self
     }
 }
@@ -286,21 +344,30 @@ pub fn create_router(state: EstState) -> Router {
         .route(
             "/.well-known/est/serverkeygen",
             post(server_key_gen).route_layer(authz(Permission::SubmitRequest, "est-serverkeygen")),
-        );
+        )
+        // L1 - cap the request body. CSRs are a few KB; an explicit 64 KiB limit
+        // rejects oversized bodies (DoS) with 413 before base64-decode/parse,
+        // rather than relying on axum's larger default. NIST 800-53: SC-5.
+        .layer(DefaultBodyLimit::max(64 * 1024));
 
     // RFC 7030 §3.3: enrollment requires client authentication. By default this
-    // is a bearer session token; with mTLS enabled the client is authenticated
-    // by its verified TLS certificate (MtlsAuthLayer) instead.
-    let protected_routes = if state.use_mtls_auth {
-        protected_routes.layer(middleware::from_fn_with_state(
+    // is a bearer session token; with mTLS the client is authenticated by its
+    // verified TLS certificate (MtlsAuthLayer). The fallback mode additionally
+    // accepts HTTP Basic (RFC 7030 §3.2.3) when no client certificate is
+    // presented, for bootstrap enrollment.
+    let protected_routes = match state.auth_mode {
+        EstAuthMode::Mtls => protected_routes.layer(middleware::from_fn_with_state(
             auth_provider,
             ostrich_common::auth::MtlsAuthLayer::authenticate,
-        ))
-    } else {
-        protected_routes.layer(middleware::from_fn_with_state(
+        )),
+        EstAuthMode::MtlsWithBasicFallback => protected_routes.layer(middleware::from_fn_with_state(
+            auth_provider,
+            ostrich_common::auth::MtlsOrBasicAuthLayer::authenticate,
+        )),
+        EstAuthMode::BearerToken => protected_routes.layer(middleware::from_fn_with_state(
             auth_provider,
             AuthLayer::authenticate,
-        ))
+        )),
     };
 
     // Merge public and protected routes
@@ -455,26 +522,59 @@ async fn simple_enroll(
     let client_identifier = &user.username;
 
     // Decode base64-encoded CSR
-    let csr_der = BASE64_STANDARD
-        .decode(&body)
-        .map_err(|e| Error::BadRequest(format!("Invalid base64: {}", e)))?;
-
-    if csr_der.len() < 10 {
-        return Err(Error::InvalidCsr("CSR too short".to_string()));
-    }
+    let csr_der = match BASE64_STANDARD.decode(&body) {
+        Ok(der) if der.len() >= 10 => der,
+        _ => {
+            emit_failure_audit(&state, client_identifier, "est:enroll", "invalid_csr_encoding")
+                .await;
+            return Err(Error::BadRequest("Invalid or too-short CSR".to_string()));
+        }
+    };
 
     // Parse and validate PKCS#10 CSR
-    let parsed_csr = ostrich_x509::parser::parse_csr(&csr_der)
-        .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR: {}", e)))?;
+    let parsed_csr = match ostrich_x509::parser::parse_csr(&csr_der) {
+        Ok(c) => c,
+        Err(e) => {
+            emit_failure_audit(&state, client_identifier, "est:enroll", "csr_parse_failed").await;
+            return Err(Error::InvalidCsr(format!("Failed to parse CSR: {}", e)));
+        }
+    };
 
-    // Verify CSR signature (proof of possession)
+    // Verify CSR signature (proof of possession). A PoP failure is a
+    // security-relevant event and must be audited (H2 / AU-2).
     let signature_valid =
         ostrich_x509::parser::verify_csr_signature(&parsed_csr, &state.crypto_provider)
             .await
             .map_err(|e| Error::InvalidCsr(format!("CSR signature verification failed: {}", e)))?;
 
     if !signature_valid {
+        emit_failure_audit(&state, client_identifier, "est:enroll", "csr_pop_failed").await;
         return Err(Error::InvalidCsr("Invalid CSR signature".to_string()));
+    }
+
+    // H1 - bind the requested identity to the authenticated principal: the CSR
+    // must name `client_identifier` in its CommonName or a SAN. Without this any
+    // caller holding SubmitRequest could obtain a certificate for an arbitrary
+    // identity (AC-3 / AC-6 / FDP_ACF.1). Fail secure: deny + audit on mismatch.
+    let csr_cn = ostrich_x509::parser::parse_csr_subject_dn(&csr_der)
+        .ok()
+        .and_then(|dn| dn.common_name);
+    if !identity_authorized(
+        &state,
+        client_identifier,
+        csr_cn.as_deref(),
+        &parsed_csr.subject_alternative_names,
+    )
+    .await?
+    {
+        emit_failure_audit(&state, client_identifier, "est:enroll", "identity_not_bound").await;
+        tracing::warn!(
+            client = %client_identifier,
+            "EST enrollment denied: CSR identity does not match authenticated principal (H1)"
+        );
+        return Err(Error::Forbidden(
+            "CSR subject CN or a SAN must match the authenticated client identity".to_string(),
+        ));
     }
 
     // Create enrollment record in database
@@ -510,14 +610,29 @@ async fn simple_enroll(
     // EstCaClient::enroll issues the certificate, records the certificate id on
     // the est_enrollments row, and transitions the enrollment to "issued".
     // RFC 7030 §4.2.1 - CSR forwarded to CA after proof-of-possession check.
-    let certificate_id = ca_client
+    let certificate_id = match ca_client
         .enroll(
             enrollment.id,
             &csr_der,
             client_identifier,
             &state.enroll_profile,
         )
-        .await?;
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            // H2 - issuance failures must be audited.
+            emit_enrollment_audit(
+                &state,
+                client_identifier,
+                enrollment.id,
+                "simpleenroll",
+                ostrich_audit::EventOutcome::Failure,
+            )
+            .await;
+            return Err(e);
+        }
+    };
 
     // Load the issued certificate and wrap it in a certs-only PKCS#7.
     // RFC 7030 §4.2.3 - Response is a degenerate PKCS#7 with the issued cert.
@@ -578,6 +693,108 @@ async fn emit_enrollment_audit(
     let _ = state.audit_sink.record(&mut event).await;
 }
 
+/// Audit a security-relevant EST failure (H2).
+///
+/// AU-2 / AU-12 / FAU_GEN.1: validation, proof-of-possession, identity-binding,
+/// and issuance failures are exactly the events that must leave a trail so an
+/// attacker probing the enrollment endpoints can be detected. Emitted as an
+/// `AccessViolation` with `Failure` outcome and the authenticated actor.
+async fn emit_failure_audit(state: &EstState, actor: &str, resource: &str, action: &str) {
+    let mut event = ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::AccessViolation,
+        actor,
+        resource,
+        action,
+        ostrich_audit::EventOutcome::Failure,
+    )
+    .build();
+    let _ = state.audit_sink.record(&mut event).await;
+}
+
+/// Canonicalize a SubjectAltName list for set comparison (C2 re-enroll binding):
+/// trimmed, sorted, and de-duplicated so two CSRs asserting the same SAN set
+/// compare equal regardless of ordering.
+fn normalize_san_set(sans: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = sans.iter().map(|s| s.trim().to_string()).collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// H1 enrollment identity binding: an authenticated principal may only enroll
+/// for a certificate that names itself. The CSR must carry the authenticated
+/// `username` as either the subject CommonName or a SubjectAltName value.
+///
+/// SAN entries are formatted `TYPE:value` (e.g. `DNS:host`); the value (after
+/// the first `:`) is matched. Comparison is exact (fail secure — fewer accepts).
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-3 (access enforcement), AC-6 (least privilege)
+/// - NIAP PP-CA: FDP_ACF.1 - bind the issued identity to the requesting principal
+fn csr_identity_matches_principal(username: &str, cn: Option<&str>, sans: &[String]) -> bool {
+    if cn == Some(username) {
+        return true;
+    }
+    sans.iter().any(|san| {
+        let value = san.split_once(':').map(|(_, v)| v).unwrap_or(san.as_str());
+        value == username
+    })
+}
+
+/// The set of identities a CSR asserts: its CommonName plus each SAN value
+/// (the `TYPE:` prefix is stripped, matching the allow-list storage format).
+fn csr_asserted_identities<'a>(cn: Option<&'a str>, sans: &'a [String]) -> Vec<&'a str> {
+    let mut ids: Vec<&str> = Vec::new();
+    if let Some(c) = cn {
+        ids.push(c);
+    }
+    for san in sans {
+        ids.push(san.split_once(':').map(|(_, v)| v).unwrap_or(san.as_str()));
+    }
+    ids
+}
+
+/// Authorize the requested certificate identity against the authenticated
+/// principal under the configured [`EstIdentityPolicy`] (H1).
+///
+/// - `MatchUsername`: the CSR must name `username` in its CN or a SAN.
+/// - `AccountAllowList`: EVERY identity the CSR asserts (CN + SAN values) must
+///   appear in the account's `est_account_identities` allow-list. A CSR that
+///   asserts no identity at all is denied. Fail secure on lookup error.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-3 (access enforcement), AC-6 (least privilege)
+/// - NIAP PP-CA: FDP_ACC.1 / FDP_ACF.1 - access control on issuance identity
+async fn identity_authorized(
+    state: &EstState,
+    username: &str,
+    cn: Option<&str>,
+    sans: &[String],
+) -> Result<bool> {
+    match state.identity_policy {
+        EstIdentityPolicy::MatchUsername => {
+            Ok(csr_identity_matches_principal(username, cn, sans))
+        }
+        EstIdentityPolicy::AccountAllowList => {
+            let asserted = csr_asserted_identities(cn, sans);
+            if asserted.is_empty() {
+                // A certificate that names nothing cannot be authorized.
+                return Ok(false);
+            }
+            let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+            let allowed = repo
+                .list_allowed_identities(username)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to load account allow-list: {}", e))
+                })?;
+            let allowed: std::collections::HashSet<&str> =
+                allowed.iter().map(|s| s.as_str()).collect();
+            Ok(asserted.iter().all(|id| allowed.contains(id)))
+        }
+    }
+}
+
 /// Simple re-enrollment (RFC 7030 S4.2.2)
 ///
 /// Authenticated client re-enrolls for certificate renewal.
@@ -602,42 +819,64 @@ async fn simple_reenroll(
     let client_identifier = &user.username;
 
     // Decode base64-encoded CSR
-    let csr_der = BASE64_STANDARD
-        .decode(&body)
-        .map_err(|e| Error::BadRequest(format!("Invalid base64: {}", e)))?;
-
-    if csr_der.len() < 10 {
-        return Err(Error::InvalidCsr("CSR too short".to_string()));
-    }
+    let csr_der = match BASE64_STANDARD.decode(&body) {
+        Ok(der) if der.len() >= 10 => der,
+        _ => {
+            emit_failure_audit(
+                &state,
+                client_identifier,
+                "est:reenroll",
+                "invalid_csr_encoding",
+            )
+            .await;
+            return Err(Error::BadRequest("Invalid or too-short CSR".to_string()));
+        }
+    };
 
     // Parse and validate PKCS#10 CSR
-    let parsed_csr = ostrich_x509::parser::parse_csr(&csr_der)
-        .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR: {}", e)))?;
+    let parsed_csr = match ostrich_x509::parser::parse_csr(&csr_der) {
+        Ok(c) => c,
+        Err(e) => {
+            emit_failure_audit(&state, client_identifier, "est:reenroll", "csr_parse_failed").await;
+            return Err(Error::InvalidCsr(format!("Failed to parse CSR: {}", e)));
+        }
+    };
 
-    // Verify CSR signature (proof of possession)
+    // Verify CSR signature (proof of possession). A PoP failure must be audited
+    // (H2 / AU-2).
     let signature_valid =
         ostrich_x509::parser::verify_csr_signature(&parsed_csr, &state.crypto_provider)
             .await
             .map_err(|e| Error::InvalidCsr(format!("CSR signature verification failed: {}", e)))?;
 
     if !signature_valid {
+        emit_failure_audit(&state, client_identifier, "est:reenroll", "csr_pop_failed").await;
         return Err(Error::InvalidCsr("Invalid CSR signature".to_string()));
     }
 
-    // RFC 7030 §4.2.2 - Re-enrollment renews an EXISTING certificate, so the CSR
-    // subject MUST match the subject of a certificate previously issued to this
-    // client. The EST server authenticates clients by account (not mTLS), so the
-    // "existing certificate" is resolved from this client's prior issued
-    // enrollments rather than a TLS-presented cert. Comparison is structural
-    // (field-by-field DistinguishedName) to avoid DN string-format mismatches.
+    // RFC 7030 §4.2.2 - Re-enrollment renews an EXISTING certificate, so the new
+    // CSR MUST assert the SAME identity as a certificate previously issued to
+    // this client. The EST server authenticates clients by account (not mTLS),
+    // so the "existing certificate" is resolved from this client's prior issued
+    // enrollments rather than a TLS-presented cert.
+    //
+    // The identity compared is the FULL subject DN *and* the complete SAN set:
+    // - Subject uses the RFC 4514 string rendering (parse_certificate /
+    //   parse_csr), NOT the 7-field DistinguishedName projection, which silently
+    //   drops unmodeled RDN attributes (DC, UID, emailAddress, ...) and would
+    //   let `CN=foo,DC=evil` match `CN=foo` (C2).
+    // - SANs are compared as a set, because for TLS profiles the SAN is the
+    //   authoritative identity; without this a client could keep its subject but
+    //   add `SAN: DNS:admin.internal` and obtain a cert for an identity it does
+    //   not own (C2).
     //
     // COMPLIANCE MAPPING:
-    // - RFC 7030 §4.2.2 - re-enrollment subject binding
+    // - RFC 7030 §4.2.2 - re-enrollment identity binding (subject + SAN)
     // - NIAP PP-CA: FDP_ACC.1 / FDP_ACF.1 - access control (identity binding)
     // - NIST 800-53: AC-3 (access enforcement), SI-10 (input validation),
     //   AU-2 (audit the denial). Fail secure: deny + audit on any mismatch.
-    let csr_subject = ostrich_x509::parser::parse_csr_subject_dn(&csr_der)
-        .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR subject: {}", e)))?;
+    let requested_subject = parsed_csr.subject_dn.trim().to_string();
+    let requested_sans = normalize_san_set(&parsed_csr.subject_alternative_names);
 
     let reenroll_repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
     let reenroll_cert_repo =
@@ -658,9 +897,9 @@ async fn simple_reenroll(
             .find_by_id(cert_id)
             .await
             .map_err(|e| Error::Internal(format!("Failed to load prior certificate: {}", e)))?
-            && let Ok(prior_subject) =
-                ostrich_x509::parser::parse_subject_dn(&prior_cert.der_encoded)
-            && prior_subject == csr_subject
+            && let Ok(prior) = ostrich_x509::parser::parse_certificate(&prior_cert.der_encoded)
+            && prior.subject_dn.trim() == requested_subject
+            && normalize_san_set(&prior.subject_alt_names) == requested_sans
         {
             subject_matches_prior = true;
             break;
@@ -669,7 +908,7 @@ async fn simple_reenroll(
 
     if !subject_matches_prior {
         let reason = if had_prior_certificate {
-            "CSR subject does not match any certificate previously issued to this client"
+            "CSR subject/SANs do not match any certificate previously issued to this client"
         } else {
             "no existing certificate to renew for this client"
         };
@@ -723,14 +962,29 @@ async fn simple_reenroll(
         ));
     };
 
-    let certificate_id = ca_client
+    let certificate_id = match ca_client
         .enroll(
             enrollment.id,
             &csr_der,
             client_identifier,
             &state.enroll_profile,
         )
-        .await?;
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            // H2 - re-issuance failures must be audited.
+            emit_enrollment_audit(
+                &state,
+                client_identifier,
+                enrollment.id,
+                "simplereenroll",
+                ostrich_audit::EventOutcome::Failure,
+            )
+            .await;
+            return Err(e);
+        }
+    };
 
     // Load the re-issued certificate and wrap it in a certs-only PKCS#7.
     // RFC 7030 §4.2.3 - Degenerate PKCS#7 response with the issued certificate.
@@ -843,13 +1097,65 @@ async fn server_key_gen(
     // The client POSTs a base64 PKCS#10 CSR conveying the desired subject/SANs
     // (RFC 7030 §4.4.1); the server generates the key, so the CSR's own key and
     // signature are not used for proof-of-possession.
-    let request_der = BASE64_STANDARD
-        .decode(&body)
-        .map_err(|e| Error::BadRequest(format!("Invalid base64: {}", e)))?;
-    let parsed = ostrich_x509::parser::parse_csr(&request_der)
-        .map_err(|e| Error::InvalidCsr(format!("Failed to parse serverkeygen CSR: {}", e)))?;
+    let request_der = match BASE64_STANDARD.decode(&body) {
+        Ok(der) if der.len() >= 10 => der,
+        _ => {
+            emit_failure_audit(
+                &state,
+                client_identifier,
+                "est:serverkeygen",
+                "invalid_csr_encoding",
+            )
+            .await;
+            return Err(Error::BadRequest("Invalid or too-short CSR".to_string()));
+        }
+    };
+    let parsed = match ostrich_x509::parser::parse_csr(&request_der) {
+        Ok(c) => c,
+        Err(e) => {
+            emit_failure_audit(
+                &state,
+                client_identifier,
+                "est:serverkeygen",
+                "csr_parse_failed",
+            )
+            .await;
+            return Err(Error::InvalidCsr(format!(
+                "Failed to parse serverkeygen CSR: {}",
+                e
+            )));
+        }
+    };
     let subject = ostrich_x509::parser::parse_csr_subject_dn(&request_der)
         .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR subject: {}", e)))?;
+
+    // H1 - the server is about to mint a key AND a certificate for whatever
+    // identity the CSR names; bind that identity to the authenticated principal
+    // (CN or a SAN must equal `client_identifier`). Fail secure: deny + audit.
+    if !identity_authorized(
+        &state,
+        client_identifier,
+        subject.common_name.as_deref(),
+        &parsed.subject_alternative_names,
+    )
+    .await?
+    {
+        emit_failure_audit(
+            &state,
+            client_identifier,
+            "est:serverkeygen",
+            "identity_not_bound",
+        )
+        .await;
+        tracing::warn!(
+            client = %client_identifier,
+            "EST serverkeygen denied: CSR identity does not match authenticated principal (H1)"
+        );
+        return Err(Error::Forbidden(
+            "CSR subject CN or a SAN must match the authenticated client identity".to_string(),
+        ));
+    }
+
     let dns_sans: Vec<String> = parsed
         .subject_alternative_names
         .iter()
@@ -858,6 +1164,13 @@ async fn server_key_gen(
 
     // CA integration is required (fail closed, never fabricate).
     let Some(ca_client) = state.ca_client.as_ref() else {
+        emit_failure_audit(
+            &state,
+            client_identifier,
+            "est:serverkeygen",
+            "ca_not_configured",
+        )
+        .await;
         return Err(Error::Internal(
             "EST CA integration not configured".to_string(),
         ));
@@ -900,11 +1213,31 @@ async fn server_key_gen(
         )
         .await;
 
-    // Always destroy the server-held private key handle (FCS_CKM.4); the PKCS#8
-    // copy returned to the client is zeroized when `material` drops.
-    let _ = state.crypto_provider.destroy_key(&material.key_handle).await;
+    // Always destroy the server-held private key handle (FCS_CKM.4). A failure
+    // to destroy key material is security-relevant and must not be swallowed (L4).
+    if let Err(e) = state.crypto_provider.destroy_key(&material.key_handle).await {
+        tracing::error!(
+            client = %client_identifier,
+            error = %e,
+            "Failed to destroy server-held private key handle after serverkeygen (FCS_CKM.4)"
+        );
+    }
 
-    let certificate_id = issue_result?;
+    let certificate_id = match issue_result {
+        Ok(id) => id,
+        Err(e) => {
+            // H2 - issuance failures must be audited.
+            emit_enrollment_audit(
+                &state,
+                client_identifier,
+                enrollment.id,
+                "serverkeygen",
+                ostrich_audit::EventOutcome::Failure,
+            )
+            .await;
+            return Err(e);
+        }
+    };
 
     // Fetch the issued certificate and encode it as a certs-only PKCS#7.
     let cert = ostrich_db::repository::CertificateRepository::new(state.db_pool.clone())
@@ -917,8 +1250,17 @@ async fn server_key_gen(
 
     // RFC 7030 §4.4.2 - multipart/mixed: the private key (application/pkcs8) and
     // the certificate (application/pkcs7-mime; certs-only). Both base64.
+    //
+    // M3 - the private key is sensitive: encode it into a Zeroizing buffer and
+    // assemble the body in a Zeroizing buffer so these intermediate copies are
+    // wiped on drop. (One copy still lives in the outbound HTTP body buffer,
+    // which is inherent to returning the key; everything else is zeroized.)
     const BOUNDARY: &str = "estServerKeyGenBoundary";
-    let body = format!(
+    let key_b64 = zeroize::Zeroizing::new(
+        BASE64_STANDARD.encode(material.private_key_pkcs8.as_slice()),
+    );
+    let cert_b64 = BASE64_STANDARD.encode(&pkcs7);
+    let body = zeroize::Zeroizing::new(format!(
         "--{b}\r\n\
          Content-Type: application/pkcs8\r\n\
          Content-Transfer-Encoding: base64\r\n\r\n\
@@ -929,9 +1271,19 @@ async fn server_key_gen(
          {cert}\r\n\
          --{b}--\r\n",
         b = BOUNDARY,
-        key = BASE64_STANDARD.encode(material.private_key_pkcs8.as_slice()),
-        cert = BASE64_STANDARD.encode(&pkcs7),
-    );
+        key = key_b64.as_str(),
+        cert = cert_b64,
+    ));
+
+    // H2 - audit the successful server-side key generation + issuance.
+    emit_enrollment_audit(
+        &state,
+        client_identifier,
+        enrollment.id,
+        "serverkeygen",
+        ostrich_audit::EventOutcome::Success,
+    )
+    .await;
 
     Ok((
         StatusCode::OK,
@@ -939,7 +1291,7 @@ async fn server_key_gen(
             header::CONTENT_TYPE,
             format!("multipart/mixed; boundary=\"{}\"", BOUNDARY),
         )],
-        body,
+        body.to_string(),
     )
         .into_response())
 }
@@ -954,6 +1306,66 @@ mod tests {
         let prefix = "/.well-known/est";
         assert!(prefix.starts_with("/.well-known/"));
         assert!(prefix.ends_with("est"));
+    }
+
+    #[test]
+    fn test_normalize_san_set_order_and_dedup() {
+        // C2: set comparison must be order- and duplicate-insensitive.
+        let a = normalize_san_set(&[
+            "DNS:b.example".into(),
+            "DNS:a.example".into(),
+            "DNS:a.example".into(),
+        ]);
+        let b = normalize_san_set(&["DNS:a.example".into(), "DNS:b.example".into()]);
+        assert_eq!(a, b);
+        // A superset must NOT compare equal (the C2 attack: adding a SAN).
+        let attacker = normalize_san_set(&[
+            "DNS:a.example".into(),
+            "DNS:b.example".into(),
+            "DNS:admin.internal".into(),
+        ]);
+        assert_ne!(a, attacker);
+    }
+
+    #[test]
+    fn test_csr_identity_binding() {
+        // H1: CN match.
+        assert!(csr_identity_matches_principal(
+            "alice",
+            Some("alice"),
+            &[]
+        ));
+        // SAN value match (TYPE: prefix stripped).
+        assert!(csr_identity_matches_principal(
+            "alice",
+            Some("other"),
+            &["DNS:alice".into()]
+        ));
+        // No match -> deny (the H1 escalation attempt).
+        assert!(!csr_identity_matches_principal(
+            "alice",
+            Some("admin"),
+            &["DNS:vpn.corp".into()]
+        ));
+        // No CN, no matching SAN -> deny.
+        assert!(!csr_identity_matches_principal("alice", None, &[]));
+        // Exact match only: "alice" must not satisfy "alice2".
+        assert!(!csr_identity_matches_principal(
+            "alice2",
+            Some("alice"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn test_csr_asserted_identities() {
+        // CN + SAN values (prefix-stripped) are all collected for the allow-list
+        // subset check.
+        let sans = ["DNS:device-1".to_string(), "email:dev@corp".to_string()];
+        let ids = csr_asserted_identities(Some("device-1"), &sans);
+        assert_eq!(ids, vec!["device-1", "device-1", "dev@corp"]);
+        // No CN, no SANs -> nothing asserted (allow-list will deny).
+        assert!(csr_asserted_identities(None, &[]).is_empty());
     }
 
     #[test]

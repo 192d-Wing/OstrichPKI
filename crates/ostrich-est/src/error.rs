@@ -73,11 +73,23 @@ impl Error {
         }
     }
 
-    /// Convert to error response
+    /// Convert to error response.
+    ///
+    /// M1 / SI-11: 5xx (internal / database / dependency) errors return a
+    /// GENERIC description — never the raw lower-layer message — so DB driver
+    /// text, internal paths, and topology are not disclosed to clients. The full
+    /// detail is logged server-side (see `into_response`). Client-input (4xx)
+    /// errors keep their specific message so callers can correct their request.
     pub fn to_response(&self) -> ErrorResponse {
+        let error_description = match self {
+            Self::Internal(_) | Self::Database(_) | Self::Common(_) => {
+                "An internal error occurred".to_string()
+            }
+            other => other.to_string(),
+        };
         ErrorResponse {
             error: self.error_type().to_string(),
-            error_description: self.to_string(),
+            error_description,
         }
     }
 
@@ -99,8 +111,14 @@ impl Error {
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let status = self.status_code();
-        let body = self.to_response();
 
+        // M1: log the full internal error server-side (the client only gets a
+        // generic 5xx body). This preserves the detail for ops/forensics.
+        if status == StatusCode::INTERNAL_SERVER_ERROR {
+            tracing::error!(error = %self, "EST request failed with internal error");
+        }
+
+        let body = self.to_response();
         (status, Json(body)).into_response()
     }
 }

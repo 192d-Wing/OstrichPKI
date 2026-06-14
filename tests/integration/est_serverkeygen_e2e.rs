@@ -258,6 +258,8 @@ async fn est_serverkeygen_full_stack_over_http() {
             ..Default::default()
         },
         pool.clone(),
+        // loopback endpoint: plaintext is acceptable in-test (C1 allows loopback)
+        false,
     )
     .await
     .unwrap();
@@ -265,9 +267,12 @@ async fn est_serverkeygen_full_stack_over_http() {
     let est_crypto: Arc<dyn CryptoProvider> =
         Arc::from(CryptoProviderFactory::create_software_provider());
     let audit: Arc<dyn ostrich_audit::AuditSink> = Arc::new(DatabaseAuditSink::new(pool.clone()));
+    // H1 identity binding: the authenticated principal must be named in the CSR
+    // (CN or SAN). The leaf CSR below uses CN/SAN "device-42.example.com", so the
+    // account username matches it.
     let ra_user = AuthenticatedUser::new(
         UserId::new(),
-        "ra-e2e".to_string(),
+        "device-42.example.com".to_string(),
         vec![Role::RaStaff],
         AuthMethod::Password,
     );

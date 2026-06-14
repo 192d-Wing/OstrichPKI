@@ -137,6 +137,103 @@ impl EstRepository {
         Ok(enrollment)
     }
 
+    /// Atomically record the issued certificate AND mark the enrollment "issued".
+    ///
+    /// RFC 7030 §4.2 - post-issuance bookkeeping. A single UPDATE avoids the
+    /// inconsistent intermediate state (certificate_id set but status not
+    /// "issued") that two separate statements could leave on a partial failure
+    /// (L2). NIST 800-53: SI-17 (consistent state).
+    pub async fn mark_enrollment_issued(
+        &self,
+        id: Uuid,
+        certificate_id: Uuid,
+        profile_name: &str,
+    ) -> Result<EstEnrollment> {
+        let now = Utc::now();
+
+        let enrollment = sqlx::query_as::<_, EstEnrollment>(
+            r#"
+            UPDATE est_enrollments
+            SET certificate_id = $1, profile_name = $2, status = 'issued', updated_at = $3
+            WHERE id = $4
+            RETURNING *
+            "#,
+        )
+        .bind(certificate_id)
+        .bind(profile_name)
+        .bind(now)
+        .bind(id)
+        .fetch_one(self.pool.pool())
+        .await?;
+
+        Ok(enrollment)
+    }
+
+    // ===========================
+    // Per-account Allowed Identities (allow-list policy)
+    // ===========================
+
+    /// List the identities (CN / SAN values) an account is permitted to enroll
+    /// for under the "account allow-list" identity policy.
+    ///
+    /// NIST 800-53: AC-3 / AC-6 - access enforcement / least privilege.
+    pub async fn list_allowed_identities(&self, account_username: &str) -> Result<Vec<String>> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT allowed_identity
+            FROM est_account_identities
+            WHERE account_username = $1
+            "#,
+        )
+        .bind(account_username)
+        .fetch_all(self.pool.pool())
+        .await?;
+
+        Ok(rows)
+    }
+
+    /// Grant an account permission to enroll for `identity` (CN or SAN value).
+    /// Idempotent: re-adding an existing entry is a no-op.
+    pub async fn add_allowed_identity(
+        &self,
+        account_username: &str,
+        identity: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO est_account_identities (account_username, allowed_identity)
+            VALUES ($1, $2)
+            ON CONFLICT (account_username, allowed_identity) DO NOTHING
+            "#,
+        )
+        .bind(account_username)
+        .bind(identity)
+        .execute(self.pool.pool())
+        .await?;
+
+        Ok(())
+    }
+
+    /// Revoke an account's permission to enroll for `identity`.
+    pub async fn remove_allowed_identity(
+        &self,
+        account_username: &str,
+        identity: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            DELETE FROM est_account_identities
+            WHERE account_username = $1 AND allowed_identity = $2
+            "#,
+        )
+        .bind(account_username)
+        .bind(identity)
+        .execute(self.pool.pool())
+        .await?;
+
+        Ok(())
+    }
+
     // ===========================
     // Authorized Client Operations
     // ===========================

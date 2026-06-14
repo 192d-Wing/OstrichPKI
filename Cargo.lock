@@ -3602,6 +3602,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "jsonschema",
  "ostrich-audit",
  "ostrich-common",
  "ostrich-crypto",

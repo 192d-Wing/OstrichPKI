@@ -73,25 +73,6 @@ pub async fn generate_key_pair_for_client(
     crypto: &Arc<dyn CryptoProvider>,
     audit: &Arc<dyn AuditSink>,
 ) -> Result<ServerKeyGenMaterial> {
-    // AU-2: record the key-generation request.
-    let mut audit_event = AuditEventBuilder::new(
-        EventType::KeyGeneration,
-        client_id,
-        "est-serverkeygen",
-        "server_side_key_generation",
-        EventOutcome::Success,
-    )
-    .with_details(serde_json::json!({
-        "subject": request.subject.to_string_rfc4514(),
-        "key_type": format!("{:?}", request.key_type),
-        "profile": request.profile_name,
-    }))
-    .build();
-    audit
-        .record(&mut audit_event)
-        .await
-        .map_err(|e| Error::Internal(format!("Audit logging failed: {}", e)))?;
-
     // FCS_CKM.1: generate the key pair (extractable so it can be delivered).
     let key_label = format!("est-serverkeygen-{}", uuid::Uuid::new_v4());
     let key_handle = crypto
@@ -128,6 +109,27 @@ pub async fn generate_key_pair_for_client(
         .map_err(|e| Error::Internal(format!("CSR signature encoding failed: {}", e)))?;
     let csr_der = ostrich_x509::builder::assemble_csr(&csr_info, sig_alg, &x509_sig)
         .map_err(|e| Error::Internal(format!("CSR assembly failed: {}", e)))?;
+
+    // AU-2 / AU-3: record the key generation only after it has actually
+    // succeeded, so the audit outcome reflects reality (L3). Earlier this was
+    // emitted as Success before the key existed.
+    let mut audit_event = AuditEventBuilder::new(
+        EventType::KeyGeneration,
+        client_id,
+        "est-serverkeygen",
+        "server_side_key_generation",
+        EventOutcome::Success,
+    )
+    .with_details(serde_json::json!({
+        "subject": request.subject.to_string_rfc4514(),
+        "key_type": format!("{:?}", request.key_type),
+        "profile": request.profile_name,
+    }))
+    .build();
+    audit
+        .record(&mut audit_event)
+        .await
+        .map_err(|e| Error::Internal(format!("Audit logging failed: {}", e)))?;
 
     Ok(ServerKeyGenMaterial {
         key_handle,
