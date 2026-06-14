@@ -142,17 +142,24 @@ Registration Authority account permitted to request several device names.
 
 #### Managing the allow-list (admin API)
 
-The allow-list is managed over a bearer-authenticated admin API. Obtain a session
-token via the login endpoint, then call:
+The allow-list is managed over an admin API that uses the **same authentication
+scheme as enrollment** (per `--enroll-identity-policy`/`auth_mode`): a bearer
+session token in bearer/Basic deployments, or a client certificate in mTLS
+deployments (mapped to an account that holds the management role). Authorization
+requires the permissions below; denied and failed attempts are audited.
 
 | Method & path | Permission | Purpose |
 |---------------|-----------|---------|
 | `GET /api/v1/est/accounts/{account}/identities` | `ViewConfig` | List an account's allowed identities |
 | `POST /api/v1/est/accounts/{account}/identities` | `ModifyConfig` | Add an identity (body `{ "identity": "..." }`) |
-| `DELETE /api/v1/est/accounts/{account}/identities/{identity}` | `ModifyConfig` | Remove an identity |
+| `DELETE /api/v1/est/accounts/{account}/identities/{identity}` | `ModifyConfig` | Remove an identity (404 if not present) |
 
-Identities are **bare values** (no `DNS:`/`email:` prefix), e.g. `device-42.example.com`.
-Every add/remove is recorded as a `ConfigurationChange` audit event (CM-3).
+Identities are **bare values** (no `DNS:`/`email:` prefix), e.g. `device-42.example.com`,
+and are **canonicalized to lowercase** (trimmed, ≤255 chars, no control characters)
+on both storage and the enrollment-time check — so add `device-42.example.com`, not
+`Device-42.Example.com`. Every successful or failed add/remove is recorded as a
+`ConfigurationChange` audit event (CM-3); the DELETE path is a catch-all segment,
+so identities containing `/` (e.g. URI SANs) can still be revoked.
 
 ```bash
 # Grant the RA account 'ra-fleet-1' two device identities:
