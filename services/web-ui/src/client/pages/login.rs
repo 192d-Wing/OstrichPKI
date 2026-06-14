@@ -128,15 +128,6 @@ pub fn login() -> Html {
                             </button>
                         </form>
 
-                        <p class="mt-4 text-xs text-gray-500 text-center">
-                            { "Authenticated directly by the Certificate Authority (no external identity provider)." }
-                        </p>
-
-                        <div class="mt-4 text-center">
-                            <a href="/auth/login" class="text-xs text-gray-400 hover:text-gray-600">
-                                { "Use single sign-on instead" }
-                            </a>
-                        </div>
                     </div>
                 </div>
 
