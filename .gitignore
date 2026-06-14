@@ -19,3 +19,4 @@ target/
 
 # Security vulnerability audit reports (CONFIDENTIAL - do not commit)
 docs/security/VULNERABILITY_AUDIT_*.mdservices/web-ui/dist/
+services/web-ui/node_modules/
