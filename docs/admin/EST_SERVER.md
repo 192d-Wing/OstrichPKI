@@ -137,17 +137,41 @@ account's allow-list. Use this for **delegated enrollment** — e.g. one
 Registration Authority account permitted to request several device names.
 
 > ⚠️ In `allowlist` mode an account with **no** allow-list entries is denied all
-> enrollments until provisioned. Populate the `est_account_identities` table
-> before switching a fleet to this mode.
+> enrollments until provisioned. Populate the allow-list before switching a fleet
+> to this mode.
 
-Provisioning (until a management CLI/API is added) is a direct insert; values are
-bare identities (no `DNS:`/`email:` prefix):
+#### Managing the allow-list (admin API)
 
-```sql
-INSERT INTO est_account_identities (account_username, allowed_identity)
-VALUES ('ra-fleet-1', 'device-42.example.com'),
-       ('ra-fleet-1', 'device-43.example.com');
+The allow-list is managed over a bearer-authenticated admin API. Obtain a session
+token via the login endpoint, then call:
+
+| Method & path | Permission | Purpose |
+|---------------|-----------|---------|
+| `GET /api/v1/est/accounts/{account}/identities` | `ViewConfig` | List an account's allowed identities |
+| `POST /api/v1/est/accounts/{account}/identities` | `ModifyConfig` | Add an identity (body `{ "identity": "..." }`) |
+| `DELETE /api/v1/est/accounts/{account}/identities/{identity}` | `ModifyConfig` | Remove an identity |
+
+Identities are **bare values** (no `DNS:`/`email:` prefix), e.g. `device-42.example.com`.
+Every add/remove is recorded as a `ConfigurationChange` audit event (CM-3).
+
+```bash
+# Grant the RA account 'ra-fleet-1' two device identities:
+curl -sS -X POST https://est.example.com/api/v1/est/accounts/ra-fleet-1/identities \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"identity":"device-42.example.com"}'
+
+curl -sS https://est.example.com/api/v1/est/accounts/ra-fleet-1/identities \
+  -H "Authorization: Bearer $TOKEN"
+# -> {"account":"ra-fleet-1","identities":["device-42.example.com"]}
+
+# Revoke one (URL-encode identities containing reserved characters):
+curl -sS -X DELETE \
+  https://est.example.com/api/v1/est/accounts/ra-fleet-1/identities/device-42.example.com \
+  -H "Authorization: Bearer $TOKEN"
 ```
+
+> Direct SQL against `est_account_identities` also works for bulk seeding, but the
+> API is preferred because it enforces RBAC and writes an audit trail.
 
 ## 6. Deployment example (production, mTLS both sides)
 

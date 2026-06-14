@@ -27,6 +27,14 @@ Implemented RFC 7030 functions:
 | `POST /.well-known/est/serverkeygen` | §4.4 | client | `SubmitRequest` |
 | `GET /health`, `GET /ready` | — | none | — |
 
+Admin/management API (bearer session token; not part of RFC 7030):
+
+| Endpoint | Auth | Permission | Purpose |
+|----------|------|------------|---------|
+| `GET /api/v1/est/accounts/{account}/identities` | bearer | `ViewConfig` | List an account's allow-list |
+| `POST /api/v1/est/accounts/{account}/identities` | bearer | `ModifyConfig` | Add an allowed identity |
+| `DELETE /api/v1/est/accounts/{account}/identities/{identity}` | bearer | `ModifyConfig` | Remove an allowed identity |
+
 ## 2. Component overview
 
 ```mermaid

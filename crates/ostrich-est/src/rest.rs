@@ -45,9 +45,9 @@ use crate::{
     error::{Error, Result},
 };
 use axum::{
-    Router,
+    Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
@@ -297,6 +297,7 @@ impl EstState {
 /// - RFC 7030 S3.2.2 - EST well-known URI structure
 pub fn create_router(state: EstState) -> Router {
     let auth_provider = state.auth_provider.clone();
+    let admin_auth_provider = state.auth_provider.clone();
     let rbac_policy = state.rbac_policy.clone();
 
     // Public endpoints (no authentication required per RFC 7030)
@@ -370,10 +371,35 @@ pub fn create_router(state: EstState) -> Router {
         )),
     };
 
-    // Merge public and protected routes
+    // Admin/management API for the per-account identity allow-list
+    // (`est_account_identities`), used by the `allowlist` enrollment identity
+    // policy. Authenticated by bearer session token (the shared login API mounted
+    // by the server). Authorization is enforced *inside* each handler because GET
+    // and POST share a path (one MethodRouter) but require different permissions
+    // (ViewConfig vs ModifyConfig), which a single `route_layer` cannot express.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIAP PP-CA: FMT_SMF.1 / FMT_MTD.1 - management of TSF data
+    // - NIST 800-53: AC-3 (access enforcement), CM-3 (config change control)
+    let admin_routes = Router::new()
+        .route(
+            "/api/v1/est/accounts/{account}/identities",
+            get(list_account_identities).post(add_account_identity),
+        )
+        .route(
+            "/api/v1/est/accounts/{account}/identities/{identity}",
+            axum::routing::delete(delete_account_identity),
+        )
+        .layer(middleware::from_fn_with_state(
+            admin_auth_provider,
+            AuthLayer::authenticate,
+        ));
+
+    // Merge public, protected, and admin routes
     Router::new()
         .merge(public_routes)
         .merge(protected_routes)
+        .merge(admin_routes)
         .with_state(state)
 }
 
@@ -1296,6 +1322,152 @@ async fn server_key_gen(
         .into_response())
 }
 
+// ===========================================================================
+// Admin API: per-account identity allow-list (`est_account_identities`)
+// ===========================================================================
+
+/// Request body for adding an allowed identity to an account.
+#[derive(Debug, serde::Deserialize)]
+struct AddIdentityRequest {
+    /// Identity (CN or SAN value, e.g. "device-42.example.com") the account may
+    /// request in a certificate.
+    identity: String,
+}
+
+/// Response body listing an account's allowed identities.
+#[derive(Debug, serde::Serialize)]
+struct IdentitiesResponse {
+    account: String,
+    identities: Vec<String>,
+}
+
+/// Enforce an admin permission on the authenticated session user (FMT_MTD.1).
+fn authorize_admin(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+    permission: Permission,
+    resource: &str,
+) -> Result<()> {
+    state
+        .rbac_policy
+        .authorize(user, permission, resource)
+        .map_err(|_| {
+            tracing::warn!(
+                actor = %user.username,
+                ?permission,
+                "EST admin authorization denied"
+            );
+            Error::Forbidden("insufficient permission".to_string())
+        })
+}
+
+/// Emit a configuration-change audit record for an allow-list mutation.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: CM-3 (configuration change control), AU-2 (auditable event)
+/// - NIAP PP-CA: FAU_GEN.1 / FMT_SMF.1
+async fn emit_config_change_audit(
+    state: &EstState,
+    actor: &str,
+    account: &str,
+    action: &str,
+    identity: &str,
+    outcome: ostrich_audit::EventOutcome,
+) {
+    let mut event = ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::ConfigurationChange,
+        actor,
+        format!("est:account:{account}:identities"),
+        action,
+        outcome,
+    )
+    .with_details(serde_json::json!({ "account": account, "identity": identity }))
+    .build();
+    let _ = state.audit_sink.record(&mut event).await;
+}
+
+/// List the identities an account is allowed to enroll for.
+///
+/// `GET /api/v1/est/accounts/{account}/identities` — requires `ViewConfig`.
+async fn list_account_identities(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+    Path(account): Path<String>,
+) -> Result<Response> {
+    authorize_admin(&state, &user, Permission::ViewConfig, "est-account-identities")?;
+
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let identities = repo
+        .list_allowed_identities(&account)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to list allowed identities: {}", e)))?;
+
+    Ok((StatusCode::OK, Json(IdentitiesResponse { account, identities })).into_response())
+}
+
+/// Grant an account permission to enroll for an identity.
+///
+/// `POST /api/v1/est/accounts/{account}/identities` — requires `ModifyConfig`.
+async fn add_account_identity(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+    Path(account): Path<String>,
+    Json(req): Json<AddIdentityRequest>,
+) -> Result<Response> {
+    authorize_admin(&state, &user, Permission::ModifyConfig, "est-account-identities")?;
+
+    let identity = req.identity.trim().to_string();
+    if identity.is_empty() {
+        return Err(Error::BadRequest("identity must not be empty".to_string()));
+    }
+
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    repo.add_allowed_identity(&account, &identity)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to add allowed identity: {}", e)))?;
+
+    emit_config_change_audit(
+        &state,
+        &user.username,
+        &account,
+        "add_allowed_identity",
+        &identity,
+        ostrich_audit::EventOutcome::Success,
+    )
+    .await;
+
+    Ok((StatusCode::CREATED, Json(serde_json::json!({ "account": account, "identity": identity })))
+        .into_response())
+}
+
+/// Revoke an account's permission to enroll for an identity.
+///
+/// `DELETE /api/v1/est/accounts/{account}/identities/{identity}` — requires `ModifyConfig`.
+async fn delete_account_identity(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+    Path((account, identity)): Path<(String, String)>,
+) -> Result<Response> {
+    authorize_admin(&state, &user, Permission::ModifyConfig, "est-account-identities")?;
+
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    repo.remove_allowed_identity(&account, &identity)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to remove allowed identity: {}", e)))?;
+
+    emit_config_change_audit(
+        &state,
+        &user.username,
+        &account,
+        "remove_allowed_identity",
+        &identity,
+        ostrich_audit::EventOutcome::Success,
+    )
+    .await;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1366,6 +1538,25 @@ mod tests {
         assert_eq!(ids, vec!["device-1", "device-1", "dev@corp"]);
         // No CN, no SANs -> nothing asserted (allow-list will deny).
         assert!(csr_asserted_identities(None, &[]).is_empty());
+    }
+
+    #[test]
+    fn test_add_identity_request_deserializes() {
+        // Admin API contract: { "identity": "<value>" }.
+        let req: AddIdentityRequest =
+            serde_json::from_str(r#"{ "identity": "device-42.example.com" }"#).unwrap();
+        assert_eq!(req.identity, "device-42.example.com");
+    }
+
+    #[test]
+    fn test_identities_response_serializes() {
+        let body = IdentitiesResponse {
+            account: "ra-fleet-1".to_string(),
+            identities: vec!["device-1".to_string(), "device-2".to_string()],
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["account"], "ra-fleet-1");
+        assert_eq!(json["identities"][1], "device-2");
     }
 
     #[test]
