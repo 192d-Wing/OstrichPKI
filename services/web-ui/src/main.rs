@@ -11,17 +11,30 @@
 //! - NIST 800-53: SC-8 (Transmission Confidentiality), SC-18 (Mobile Code)
 //! - NIAP PP-CA: FIA_UAU.1 (User Authentication), FAU_GEN.1 (Audit Generation)
 
+// The server binary is host-only. Trunk compiles this whole package for
+// wasm32 to build the client lib; gate the server out so wasm gets just an
+// empty `main` (server-only crates like tokio/axum aren't available there).
+#[cfg(target_arch = "wasm32")]
+fn main() {}
+
+#[cfg(not(target_arch = "wasm32"))]
 mod server;
 
+#[cfg(not(target_arch = "wasm32"))]
 use anyhow::Result;
+#[cfg(not(target_arch = "wasm32"))]
 use clap::Parser;
+#[cfg(not(target_arch = "wasm32"))]
 use std::net::SocketAddr;
+#[cfg(not(target_arch = "wasm32"))]
 use tracing::info;
+#[cfg(not(target_arch = "wasm32"))]
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-
+#[cfg(not(target_arch = "wasm32"))]
 use server::{config::WebUiConfig, router::create_router};
 
 /// OstrichPKI Web UI Server
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Parser, Debug)]
 #[command(name = "ostrich-web-ui")]
 #[command(about = "OstrichPKI Web Administration Interface")]
@@ -48,6 +61,7 @@ struct Args {
     tls_key: Option<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -103,6 +117,7 @@ async fn main() -> Result<()> {
 }
 
 /// Wait for shutdown signal
+#[cfg(not(target_arch = "wasm32"))]
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()

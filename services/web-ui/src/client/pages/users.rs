@@ -281,10 +281,9 @@ pub fn users() -> Html {
 
     let columns: Vec<Column<User>> = vec![
         Column {
-            header: "User".to_string(),
+            label: "User".to_string(),
             key: "user".to_string(),
             sortable: true,
-            width: None,
             render: Rc::new(|user: &User| {
                 let initials: String = user
                     .full_name
@@ -308,19 +307,17 @@ pub fn users() -> Html {
             }),
         },
         Column {
-            header: "Email".to_string(),
+            label: "Email".to_string(),
             key: "email".to_string(),
             sortable: true,
-            width: Some("w-48".to_string()),
             render: Rc::new(|user: &User| {
                 html! { <span class="text-gray-500">{&user.email}</span> }
             }),
         },
         Column {
-            header: "Roles".to_string(),
+            label: "Roles".to_string(),
             key: "roles".to_string(),
             sortable: false,
-            width: Some("w-48".to_string()),
             render: Rc::new(|user: &User| {
                 html! {
                     <div class="flex flex-wrap gap-1">
@@ -343,10 +340,9 @@ pub fn users() -> Html {
             }),
         },
         Column {
-            header: "MFA".to_string(),
+            label: "MFA".to_string(),
             key: "mfa".to_string(),
             sortable: true,
-            width: Some("w-20".to_string()),
             render: Rc::new(|user: &User| {
                 if user.mfa_enabled {
                     html! {
@@ -364,10 +360,9 @@ pub fn users() -> Html {
             }),
         },
         Column {
-            header: "Last Login".to_string(),
+            label: "Last Login".to_string(),
             key: "last_login".to_string(),
             sortable: true,
-            width: Some("w-36".to_string()),
             render: Rc::new(|user: &User| {
                 html! {
                     <span class="text-gray-500">
@@ -377,10 +372,9 @@ pub fn users() -> Html {
             }),
         },
         Column {
-            header: "Status".to_string(),
+            label: "Status".to_string(),
             key: "status".to_string(),
             sortable: true,
-            width: Some("w-28".to_string()),
             render: Rc::new(|user: &User| {
                 html! {
                     <Badge
@@ -392,10 +386,9 @@ pub fn users() -> Html {
             }),
         },
         Column {
-            header: "Actions".to_string(),
+            label: "Actions".to_string(),
             key: "actions".to_string(),
             sortable: false,
-            width: Some("w-36".to_string()),
             render: {
                 let on_view = on_view.clone();
                 let on_edit = on_edit.clone();
@@ -722,7 +715,7 @@ pub fn users() -> Html {
                                 <button
                                     type="button"
                                     class="btn btn-secondary"
-                                    onclick={on_close_modal.clone()}
+                                    onclick={on_close_modal.reform(|_: MouseEvent| ())}
                                 >
                                     {"Cancel"}
                                 </button>
@@ -821,7 +814,7 @@ pub fn users() -> Html {
                             <button
                                 type="button"
                                 class="btn btn-secondary"
-                                onclick={on_close_modal.clone()}
+                                onclick={on_close_modal.reform(|_: MouseEvent| ())}
                             >
                                 {"Cancel"}
                             </button>
@@ -908,7 +901,7 @@ pub fn users() -> Html {
                                 <button
                                     type="button"
                                     class="btn btn-secondary"
-                                    onclick={on_close_modal.clone()}
+                                    onclick={on_close_modal.reform(|_: MouseEvent| ())}
                                 >
                                     {"Cancel"}
                                 </button>

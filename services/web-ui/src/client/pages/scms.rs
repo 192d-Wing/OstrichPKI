@@ -295,10 +295,9 @@ pub fn scms() -> Html {
 
     let columns: Vec<Column<Token>> = vec![
         Column {
-            header: "Token".to_string(),
+            label: "Token".to_string(),
             key: "token".to_string(),
             sortable: true,
-            width: None,
             render: Rc::new(|token: &Token| {
                 html! {
                     <div class="flex items-center gap-3">
@@ -316,19 +315,17 @@ pub fn scms() -> Html {
             }),
         },
         Column {
-            header: "Type".to_string(),
+            label: "Type".to_string(),
             key: "type".to_string(),
             sortable: true,
-            width: Some("w-28".to_string()),
             render: Rc::new(|token: &Token| {
                 html! { <span>{token.token_type.as_str()}</span> }
             }),
         },
         Column {
-            header: "Owner".to_string(),
+            label: "Owner".to_string(),
             key: "owner".to_string(),
             sortable: true,
-            width: Some("w-40".to_string()),
             render: Rc::new(|token: &Token| {
                 html! {
                     <div>
@@ -339,10 +336,9 @@ pub fn scms() -> Html {
             }),
         },
         Column {
-            header: "Keys".to_string(),
+            label: "Keys".to_string(),
             key: "keys".to_string(),
             sortable: true,
-            width: Some("w-20".to_string()),
             render: Rc::new(|token: &Token| {
                 html! {
                     <span class="text-gray-900">{token.key_count}</span>
@@ -350,10 +346,9 @@ pub fn scms() -> Html {
             }),
         },
         Column {
-            header: "Last Used".to_string(),
+            label: "Last Used".to_string(),
             key: "last_used".to_string(),
             sortable: true,
-            width: Some("w-32".to_string()),
             render: Rc::new(|token: &Token| {
                 html! {
                     <span class="text-gray-500">
@@ -363,10 +358,9 @@ pub fn scms() -> Html {
             }),
         },
         Column {
-            header: "Status".to_string(),
+            label: "Status".to_string(),
             key: "status".to_string(),
             sortable: true,
-            width: Some("w-28".to_string()),
             render: Rc::new(|token: &Token| {
                 html! {
                     <Badge
@@ -378,10 +372,9 @@ pub fn scms() -> Html {
             }),
         },
         Column {
-            header: "Actions".to_string(),
+            label: "Actions".to_string(),
             key: "actions".to_string(),
             sortable: false,
-            width: Some("w-32".to_string()),
             render: {
                 let on_view = on_view.clone();
                 let on_revoke = on_revoke.clone();
@@ -702,7 +695,7 @@ pub fn scms() -> Html {
                                 <button
                                     type="button"
                                     class="btn btn-secondary"
-                                    onclick={on_close_modal.clone()}
+                                    onclick={on_close_modal.reform(|_: MouseEvent| ())}
                                 >
                                     {"Cancel"}
                                 </button>
@@ -772,7 +765,7 @@ pub fn scms() -> Html {
                             <button
                                 type="button"
                                 class="btn btn-secondary"
-                                onclick={on_close_modal.clone()}
+                                onclick={on_close_modal.reform(|_: MouseEvent| ())}
                             >
                                 {"Cancel"}
                             </button>

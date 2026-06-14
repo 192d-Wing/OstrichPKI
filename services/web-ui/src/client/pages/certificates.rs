@@ -10,14 +10,12 @@
 
 use std::rc::Rc;
 use yew::prelude::*;
-use yew_router::prelude::*;
 
 use crate::components::auth::Protected;
 use crate::components::common::{
-    Alert, AlertType, Badge, BadgeVariant, Column, DataTable, Loading, Modal, ModalSize,
-    Pagination,
+    Alert, AlertType, Badge, BadgeVariant, Column, DataTable, KeyFn, Loading, Modal, ModalSize,
+    Pagination, RenderFn,
 };
-use crate::router::Route;
 use crate::services::api::{api, ApiError};
 use crate::types::api::{
     CertificateDetails, CertificateFilter, CertificateListResponse, CertificateStatus,
@@ -347,9 +345,9 @@ pub fn certificates() -> Html {
                                 <DataTable<CertificateSummary>
                                     columns={columns.clone()}
                                     data={state.certificates.clone()}
-                                    row_key={Rc::new(|cert: &CertificateSummary| cert.id.clone())}
+                                    row_key={Some(KeyFn(Rc::new(|cert: &CertificateSummary| cert.id.clone())))}
                                     empty_message="No certificates found"
-                                    actions={Some(Rc::new({
+                                    actions={Some(RenderFn(Rc::new({
                                         let on_revoke_click = on_revoke_click.clone();
                                         move |cert: &CertificateSummary| {
                                             let cert_clone = cert.clone();
@@ -376,16 +374,16 @@ pub fn certificates() -> Html {
                                                 </div>
                                             }
                                         }
-                                    }))}
+                                    })))}
                                 />
 
                                 // Pagination
                                 if total_pages > 1 {
                                     <div class="border-t border-gray-200 px-4 py-3">
                                         <Pagination
-                                            current_page={state.page}
-                                            total_pages={total_pages}
-                                            on_page_change={on_page_change}
+                                            current_page={state.page as usize}
+                                            total_pages={total_pages as usize}
+                                            on_page_change={on_page_change.reform(|p: usize| p as u32)}
                                         />
                                     </div>
                                 }
@@ -611,6 +609,7 @@ fn revoke_certificate_modal(props: &RevokeCertificateModalProps) -> Html {
 
     html! {
         <Modal
+            open={true}
             title="Revoke Certificate"
             size={ModalSize::Medium}
             on_close={props.on_close.clone()}
@@ -986,7 +985,7 @@ fn certificate_detail_content(props: &CertificateDetailContentProps) -> Html {
                             <div class="flex flex-wrap gap-2 mt-1">
                                 {
                                     cert.key_usage.iter().map(|ku| {
-                                        html! { <Badge variant={BadgeVariant::Gray}>{ ku }</Badge> }
+                                        html! { <Badge variant={BadgeVariant::Gray}>{ ku.clone() }</Badge> }
                                     }).collect::<Html>()
                                 }
                             </div>
@@ -996,7 +995,7 @@ fn certificate_detail_content(props: &CertificateDetailContentProps) -> Html {
                             <div class="flex flex-wrap gap-2 mt-1">
                                 {
                                     cert.extended_key_usage.iter().map(|eku| {
-                                        html! { <Badge variant={BadgeVariant::Info}>{ eku }</Badge> }
+                                        html! { <Badge variant={BadgeVariant::Info}>{ eku.clone() }</Badge> }
                                     }).collect::<Html>()
                                 }
                             </div>

@@ -18,4 +18,4 @@ target/
 .DS_STORE
 
 # Security vulnerability audit reports (CONFIDENTIAL - do not commit)
-docs/security/VULNERABILITY_AUDIT_*.md
+docs/security/VULNERABILITY_AUDIT_*.mdservices/web-ui/dist/

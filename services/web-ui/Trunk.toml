@@ -10,6 +10,11 @@ target = "index.html"
 # Output directory for compiled assets
 dist = "dist"
 
+# Emit stable (un-hashed) asset filenames (ostrich_web_ui_client.js /
+# _bg.wasm). The server's CSP-nonce index template references these fixed
+# names, so hashing must be off for the two to line up.
+filehash = false
+
 # Public URL path where static assets are served
 public_url = "/static/"
 
@@ -26,7 +31,7 @@ ignore = ["dist", "target"]
 [[hooks]]
 stage = "pre_build"
 command = "sh"
-command_arguments = ["-c", "npx tailwindcss -i ./input.css -o ./dist/output.css --minify 2>/dev/null || echo 'Tailwind not installed, skipping CSS build'"]
+command_arguments = ["-c", "mkdir -p dist && { npx --no-install tailwindcss -i ./input.css -o ./dist/output.css --minify 2>/dev/null || echo '/* tailwindcss CLI unavailable; UI renders unstyled */' > ./dist/output.css; }"]
 
 # WASM optimization settings
 [tools]

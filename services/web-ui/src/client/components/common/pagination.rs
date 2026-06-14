@@ -13,10 +13,12 @@ pub struct PaginationProps {
     /// Total number of pages
     pub total_pages: usize,
 
-    /// Total number of items
+    /// Total number of items (0 hides the "showing N results" summary)
+    #[prop_or_default]
     pub total_items: usize,
 
     /// Items per page
+    #[prop_or(10)]
     pub page_size: usize,
 
     /// Callback when page changes
@@ -122,15 +124,17 @@ pub fn pagination(props: &PaginationProps) -> Html {
             // Desktop view
             <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
                 <div>
-                    <p class="text-sm text-gray-700">
-                        {"Showing "}
-                        <span class="font-medium">{first_item}</span>
-                        {" to "}
-                        <span class="font-medium">{last_item}</span>
-                        {" of "}
-                        <span class="font-medium">{props.total_items}</span>
-                        {" results"}
-                    </p>
+                    if props.total_items > 0 {
+                        <p class="text-sm text-gray-700">
+                            {"Showing "}
+                            <span class="font-medium">{first_item}</span>
+                            {" to "}
+                            <span class="font-medium">{last_item}</span>
+                            {" of "}
+                            <span class="font-medium">{props.total_items}</span>
+                            {" results"}
+                        </p>
+                    }
                 </div>
                 <div>
                     <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">

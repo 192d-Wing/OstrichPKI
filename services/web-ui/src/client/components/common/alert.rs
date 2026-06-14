@@ -40,8 +40,13 @@ impl AlertType {
 /// Properties for the Alert component
 #[derive(Properties, Clone, PartialEq)]
 pub struct AlertProps {
-    /// The alert message
-    pub message: String,
+    /// The alert message (used when no children are provided).
+    #[prop_or_default]
+    pub message: Option<String>,
+
+    /// Child content, rendered instead of `message` when present.
+    #[prop_or_default]
+    pub children: Children,
 
     /// Alert type/severity
     #[prop_or_default]
@@ -103,9 +108,13 @@ pub fn alert(props: &AlertProps) -> Html {
                     if let Some(title) = &props.title {
                         <h3 class="text-sm font-medium">{title}</h3>
                     }
-                    <p class={if props.title.is_some() { "mt-1 text-sm" } else { "text-sm" }}>
-                        {&props.message}
-                    </p>
+                    <div class={if props.title.is_some() { "mt-1 text-sm" } else { "text-sm" }}>
+                        if !props.children.is_empty() {
+                            { for props.children.iter() }
+                        } else if let Some(message) = &props.message {
+                            { message }
+                        }
+                    </div>
                 </div>
                 if props.dismissible {
                     <div class="ml-auto pl-3">

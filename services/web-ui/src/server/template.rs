@@ -121,11 +121,11 @@ fn get_index_template() -> String {
 
     <!-- Yew WASM application -->
     <script type="module" nonce="{{CSP_NONCE}}">
-        import init from '/static/ostrich_web_ui_client.js';
+        import init from '/static/ostrich-web-ui.js';
 
         async function run() {
             try {
-                await init('/static/ostrich_web_ui_client_bg.wasm');
+                await init('/static/ostrich-web-ui_bg.wasm');
                 // Dispatch ready event
                 window.dispatchEvent(new Event('ostrich:ready'));
             } catch (e) {

@@ -23,17 +23,14 @@ pub enum SortDirection {
 /// Column definition for the data table
 #[derive(Clone)]
 pub struct Column<T: Clone + PartialEq + 'static> {
-    /// Column header text
-    pub header: String,
-
     /// Unique key for the column
     pub key: String,
 
+    /// Column header label
+    pub label: String,
+
     /// Whether the column is sortable
     pub sortable: bool,
-
-    /// Column width class (e.g., "w-32", "w-48")
-    pub width: Option<String>,
 
     /// Cell renderer function
     pub render: Rc<dyn Fn(&T) -> Html>,
@@ -41,7 +38,28 @@ pub struct Column<T: Clone + PartialEq + 'static> {
 
 impl<T: Clone + PartialEq + 'static> PartialEq for Column<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.key == other.key && self.header == other.header
+        self.key == other.key && self.label == other.label
+    }
+}
+
+/// Wraps a cell-render closure so it can live in `#[derive(PartialEq)]` props
+/// (closures aren't `PartialEq`; identity comparison via `Rc::ptr_eq` is used).
+#[derive(Clone)]
+pub struct RenderFn<T>(pub Rc<dyn Fn(&T) -> Html>);
+
+impl<T> PartialEq for RenderFn<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// Wraps a row-key closure (see [`RenderFn`]).
+#[derive(Clone)]
+pub struct KeyFn<T>(pub Rc<dyn Fn(&T) -> String>);
+
+impl<T> PartialEq for KeyFn<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -53,6 +71,14 @@ pub struct DataTableProps<T: Clone + PartialEq + 'static> {
 
     /// Column definitions
     pub columns: Vec<Column<T>>,
+
+    /// Optional per-row actions, rendered as a trailing "Actions" column.
+    #[prop_or_default]
+    pub actions: Option<RenderFn<T>>,
+
+    /// Optional stable row key (used for Yew list keying).
+    #[prop_or_default]
+    pub row_key: Option<KeyFn<T>>,
 
     /// Whether data is loading
     #[prop_or_default]
@@ -127,11 +153,8 @@ pub fn data_table<T: Clone + PartialEq + 'static>(props: &DataTableProps<T>) -> 
                     <thead class="bg-gray-50">
                         <tr>
                             { for props.columns.iter().map(|col| {
-                                let width_class = col.width.clone().unwrap_or_default();
-                                let header_class = format!(
-                                    "px-3 py-3.5 text-left text-sm font-semibold text-gray-900 {}",
-                                    width_class
-                                );
+                                let header_class =
+                                    "px-3 py-3.5 text-left text-sm font-semibold text-gray-900".to_string();
 
                                 if col.sortable {
                                     let is_sorted = props.sort_by.as_ref() == Some(&col.key);
@@ -159,7 +182,7 @@ pub fn data_table<T: Clone + PartialEq + 'static>(props: &DataTableProps<T>) -> 
                                                     }
                                                 })}
                                             >
-                                                {&col.header}
+                                                {&col.label}
                                                 <span class={if is_sorted { "text-gray-900" } else { "text-gray-400 group-hover:text-gray-500" }}>
                                                     {match direction {
                                                         SortDirection::Ascending => html! {
@@ -185,11 +208,16 @@ pub fn data_table<T: Clone + PartialEq + 'static>(props: &DataTableProps<T>) -> 
                                 } else {
                                     html! {
                                         <th scope="col" class={header_class}>
-                                            {&col.header}
+                                            {&col.label}
                                         </th>
                                     }
                                 }
                             })}
+                            if props.actions.is_some() {
+                                <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">
+                                    {"Actions"}
+                                </th>
+                            }
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 bg-white">
@@ -209,9 +237,11 @@ pub fn data_table<T: Clone + PartialEq + 'static>(props: &DataTableProps<T>) -> 
                             { for props.data.iter().map(|row| {
                                 let on_click = props.on_row_click.clone();
                                 let row_data = row.clone();
+                                let key = props.row_key.as_ref().map(|k| (k.0)(row));
 
                                 html! {
                                     <tr
+                                        key={key.unwrap_or_default()}
                                         class={row_class}
                                         onclick={Callback::from(move |_| {
                                             if let Some(cb) = &on_click {
@@ -226,6 +256,11 @@ pub fn data_table<T: Clone + PartialEq + 'static>(props: &DataTableProps<T>) -> 
                                                 </td>
                                             }
                                         })}
+                                        if let Some(actions) = &props.actions {
+                                            <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                                                {(actions.0)(row)}
+                                            </td>
+                                        }
                                     </tr>
                                 }
                             })}

@@ -234,10 +234,9 @@ pub fn approvals() -> Html {
 
     let columns: Vec<Column<ApprovalRequest>> = vec![
         Column {
-            header: "Request Type".to_string(),
+            label: "Request Type".to_string(),
             key: "type".to_string(),
             sortable: true,
-            width: Some("w-40".to_string()),
             render: Rc::new(|req: &ApprovalRequest| {
                 html! {
                     <span class="font-medium text-gray-900">
@@ -247,10 +246,9 @@ pub fn approvals() -> Html {
             }),
         },
         Column {
-            header: "Subject".to_string(),
+            label: "Subject".to_string(),
             key: "subject".to_string(),
             sortable: true,
-            width: None,
             render: Rc::new(|req: &ApprovalRequest| {
                 html! {
                     <div>
@@ -261,10 +259,9 @@ pub fn approvals() -> Html {
             }),
         },
         Column {
-            header: "Requestor".to_string(),
+            label: "Requestor".to_string(),
             key: "requestor".to_string(),
             sortable: true,
-            width: Some("w-40".to_string()),
             render: Rc::new(|req: &ApprovalRequest| {
                 html! {
                     <div>
@@ -275,28 +272,25 @@ pub fn approvals() -> Html {
             }),
         },
         Column {
-            header: "Created".to_string(),
+            label: "Created".to_string(),
             key: "created_at".to_string(),
             sortable: true,
-            width: Some("w-32".to_string()),
             render: Rc::new(|req: &ApprovalRequest| {
                 html! { <span>{&req.created_at}</span> }
             }),
         },
         Column {
-            header: "Expires".to_string(),
+            label: "Expires".to_string(),
             key: "expires_at".to_string(),
             sortable: true,
-            width: Some("w-32".to_string()),
             render: Rc::new(|req: &ApprovalRequest| {
                 html! { <span>{&req.expires_at}</span> }
             }),
         },
         Column {
-            header: "Priority".to_string(),
+            label: "Priority".to_string(),
             key: "priority".to_string(),
             sortable: true,
-            width: Some("w-24".to_string()),
             render: Rc::new(|req: &ApprovalRequest| {
                 let variant = match req.priority.as_str() {
                     "High" => BadgeVariant::Danger,
@@ -307,10 +301,9 @@ pub fn approvals() -> Html {
             }),
         },
         Column {
-            header: "Status".to_string(),
+            label: "Status".to_string(),
             key: "status".to_string(),
             sortable: true,
-            width: Some("w-28".to_string()),
             render: Rc::new(|req: &ApprovalRequest| {
                 html! {
                     <Badge
@@ -322,10 +315,9 @@ pub fn approvals() -> Html {
             }),
         },
         Column {
-            header: "Actions".to_string(),
+            label: "Actions".to_string(),
             key: "actions".to_string(),
             sortable: false,
-            width: Some("w-32".to_string()),
             render: {
                 let on_approve = on_approve.clone();
                 let on_deny = on_deny.clone();
@@ -469,7 +461,7 @@ pub fn approvals() -> Html {
                                 <button
                                     type="button"
                                     class="btn btn-secondary"
-                                    onclick={on_close_modal.clone()}
+                                    onclick={on_close_modal.reform(|_: MouseEvent| ())}
                                 >
                                     {"Cancel"}
                                 </button>
@@ -533,7 +525,7 @@ pub fn approvals() -> Html {
                                 <button
                                     type="button"
                                     class="btn btn-secondary"
-                                    onclick={on_close_modal.clone()}
+                                    onclick={on_close_modal.reform(|_: MouseEvent| ())}
                                 >
                                     {"Cancel"}
                                 </button>

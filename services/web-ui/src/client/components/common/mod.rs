@@ -14,8 +14,8 @@ mod modal;
 mod pagination;
 
 pub use alert::{Alert, AlertType};
-pub use badge::{Badge, BadgeVariant};
-pub use data_table::{Column, DataTable};
+pub use badge::{Badge, BadgeSize, BadgeVariant};
+pub use data_table::{Column, DataTable, KeyFn, RenderFn};
 pub use loading::Loading;
-pub use modal::Modal;
+pub use modal::{Modal, ModalSize};
 pub use pagination::Pagination;

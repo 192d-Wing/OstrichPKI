@@ -14,6 +14,7 @@ pub enum BadgeVariant {
     Warning,
     Danger,
     Info,
+    Gray,
 }
 
 impl BadgeVariant {
@@ -25,6 +26,7 @@ impl BadgeVariant {
             BadgeVariant::Warning => "bg-yellow-100 text-yellow-800",
             BadgeVariant::Danger => "bg-red-100 text-red-800",
             BadgeVariant::Info => "bg-blue-100 text-blue-800",
+            BadgeVariant::Gray => "bg-gray-100 text-gray-700",
         }
     }
 }
@@ -51,8 +53,13 @@ impl BadgeSize {
 /// Properties for the Badge component
 #[derive(Properties, Clone, PartialEq)]
 pub struct BadgeProps {
-    /// Badge text
-    pub text: String,
+    /// Badge text (used when no children are provided).
+    #[prop_or_default]
+    pub text: Option<String>,
+
+    /// Child content, rendered instead of `text` when present.
+    #[prop_or_default]
+    pub children: Children,
 
     /// Badge variant/color
     #[prop_or_default]
@@ -81,7 +88,7 @@ pub fn badge(props: &BadgeProps) -> Html {
     );
 
     let dot_class = match props.variant {
-        BadgeVariant::Default => "bg-gray-400",
+        BadgeVariant::Default | BadgeVariant::Gray => "bg-gray-400",
         BadgeVariant::Primary => "bg-primary-400",
         BadgeVariant::Success => "bg-green-400",
         BadgeVariant::Warning => "bg-yellow-400",
@@ -97,7 +104,11 @@ pub fn badge(props: &BadgeProps) -> Html {
             if let Some(icon) = &props.icon {
                 {icon.clone()}
             }
-            {&props.text}
+            if !props.children.is_empty() {
+                { for props.children.iter() }
+            } else if let Some(text) = &props.text {
+                { text }
+            }
         </span>
     }
 }
