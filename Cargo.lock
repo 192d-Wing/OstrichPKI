@@ -740,9 +740,9 @@ version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b77c319abfd5219629c45c34c89ba945ed3c5e49fcde9d16b6c3885f118a730"
 dependencies = [
- "const-oid",
- "der",
- "spki",
+ "const-oid 0.9.6",
+ "der 0.7.10",
+ "spki 0.7.3",
  "x509-cert",
 ]
 
@@ -823,6 +823,12 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "const-oid"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "const-random"
@@ -1158,11 +1164,20 @@ version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
- "const-oid",
+ "const-oid 0.9.6",
  "der_derive",
  "flagset",
  "pem-rfc7468 0.7.0",
  "zeroize",
+]
+
+[[package]]
+name = "der"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71fd89660b2dc699704064e59e9dba0147b903e85319429e131620d022be411b"
+dependencies = [
+ "const-oid 0.10.2",
 ]
 
 [[package]]
@@ -1206,7 +1221,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
- "const-oid",
+ "const-oid 0.9.6",
  "crypto-common",
  "subtle",
 ]
@@ -1255,12 +1270,12 @@ version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee27f32b5c5292967d2d4a9d7f1e0b0aed2c15daded5a60300e4abb9d8020bca"
 dependencies = [
- "der",
+ "der 0.7.10",
  "digest",
  "elliptic-curve",
  "rfc6979",
  "signature",
- "spki",
+ "spki 0.7.3",
 ]
 
 [[package]]
@@ -3416,7 +3431,7 @@ version = "0.15.0"
 dependencies = [
  "axum",
  "chrono",
- "der",
+ "der 0.7.10",
  "hickory-proto",
  "hickory-resolver",
  "ostrich-audit",
@@ -3431,7 +3446,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "spki",
+ "spki 0.8.0",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
@@ -3498,9 +3513,9 @@ name = "ostrich-benches"
 version = "0.15.0"
 dependencies = [
  "chrono",
- "const-oid",
+ "const-oid 0.9.6",
  "criterion",
- "der",
+ "der 0.7.10",
  "ostrich-common",
  "ostrich-crypto",
  "ostrich-x509",
@@ -3509,7 +3524,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "spki",
+ "spki 0.8.0",
  "tokio",
  "x509-cert",
 ]
@@ -3523,7 +3538,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
- "der",
+ "der 0.7.10",
  "hex",
  "ostrich-audit",
  "ostrich-common",
@@ -3597,7 +3612,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "config",
- "const-oid",
+ "const-oid 0.9.6",
  "hex",
  "jsonschema",
  "rand 0.9.2",
@@ -3631,7 +3646,7 @@ dependencies = [
  "base64 0.22.1",
  "cipher",
  "cryptoki",
- "der",
+ "der 0.7.10",
  "digest",
  "getrandom 0.3.4",
  "hex",
@@ -3644,7 +3659,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "spki",
+ "spki 0.8.0",
  "thiserror 2.0.18",
  "tokio",
  "tokio-test",
@@ -3683,7 +3698,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "cms",
- "der",
+ "der 0.7.10",
  "hex",
  "ostrich-audit",
  "ostrich-common",
@@ -3735,7 +3750,7 @@ version = "0.15.0"
 dependencies = [
  "anyhow",
  "clap",
- "der",
+ "der 0.7.10",
  "ostrich-common",
  "ostrich-crypto",
  "ostrich-db",
@@ -3759,7 +3774,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
- "der",
+ "der 0.7.10",
  "ed25519-dalek",
  "hex",
  "ostrich-audit",
@@ -3838,7 +3853,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
- "der",
+ "der 0.7.10",
  "hex",
  "ostrich-audit",
  "ostrich-common",
@@ -3986,8 +4001,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "const-oid",
- "der",
+ "const-oid 0.9.6",
+ "der 0.7.10",
  "digest",
  "hex",
  "ostrich-common",
@@ -3998,7 +4013,7 @@ dependencies = [
  "serde",
  "sha1",
  "sha2",
- "spki",
+ "spki 0.8.0",
  "thiserror 2.0.18",
  "tokio",
  "tokio-test",
@@ -4240,9 +4255,9 @@ version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8ffb9f10fa047879315e6625af03c164b16962a5368d724ed16323b68ace47f"
 dependencies = [
- "der",
+ "der 0.7.10",
  "pkcs8",
- "spki",
+ "spki 0.7.3",
 ]
 
 [[package]]
@@ -4253,11 +4268,11 @@ checksum = "e847e2c91a18bfa887dd028ec33f2fe6f25db77db3619024764914affe8b69a6"
 dependencies = [
  "aes",
  "cbc",
- "der",
+ "der 0.7.10",
  "pbkdf2",
  "scrypt",
  "sha2",
- "spki",
+ "spki 0.7.3",
 ]
 
 [[package]]
@@ -4266,10 +4281,10 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
 dependencies = [
- "der",
+ "der 0.7.10",
  "pkcs5",
  "rand_core 0.6.4",
- "spki",
+ "spki 0.7.3",
 ]
 
 [[package]]
@@ -4922,7 +4937,7 @@ version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8573f03f5883dcaebdfcf4725caa1ecb9c15b2ef50c43a07b816e06799bb12d"
 dependencies = [
- "const-oid",
+ "const-oid 0.9.6",
  "digest",
  "num-bigint-dig",
  "num-integer",
@@ -4932,7 +4947,7 @@ dependencies = [
  "rand_core 0.6.4",
  "sha2",
  "signature",
- "spki",
+ "spki 0.7.3",
  "subtle",
  "zeroize",
 ]
@@ -5157,7 +5172,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3e97a565f76233a6003f9f5c54be1d9c5bdfa3eccfb189469f11ec4901c47dc"
 dependencies = [
  "base16ct",
- "der",
+ "der 0.7.10",
  "generic-array",
  "pkcs8",
  "subtle",
@@ -5504,7 +5519,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
- "der",
+ "der 0.7.10",
+]
+
+[[package]]
+name = "spki"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d9efca8738c78ee9484207732f728b1ef517bbb1833d6fc0879ca898a522f6f"
+dependencies = [
+ "der 0.8.0",
 ]
 
 [[package]]
@@ -7209,11 +7233,11 @@ version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1301e935010a701ae5f8655edc0ad17c44bad3ac5ce8c39185f75453b720ae94"
 dependencies = [
- "const-oid",
- "der",
+ "const-oid 0.9.6",
+ "der 0.7.10",
  "sha1",
  "signature",
- "spki",
+ "spki 0.7.3",
  "tls_codec",
 ]
 
