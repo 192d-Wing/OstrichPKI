@@ -45,9 +45,9 @@ use crate::{
     error::{Error, Result},
 };
 use axum::{
-    Router,
+    Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
@@ -297,6 +297,7 @@ impl EstState {
 /// - RFC 7030 S3.2.2 - EST well-known URI structure
 pub fn create_router(state: EstState) -> Router {
     let auth_provider = state.auth_provider.clone();
+    let admin_auth_provider = state.auth_provider.clone();
     let rbac_policy = state.rbac_policy.clone();
 
     // Public endpoints (no authentication required per RFC 7030)
@@ -370,10 +371,56 @@ pub fn create_router(state: EstState) -> Router {
         )),
     };
 
-    // Merge public and protected routes
+    // Admin/management API for the per-account identity allow-list
+    // (`est_account_identities`), used by the `allowlist` enrollment identity
+    // policy.
+    //
+    // Authentication uses the SAME scheme as enrollment (selected by `auth_mode`)
+    // so the API is reachable in every deployment posture — including pure mTLS,
+    // where there is no password/bearer path and a hard-coded bearer layer would
+    // make the API unauthenticatable (an admin authenticates with a client
+    // certificate mapped to an account that holds the management role).
+    //
+    // Authorization is enforced *inside* each handler (not via `route_layer`)
+    // for two reasons: GET and POST share one MethodRouter but need different
+    // permissions (ViewConfig vs ModifyConfig); and the handler path audits every
+    // denial (`emit_failure_audit`), which the generic `AuthzLayer` does not.
+    //
+    // The DELETE identity is a catch-all segment so identities containing '/'
+    // (e.g. URI/SPIFFE SAN values) can still be revoked through the API.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIAP PP-CA: FMT_SMF.1 / FMT_MTD.1 - management of TSF data
+    // - NIST 800-53: AC-3 (access enforcement), CM-3 (config change control)
+    let admin_routes = Router::new()
+        .route(
+            "/api/v1/est/accounts/{account}/identities",
+            get(list_account_identities).post(add_account_identity),
+        )
+        .route(
+            "/api/v1/est/accounts/{account}/identities/{*identity}",
+            axum::routing::delete(delete_account_identity),
+        );
+    let admin_routes = match state.auth_mode {
+        EstAuthMode::Mtls => admin_routes.layer(middleware::from_fn_with_state(
+            admin_auth_provider,
+            ostrich_common::auth::MtlsAuthLayer::authenticate,
+        )),
+        EstAuthMode::MtlsWithBasicFallback => admin_routes.layer(middleware::from_fn_with_state(
+            admin_auth_provider,
+            ostrich_common::auth::MtlsOrBasicAuthLayer::authenticate,
+        )),
+        EstAuthMode::BearerToken => admin_routes.layer(middleware::from_fn_with_state(
+            admin_auth_provider,
+            AuthLayer::authenticate,
+        )),
+    };
+
+    // Merge public, protected, and admin routes
     Router::new()
         .merge(public_routes)
         .merge(protected_routes)
+        .merge(admin_routes)
         .with_state(state)
 }
 
@@ -754,6 +801,41 @@ fn csr_asserted_identities<'a>(cn: Option<&'a str>, sans: &'a [String]) -> Vec<&
     ids
 }
 
+/// Maximum length of an allow-list identity (matches the
+/// `est_account_identities.allowed_identity` `VARCHAR(255)` column).
+const MAX_IDENTITY_LEN: usize = 255;
+
+/// Canonicalize an identity for storage and comparison: trim surrounding
+/// whitespace and lowercase. DNS names (the common SAN type) are
+/// case-insensitive, and storing/comparing in one canonical form prevents a
+/// provisioned identity from silently never matching a CSR value (e.g. admin
+/// adds `Device-1` but the CSR asserts `device-1`).
+fn normalize_identity(identity: &str) -> String {
+    identity.trim().to_ascii_lowercase()
+}
+
+/// Validate and canonicalize an admin-supplied identity (SI-10 input validation).
+/// Rejects empty, over-long, or control-character-bearing values.
+fn validate_identity(raw: &str) -> Result<String> {
+    let id = normalize_identity(raw);
+    if id.is_empty() {
+        return Err(Error::BadRequest("identity must not be empty".to_string()));
+    }
+    // Count characters (not bytes) to match both the message and the DB
+    // VARCHAR(255) column semantics for multibyte identities.
+    if id.chars().count() > MAX_IDENTITY_LEN {
+        return Err(Error::BadRequest(format!(
+            "identity must be at most {MAX_IDENTITY_LEN} characters"
+        )));
+    }
+    if id.chars().any(|c| c.is_control()) {
+        return Err(Error::BadRequest(
+            "identity must not contain control characters".to_string(),
+        ));
+    }
+    Ok(id)
+}
+
 /// Authorize the requested certificate identity against the authenticated
 /// principal under the configured [`EstIdentityPolicy`] (H1).
 ///
@@ -788,9 +870,13 @@ async fn identity_authorized(
                 .map_err(|e| {
                     Error::Internal(format!("Failed to load account allow-list: {}", e))
                 })?;
-            let allowed: std::collections::HashSet<&str> =
-                allowed.iter().map(|s| s.as_str()).collect();
-            Ok(asserted.iter().all(|id| allowed.contains(id)))
+            // Compare in canonical form on both sides (see `normalize_identity`)
+            // so case/whitespace differences don't cause a silent non-match.
+            let allowed: std::collections::HashSet<String> =
+                allowed.iter().map(|s| normalize_identity(s)).collect();
+            Ok(asserted
+                .iter()
+                .all(|id| allowed.contains(&normalize_identity(id))))
         }
     }
 }
@@ -1296,6 +1382,213 @@ async fn server_key_gen(
         .into_response())
 }
 
+// ===========================================================================
+// Admin API: per-account identity allow-list (`est_account_identities`)
+// ===========================================================================
+
+/// Request body for adding an allowed identity to an account.
+#[derive(Debug, serde::Deserialize)]
+struct AddIdentityRequest {
+    /// Identity (CN or SAN value, e.g. "device-42.example.com") the account may
+    /// request in a certificate.
+    identity: String,
+}
+
+/// Response body listing an account's allowed identities.
+#[derive(Debug, serde::Serialize)]
+struct IdentitiesResponse {
+    account: String,
+    identities: Vec<String>,
+}
+
+/// Enforce an admin permission on the authenticated user (FMT_MTD.1), auditing
+/// the denial so unauthorized management attempts leave a trail (AU-2/AU-12),
+/// matching the enrollment handlers' failure-audit behavior.
+async fn authorize_admin(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+    permission: Permission,
+    account: &str,
+    action: &str,
+) -> Result<()> {
+    if state
+        .rbac_policy
+        .authorize(user, permission, "est-account-identities")
+        .is_err()
+    {
+        let resource = format!("est:account:{account}:identities");
+        emit_failure_audit(state, &user.username, &resource, &format!("{action}_denied")).await;
+        tracing::warn!(
+            actor = %user.username,
+            ?permission,
+            account,
+            "EST admin authorization denied"
+        );
+        return Err(Error::Forbidden("insufficient permission".to_string()));
+    }
+    Ok(())
+}
+
+/// Emit a configuration-change audit record for an allow-list mutation.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: CM-3 (configuration change control), AU-2 (auditable event)
+/// - NIAP PP-CA: FAU_GEN.1 / FMT_SMF.1
+async fn emit_config_change_audit(
+    state: &EstState,
+    actor: &str,
+    account: &str,
+    action: &str,
+    identity: &str,
+    outcome: ostrich_audit::EventOutcome,
+) {
+    let mut event = ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::ConfigurationChange,
+        actor,
+        format!("est:account:{account}:identities"),
+        action,
+        outcome,
+    )
+    .with_details(serde_json::json!({ "account": account, "identity": identity }))
+    .build();
+    let _ = state.audit_sink.record(&mut event).await;
+}
+
+/// List the identities an account is allowed to enroll for.
+///
+/// `GET /api/v1/est/accounts/{account}/identities` — requires `ViewConfig`.
+async fn list_account_identities(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+    Path(account): Path<String>,
+) -> Result<Response> {
+    authorize_admin(
+        &state,
+        &user,
+        Permission::ViewConfig,
+        &account,
+        "list_allowed_identities",
+    )
+    .await?;
+
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let identities = repo
+        .list_allowed_identities(&account)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to list allowed identities: {}", e)))?;
+
+    Ok((StatusCode::OK, Json(IdentitiesResponse { account, identities })).into_response())
+}
+
+/// Grant an account permission to enroll for an identity.
+///
+/// `POST /api/v1/est/accounts/{account}/identities` — requires `ModifyConfig`.
+async fn add_account_identity(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+    Path(account): Path<String>,
+    Json(req): Json<AddIdentityRequest>,
+) -> Result<Response> {
+    authorize_admin(
+        &state,
+        &user,
+        Permission::ModifyConfig,
+        &account,
+        "add_allowed_identity",
+    )
+    .await?;
+
+    // SI-10: validate + canonicalize (trim, lowercase, length/charset bounds).
+    let identity = validate_identity(&req.identity)?;
+
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    if let Err(e) = repo.add_allowed_identity(&account, &identity).await {
+        // AU-2: audit the failed mutation, not just successes.
+        emit_config_change_audit(
+            &state,
+            &user.username,
+            &account,
+            "add_allowed_identity",
+            &identity,
+            ostrich_audit::EventOutcome::Failure,
+        )
+        .await;
+        return Err(Error::Internal(format!("Failed to add allowed identity: {}", e)));
+    }
+
+    emit_config_change_audit(
+        &state,
+        &user.username,
+        &account,
+        "add_allowed_identity",
+        &identity,
+        ostrich_audit::EventOutcome::Success,
+    )
+    .await;
+
+    Ok((StatusCode::CREATED, Json(serde_json::json!({ "account": account, "identity": identity })))
+        .into_response())
+}
+
+/// Revoke an account's permission to enroll for an identity.
+///
+/// `DELETE /api/v1/est/accounts/{account}/identities/{identity}` — requires `ModifyConfig`.
+async fn delete_account_identity(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+    Path((account, identity)): Path<(String, String)>,
+) -> Result<Response> {
+    authorize_admin(
+        &state,
+        &user,
+        Permission::ModifyConfig,
+        &account,
+        "remove_allowed_identity",
+    )
+    .await?;
+
+    // Match the canonical form used at insert time so a revoke actually hits the
+    // stored row.
+    let identity = normalize_identity(&identity);
+
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let removed = match repo.remove_allowed_identity(&account, &identity).await {
+        Ok(removed) => removed,
+        Err(e) => {
+            emit_config_change_audit(
+                &state,
+                &user.username,
+                &account,
+                "remove_allowed_identity",
+                &identity,
+                ostrich_audit::EventOutcome::Failure,
+            )
+            .await;
+            return Err(Error::Internal(format!(
+                "Failed to remove allowed identity: {}",
+                e
+            )));
+        }
+    };
+
+    // Don't claim (or audit) a revocation that didn't happen (AU-3).
+    if !removed {
+        return Err(Error::NotFound);
+    }
+
+    emit_config_change_audit(
+        &state,
+        &user.username,
+        &account,
+        "remove_allowed_identity",
+        &identity,
+        ostrich_audit::EventOutcome::Success,
+    )
+    .await;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1366,6 +1659,41 @@ mod tests {
         assert_eq!(ids, vec!["device-1", "device-1", "dev@corp"]);
         // No CN, no SANs -> nothing asserted (allow-list will deny).
         assert!(csr_asserted_identities(None, &[]).is_empty());
+    }
+
+    #[test]
+    fn test_add_identity_request_deserializes() {
+        // Admin API contract: { "identity": "<value>" }.
+        let req: AddIdentityRequest =
+            serde_json::from_str(r#"{ "identity": "device-42.example.com" }"#).unwrap();
+        assert_eq!(req.identity, "device-42.example.com");
+    }
+
+    #[test]
+    fn test_normalize_identity_canonicalizes() {
+        // Trim + lowercase so admin-stored and CSR-asserted values match.
+        assert_eq!(normalize_identity("  Device-1.Example.COM "), "device-1.example.com");
+        assert_eq!(normalize_identity("dev@CORP"), "dev@corp");
+    }
+
+    #[test]
+    fn test_validate_identity_rules() {
+        assert_eq!(validate_identity("  Host.Example  ").unwrap(), "host.example");
+        assert!(validate_identity("   ").is_err()); // empty after trim
+        assert!(validate_identity("a\nb").is_err()); // control char
+        assert!(validate_identity(&"x".repeat(MAX_IDENTITY_LEN + 1)).is_err()); // too long
+        assert!(validate_identity(&"x".repeat(MAX_IDENTITY_LEN)).is_ok());
+    }
+
+    #[test]
+    fn test_identities_response_serializes() {
+        let body = IdentitiesResponse {
+            account: "ra-fleet-1".to_string(),
+            identities: vec!["device-1".to_string(), "device-2".to_string()],
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["account"], "ra-fleet-1");
+        assert_eq!(json["identities"][1], "device-2");
     }
 
     #[test]

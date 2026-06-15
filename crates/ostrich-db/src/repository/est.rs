@@ -215,12 +215,17 @@ impl EstRepository {
     }
 
     /// Revoke an account's permission to enroll for `identity`.
+    ///
+    /// Returns `true` if a row was actually deleted, `false` if no matching
+    /// (account, identity) grant existed — so callers can distinguish a real
+    /// revocation from a no-op and avoid auditing a revocation that did not
+    /// happen. NIST 800-53: AU-3 (accurate audit outcome).
     pub async fn remove_allowed_identity(
         &self,
         account_username: &str,
         identity: &str,
-    ) -> Result<()> {
-        sqlx::query(
+    ) -> Result<bool> {
+        let result = sqlx::query(
             r#"
             DELETE FROM est_account_identities
             WHERE account_username = $1 AND allowed_identity = $2
@@ -231,7 +236,7 @@ impl EstRepository {
         .execute(self.pool.pool())
         .await?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     // ===========================

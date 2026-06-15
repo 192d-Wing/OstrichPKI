@@ -27,6 +27,16 @@ Implemented RFC 7030 functions:
 | `POST /.well-known/est/serverkeygen` | §4.4 | client | `SubmitRequest` |
 | `GET /health`, `GET /ready` | — | none | — |
 
+Admin/management API (not part of RFC 7030). Authenticated with the same scheme
+as enrollment (`auth_mode`): bearer session token, or mTLS client certificate in
+mTLS deployments. Authorization is enforced in-handler (so denials are audited):
+
+| Endpoint | Permission | Purpose |
+|----------|------------|---------|
+| `GET /api/v1/est/accounts/{account}/identities` | `ViewConfig` | List an account's allow-list |
+| `POST /api/v1/est/accounts/{account}/identities` | `ModifyConfig` | Add an allowed identity |
+| `DELETE /api/v1/est/accounts/{account}/identities/{*identity}` | `ModifyConfig` | Remove an allowed identity |
+
 ## 2. Component overview
 
 ```mermaid
