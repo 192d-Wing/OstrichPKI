@@ -231,30 +231,41 @@ impl CertificateAuthProvider {
     }
 
     /// Parse the DER end-entity certificate and return its subject distinguished
-    /// name in RFC 4514 string form.
+    /// name as a canonical RFC 4514 string.
     ///
-    /// This is the identity the certificate maps to: the returned string is
-    /// matched verbatim against the `certificate_subject` column
-    /// (`find_by_certificate_dn`), and is rendered the same way the rest of the
-    /// system renders DNs (x509-parser, as used by ostrich-x509).
+    /// This string is the identity key: it is matched verbatim against the
+    /// `certificate_subject` column (`find_by_certificate_dn`). It is rendered
+    /// with `x509-cert`, whose `Name` Display is RFC 4514-compliant — special
+    /// characters (`,` `+` `"` `;` `<` `>` `\`, leading `#`, leading/trailing
+    /// space, control chars) are escaped and RDNs are emitted in reverse order.
+    /// The canonical, escaped form is REQUIRED here: an unescaped renderer lets a
+    /// single-valued `CN="admin, O=OstrichPKI"` collide with a two-RDN subject,
+    /// which under exact-match lookup would alias one client onto another's
+    /// account. Provisioned `certificate_subject` values must use this exact
+    /// RFC 4514 form.
+    ///
+    /// A certificate with an empty subject (identity carried only in SANs) is
+    /// rejected: this provider maps accounts by subject DN and does not support
+    /// SAN-only client certificates.
     ///
     /// # COMPLIANCE MAPPING
-    /// - RFC 4514: LDAP DN String Representation
+    /// - RFC 4514: LDAP DN String Representation (escaped, reverse order)
     /// - NIST 800-53: IA-2 - identification via the certificate subject
     fn extract_subject_dn(&self, cert_der: &[u8]) -> AuthResult<String> {
-        use x509_parser::prelude::FromDer;
+        use x509_cert::der::Decode;
 
-        let (_, cert) =
-            x509_parser::certificate::X509Certificate::from_der(cert_der).map_err(|e| {
-                AuthError::CertificateValidationFailed {
-                    reason: format!("failed to parse client certificate: {e}"),
-                }
-            })?;
+        let cert = x509_cert::Certificate::from_der(cert_der).map_err(|e| {
+            AuthError::CertificateValidationFailed {
+                reason: format!("failed to parse client certificate: {e}"),
+            }
+        })?;
 
-        let subject_dn = cert.subject().to_string();
+        let subject_dn = cert.tbs_certificate.subject.to_string();
         if subject_dn.is_empty() {
             return Err(AuthError::CertificateValidationFailed {
-                reason: "client certificate has an empty subject DN".to_string(),
+                reason: "client certificate has an empty subject DN; SAN-only \
+                         certificates are not supported for certificate authentication"
+                    .to_string(),
             });
         }
         Ok(subject_dn)
@@ -552,7 +563,7 @@ mod tests {
     /// provider's `extract_subject_dn` would render it — so a user registered
     /// under it will be found by `find_by_certificate_dn`.
     fn test_cert(common_name: &str) -> (Vec<u8>, String) {
-        use x509_parser::prelude::FromDer;
+        use x509_cert::der::Decode;
 
         let mut params = rcgen::CertificateParams::new(vec![]).expect("params");
         let mut dn = rcgen::DistinguishedName::new();
@@ -562,10 +573,24 @@ mod tests {
         let key = rcgen::KeyPair::generate().expect("keypair");
         let der = params.self_signed(&key).expect("self-signed").der().to_vec();
 
-        let (_, parsed) =
-            x509_parser::certificate::X509Certificate::from_der(&der).expect("parse");
-        let subject_dn = parsed.subject().to_string();
+        // Render the expected DN exactly as extract_subject_dn does (x509-cert).
+        let parsed = x509_cert::Certificate::from_der(&der).expect("parse");
+        let subject_dn = parsed.tbs_certificate.subject.to_string();
         (der, subject_dn)
+    }
+
+    #[test]
+    fn test_subject_dn_escapes_special_chars() {
+        // A CommonName whose value contains an RFC 4514 RDN separator (comma)
+        // must be escaped, so a single-valued CN cannot render identically to a
+        // genuine multi-RDN subject and alias onto another account on the
+        // exact-match lookup. (Escaping ',' and '+' is what disambiguates RDN
+        // boundaries; '=' inside a value need not be escaped.)
+        let (_der, dn) = test_cert("admin, O=Evil");
+        assert!(
+            dn.contains("admin\\,"),
+            "the comma inside the CN value must be escaped, got: {dn}"
+        );
     }
 
     #[tokio::test]

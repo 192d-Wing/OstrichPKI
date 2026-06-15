@@ -33,8 +33,10 @@ rand = { workspace = true }
 
 # Cryptographic types
 const-oid = { workspace = true }
-# X.509 parsing (extract subject DN from verified client certificates)
-x509-parser = { workspace = true }
+# X.509 parsing (extract a canonical RFC 4514 subject DN from verified client
+# certificates). x509-cert's Name Display is RFC 4514-escaped + reverse-ordered,
+# so distinct subjects cannot collide on the identity-lookup key.
+x509-cert = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }

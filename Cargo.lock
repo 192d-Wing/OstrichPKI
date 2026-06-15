@@ -3507,7 +3507,7 @@ dependencies = [
  "tower",
  "tracing",
  "uuid",
- "x509-parser",
+ "x509-cert",
 ]
 
 [[package]]
