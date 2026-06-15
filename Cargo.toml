@@ -167,8 +167,8 @@ rand_core = "0.9"
 reqwest = { version = "0.13", features = ["json"] }
 
 # DNS resolver (for ACME DNS-01 challenge)
-hickory-resolver = "0.25"
-hickory-proto = "0.25"
+hickory-resolver = "0.26"
+hickory-proto = "0.26"
 
 # TLS (for ACME TLS-ALPN-01 challenge, mTLS, and HTTPS service binaries)
 # The "ring" feature makes the ring CryptoProvider available; ostrich-common::tls
