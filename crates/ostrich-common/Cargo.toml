@@ -33,6 +33,8 @@ rand = { workspace = true }
 
 # Cryptographic types
 const-oid = { workspace = true }
+# X.509 parsing (extract subject DN from verified client certificates)
+x509-parser = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
@@ -63,3 +65,7 @@ rustls-pki-types = { workspace = true }
 axum-server = { workspace = true }
 # Surface the verified mTLS client certificate to handlers (custom Accept).
 tokio-rustls = { workspace = true }
+
+[dev-dependencies]
+# Generate real self-signed certificates for certificate-auth tests.
+rcgen = { workspace = true }
