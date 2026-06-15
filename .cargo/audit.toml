@@ -1,0 +1,38 @@
+# cargo-audit configuration (read by `cargo audit` and the CI audit job).
+#
+# Each ignored advisory below is triaged with a rationale and, where applicable,
+# a POA&M note. This is the security posture of record for known advisories that
+# currently have no actionable fix or require a tracked migration. New advisories
+# (anything not listed here) are surfaced by CI and by Dependabot.
+
+[advisories]
+ignore = [
+    # --- No fixed upgrade available ---
+
+    # RSA "Marvin" timing side-channel (PKCS#1 v1.5 decryption). The pure-Rust
+    # `rsa` crate has no patched release. Our usage is RSA signature VERIFICATION
+    # (OIDC, via openidconnect) and JWS SIGNING (ACME account keys) — neither
+    # exposes an RSA *decryption* oracle over attacker-chosen ciphertexts, which
+    # is what the attack requires. Risk accepted; revisit if `rsa` ships a fix.
+    "RUSTSEC-2023-0071",
+
+    # hickory-proto: NSEC3 closest-encloser validation can loop on crafted
+    # cross-zone DNSSEC responses. No fixed upgrade available. Reachable only via
+    # the ACME server's DNS-01 resolver. POA&M: re-evaluate when upstream fixes.
+    "RUSTSEC-2026-0118",
+
+    # --- Fix available but deferred (tracked migration) ---
+
+    # hickory-proto: O(n^2) name-compression CPU exhaustion during message
+    # ENCODING. Fixed in hickory 0.26.1, but 0.26 is a breaking API change for
+    # our resolver setup (name_server module now private, TokioConnectionProvider
+    # relocated). POA&M: migrate ACME DNS to hickory 0.26 in a dedicated change.
+    "RUSTSEC-2026-0119",
+
+    # --- Unmaintained / unsound (warnings; all transitive, no direct use) ---
+    "RUSTSEC-2025-0141", # bincode 1.x unmaintained (transitive)
+    "RUSTSEC-2024-0436", # paste unmaintained (transitive proc-macro dep)
+    "RUSTSEC-2024-0370", # proc-macro-error unmaintained (transitive)
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained (transitive)
+    "RUSTSEC-2026-0097", # rand unsound only with a custom global logger; not our usage
+]
