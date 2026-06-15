@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least-privilege default; jobs that need more request it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---- Blocking gate: the workspace must build and unit/lib tests must pass ----
+  build-test:
+    name: Build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # aws-lc-rs (PQC / crypto) builds C/asm; install its toolchain.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev pkg-config nasm
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --locked
+
+      # Unit/lib + binary tests only. Integration suites that need external
+      # infrastructure (PostgreSQL, a PKCS#11 HSM) are intentionally excluded
+      # here — they run in a separate, infra-provisioned workflow.
+      - name: Test
+        run: cargo test --workspace --lib --bins --locked
+
+  # ---- Advisory checks (non-blocking for now) ----
+  # These surface drift without failing PRs while pre-existing debt is paid down:
+  #   * rustfmt: the tree is not yet fully `cargo fmt`-normalized (~231 files).
+  #   * clippy:  a handful of pre-existing warnings remain across some crates.
+  # Once both are clean, drop `continue-on-error` to make them required gates.
+  clippy:
+    name: Clippy (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev pkg-config nasm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  rustfmt:
+    name: Rustfmt (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # Dependency vulnerability scan. Advisory here because Dependabot
+  # (.github/dependabot.yml) is the primary channel for vuln-driven updates;
+  # this gives an in-CI signal on the committed Cargo.lock.
+  audit:
+    name: cargo audit (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
