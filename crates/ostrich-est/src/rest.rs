@@ -821,7 +821,9 @@ fn validate_identity(raw: &str) -> Result<String> {
     if id.is_empty() {
         return Err(Error::BadRequest("identity must not be empty".to_string()));
     }
-    if id.len() > MAX_IDENTITY_LEN {
+    // Count characters (not bytes) to match both the message and the DB
+    // VARCHAR(255) column semantics for multibyte identities.
+    if id.chars().count() > MAX_IDENTITY_LEN {
         return Err(Error::BadRequest(format!(
             "identity must be at most {MAX_IDENTITY_LEN} characters"
         )));
