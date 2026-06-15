@@ -28,8 +28,8 @@
 
 use crate::{Error, KeyType, Result};
 use aws_lc_rs::kem::{
-    Algorithm, AlgorithmId, Ciphertext, DecapsulationKey, EncapsulationKey, ML_KEM_512,
-    ML_KEM_768, ML_KEM_1024,
+    Algorithm, AlgorithmId, Ciphertext, DecapsulationKey, EncapsulationKey, ML_KEM_512, ML_KEM_768,
+    ML_KEM_1024,
 };
 use zeroize::Zeroizing;
 
@@ -195,7 +195,11 @@ mod tests {
                 recovered.as_slice(),
                 "{kt:?}: sender and receiver shared secrets must match"
             );
-            assert_eq!(enc.shared_secret.len(), 32, "{kt:?}: shared secret is 32 bytes");
+            assert_eq!(
+                enc.shared_secret.len(),
+                32,
+                "{kt:?}: shared secret is 32 bytes"
+            );
         }
     }
 
@@ -204,8 +208,16 @@ mod tests {
         for kt in PARAM_SETS {
             let (ek_len, dk_len, ct_len) = expected_sizes(kt);
             let kp = MlKemKeyPair::generate(kt).unwrap();
-            assert_eq!(kp.public_key_bytes().unwrap().len(), ek_len, "{kt:?} ek size");
-            assert_eq!(kp.private_key_bytes().unwrap().len(), dk_len, "{kt:?} dk size");
+            assert_eq!(
+                kp.public_key_bytes().unwrap().len(),
+                ek_len,
+                "{kt:?} ek size"
+            );
+            assert_eq!(
+                kp.private_key_bytes().unwrap().len(),
+                dk_len,
+                "{kt:?} dk size"
+            );
             let enc = encapsulate(kt, &kp.public_key_bytes().unwrap()).unwrap();
             assert_eq!(enc.ciphertext.len(), ct_len, "{kt:?} ciphertext size");
         }

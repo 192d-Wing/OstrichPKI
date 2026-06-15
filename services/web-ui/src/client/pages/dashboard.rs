@@ -10,7 +10,7 @@ use yew::prelude::*;
 
 use crate::components::auth::Protected;
 use crate::components::common::{Alert, AlertType, Loading};
-use crate::services::api::{api, ApiError};
+use crate::services::api::{ApiError, api};
 use crate::types::api::{ActivityItem, DashboardData, DashboardStats};
 
 /// Loading state for async data
@@ -372,9 +372,21 @@ struct QuickActionCardProps {
 fn quick_action_card(props: &QuickActionCardProps) -> Html {
     let (hover_border, hover_bg, text_color) = match props.icon_color {
         "blue" => ("hover:border-blue-500", "hover:bg-blue-50", "text-blue-600"),
-        "green" => ("hover:border-green-500", "hover:bg-green-50", "text-green-600"),
-        "purple" => ("hover:border-purple-500", "hover:bg-purple-50", "text-purple-600"),
-        "orange" => ("hover:border-orange-500", "hover:bg-orange-50", "text-orange-600"),
+        "green" => (
+            "hover:border-green-500",
+            "hover:bg-green-50",
+            "text-green-600",
+        ),
+        "purple" => (
+            "hover:border-purple-500",
+            "hover:bg-purple-50",
+            "text-purple-600",
+        ),
+        "orange" => (
+            "hover:border-orange-500",
+            "hover:bg-orange-50",
+            "text-orange-600",
+        ),
         _ => ("hover:border-gray-500", "hover:bg-gray-50", "text-gray-600"),
     };
 
@@ -409,15 +421,30 @@ struct ActivityItemRowProps {
 fn activity_item_row(props: &ActivityItemRowProps) -> Html {
     // Determine icon based on action
     let (icon, icon_color) = if props.action.contains("issued") {
-        ("M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z", "text-green-500")
+        (
+            "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z",
+            "text-green-500",
+        )
     } else if props.action.contains("revoked") {
-        ("M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636", "text-red-500")
+        (
+            "M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636",
+            "text-red-500",
+        )
     } else if props.action.contains("Approval") {
-        ("M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2", "text-blue-500")
+        (
+            "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
+            "text-blue-500",
+        )
     } else if props.action.contains("CRL") {
-        ("M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z", "text-purple-500")
+        (
+            "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
+            "text-purple-500",
+        )
     } else {
-        ("M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z", "text-gray-500")
+        (
+            "M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+            "text-gray-500",
+        )
     };
 
     html! {

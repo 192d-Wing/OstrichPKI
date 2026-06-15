@@ -27,12 +27,12 @@
 //! of crates/ostrich-acme from RFC 8555. The client deliberately matches the
 //! server's actual behavior; the quirks are bug reports for the server side.
 
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rsa::RsaPrivateKey;
+use base64::Engine;
 use rsa::pkcs1v15::SigningKey;
 use rsa::signature::{SignatureEncoding, Signer};
 use rsa::traits::PublicKeyParts;
+use rsa::RsaPrivateKey;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
@@ -178,7 +178,10 @@ impl AcmeClient {
     /// lexicographic order, no whitespace). This matches the server's
     /// jws::compute_jwk_thumbprint exactly.
     fn jwk_thumbprint(&self) -> String {
-        let canonical = format!(r#"{{"e":"{}","kty":"RSA","n":"{}"}}"#, self.jwk_e, self.jwk_n);
+        let canonical = format!(
+            r#"{{"e":"{}","kty":"RSA","n":"{}"}}"#,
+            self.jwk_e, self.jwk_n
+        );
         URL_SAFE_NO_PAD.encode(Sha256::digest(canonical.as_bytes()))
     }
 
@@ -351,8 +354,7 @@ async fn start_http01_responder(
                         Ok(0) => break,
                         Ok(n) => {
                             read += n;
-                            if buf[..read].windows(4).any(|w| w == b"\r\n\r\n")
-                                || read == buf.len()
+                            if buf[..read].windows(4).any(|w| w == b"\r\n\r\n") || read == buf.len()
                             {
                                 break;
                             }
@@ -392,15 +394,15 @@ async fn start_http01_responder(
 fn build_csr_der(identifier: &str) -> Vec<u8> {
     use std::str::FromStr;
     use x509_cert::builder::{Builder, RequestBuilder};
-    use x509_cert::der::Encode;
     use x509_cert::der::asn1::Ia5String;
-    use x509_cert::ext::pkix::SubjectAltName;
+    use x509_cert::der::Encode;
     use x509_cert::ext::pkix::name::GeneralName;
+    use x509_cert::ext::pkix::SubjectAltName;
     use x509_cert::name::Name;
 
     println!("[acme-client] generating RSA-2048 certificate key + CSR...");
-    let cert_key = RsaPrivateKey::new(&mut rand::thread_rng(), 2048)
-        .expect("certificate RSA keygen failed");
+    let cert_key =
+        RsaPrivateKey::new(&mut rand::thread_rng(), 2048).expect("certificate RSA keygen failed");
     let csr_signer = SigningKey::<Sha256>::new(cert_key);
 
     let subject = Name::from_str(&format!("CN={}", identifier)).expect("invalid subject DN");
@@ -455,7 +457,10 @@ async fn test_acme_full_issuance_flow() {
     let new_order_url = directory
         .new_order
         .unwrap_or_else(|| format!("{}/acme/new-order", base_url));
-    println!("[step 1] newNonce={} newAccount={}", new_nonce_url, new_account_url);
+    println!(
+        "[step 1] newNonce={} newAccount={}",
+        new_nonce_url, new_account_url
+    );
 
     // -------------------------------------------------------------------
     // Step 2: Initial nonce (RFC 8555 §7.2)
@@ -491,7 +496,12 @@ async fn test_acme_full_issuance_flow() {
     let account_location = headers
         .get("Location")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or_else(|| panic!("new-account response missing Location header; body: {}", body))
+        .unwrap_or_else(|| {
+            panic!(
+                "new-account response missing Location header; body: {}",
+                body
+            )
+        })
         .to_string();
     client.kid = Some(account_location.clone());
     println!("[step 3] account created, kid = {}", account_location);
@@ -522,8 +532,8 @@ async fn test_acme_full_issuance_flow() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or_else(|| panic!("new-order response missing Location header; body: {}", body))
         .to_string();
-    let order: OrderObject =
-        serde_json::from_str(&body).unwrap_or_else(|e| panic!("invalid order JSON: {} - {}", e, body));
+    let order: OrderObject = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("invalid order JSON: {} - {}", e, body));
     assert!(
         !order.authorizations.is_empty(),
         "order has no authorizations: {}",
@@ -549,8 +559,8 @@ async fn test_acme_full_issuance_flow() {
     println!("[step 6] GET authorization {}", authz_url);
     let response = client.get(&authz_url).await;
     let (_, body) = expect_status(response, reqwest::StatusCode::OK, "get-authorization").await;
-    let authz: AuthzObject =
-        serde_json::from_str(&body).unwrap_or_else(|e| panic!("invalid authz JSON: {} - {}", e, body));
+    let authz: AuthzObject = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("invalid authz JSON: {} - {}", e, body));
     let challenge = authz
         .challenges
         .iter()
@@ -573,9 +583,7 @@ async fn test_acme_full_issuance_flow() {
     // Step 8: Trigger challenge validation and poll (RFC 8555 §7.5.1)
     // -------------------------------------------------------------------
     println!("[step 8] POST {{}} to challenge {}", challenge_url);
-    let response = client
-        .post_jws(&new_nonce_url, &challenge_url, "{}")
-        .await;
+    let response = client.post_jws(&new_nonce_url, &challenge_url, "{}").await;
     let (_, body) = expect_status(response, reqwest::StatusCode::OK, "respond-to-challenge").await;
     println!("[step 8] challenge response accepted: {}", body);
 
@@ -587,7 +595,10 @@ async fn test_acme_full_issuance_flow() {
     // crates/ostrich-acme/src/validation.rs with .with_http_port() and
     // .insecure_allow_private_domains() for exactly this setup). This poll
     // times out against a stock server until that is wired up.
-    println!("[step 8] polling authorization until valid (timeout {:?})", POLL_TIMEOUT);
+    println!(
+        "[step 8] polling authorization until valid (timeout {:?})",
+        POLL_TIMEOUT
+    );
     let deadline = Instant::now() + POLL_TIMEOUT;
     loop {
         let response = client.get(&authz_url).await;
@@ -630,7 +641,11 @@ async fn test_acme_full_issuance_flow() {
     // -------------------------------------------------------------------
     let csr_der = build_csr_der(identifier);
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
-    println!("[step 9] POST finalize {} ({} byte CSR)", finalize_url, csr_der.len());
+    println!(
+        "[step 9] POST finalize {} ({} byte CSR)",
+        finalize_url,
+        csr_der.len()
+    );
     let payload = serde_json::json!({ "csr": csr_b64 }).to_string();
     let response = client
         .post_jws(&new_nonce_url, &finalize_url, &payload)
@@ -687,7 +702,10 @@ async fn test_acme_full_issuance_flow() {
     // -------------------------------------------------------------------
     // Step 11: Assertions on the issued certificate (RFC 5280)
     // -------------------------------------------------------------------
-    println!("[step 11] validating issued certificate ({} bytes PEM)", pem_chain.len());
+    println!(
+        "[step 11] validating issued certificate ({} bytes PEM)",
+        pem_chain.len()
+    );
     assert!(
         pem_chain.contains("-----BEGIN CERTIFICATE-----"),
         "response is not a PEM certificate chain: {}",
@@ -698,7 +716,9 @@ async fn test_acme_full_issuance_flow() {
         .next()
         .expect("no PEM block in certificate chain")
         .expect("invalid PEM block");
-    let cert = pem.parse_x509().expect("failed to parse issued certificate");
+    let cert = pem
+        .parse_x509()
+        .expect("failed to parse issued certificate");
 
     // SAN contains DNS:localhost (RFC 5280 §4.2.1.6; acme-default profile)
     let san = cert

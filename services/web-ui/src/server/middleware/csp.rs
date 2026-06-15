@@ -12,11 +12,11 @@
 use axum::{
     body::Body,
     extract::Request,
-    http::{header, HeaderValue},
+    http::{HeaderValue, header},
     middleware::Next,
     response::Response,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use ostrich_common::util::random::secure_random_bytes;
 
 /// Default nonce length in bytes (128 bits)
@@ -120,10 +120,16 @@ fn add_security_headers(response: &mut Response<Body>) {
     headers.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
 
     // Prevent MIME type sniffing
-    headers.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    headers.insert(
+        "X-Content-Type-Options",
+        HeaderValue::from_static("nosniff"),
+    );
 
     // Enable XSS filter (legacy, but still useful for older browsers)
-    headers.insert("X-XSS-Protection", HeaderValue::from_static("1; mode=block"));
+    headers.insert(
+        "X-XSS-Protection",
+        HeaderValue::from_static("1; mode=block"),
+    );
 
     // Referrer policy - don't leak URLs
     headers.insert(

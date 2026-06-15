@@ -11,8 +11,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 // rand_core 0.6 traits, while the workspace `rand` is 0.9 (rand_core 0.9).
 // Same pattern as crates/ostrich-crypto/src/software/mod.rs.
 use rsa::RsaPrivateKey;
-use rsa::rand_core::OsRng;
 use rsa::pkcs1v15::SigningKey;
+use rsa::rand_core::OsRng;
 use rsa::signature::{Keypair, RandomizedSigner, Verifier};
 use sha2::Sha256;
 

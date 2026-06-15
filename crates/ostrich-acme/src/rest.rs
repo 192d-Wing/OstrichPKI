@@ -1082,7 +1082,9 @@ async fn finalize_order(
     //
     // COMPLIANCE: RFC 8555 §7.4; NIST 800-53 SI-10 / AC-3; NIAP PP-CA FIA_UAU.1.
     let order_identifiers: Vec<Identifier> = serde_json::from_value(db_order.identifiers.clone())
-        .map_err(|e| Error::ServerInternal(format!("Failed to parse order identifiers: {}", e)))?;
+        .map_err(|e| {
+        Error::ServerInternal(format!("Failed to parse order identifiers: {}", e))
+    })?;
 
     validate_csr_identifiers(&order_identifiers, &parsed_csr.subject_alternative_names)?;
 

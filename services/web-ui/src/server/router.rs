@@ -13,11 +13,11 @@
 
 use anyhow::Result;
 use axum::{
+    Router,
     extract::State,
     middleware,
     response::{IntoResponse, Json, Response},
     routing::{get, post},
-    Router,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -27,8 +27,7 @@ use super::{
     auth,
     config::{AuthMode, WebUiConfig},
     middleware::{audit_middleware, csp_middleware, require_session},
-    proxy,
-    template,
+    proxy, template,
 };
 
 /// Application state shared across handlers
@@ -110,11 +109,9 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
     // - NIST 800-53: AC-3 (Access Enforcement)
     // - NIST 800-53: IA-2 (Identification and Authentication)
     // - NIAP PP-CA: FIA_UAU.1 (User Authentication before TSF-mediated actions)
-    let api_routes = proxy::create_proxy_routes(state.clone())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_session,
-        ));
+    let api_routes = proxy::create_proxy_routes(state.clone()).layer(
+        middleware::from_fn_with_state(state.clone(), require_session),
+    );
 
     // Static file serving
     let static_routes = Router::new().nest_service(

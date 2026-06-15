@@ -25,11 +25,7 @@ use std::process::Command;
 
 use ostrich_common::types::{DistinguishedName, SerialNumber};
 use ostrich_crypto::{Algorithm, CryptoProvider, CryptoProviderFactory, KeyType};
-use ostrich_db::{
-    DatabasePool, PoolConfig,
-    models::Certificate,
-    repository::CaRepository,
-};
+use ostrich_db::{DatabasePool, PoolConfig, models::Certificate, repository::CaRepository};
 use ostrich_x509::{CertificateBuilder, extensions::SubjectAltName, profile::KeyUsage};
 
 use crate::CertificateAuthority;
@@ -132,15 +128,29 @@ async fn issued_certificates_carry_aia_extension_verified_by_openssl() {
     let ca_repo = CaRepository::new(pool.clone());
     let ca_key_row = ca_repo
         .create_ca_key(
-            key_label, "EcP256", "EcdsaP256Sha256", "Pkcs11", Some(slot as i64),
-            &key_handle.key_id, false,
+            key_label,
+            "EcP256",
+            "EcdsaP256Sha256",
+            "Pkcs11",
+            Some(slot as i64),
+            &key_handle.key_id,
+            false,
         )
         .await
         .unwrap();
     let ca_cert_row = ca_repo
         .create_ca_certificate(
-            ca_key_row.id, serial.as_bytes(), &dn, &dn, not_before, not_after,
-            &ca_der, &ca_pem, true, None, None,
+            ca_key_row.id,
+            serial.as_bytes(),
+            &dn,
+            &dn,
+            not_before,
+            not_after,
+            &ca_der,
+            &ca_pem,
+            true,
+            None,
+            None,
         )
         .await
         .unwrap();

@@ -88,9 +88,13 @@ async fn test_ca_issue_certificate_rsa() {
     let spki = fixtures::generate_test_rsa_spki();
     let common_name = generate_test_domain();
 
-    let response =
-        issue_test_certificate(&mut client, &config.ca_profile_name, &common_name, spki.clone())
-            .await;
+    let response = issue_test_certificate(
+        &mut client,
+        &config.ca_profile_name,
+        &common_name,
+        spki.clone(),
+    )
+    .await;
 
     assert_issued_certificate(&response, &common_name, &spki);
     println!("✓ RSA certificate issued: {}", response.certificate_id);
@@ -111,12 +115,19 @@ async fn test_ca_issue_certificate_ecdsa() {
     let spki = fixtures::generate_test_p256_spki();
     let common_name = generate_test_domain();
 
-    let response =
-        issue_test_certificate(&mut client, &config.ca_profile_name, &common_name, spki.clone())
-            .await;
+    let response = issue_test_certificate(
+        &mut client,
+        &config.ca_profile_name,
+        &common_name,
+        spki.clone(),
+    )
+    .await;
 
     assert_issued_certificate(&response, &common_name, &spki);
-    println!("✓ ECDSA P-256 certificate issued: {}", response.certificate_id);
+    println!(
+        "✓ ECDSA P-256 certificate issued: {}",
+        response.certificate_id
+    );
 }
 
 /// Test certificate issuance with EdDSA (Ed25519)
@@ -134,9 +145,13 @@ async fn test_ca_issue_certificate_eddsa() {
     let spki = fixtures::generate_test_ed25519_spki();
     let common_name = generate_test_domain();
 
-    let response =
-        issue_test_certificate(&mut client, &config.ca_profile_name, &common_name, spki.clone())
-            .await;
+    let response = issue_test_certificate(
+        &mut client,
+        &config.ca_profile_name,
+        &common_name,
+        spki.clone(),
+    )
+    .await;
 
     assert_issued_certificate(&response, &common_name, &spki);
     println!("✓ Ed25519 certificate issued: {}", response.certificate_id);
@@ -168,9 +183,8 @@ async fn test_ca_issue_certificate_mldsa() {
 
     let result = client.issue_certificate(tonic::Request::new(request)).await;
 
-    let status = result.expect_err(
-        "ML-DSA issuance must fail cleanly until FIPS 204 support is implemented",
-    );
+    let status = result
+        .expect_err("ML-DSA issuance must fail cleanly until FIPS 204 support is implemented");
     assert!(
         !status.message().is_empty(),
         "error status must carry a diagnostic message"
@@ -197,9 +211,13 @@ async fn test_ca_revoke_certificate() {
     // Issue a certificate to revoke (RSA flow)
     let spki = fixtures::generate_test_rsa_spki();
     let common_name = generate_test_domain();
-    let issued =
-        issue_test_certificate(&mut client, &config.ca_profile_name, &common_name, spki.clone())
-            .await;
+    let issued = issue_test_certificate(
+        &mut client,
+        &config.ca_profile_name,
+        &common_name,
+        spki.clone(),
+    )
+    .await;
     assert_issued_certificate(&issued, &common_name, &spki);
 
     // Revoke with reason keyCompromise (RFC 5280 §5.3.1)
@@ -240,7 +258,10 @@ async fn test_ca_revoke_certificate() {
         "revocation_time must be present for a revoked certificate"
     );
 
-    println!("✓ Certificate {} revoked (keyCompromise)", issued.certificate_id);
+    println!(
+        "✓ Certificate {} revoked (keyCompromise)",
+        issued.certificate_id
+    );
 }
 
 /// Test CRL generation

@@ -51,17 +51,46 @@ fn est_status() -> Html {
 
     let status_badge = match *health {
         Health::Checking => html! { <Badge variant={BadgeVariant::Gray}>{ "Checking…" }</Badge> },
-        Health::Online => html! { <Badge variant={BadgeVariant::Success} dot={true}>{ "Online" }</Badge> },
-        Health::Offline => html! { <Badge variant={BadgeVariant::Danger} dot={true}>{ "Unreachable" }</Badge> },
+        Health::Online => {
+            html! { <Badge variant={BadgeVariant::Success} dot={true}>{ "Online" }</Badge> }
+        }
+        Health::Offline => {
+            html! { <Badge variant={BadgeVariant::Danger} dot={true}>{ "Unreachable" }</Badge> }
+        }
     };
 
     // Each EST operation: (method, path, auth, description)
     let ops = [
-        ("GET", "/.well-known/est/cacerts", "Public", "Distribute the CA certificate chain (trust anchors), PKCS#7."),
-        ("GET", "/.well-known/est/csrattrs", "Public", "CSR attributes the client should include (RFC 7030 §4.5)."),
-        ("POST", "/.well-known/est/simpleenroll", "mTLS", "Enroll: submit a CSR, receive a certificate (PKCS#7)."),
-        ("POST", "/.well-known/est/simplereenroll", "mTLS", "Re-enroll an existing certificate before expiry."),
-        ("POST", "/.well-known/est/serverkeygen", "mTLS", "Server-side key generation: returns key + certificate."),
+        (
+            "GET",
+            "/.well-known/est/cacerts",
+            "Public",
+            "Distribute the CA certificate chain (trust anchors), PKCS#7.",
+        ),
+        (
+            "GET",
+            "/.well-known/est/csrattrs",
+            "Public",
+            "CSR attributes the client should include (RFC 7030 §4.5).",
+        ),
+        (
+            "POST",
+            "/.well-known/est/simpleenroll",
+            "mTLS",
+            "Enroll: submit a CSR, receive a certificate (PKCS#7).",
+        ),
+        (
+            "POST",
+            "/.well-known/est/simplereenroll",
+            "mTLS",
+            "Re-enroll an existing certificate before expiry.",
+        ),
+        (
+            "POST",
+            "/.well-known/est/serverkeygen",
+            "mTLS",
+            "Server-side key generation: returns key + certificate.",
+        ),
     ];
 
     html! {

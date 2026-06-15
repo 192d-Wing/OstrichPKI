@@ -132,6 +132,9 @@ async fn test_ocsp_good_then_revoked() {
         "expected OCSP status 'revoked' after revocation, got: {}",
         status
     );
-    println!("[step 4] OCSP reports revoked (post-revocation): {}", status);
+    println!(
+        "[step 4] OCSP reports revoked (post-revocation): {}",
+        status
+    );
     println!("=== OCSP revocation round-trip PASSED ===");
 }

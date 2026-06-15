@@ -17,11 +17,11 @@
 //! - NIAP PP-CA: FTA_SSL.1/FTA_SSL.3 (session timeout enforcement)
 
 use axum::{
+    Json,
     extract::{Request, State},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
-    Json,
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde_json::json;
@@ -60,9 +60,10 @@ pub async fn require_session(
 
     // Server-side validation: token must map to a live, non-expired session.
     match state.session_manager.validate_session(&token).await {
-        Some(session) if session.locked => {
-            reject(&path, "session locked (inactivity); re-authentication required")
-        }
+        Some(session) if session.locked => reject(
+            &path,
+            "session locked (inactivity); re-authentication required",
+        ),
         Some(session) => {
             // Make the validated session available to downstream proxy handlers
             // so they can attach the bound backend credential (internal mode).

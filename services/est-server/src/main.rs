@@ -158,8 +158,14 @@ impl Settings {
             tls_cert: args.tls_cert.or(file.tls_cert),
             tls_key: args.tls_key.or(file.tls_key),
             tls_ca_cert: args.tls_ca_cert.or(file.tls_ca_cert),
-            allow_basic_auth: args.allow_basic_auth.or(file.allow_basic_auth).unwrap_or(false),
-            allow_bearer_auth: args.allow_bearer_auth.or(file.allow_bearer_auth).unwrap_or(false),
+            allow_basic_auth: args
+                .allow_basic_auth
+                .or(file.allow_basic_auth)
+                .unwrap_or(false),
+            allow_bearer_auth: args
+                .allow_bearer_auth
+                .or(file.allow_bearer_auth)
+                .unwrap_or(false),
             log_level: args
                 .log_level
                 .or(file.log_level)
@@ -249,7 +255,9 @@ async fn main() -> Result<()> {
         (false, _) => EstAuthMode::BearerToken,
     };
 
-    let user_repo = Arc::new(ostrich_db::repository::DbUserRepository::new(db_pool.clone()));
+    let user_repo = Arc::new(ostrich_db::repository::DbUserRepository::new(
+        db_pool.clone(),
+    ));
     let lockout = Arc::new(ostrich_common::auth::AuthLockout::new(
         ostrich_common::auth::LockoutConfig::default(),
     ));
@@ -388,7 +396,11 @@ async fn main() -> Result<()> {
     };
 
     // H1 - certificate identity authorization policy.
-    let identity_policy = match settings.enroll_identity_policy.to_ascii_lowercase().as_str() {
+    let identity_policy = match settings
+        .enroll_identity_policy
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "username" => ostrich_est::rest::EstIdentityPolicy::MatchUsername,
         "allowlist" | "allow-list" => ostrich_est::rest::EstIdentityPolicy::AccountAllowList,
         other => anyhow::bail!(

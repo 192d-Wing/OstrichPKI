@@ -51,16 +51,26 @@ fn role_permissions() -> HashMap<&'static str, Vec<&'static str>> {
     // the CA will actually authorize (separation of duties: the Administrator
     // manages the system but does NOT issue/revoke — that is OperationsStaff).
     let admin = vec![
-        "view_certificates", "view_approvals", "view_tokens", "view_crl",
-        "view_config", "manage_users", "admin",
+        "view_certificates",
+        "view_approvals",
+        "view_tokens",
+        "view_crl",
+        "view_config",
+        "manage_users",
+        "admin",
     ];
     map.insert("Administrator", admin.clone());
     map.insert("admin", admin); // legacy/alias
 
     // OperationsStaff: certificate issuance, revocation, CRL, tokens.
     let ops = vec![
-        "view_certificates", "issue_certificates", "revoke_certificates",
-        "view_tokens", "manage_tokens", "view_crl", "generate_crl",
+        "view_certificates",
+        "issue_certificates",
+        "revoke_certificates",
+        "view_tokens",
+        "manage_tokens",
+        "view_crl",
+        "generate_crl",
     ];
     map.insert("OperationsStaff", ops);
 
@@ -120,7 +130,9 @@ impl AuthContext {
 
     /// Check if the user has a specific role
     pub fn has_role(&self, role: &str) -> bool {
-        self.state.user.as_ref()
+        self.state
+            .user
+            .as_ref()
             .map(|u| u.roles.iter().any(|r| r == role))
             .unwrap_or(false)
     }
@@ -200,8 +212,8 @@ pub fn auth_provider(props: &AuthProviderProps) -> Html {
 /// Hook to access authentication context
 #[hook]
 pub fn use_auth() -> AuthContext {
-    let context = use_context::<AuthContextHandle>()
-        .expect("AuthProvider not found in component tree");
+    let context =
+        use_context::<AuthContextHandle>().expect("AuthProvider not found in component tree");
     (*context).clone()
 }
 
@@ -227,10 +239,7 @@ async fn fetch_user_info() -> Result<UserInfo, String> {
         session_locked: bool,
     }
 
-    let data: UserInfoResponse = response
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
+    let data: UserInfoResponse = response.json().await.map_err(|e| e.to_string())?;
 
     Ok(UserInfo {
         id: data.subject,

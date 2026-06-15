@@ -66,8 +66,8 @@ impl FileConfig {
         let value: serde_json::Value =
             serde_json::from_str(json).context("config is not valid JSON")?;
 
-        let schema: serde_json::Value =
-            serde_json::from_str(EST_CONFIG_SCHEMA).context("embedded EST config schema is invalid")?;
+        let schema: serde_json::Value = serde_json::from_str(EST_CONFIG_SCHEMA)
+            .context("embedded EST config schema is invalid")?;
         let validator =
             jsonschema::validator_for(&schema).context("failed to compile EST config schema")?;
 
@@ -76,7 +76,10 @@ impl FileConfig {
             .map(|e| format!("{}: {}", e.instance_path(), e))
             .collect();
         if !errors.is_empty() {
-            bail!("config failed schema validation:\n  - {}", errors.join("\n  - "));
+            bail!(
+                "config failed schema validation:\n  - {}",
+                errors.join("\n  - ")
+            );
         }
 
         serde_json::from_value(value).context("failed to deserialize config")
@@ -100,10 +103,9 @@ mod tests {
 
     #[test]
     fn accepts_the_schema_reference_key() {
-        let cfg = FileConfig::from_json(
-            r#"{ "$schema": "./est-server.schema.json", "logJson": true }"#,
-        )
-        .unwrap();
+        let cfg =
+            FileConfig::from_json(r#"{ "$schema": "./est-server.schema.json", "logJson": true }"#)
+                .unwrap();
         assert_eq!(cfg.log_json, Some(true));
     }
 
@@ -115,8 +117,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_identity_policy() {
-        let err =
-            FileConfig::from_json(r#"{ "enrollIdentityPolicy": "wide-open" }"#).unwrap_err();
+        let err = FileConfig::from_json(r#"{ "enrollIdentityPolicy": "wide-open" }"#).unwrap_err();
         assert!(format!("{err:#}").contains("schema validation"));
     }
 

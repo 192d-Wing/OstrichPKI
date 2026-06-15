@@ -9,8 +9,8 @@
 
 use axum::{
     extract::{Extension, State},
-    response::{Html, IntoResponse, Response},
     http::StatusCode,
+    response::{Html, IntoResponse, Response},
 };
 use serde::Serialize;
 
@@ -54,7 +54,10 @@ pub async fn serve_index(
     let client_config = ClientConfig {
         api_base_url: "/api".to_string(),
         oidc_client_id: state.config.oidc.client_id.clone(),
-        oidc_auth_url: format!("{}/protocol/openid-connect/auth", state.config.oidc.issuer_url),
+        oidc_auth_url: format!(
+            "{}/protocol/openid-connect/auth",
+            state.config.oidc.issuer_url
+        ),
         app_name: "OstrichPKI".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     };

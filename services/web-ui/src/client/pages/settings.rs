@@ -137,7 +137,10 @@ fn service_health(props: &ServiceHealthProps) -> Html {
         let svc = props.svc;
         use_effect_with((), move |_| {
             spawn_local(async move {
-                let up = api().get::<serde_json::Value>(&format!("/{svc}/health")).await.is_ok();
+                let up = api()
+                    .get::<serde_json::Value>(&format!("/{svc}/health"))
+                    .await
+                    .is_ok();
                 status.set(if up { Status::Up } else { Status::Down });
             });
             || ()
@@ -147,7 +150,9 @@ fn service_health(props: &ServiceHealthProps) -> Html {
     let badge = match *status {
         Status::Checking => html! { <Badge variant={BadgeVariant::Gray}>{ "…" }</Badge> },
         Status::Up => html! { <Badge variant={BadgeVariant::Success} dot={true}>{ "Up" }</Badge> },
-        Status::Down => html! { <Badge variant={BadgeVariant::Danger} dot={true}>{ "Down" }</Badge> },
+        Status::Down => {
+            html! { <Badge variant={BadgeVariant::Danger} dot={true}>{ "Down" }</Badge> }
+        }
     };
 
     html! {

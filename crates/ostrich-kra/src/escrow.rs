@@ -154,10 +154,7 @@ impl KeyEscrow {
     /// An earlier version split the KEK but dropped the shares (only audit-
     /// logging that they were "distributed"), which made every escrowed key
     /// permanently unrecoverable.
-    pub async fn escrow_key(
-        &self,
-        request: KeyEscrowRequest,
-    ) -> Result<(EscrowedKey, Vec<Share>)> {
+    pub async fn escrow_key(&self, request: KeyEscrowRequest) -> Result<(EscrowedKey, Vec<Share>)> {
         // Validate request
         if request.threshold > request.num_agents {
             return Err(Error::InvalidRequest(format!(
@@ -261,7 +258,6 @@ impl KeyEscrow {
         // split-knowledge); the caller owns distribution.
         Ok((escrowed_key, shares))
     }
-
 }
 
 #[cfg(test)]

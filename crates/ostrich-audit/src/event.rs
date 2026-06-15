@@ -440,7 +440,7 @@ impl AuditEventBuilder {
             previous_hash: None,    // Will be set by sink
             event_hash: Vec::new(), // Will be computed by sink
             timestamp: Utc::now(),
-            signature: None,        // Will be set by sink if signing is configured
+            signature: None, // Will be set by sink if signing is configured
             signing_key_id: None,
         }
     }

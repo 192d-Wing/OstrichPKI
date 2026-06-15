@@ -83,11 +83,10 @@ impl TlsSettings {
 
     /// Load certificates and build a TLS 1.3-only rustls server config.
     pub fn load(&self) -> Result<ServerConfig> {
-        let certs: Vec<CertificateDer<'static>> =
-            CertificateDer::pem_file_iter(&self.cert_path)
-                .map_err(|e| tls_err("read certificate", &self.cert_path, e))?
-                .collect::<std::result::Result<_, _>>()
-                .map_err(|e| tls_err("parse certificate", &self.cert_path, e))?;
+        let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(&self.cert_path)
+            .map_err(|e| tls_err("read certificate", &self.cert_path, e))?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| tls_err("parse certificate", &self.cert_path, e))?;
         if certs.is_empty() {
             return Err(Error::Config(format!(
                 "No certificates found in {}",
@@ -119,12 +118,10 @@ impl TlsSettings {
                         .add(ca)
                         .map_err(|e| Error::Config(format!("Invalid client CA: {e}")))?;
                 }
-                let verifier = WebPkiClientVerifier::builder_with_provider(
-                    Arc::new(roots),
-                    provider,
-                )
-                .build()
-                .map_err(|e| Error::Config(format!("Client verifier build failed: {e}")))?;
+                let verifier =
+                    WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider)
+                        .build()
+                        .map_err(|e| Error::Config(format!("Client verifier build failed: {e}")))?;
                 builder.with_client_cert_verifier(verifier)
             }
             None => builder.with_no_client_auth(),
@@ -284,9 +281,11 @@ mod tests {
 
     #[test]
     fn from_options_none_when_unconfigured() {
-        assert!(TlsSettings::from_options(None, None, None)
-            .unwrap()
-            .is_none());
+        assert!(
+            TlsSettings::from_options(None, None, None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

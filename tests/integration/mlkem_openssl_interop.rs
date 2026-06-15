@@ -67,9 +67,22 @@ fn ostrich_encapsulates_openssl_decapsulates() {
     let p = |f: &str| dir.join(f).to_str().unwrap().to_string();
 
     // OpenSSL owns the key pair.
-    assert!(run_openssl(&["genpkey", "-algorithm", "ML-KEM-768", "-out", &p("priv.pem")]));
     assert!(run_openssl(&[
-        "pkey", "-in", &p("priv.pem"), "-pubout", "-outform", "DER", "-out", &p("pub.der"),
+        "genpkey",
+        "-algorithm",
+        "ML-KEM-768",
+        "-out",
+        &p("priv.pem")
+    ]));
+    assert!(run_openssl(&[
+        "pkey",
+        "-in",
+        &p("priv.pem"),
+        "-pubout",
+        "-outform",
+        "DER",
+        "-out",
+        &p("pub.der"),
     ]));
 
     // Extract the raw ek (trailing EK_LEN bytes of the SPKI).
@@ -83,7 +96,13 @@ fn ostrich_encapsulates_openssl_decapsulates() {
 
     // OpenSSL decapsulates with its private key.
     assert!(run_openssl(&[
-        "pkeyutl", "-decap", "-inkey", &p("priv.pem"), "-in", &p("ct.bin"), "-secret",
+        "pkeyutl",
+        "-decap",
+        "-inkey",
+        &p("priv.pem"),
+        "-in",
+        &p("ct.bin"),
+        "-secret",
         &p("ss_openssl.bin"),
     ]));
     let ss_openssl = std::fs::read(dir.join("ss_openssl.bin")).unwrap();
@@ -115,9 +134,22 @@ fn openssl_encapsulates_ostrich_decapsulates() {
 
     // Obtain a real param-set SPKI header from a throwaway OpenSSL key, then
     // splice [header || our ek] so OpenSSL will import our public key.
-    assert!(run_openssl(&["genpkey", "-algorithm", "ML-KEM-768", "-out", &p("tmpl.pem")]));
     assert!(run_openssl(&[
-        "pkey", "-in", &p("tmpl.pem"), "-pubout", "-outform", "DER", "-out", &p("tmpl_pub.der"),
+        "genpkey",
+        "-algorithm",
+        "ML-KEM-768",
+        "-out",
+        &p("tmpl.pem")
+    ]));
+    assert!(run_openssl(&[
+        "pkey",
+        "-in",
+        &p("tmpl.pem"),
+        "-pubout",
+        "-outform",
+        "DER",
+        "-out",
+        &p("tmpl_pub.der"),
     ]));
     let tmpl = std::fs::read(dir.join("tmpl_pub.der")).unwrap();
     let header = &tmpl[..tmpl.len() - EK_LEN];
@@ -128,13 +160,27 @@ fn openssl_encapsulates_ostrich_decapsulates() {
     std::fs::write(dir.join("our_pub.der"), &spki).unwrap();
     // Convert to PEM (also validates OpenSSL accepts our spliced SPKI as a key).
     assert!(run_openssl(&[
-        "pkey", "-pubin", "-inform", "DER", "-in", &p("our_pub.der"), "-out", &p("our_pub.pem"),
+        "pkey",
+        "-pubin",
+        "-inform",
+        "DER",
+        "-in",
+        &p("our_pub.der"),
+        "-out",
+        &p("our_pub.pem"),
     ]));
 
     // OpenSSL encapsulates to OstrichPKI's public key.
     assert!(run_openssl(&[
-        "pkeyutl", "-encap", "-inkey", &p("our_pub.pem"), "-pubin", "-out", &p("ct.bin"),
-        "-secret", &p("ss_openssl.bin"),
+        "pkeyutl",
+        "-encap",
+        "-inkey",
+        &p("our_pub.pem"),
+        "-pubin",
+        "-out",
+        &p("ct.bin"),
+        "-secret",
+        &p("ss_openssl.bin"),
     ]));
     let ct = std::fs::read(dir.join("ct.bin")).unwrap();
     let ss_openssl = std::fs::read(dir.join("ss_openssl.bin")).unwrap();

@@ -115,7 +115,9 @@ fn issue_form() -> Html {
             e.prevent_default();
             let csr_b64 = pem_to_csr_b64(&csr);
             if csr_b64.is_empty() {
-                error.set(Some("Paste a PEM-encoded certificate request (CSR).".into()));
+                error.set(Some(
+                    "Paste a PEM-encoded certificate request (CSR).".into(),
+                ));
                 return;
             }
             let req = IssueRequest {
@@ -129,7 +131,10 @@ fn issue_form() -> Html {
             error.set(None);
             result.set(None);
             spawn_local(async move {
-                match api().post::<IssueResponse, _>("/ca/api/v1/certificates", &req).await {
+                match api()
+                    .post::<IssueResponse, _>("/ca/api/v1/certificates", &req)
+                    .await
+                {
                     Ok(resp) => result.set(Some(resp)),
                     Err(e) => error.set(Some(if e.message.is_empty() {
                         format!("Issuance failed (HTTP {})", e.status)

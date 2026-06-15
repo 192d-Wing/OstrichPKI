@@ -70,11 +70,7 @@ fn assemble_certificate(tbs_der: &[u8], signature: &[u8]) -> Vec<u8> {
     .expect("encode certificate")
 }
 
-fn req(
-    profile_name: &str,
-    public_key: Vec<u8>,
-    csr_der: Option<Vec<u8>>,
-) -> IssuanceRequest {
+fn req(profile_name: &str, public_key: Vec<u8>, csr_der: Option<Vec<u8>>) -> IssuanceRequest {
     IssuanceRequest {
         profile_name: profile_name.to_string(),
         subject: DistinguishedName {
@@ -158,15 +154,29 @@ async fn proof_of_possession_is_enforced_for_end_entity_issuance() {
     let ca_repo = CaRepository::new(pool.clone());
     let ca_key_row = ca_repo
         .create_ca_key(
-            key_label, "EcP256", "EcdsaP256Sha256", "Pkcs11", Some(slot as i64),
-            &key_handle.key_id, false,
+            key_label,
+            "EcP256",
+            "EcdsaP256Sha256",
+            "Pkcs11",
+            Some(slot as i64),
+            &key_handle.key_id,
+            false,
         )
         .await
         .unwrap();
     let ca_cert_row = ca_repo
         .create_ca_certificate(
-            ca_key_row.id, serial.as_bytes(), &dn, &dn, not_before, not_after, &ca_der, &ca_pem,
-            true, None, None,
+            ca_key_row.id,
+            serial.as_bytes(),
+            &dn,
+            &dn,
+            not_before,
+            not_after,
+            &ca_der,
+            &ca_pem,
+            true,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -194,8 +204,8 @@ async fn proof_of_possession_is_enforced_for_end_entity_issuance() {
         updated_at: now,
     };
 
-    let mut ca = CertificateAuthority::new(ca_certificate, key_handle, crypto, pool.clone(), 24)
-        .unwrap();
+    let mut ca =
+        CertificateAuthority::new(ca_certificate, key_handle, crypto, pool.clone(), 24).unwrap();
     ca.set_approval_config(ApprovalConfig {
         require_approval: false,
         ..ApprovalConfig::default()
@@ -206,7 +216,9 @@ async fn proof_of_possession_is_enforced_for_end_entity_issuance() {
     ca.add_profile(profile);
 
     let csr_der = hex::decode(CSR_HEX.replace(['\n', ' '], "")).unwrap();
-    let csr_public_key = ostrich_x509::parser::parse_csr(&csr_der).unwrap().public_key;
+    let csr_public_key = ostrich_x509::parser::parse_csr(&csr_der)
+        .unwrap()
+        .public_key;
 
     // 1. No CSR -> rejected (proof-of-possession required).
     let no_csr = ca

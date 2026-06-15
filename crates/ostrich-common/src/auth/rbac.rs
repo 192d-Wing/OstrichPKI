@@ -483,22 +483,70 @@ mod tests {
         let ops = make_user(vec![Role::OperationsStaff]);
 
         // Administrator: full lifecycle
-        assert!(policy.authorize(&admin, Permission::CreateUser, "scms:tokens").is_ok());
-        assert!(policy.authorize(&admin, Permission::ModifyUser, "scms:token").is_ok());
-        assert!(policy.authorize(&admin, Permission::DeleteUser, "scms:token").is_ok());
-        assert!(policy.authorize(&admin, Permission::UnlockAccount, "scms:token").is_ok());
-        assert!(policy.authorize(&admin, Permission::ViewUsers, "scms:tokens").is_ok());
+        assert!(
+            policy
+                .authorize(&admin, Permission::CreateUser, "scms:tokens")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&admin, Permission::ModifyUser, "scms:token")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&admin, Permission::DeleteUser, "scms:token")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&admin, Permission::UnlockAccount, "scms:token")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&admin, Permission::ViewUsers, "scms:tokens")
+                .is_ok()
+        );
 
         // Auditor: read-only
-        assert!(policy.authorize(&auditor, Permission::ViewUsers, "scms:tokens").is_ok());
-        assert!(policy.authorize(&auditor, Permission::CreateUser, "scms:tokens").is_err());
-        assert!(policy.authorize(&auditor, Permission::ModifyUser, "scms:token").is_err());
-        assert!(policy.authorize(&auditor, Permission::DeleteUser, "scms:token").is_err());
+        assert!(
+            policy
+                .authorize(&auditor, Permission::ViewUsers, "scms:tokens")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&auditor, Permission::CreateUser, "scms:tokens")
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(&auditor, Permission::ModifyUser, "scms:token")
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(&auditor, Permission::DeleteUser, "scms:token")
+                .is_err()
+        );
 
         // OperationsStaff: cannot manage users/tokens
-        assert!(policy.authorize(&ops, Permission::CreateUser, "scms:tokens").is_err());
-        assert!(policy.authorize(&ops, Permission::ModifyUser, "scms:token").is_err());
-        assert!(policy.authorize(&ops, Permission::DeleteUser, "scms:token").is_err());
+        assert!(
+            policy
+                .authorize(&ops, Permission::CreateUser, "scms:tokens")
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(&ops, Permission::ModifyUser, "scms:token")
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(&ops, Permission::DeleteUser, "scms:token")
+                .is_err()
+        );
     }
 
     /// SCMS: only the Auditor may read token event audit logs.
@@ -506,18 +554,42 @@ mod tests {
     #[test]
     fn rbac_matrix_scms_audit_auditor_only() {
         let policy = RbacPolicy::new().with_logging(false);
-        assert!(policy
-            .authorize(&make_user(vec![Role::Auditor]), Permission::ReadAuditLog, "scms:events")
-            .is_ok());
-        assert!(policy
-            .authorize(&make_user(vec![Role::Administrator]), Permission::ReadAuditLog, "scms:events")
-            .is_err());
-        assert!(policy
-            .authorize(&make_user(vec![Role::OperationsStaff]), Permission::ReadAuditLog, "scms:events")
-            .is_err());
-        assert!(policy
-            .authorize(&make_user(vec![Role::RaStaff]), Permission::ReadAuditLog, "scms:events")
-            .is_err());
+        assert!(
+            policy
+                .authorize(
+                    &make_user(vec![Role::Auditor]),
+                    Permission::ReadAuditLog,
+                    "scms:events"
+                )
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(
+                    &make_user(vec![Role::Administrator]),
+                    Permission::ReadAuditLog,
+                    "scms:events"
+                )
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(
+                    &make_user(vec![Role::OperationsStaff]),
+                    Permission::ReadAuditLog,
+                    "scms:events"
+                )
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(
+                    &make_user(vec![Role::RaStaff]),
+                    Permission::ReadAuditLog,
+                    "scms:events"
+                )
+                .is_err()
+        );
     }
 
     /// SCMS: token model catalog config.
@@ -529,11 +601,31 @@ mod tests {
         let auditor = make_user(vec![Role::Auditor]);
         let ops = make_user(vec![Role::OperationsStaff]);
 
-        assert!(policy.authorize(&admin, Permission::ModifyConfig, "scms:models").is_ok());
-        assert!(policy.authorize(&admin, Permission::ViewConfig, "scms:models").is_ok());
-        assert!(policy.authorize(&auditor, Permission::ViewConfig, "scms:models").is_ok());
-        assert!(policy.authorize(&auditor, Permission::ModifyConfig, "scms:models").is_err());
-        assert!(policy.authorize(&ops, Permission::ModifyConfig, "scms:models").is_err());
+        assert!(
+            policy
+                .authorize(&admin, Permission::ModifyConfig, "scms:models")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&admin, Permission::ViewConfig, "scms:models")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&auditor, Permission::ViewConfig, "scms:models")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&auditor, Permission::ModifyConfig, "scms:models")
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(&ops, Permission::ModifyConfig, "scms:models")
+                .is_err()
+        );
     }
 
     /// CA: certificate lifecycle belongs to OperationsStaff.
@@ -545,15 +637,43 @@ mod tests {
         let admin = make_user(vec![Role::Administrator]);
         let ra = make_user(vec![Role::RaStaff]);
 
-        assert!(policy.authorize(&ops, Permission::IssueCertificate, "cert").is_ok());
-        assert!(policy.authorize(&ops, Permission::RevokeCertificate, "cert").is_ok());
-        assert!(policy.authorize(&ops, Permission::GenerateCrl, "crl").is_ok());
+        assert!(
+            policy
+                .authorize(&ops, Permission::IssueCertificate, "cert")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&ops, Permission::RevokeCertificate, "cert")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&ops, Permission::GenerateCrl, "crl")
+                .is_ok()
+        );
 
-        assert!(policy.authorize(&admin, Permission::IssueCertificate, "cert").is_err());
-        assert!(policy.authorize(&admin, Permission::RevokeCertificate, "cert").is_err());
+        assert!(
+            policy
+                .authorize(&admin, Permission::IssueCertificate, "cert")
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(&admin, Permission::RevokeCertificate, "cert")
+                .is_err()
+        );
 
-        assert!(policy.authorize(&ra, Permission::IssueCertificate, "cert").is_err());
-        assert!(policy.authorize(&ra, Permission::ApproveRequest, "approvals").is_ok());
+        assert!(
+            policy
+                .authorize(&ra, Permission::IssueCertificate, "cert")
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(&ra, Permission::ApproveRequest, "approvals")
+                .is_ok()
+        );
     }
 
     /// CA approval workflow: RaStaff + Aor approve, OperationsStaff submits.
@@ -564,15 +684,43 @@ mod tests {
         let aor = make_user(vec![Role::Aor]);
         let ops = make_user(vec![Role::OperationsStaff]);
 
-        assert!(policy.authorize(&ra, Permission::ApproveRequest, "approvals").is_ok());
-        assert!(policy.authorize(&ra, Permission::RejectRequest, "approvals").is_ok());
-        assert!(policy.authorize(&aor, Permission::ApproveRequest, "approvals").is_ok());
+        assert!(
+            policy
+                .authorize(&ra, Permission::ApproveRequest, "approvals")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&ra, Permission::RejectRequest, "approvals")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&aor, Permission::ApproveRequest, "approvals")
+                .is_ok()
+        );
 
-        assert!(policy.authorize(&ra, Permission::SubmitRequest, "approvals").is_ok());
-        assert!(policy.authorize(&aor, Permission::SubmitRequest, "approvals").is_ok());
+        assert!(
+            policy
+                .authorize(&ra, Permission::SubmitRequest, "approvals")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&aor, Permission::SubmitRequest, "approvals")
+                .is_ok()
+        );
 
-        assert!(policy.authorize(&ops, Permission::ApproveRequest, "approvals").is_err());
-        assert!(policy.authorize(&ops, Permission::RejectRequest, "approvals").is_err());
+        assert!(
+            policy
+                .authorize(&ops, Permission::ApproveRequest, "approvals")
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(&ops, Permission::RejectRequest, "approvals")
+                .is_err()
+        );
     }
 
     /// CA configuration: /api/v1/profiles was moved from public to
@@ -586,12 +734,32 @@ mod tests {
         let aor = make_user(vec![Role::Aor]);
         let ops = make_user(vec![Role::OperationsStaff]);
 
-        assert!(policy.authorize(&admin, Permission::ViewConfig, "profiles").is_ok());
-        assert!(policy.authorize(&auditor, Permission::ViewConfig, "profiles").is_ok());
+        assert!(
+            policy
+                .authorize(&admin, Permission::ViewConfig, "profiles")
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&auditor, Permission::ViewConfig, "profiles")
+                .is_ok()
+        );
         // OperationsStaff, RaStaff, Aor do NOT have ViewConfig per the matrix.
-        assert!(policy.authorize(&ops, Permission::ViewConfig, "profiles").is_err());
-        assert!(policy.authorize(&ra, Permission::ViewConfig, "profiles").is_err());
-        assert!(policy.authorize(&aor, Permission::ViewConfig, "profiles").is_err());
+        assert!(
+            policy
+                .authorize(&ops, Permission::ViewConfig, "profiles")
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(&ra, Permission::ViewConfig, "profiles")
+                .is_err()
+        );
+        assert!(
+            policy
+                .authorize(&aor, Permission::ViewConfig, "profiles")
+                .is_err()
+        );
     }
 
     /// Separation of duties: no single role can both modify data AND read
@@ -608,7 +776,9 @@ mod tests {
         ] {
             let user = make_user(vec![role]);
             assert!(
-                policy.authorize(&user, Permission::ReadAuditLog, "audit").is_err(),
+                policy
+                    .authorize(&user, Permission::ReadAuditLog, "audit")
+                    .is_err(),
                 "role {:?} must not be able to read audit logs",
                 role
             );

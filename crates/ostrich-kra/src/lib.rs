@@ -54,4 +54,4 @@ pub mod wrap;
 pub use error::{Error, Result};
 pub use escrow::{KeyEscrow, KeyEscrowRequest};
 pub use recovery::{KeyRecovery, RecoveryAgent, RecoveryRequest, RecoveryShare};
-pub use shamir::{Share, ShamirSecretSharing};
+pub use shamir::{ShamirSecretSharing, Share};

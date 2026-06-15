@@ -379,7 +379,9 @@ mod tests {
     /// Build a DER Extensions SEQUENCE containing a single OCSP nonce extension
     /// with a nonce of `nonce_len` bytes (lengths < 128 only — single-byte DER).
     fn nonce_extensions(nonce_len: usize) -> Vec<u8> {
-        let oid = [0x06u8, 0x09, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x02];
+        let oid = [
+            0x06u8, 0x09, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x02,
+        ];
         let mut octet = vec![0x04, nonce_len as u8];
         octet.extend(std::iter::repeat_n(0xABu8, nonce_len));
         let mut ext = oid.to_vec();

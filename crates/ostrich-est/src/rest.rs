@@ -361,10 +361,12 @@ pub fn create_router(state: EstState) -> Router {
             auth_provider,
             ostrich_common::auth::MtlsAuthLayer::authenticate,
         )),
-        EstAuthMode::MtlsWithBasicFallback => protected_routes.layer(middleware::from_fn_with_state(
-            auth_provider,
-            ostrich_common::auth::MtlsOrBasicAuthLayer::authenticate,
-        )),
+        EstAuthMode::MtlsWithBasicFallback => {
+            protected_routes.layer(middleware::from_fn_with_state(
+                auth_provider,
+                ostrich_common::auth::MtlsOrBasicAuthLayer::authenticate,
+            ))
+        }
         EstAuthMode::BearerToken => protected_routes.layer(middleware::from_fn_with_state(
             auth_provider,
             AuthLayer::authenticate,
@@ -463,9 +465,7 @@ async fn get_ca_certs(State(state): State<EstState>) -> Result<Response> {
     let pkcs7_der = match state.ca_certificate_der.as_ref() {
         Some(der) => encode_certs_only_pkcs7(std::slice::from_ref(der))?,
         None => {
-            tracing::warn!(
-                "EST /cacerts: no CA certificate configured; returning empty PKCS#7"
-            );
+            tracing::warn!("EST /cacerts: no CA certificate configured; returning empty PKCS#7");
             encode_certs_only_pkcs7(&[])?
         }
     };
@@ -572,8 +572,13 @@ async fn simple_enroll(
     let csr_der = match BASE64_STANDARD.decode(&body) {
         Ok(der) if der.len() >= 10 => der,
         _ => {
-            emit_failure_audit(&state, client_identifier, "est:enroll", "invalid_csr_encoding")
-                .await;
+            emit_failure_audit(
+                &state,
+                client_identifier,
+                "est:enroll",
+                "invalid_csr_encoding",
+            )
+            .await;
             return Err(Error::BadRequest("Invalid or too-short CSR".to_string()));
         }
     };
@@ -614,7 +619,13 @@ async fn simple_enroll(
     )
     .await?
     {
-        emit_failure_audit(&state, client_identifier, "est:enroll", "identity_not_bound").await;
+        emit_failure_audit(
+            &state,
+            client_identifier,
+            "est:enroll",
+            "identity_not_bound",
+        )
+        .await;
         tracing::warn!(
             client = %client_identifier,
             "EST enrollment denied: CSR identity does not match authenticated principal (H1)"
@@ -854,9 +865,7 @@ async fn identity_authorized(
     sans: &[String],
 ) -> Result<bool> {
     match state.identity_policy {
-        EstIdentityPolicy::MatchUsername => {
-            Ok(csr_identity_matches_principal(username, cn, sans))
-        }
+        EstIdentityPolicy::MatchUsername => Ok(csr_identity_matches_principal(username, cn, sans)),
         EstIdentityPolicy::AccountAllowList => {
             let asserted = csr_asserted_identities(cn, sans);
             if asserted.is_empty() {
@@ -864,12 +873,9 @@ async fn identity_authorized(
                 return Ok(false);
             }
             let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
-            let allowed = repo
-                .list_allowed_identities(username)
-                .await
-                .map_err(|e| {
-                    Error::Internal(format!("Failed to load account allow-list: {}", e))
-                })?;
+            let allowed = repo.list_allowed_identities(username).await.map_err(|e| {
+                Error::Internal(format!("Failed to load account allow-list: {}", e))
+            })?;
             // Compare in canonical form on both sides (see `normalize_identity`)
             // so case/whitespace differences don't cause a silent non-match.
             let allowed: std::collections::HashSet<String> =
@@ -923,7 +929,13 @@ async fn simple_reenroll(
     let parsed_csr = match ostrich_x509::parser::parse_csr(&csr_der) {
         Ok(c) => c,
         Err(e) => {
-            emit_failure_audit(&state, client_identifier, "est:reenroll", "csr_parse_failed").await;
+            emit_failure_audit(
+                &state,
+                client_identifier,
+                "est:reenroll",
+                "csr_parse_failed",
+            )
+            .await;
             return Err(Error::InvalidCsr(format!("Failed to parse CSR: {}", e)));
         }
     };
@@ -1301,7 +1313,11 @@ async fn server_key_gen(
 
     // Always destroy the server-held private key handle (FCS_CKM.4). A failure
     // to destroy key material is security-relevant and must not be swallowed (L4).
-    if let Err(e) = state.crypto_provider.destroy_key(&material.key_handle).await {
+    if let Err(e) = state
+        .crypto_provider
+        .destroy_key(&material.key_handle)
+        .await
+    {
         tracing::error!(
             client = %client_identifier,
             error = %e,
@@ -1342,9 +1358,8 @@ async fn server_key_gen(
     // wiped on drop. (One copy still lives in the outbound HTTP body buffer,
     // which is inherent to returning the key; everything else is zeroized.)
     const BOUNDARY: &str = "estServerKeyGenBoundary";
-    let key_b64 = zeroize::Zeroizing::new(
-        BASE64_STANDARD.encode(material.private_key_pkcs8.as_slice()),
-    );
+    let key_b64 =
+        zeroize::Zeroizing::new(BASE64_STANDARD.encode(material.private_key_pkcs8.as_slice()));
     let cert_b64 = BASE64_STANDARD.encode(&pkcs7);
     let body = zeroize::Zeroizing::new(format!(
         "--{b}\r\n\
@@ -1417,7 +1432,13 @@ async fn authorize_admin(
         .is_err()
     {
         let resource = format!("est:account:{account}:identities");
-        emit_failure_audit(state, &user.username, &resource, &format!("{action}_denied")).await;
+        emit_failure_audit(
+            state,
+            &user.username,
+            &resource,
+            &format!("{action}_denied"),
+        )
+        .await;
         tracing::warn!(
             actor = %user.username,
             ?permission,
@@ -1477,7 +1498,14 @@ async fn list_account_identities(
         .await
         .map_err(|e| Error::Internal(format!("Failed to list allowed identities: {}", e)))?;
 
-    Ok((StatusCode::OK, Json(IdentitiesResponse { account, identities })).into_response())
+    Ok((
+        StatusCode::OK,
+        Json(IdentitiesResponse {
+            account,
+            identities,
+        }),
+    )
+        .into_response())
 }
 
 /// Grant an account permission to enroll for an identity.
@@ -1513,7 +1541,10 @@ async fn add_account_identity(
             ostrich_audit::EventOutcome::Failure,
         )
         .await;
-        return Err(Error::Internal(format!("Failed to add allowed identity: {}", e)));
+        return Err(Error::Internal(format!(
+            "Failed to add allowed identity: {}",
+            e
+        )));
     }
 
     emit_config_change_audit(
@@ -1526,7 +1557,10 @@ async fn add_account_identity(
     )
     .await;
 
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "account": account, "identity": identity })))
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "account": account, "identity": identity })),
+    )
         .into_response())
 }
 
@@ -1623,11 +1657,7 @@ mod tests {
     #[test]
     fn test_csr_identity_binding() {
         // H1: CN match.
-        assert!(csr_identity_matches_principal(
-            "alice",
-            Some("alice"),
-            &[]
-        ));
+        assert!(csr_identity_matches_principal("alice", Some("alice"), &[]));
         // SAN value match (TYPE: prefix stripped).
         assert!(csr_identity_matches_principal(
             "alice",
@@ -1672,13 +1702,19 @@ mod tests {
     #[test]
     fn test_normalize_identity_canonicalizes() {
         // Trim + lowercase so admin-stored and CSR-asserted values match.
-        assert_eq!(normalize_identity("  Device-1.Example.COM "), "device-1.example.com");
+        assert_eq!(
+            normalize_identity("  Device-1.Example.COM "),
+            "device-1.example.com"
+        );
         assert_eq!(normalize_identity("dev@CORP"), "dev@corp");
     }
 
     #[test]
     fn test_validate_identity_rules() {
-        assert_eq!(validate_identity("  Host.Example  ").unwrap(), "host.example");
+        assert_eq!(
+            validate_identity("  Host.Example  ").unwrap(),
+            "host.example"
+        );
         assert!(validate_identity("   ").is_err()); // empty after trim
         assert!(validate_identity("a\nb").is_err()); // control char
         assert!(validate_identity(&"x".repeat(MAX_IDENTITY_LEN + 1)).is_err()); // too long

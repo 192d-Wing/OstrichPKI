@@ -39,5 +39,5 @@ pub use hsm_validation::HsmKeyValidator;
 pub use kem::{Encapsulation, MlKemKeyPair, encapsulate};
 pub use key::KeyHandle;
 pub use provider::{CryptoProvider, CryptoProviderFactory};
-pub use verify::verify_with_spki;
 pub use self_test::{SelfTestResult, SelfTestRunner, SelfTestSummary};
+pub use verify::verify_with_spki;

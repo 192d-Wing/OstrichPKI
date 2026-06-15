@@ -231,16 +231,21 @@ impl SoftwareProvider {
 
         match curve {
             EcCurve::P256 => {
-                let pkcs8_bytes =
-                    EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).map_err(
-                        |e| Error::KeyGeneration(format!("ECDSA P-256 key generation failed: {e:?}")),
-                    )?;
+                let pkcs8_bytes = EcdsaKeyPair::generate_pkcs8(
+                    &ECDSA_P256_SHA256_FIXED_SIGNING,
+                    &rng,
+                )
+                .map_err(|e| {
+                    Error::KeyGeneration(format!("ECDSA P-256 key generation failed: {e:?}"))
+                })?;
 
                 let key_pair = EcdsaKeyPair::from_pkcs8(
                     &ECDSA_P256_SHA256_FIXED_SIGNING,
                     pkcs8_bytes.as_ref(),
                 )
-                .map_err(|e| Error::KeyGeneration(format!("ECDSA P-256 key parse failed: {e:?}")))?;
+                .map_err(|e| {
+                    Error::KeyGeneration(format!("ECDSA P-256 key parse failed: {e:?}"))
+                })?;
 
                 let public_key = key_pair.public_key().as_ref().to_vec();
 
@@ -252,16 +257,21 @@ impl SoftwareProvider {
             }
 
             EcCurve::P384 => {
-                let pkcs8_bytes =
-                    EcdsaKeyPair::generate_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, &rng).map_err(
-                        |e| Error::KeyGeneration(format!("ECDSA P-384 key generation failed: {e:?}")),
-                    )?;
+                let pkcs8_bytes = EcdsaKeyPair::generate_pkcs8(
+                    &ECDSA_P384_SHA384_FIXED_SIGNING,
+                    &rng,
+                )
+                .map_err(|e| {
+                    Error::KeyGeneration(format!("ECDSA P-384 key generation failed: {e:?}"))
+                })?;
 
                 let key_pair = EcdsaKeyPair::from_pkcs8(
                     &ECDSA_P384_SHA384_FIXED_SIGNING,
                     pkcs8_bytes.as_ref(),
                 )
-                .map_err(|e| Error::KeyGeneration(format!("ECDSA P-384 key parse failed: {e:?}")))?;
+                .map_err(|e| {
+                    Error::KeyGeneration(format!("ECDSA P-384 key parse failed: {e:?}"))
+                })?;
 
                 let public_key = key_pair.public_key().as_ref().to_vec();
 
@@ -311,9 +321,11 @@ impl SoftwareProvider {
                     )));
                 }
 
-                let ecdsa_key_pair =
-                    EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &key_pair.private_key)
-                        .map_err(|_| Error::Signing("Failed to parse ECDSA P-256 key".into()))?;
+                let ecdsa_key_pair = EcdsaKeyPair::from_pkcs8(
+                    &ECDSA_P256_SHA256_FIXED_SIGNING,
+                    &key_pair.private_key,
+                )
+                .map_err(|_| Error::Signing("Failed to parse ECDSA P-256 key".into()))?;
                 let signature = ecdsa_key_pair
                     .sign(&rng, data)
                     .map_err(|_| Error::Signing("ECDSA P-256 signing failed".into()))?;
@@ -328,9 +340,11 @@ impl SoftwareProvider {
                     )));
                 }
 
-                let ecdsa_key_pair =
-                    EcdsaKeyPair::from_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, &key_pair.private_key)
-                        .map_err(|_| Error::Signing("Failed to parse ECDSA P-384 key".into()))?;
+                let ecdsa_key_pair = EcdsaKeyPair::from_pkcs8(
+                    &ECDSA_P384_SHA384_FIXED_SIGNING,
+                    &key_pair.private_key,
+                )
+                .map_err(|_| Error::Signing("Failed to parse ECDSA P-384 key".into()))?;
                 let signature = ecdsa_key_pair
                     .sign(&rng, data)
                     .map_err(|_| Error::Signing("ECDSA P-384 signing failed".into()))?;
@@ -893,7 +907,10 @@ mod tests {
             (KeyType::Rsa2048, Algorithm::RsaPkcs1Sha256),
             (KeyType::Rsa3072, Algorithm::RsaPkcs1Sha384),
         ] {
-            let key = provider.generate_key_pair(kt, "rsa-spki", true).await.unwrap();
+            let key = provider
+                .generate_key_pair(kt, "rsa-spki", true)
+                .await
+                .unwrap();
             let spki = provider.export_public_key(&key).await.unwrap();
             let sig = provider.sign(&key, alg, data).await.unwrap();
 
@@ -926,7 +943,10 @@ mod tests {
         ] {
             let key = provider.generate_key_pair(kt, "sig", false).await.unwrap();
             let sig = provider.sign(&key, alg, msg).await.unwrap();
-            assert!(provider.verify(&key, alg, msg, &sig).await.unwrap(), "{kt:?} verify");
+            assert!(
+                provider.verify(&key, alg, msg, &sig).await.unwrap(),
+                "{kt:?} verify"
+            );
             assert!(
                 !provider.verify(&key, alg, b"tampered", &sig).await.unwrap(),
                 "{kt:?} must reject a different message"

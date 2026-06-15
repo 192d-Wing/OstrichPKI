@@ -178,13 +178,11 @@ impl UserRepository for DbUserRepository {
     }
 
     async fn update_last_login(&self, user_id: &UserId) -> AuthResult<()> {
-        sqlx::query(
-            "UPDATE users SET last_login_at = NOW(), updated_at = NOW() WHERE id = $1",
-        )
-        .bind(user_id.as_uuid())
-        .execute(self.pool.pool())
-        .await
-        .map_err(|e| AuthError::Internal(format!("Database error: {}", e)))?;
+        sqlx::query("UPDATE users SET last_login_at = NOW(), updated_at = NOW() WHERE id = $1")
+            .bind(user_id.as_uuid())
+            .execute(self.pool.pool())
+            .await
+            .map_err(|e| AuthError::Internal(format!("Database error: {}", e)))?;
         Ok(())
     }
 
@@ -236,10 +234,7 @@ impl UserRepository for DbUserRepository {
 /// `certificate_subject` column (NIST 800-53 IA-2; NIAP FIA_UAU.1).
 #[async_trait]
 impl ostrich_common::auth::CertificateUserRepository for DbUserRepository {
-    async fn find_by_certificate_dn(
-        &self,
-        subject_dn: &str,
-    ) -> AuthResult<Option<UserAccount>> {
+    async fn find_by_certificate_dn(&self, subject_dn: &str) -> AuthResult<Option<UserAccount>> {
         let row =
             sqlx::query_as::<_, UserRow>("SELECT * FROM users WHERE certificate_subject = $1")
                 .bind(subject_dn)

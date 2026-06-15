@@ -422,9 +422,9 @@ async fn bootstrap_ca(
     if args.require_approval {
         let approval_engine =
             std::sync::Arc::new(ostrich_ca::ApprovalEngine::new(approval_config.clone()));
-        let approval_repo = std::sync::Arc::new(
-            ostrich_db::repository::ApprovalRepository::new(db_pool.pool().clone()),
-        );
+        let approval_repo = std::sync::Arc::new(ostrich_db::repository::ApprovalRepository::new(
+            db_pool.pool().clone(),
+        ));
         ca.set_approval(approval_engine, approval_repo, approval_config);
     } else {
         tracing::warn!(
@@ -519,8 +519,7 @@ fn default_profiles() -> Vec<ostrich_x509::CertificateProfile> {
     // (RFC 8555 identifiers become SANs)
     let mut acme_default = CertificateProfile::tls_server(90);
     acme_default.name = "acme-default".to_string();
-    acme_default.description =
-        Some("ACME-issued TLS server certificates (RFC 8555)".to_string());
+    acme_default.description = Some("ACME-issued TLS server certificates (RFC 8555)".to_string());
 
     // Subordinate (intermediate) CA issuance via gRPC: CA=true, keyCertSign +
     // cRLSign, pathLenConstraint 0 (RFC 5280 §4.2.1.9), ~5 year validity.

@@ -559,10 +559,7 @@ fn extract_sans_from_csr(
                                             tag = ?tag,
                                             "Encountered invalid GeneralName variant in SAN extension"
                                         );
-                                        sans.push(format!(
-                                            "invalid:tag={:?}:{}",
-                                            tag, hex_value
-                                        ));
+                                        sans.push(format!("invalid:tag={:?}:{}", tag, hex_value));
                                     }
                                 }
                             }

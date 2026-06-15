@@ -35,11 +35,12 @@ async fn escrow_recover_roundtrip() {
     let pool = connect().await;
 
     // escrowed_keys.certificate_id is a FK -> use a real certificate.
-    let cert_id: Uuid =
-        ostrich_db::sqlx::query_scalar("SELECT id FROM certificates ORDER BY created_at DESC LIMIT 1")
-            .fetch_one(pool.pool())
-            .await
-            .expect("the test DB needs at least one certificate row");
+    let cert_id: Uuid = ostrich_db::sqlx::query_scalar(
+        "SELECT id FROM certificates ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(pool.pool())
+    .await
+    .expect("the test DB needs at least one certificate row");
 
     let crypto = Arc::new(SoftwareProvider::new());
     let audit = Arc::new(MemoryAuditSink::new());
@@ -64,7 +65,11 @@ async fn escrow_recover_roundtrip() {
         })
         .await
         .expect("escrow_key");
-    assert_eq!(shares.len(), 5, "5 shares must be returned for distribution");
+    assert_eq!(
+        shares.len(),
+        5,
+        "5 shares must be returned for distribution"
+    );
     println!("[escrow] escrow_id={} shares={}", escrowed.id, shares.len());
 
     // 2. Initiate recovery for this escrow.
@@ -99,7 +104,10 @@ async fn escrow_recover_roundtrip() {
         original_key.as_slice(),
         "recovered key must byte-match the escrowed key"
     );
-    println!("[recovery] recovered {} bytes, byte-identical to escrow", recovered.len());
+    println!(
+        "[recovery] recovered {} bytes, byte-identical to escrow",
+        recovered.len()
+    );
 
     // 5. A DIFFERENT subset of 3 shares also recovers (any threshold works).
     let recovered2 = recovery

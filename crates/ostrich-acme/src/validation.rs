@@ -163,12 +163,10 @@ impl Http01Validator {
         // Dev/E2E override: keep the permissive shared client (private addresses
         // allowed, reqwest follows redirects). NOT for production.
         if self.allow_private_domains {
-            let response = self
-                .client
-                .get(&initial_url)
-                .send()
-                .await
-                .map_err(|e| Error::ChallengeValidation(format!("HTTP request failed: {}", e)))?;
+            let response =
+                self.client.get(&initial_url).send().await.map_err(|e| {
+                    Error::ChallengeValidation(format!("HTTP request failed: {}", e))
+                })?;
             if !response.status().is_success() {
                 return Err(Error::ChallengeValidation(format!(
                     "HTTP challenge returned status {}: expected 200 OK",
@@ -213,11 +211,10 @@ impl Http01Validator {
                     Error::ChallengeValidation(format!("Failed to build HTTP client: {}", e))
                 })?;
 
-            let response = client
-                .get(url.clone())
-                .send()
-                .await
-                .map_err(|e| Error::ChallengeValidation(format!("HTTP request failed: {}", e)))?;
+            let response =
+                client.get(url.clone()).send().await.map_err(|e| {
+                    Error::ChallengeValidation(format!("HTTP request failed: {}", e))
+                })?;
 
             let status = response.status();
             if status.is_redirection() {
@@ -229,9 +226,9 @@ impl Http01Validator {
                         Error::ChallengeValidation("Redirect response without Location".to_string())
                     })?;
                 // Resolve relative Locations against the current URL.
-                url = url.join(location).map_err(|e| {
-                    Error::Malformed(format!("Invalid redirect Location: {}", e))
-                })?;
+                url = url
+                    .join(location)
+                    .map_err(|e| Error::Malformed(format!("Invalid redirect Location: {}", e)))?;
                 continue;
             }
 
@@ -242,10 +239,9 @@ impl Http01Validator {
                 )));
             }
 
-            let body = response
-                .text()
-                .await
-                .map_err(|e| Error::ChallengeValidation(format!("Failed to read response: {}", e)))?;
+            let body = response.text().await.map_err(|e| {
+                Error::ChallengeValidation(format!("Failed to read response: {}", e))
+            })?;
             return Ok(body.trim() == expected_response);
         }
 

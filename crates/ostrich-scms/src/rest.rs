@@ -35,9 +35,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
-use ostrich_common::auth::{
-    AuthLayer, AuthUser, Permission, RbacPolicy, provider::AuthProvider,
-};
+use ostrich_common::auth::{AuthLayer, AuthUser, Permission, RbacPolicy, provider::AuthProvider};
 use ostrich_crypto::CryptoProvider;
 use ostrich_db::DatabasePool;
 use serde::{Deserialize, Serialize};
@@ -827,9 +825,7 @@ async fn unblock_token(
     // tracked independently per NIAP FMT_SMR.1 role separation.
     repo.update_token_so_pin_attempts(id, 3)
         .await
-        .map_err(|e| {
-            Error::DatabaseError(format!("Failed to reset SO-PIN attempts: {}", e))
-        })?;
+        .map_err(|e| Error::DatabaseError(format!("Failed to reset SO-PIN attempts: {}", e)))?;
 
     audit_token_event(
         &state,
@@ -908,7 +904,11 @@ async fn verify_pin(
         // Once attempts reach zero, FIA_AFL.1 requires the token transition to
         // a blocked state requiring SO-PIN unblock. We update both fields in
         // the same DB call so the lockout is atomic with the counter decrement.
-        let new_status: Option<&str> = if new_attempts <= 0 { Some("blocked") } else { None };
+        let new_status: Option<&str> = if new_attempts <= 0 {
+            Some("blocked")
+        } else {
+            None
+        };
         repo.update_token(id, new_status, None, Some(new_attempts), None)
             .await
             .map_err(|e| Error::DatabaseError(format!("Failed to update PIN attempts: {}", e)))?;
@@ -1241,15 +1241,15 @@ async fn create_model(
         .create_token_model(
             &request.manufacturer,
             &request.model_name,
-            None,         // atr
-            vec![],       // supported_key_types (empty for now)
-            12,           // max_pin_length (default)
-            4,            // min_pin_length (default)
-            false,        // supports_puk (default)
-            None,         // firmware_version
-            None,         // key_capacity
-            None,         // cert_capacity
-            true,         // pkcs11_support: assume yes by default
+            None,   // atr
+            vec![], // supported_key_types (empty for now)
+            12,     // max_pin_length (default)
+            4,      // min_pin_length (default)
+            false,  // supports_puk (default)
+            None,   // firmware_version
+            None,   // key_capacity
+            None,   // cert_capacity
+            true,   // pkcs11_support: assume yes by default
         )
         .await
         .map_err(|e| Error::DatabaseError(format!("Failed to create model: {}", e)))?;
@@ -1504,7 +1504,9 @@ mod tests {
         .with_details(serde_json::json!({"serial_number": "SN-1"}))
         .build();
 
-        sink.record(&mut event).await.expect("record should succeed");
+        sink.record(&mut event)
+            .await
+            .expect("record should succeed");
 
         let events = sink
             .query_events(ostrich_audit::sink::QueryCriteria::default())
@@ -1534,7 +1536,10 @@ mod tests {
         }
 
         assert_eq!(attempts, 0);
-        assert!(blocked, "third consecutive failure must transition to blocked");
+        assert!(
+            blocked,
+            "third consecutive failure must transition to blocked"
+        );
     }
 
     /// A successful PIN verification resets the retry counter (NIAP FIA_AFL.1.2
@@ -1547,7 +1552,10 @@ mod tests {
         // ...resets to the configured maximum after success.
         let attempts_after: i32 = 3;
 
-        assert!(attempts_before > 0, "must have an attempt remaining to verify");
+        assert!(
+            attempts_before > 0,
+            "must have an attempt remaining to verify"
+        );
         assert_eq!(attempts_after, 3);
     }
 

@@ -362,7 +362,9 @@ impl KeyRecovery {
         let recovery_request = repo
             .find_recovery_request(session_id)
             .await?
-            .ok_or_else(|| Error::RecoveryError(format!("Recovery session not found: {}", session_id)))?;
+            .ok_or_else(|| {
+                Error::RecoveryError(format!("Recovery session not found: {}", session_id))
+            })?;
         let escrowed_key = repo
             .find_escrowed_key(recovery_request.escrowed_key_id)
             .await?

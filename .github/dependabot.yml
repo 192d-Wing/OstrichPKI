@@ -1,0 +1,52 @@
+version: 2
+
+updates:
+  # ---- Rust / Cargo ----
+  # A single entry at the workspace root covers every member crate, because
+  # Dependabot reads the root Cargo.toml + Cargo.lock for the whole workspace.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    # Batch low-risk bumps into one PR to cut noise; majors stay individual.
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+      - rust
+
+  # ---- GitHub Actions ----
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+      - github-actions
+
+  # ---- Docker base images ----
+  # One entry per directory containing a Dockerfile.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - docker
+
+  - package-ecosystem: docker
+    directory: "/services/web-ui"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - docker

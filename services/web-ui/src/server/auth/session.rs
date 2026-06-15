@@ -18,8 +18,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64};
 use ostrich_common::util::random::secure_random_bytes;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64, Engine};
 
 /// Session token length in bytes
 const SESSION_TOKEN_LENGTH: usize = 32;

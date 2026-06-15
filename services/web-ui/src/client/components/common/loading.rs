@@ -46,10 +46,7 @@ pub struct LoadingProps {
 /// Loading spinner component
 #[function_component(Loading)]
 pub fn loading(props: &LoadingProps) -> Html {
-    let spinner_class = format!(
-        "{} animate-spin text-primary-600",
-        props.size.class()
-    );
+    let spinner_class = format!("{} animate-spin text-primary-600", props.size.class());
 
     let container_class = if props.overlay {
         "fixed inset-0 bg-gray-900/50 flex items-center justify-center z-50"

@@ -25,7 +25,11 @@ const ALGO: Algorithm = Algorithm::EcdsaP256Sha256;
 async fn connect() -> Option<DatabasePool> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let config = PoolConfig::from_url(&url).expect("valid DATABASE_URL");
-    Some(DatabasePool::new(&config).await.expect("connect to test DB"))
+    Some(
+        DatabasePool::new(&config)
+            .await
+            .expect("connect to test DB"),
+    )
 }
 
 /// Remove every audit row so the chain starts clean for this test run.

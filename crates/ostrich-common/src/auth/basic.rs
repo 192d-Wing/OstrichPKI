@@ -254,10 +254,7 @@ mod tests {
     }
 
     fn basic_header(user: &str, pass: &str) -> String {
-        format!(
-            "Basic {}",
-            BASE64_STANDARD.encode(format!("{user}:{pass}"))
-        )
+        format!("Basic {}", BASE64_STANDARD.encode(format!("{user}:{pass}")))
     }
 
     async fn run(req: HttpRequest<Body>) -> Result<(), AuthResponse> {
@@ -285,10 +282,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let err = run(req).await.unwrap_err();
-        assert_eq!(
-            err.into_response().status(),
-            StatusCode::UNAUTHORIZED
-        );
+        assert_eq!(err.into_response().status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

@@ -161,7 +161,12 @@ impl DatabaseAuditSink {
         algorithm: ostrich_crypto::Algorithm,
     ) -> Result<bool> {
         // First the structural checks (continuity + hash recomputation).
-        if !self.repository.verify_chain().await.map_err(Error::Database)? {
+        if !self
+            .repository
+            .verify_chain()
+            .await
+            .map_err(Error::Database)?
+        {
             return Ok(false);
         }
 

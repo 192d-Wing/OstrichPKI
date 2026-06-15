@@ -16,7 +16,7 @@ use crate::components::common::{
     Alert, AlertType, Badge, BadgeVariant, Column, DataTable, KeyFn, Loading, Modal, ModalSize,
     Pagination, RenderFn,
 };
-use crate::services::api::{api, ApiError};
+use crate::services::api::{ApiError, api};
 use crate::types::api::{
     CertificateDetails, CertificateFilter, CertificateListResponse, CertificateStatus,
     CertificateSummary, RevocationReason, RevocationRequest,

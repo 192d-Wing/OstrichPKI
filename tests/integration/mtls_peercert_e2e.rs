@@ -12,11 +12,14 @@
 
 use std::process::Command;
 
-use axum::{Extension, Router, routing::get};
-use ostrich_common::tls::{PeerCertificate, TlsSettings, serve};
+use axum::{routing::get, Extension, Router};
+use ostrich_common::tls::{serve, PeerCertificate, TlsSettings};
 
 fn openssl(args: &[&str]) {
-    let out = Command::new("openssl").args(args).output().expect("run openssl");
+    let out = Command::new("openssl")
+        .args(args)
+        .output()
+        .expect("run openssl");
     assert!(
         out.status.success(),
         "openssl {:?} failed: {}",
@@ -48,35 +51,94 @@ async fn mtls_client_cert_reaches_handler() {
 
     // CA (EC P-256, self-signed).
     openssl(&[
-        "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
-        "-days", "1", "-nodes", "-keyout", &p("ca.key"), "-out", &p("ca.crt"),
-        "-subj", "/CN=Test mTLS CA",
+        "req",
+        "-x509",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:P-256",
+        "-days",
+        "1",
+        "-nodes",
+        "-keyout",
+        &p("ca.key"),
+        "-out",
+        &p("ca.crt"),
+        "-subj",
+        "/CN=Test mTLS CA",
     ]);
     // Server key + CSR + cert with SAN IP:127.0.0.1.
     openssl(&[
-        "req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
-        "-keyout", &p("server.key"), "-out", &p("server.csr"), "-subj", "/CN=localhost",
+        "req",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:P-256",
+        "-nodes",
+        "-keyout",
+        &p("server.key"),
+        "-out",
+        &p("server.csr"),
+        "-subj",
+        "/CN=localhost",
     ]);
     std::fs::write(dir.join("san.ext"), "subjectAltName=IP:127.0.0.1\n").unwrap();
     openssl(&[
-        "x509", "-req", "-in", &p("server.csr"), "-CA", &p("ca.crt"), "-CAkey",
-        &p("ca.key"), "-CAcreateserial", "-days", "1", "-out", &p("server.crt"),
-        "-extfile", &p("san.ext"),
+        "x509",
+        "-req",
+        "-in",
+        &p("server.csr"),
+        "-CA",
+        &p("ca.crt"),
+        "-CAkey",
+        &p("ca.key"),
+        "-CAcreateserial",
+        "-days",
+        "1",
+        "-out",
+        &p("server.crt"),
+        "-extfile",
+        &p("san.ext"),
     ]);
     // Client key + CSR + cert (CN=client.test).
     openssl(&[
-        "req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
-        "-keyout", &p("client.key"), "-out", &p("client.csr"), "-subj", "/CN=client.test",
+        "req",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:P-256",
+        "-nodes",
+        "-keyout",
+        &p("client.key"),
+        "-out",
+        &p("client.csr"),
+        "-subj",
+        "/CN=client.test",
     ]);
     openssl(&[
-        "x509", "-req", "-in", &p("client.csr"), "-CA", &p("ca.crt"), "-CAkey",
-        &p("ca.key"), "-CAcreateserial", "-days", "1", "-out", &p("client.crt"),
+        "x509",
+        "-req",
+        "-in",
+        &p("client.csr"),
+        "-CA",
+        &p("ca.crt"),
+        "-CAkey",
+        &p("ca.key"),
+        "-CAcreateserial",
+        "-days",
+        "1",
+        "-out",
+        &p("client.crt"),
     ]);
 
     // Serve over TLS requiring a client cert (client_ca = our CA).
-    let tls = TlsSettings::from_options(Some(p("server.crt")), Some(p("server.key")), Some(p("ca.crt")))
-        .unwrap()
-        .unwrap();
+    let tls = TlsSettings::from_options(
+        Some(p("server.crt")),
+        Some(p("server.key")),
+        Some(p("ca.crt")),
+    )
+    .unwrap()
+    .unwrap();
     let port = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         l.local_addr().unwrap().port()

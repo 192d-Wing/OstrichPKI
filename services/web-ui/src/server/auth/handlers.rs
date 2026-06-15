@@ -9,11 +9,10 @@
 //! - NIAP PP-CA: FAU_GEN.1 (Audit Data Generation)
 
 use axum::{
-    debug_handler,
+    Json, debug_handler,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
-    Json,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
@@ -50,7 +49,8 @@ fn oidc_disabled() -> Response {
         StatusCode::NOT_FOUND,
         Json(AuthError {
             error: "oidc_disabled".to_string(),
-            message: "OIDC is disabled; this deployment uses internal CA authentication".to_string(),
+            message: "OIDC is disabled; this deployment uses internal CA authentication"
+                .to_string(),
         }),
     )
         .into_response()
@@ -198,20 +198,17 @@ pub async fn login(
     let oidc_client = state.oidc_client.as_ref().ok_or_else(oidc_disabled)?;
 
     // Generate authorization URL with PKCE
-    let (auth_url, csrf_state) = oidc_client
-        .authorize_url()
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to generate authorization URL");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AuthError {
-                    error: "auth_error".to_string(),
-                    message: "Failed to initiate authentication".to_string(),
-                }),
-            )
-                .into_response()
-        })?;
+    let (auth_url, csrf_state) = oidc_client.authorize_url().await.map_err(|e| {
+        tracing::error!(error = %e, "Failed to generate authorization URL");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AuthError {
+                error: "auth_error".to_string(),
+                message: "Failed to initiate authentication".to_string(),
+            }),
+        )
+            .into_response()
+    })?;
 
     tracing::info!("Initiating OAuth login flow");
 
@@ -322,19 +319,13 @@ pub async fn callback(
         .max_age(cookie::time::Duration::ZERO);
 
     // Redirect to dashboard
-    Ok((
-        jar.add(session_cookie).add(remove_csrf),
-        Redirect::to("/"),
-    ))
+    Ok((jar.add(session_cookie).add(remove_csrf), Redirect::to("/")))
 }
 
 /// Logout handler
 ///
 /// Invalidates the session and clears the session cookie.
-pub async fn logout(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> impl IntoResponse {
+pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
     // Invalidate the server-side session (NIAP PP-CA: FTA_SSL.4 -
     // user-initiated termination). Removing only the cookie would leave the
     // session live and replayable until timeout.
