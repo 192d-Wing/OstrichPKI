@@ -194,11 +194,7 @@ impl EstRepository {
 
     /// Grant an account permission to enroll for `identity` (CN or SAN value).
     /// Idempotent: re-adding an existing entry is a no-op.
-    pub async fn add_allowed_identity(
-        &self,
-        account_username: &str,
-        identity: &str,
-    ) -> Result<()> {
+    pub async fn add_allowed_identity(&self, account_username: &str, identity: &str) -> Result<()> {
         sqlx::query(
             r#"
             INSERT INTO est_account_identities (account_username, allowed_identity)

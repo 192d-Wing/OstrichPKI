@@ -550,20 +550,12 @@ impl CertificateIssuer {
         // structured subject DN (parsed from DER), not a CN wrapper around
         // the rendered string, or name chaining fails at validation time.
         let issuer_dn = ostrich_x509::parser::parse_subject_dn(&self.ca_certificate.der_encoded)
-            .map_err(|e| {
-                Error::Issuance(format!("Failed to parse CA subject DN: {}", e))
-            })?;
+            .map_err(|e| Error::Issuance(format!("Failed to parse CA subject DN: {}", e)))?;
         // RFC 5280 §4.1.1.2 - choose the signature algorithm from the CA key
         // type so the TBS AlgorithmIdentifier, the outer signatureAlgorithm, and
         // the actual signing call all agree (RSA / ECDSA P-256/P-384 / Ed25519).
-        let sig_alg =
-            ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type)
-                .map_err(|e| {
-                    Error::Issuance(format!(
-                        "unsupported CA key type for issuance: {}",
-                        e
-                    ))
-                })?;
+        let sig_alg = ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type)
+            .map_err(|e| Error::Issuance(format!("unsupported CA key type for issuance: {}", e)))?;
 
         let mut builder = CertificateBuilder::from_profile(profile)
             .serial_number(serial_number.clone())
@@ -594,11 +586,10 @@ impl CertificateIssuer {
         // computed (e.g. an unparseable CA cert), we log and proceed without it
         // rather than failing issuance - AKI is a path-building hint, not a
         // correctness requirement for the signature.
-        match Self::ca_subject_public_key_info(&self.ca_certificate.der_encoded)
-            .and_then(|spki| {
-                ostrich_x509::signing::key_identifier(&spki)
-                    .map_err(|e| Error::Issuance(format!("AKI key id: {}", e)))
-            }) {
+        match Self::ca_subject_public_key_info(&self.ca_certificate.der_encoded).and_then(|spki| {
+            ostrich_x509::signing::key_identifier(&spki)
+                .map_err(|e| Error::Issuance(format!("AKI key id: {}", e)))
+        }) {
             Ok(aki) => builder = builder.authority_key_id(aki),
             Err(e) => tracing::warn!(
                 error = %e,
@@ -748,8 +739,9 @@ impl CertificateIssuer {
     fn ca_subject_public_key_info(ca_cert_der: &[u8]) -> Result<Vec<u8>> {
         // ParsedCertificate.public_key is the complete DER SubjectPublicKeyInfo
         // (x509-parser's `public_key().raw`), exactly what key_identifier wants.
-        let parsed = ostrich_x509::parser::parse_certificate(ca_cert_der)
-            .map_err(|e| Error::Issuance(format!("failed to parse CA certificate for AKI: {}", e)))?;
+        let parsed = ostrich_x509::parser::parse_certificate(ca_cert_der).map_err(|e| {
+            Error::Issuance(format!("failed to parse CA certificate for AKI: {}", e))
+        })?;
         Ok(parsed.public_key)
     }
 

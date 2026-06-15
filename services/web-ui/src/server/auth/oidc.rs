@@ -8,14 +8,14 @@
 //! - NIST 800-53: SC-8 (Transmission Confidentiality)
 
 use anyhow::{Context, Result};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ostrich_common::util::random::secure_random_bytes;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use url::form_urlencoded;
 use url::Url;
+use url::form_urlencoded;
 
 use super::super::config::OidcConfig;
 
@@ -246,10 +246,7 @@ impl OidcClient {
 
     /// Parse userinfo response into OidcUserInfo
     fn parse_userinfo(&self, userinfo: &serde_json::Value) -> OidcUserInfo {
-        let subject = userinfo["sub"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string();
+        let subject = userinfo["sub"].as_str().unwrap_or("unknown").to_string();
 
         let username = userinfo["preferred_username"]
             .as_str()

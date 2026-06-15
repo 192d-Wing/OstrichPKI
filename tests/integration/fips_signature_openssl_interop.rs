@@ -65,7 +65,13 @@ fn spki_der_to_pem(dir: &Path, spki: &[u8], stem: &str) -> std::path::PathBuf {
     std::fs::write(&der, spki).unwrap();
     assert!(
         openssl_ok(&[
-            "pkey", "-pubin", "-inform", "DER", "-in", der.to_str().unwrap(), "-out",
+            "pkey",
+            "-pubin",
+            "-inform",
+            "DER",
+            "-in",
+            der.to_str().unwrap(),
+            "-out",
             pem.to_str().unwrap(),
         ]),
         "openssl must parse the provider's SPKI for {stem}"
@@ -89,8 +95,18 @@ async fn fips_signatures_verify_in_openssl() {
 
     // (key type, signing algorithm, openssl digest, is_ecdsa)
     let cases = [
-        (KeyType::Rsa2048, Algorithm::RsaPkcs1Sha256, "-sha256", false),
-        (KeyType::Rsa3072, Algorithm::RsaPkcs1Sha384, "-sha384", false),
+        (
+            KeyType::Rsa2048,
+            Algorithm::RsaPkcs1Sha256,
+            "-sha256",
+            false,
+        ),
+        (
+            KeyType::Rsa3072,
+            Algorithm::RsaPkcs1Sha384,
+            "-sha384",
+            false,
+        ),
         (KeyType::EcP256, Algorithm::EcdsaP256Sha256, "-sha256", true),
         (KeyType::EcP384, Algorithm::EcdsaP384Sha384, "-sha384", true),
     ];
@@ -113,7 +129,12 @@ async fn fips_signatures_verify_in_openssl() {
         std::fs::write(dir.join(&sig_path), &sig_bytes).unwrap();
 
         let verified = openssl_ok(&[
-            "dgst", digest, "-verify", pem.to_str().unwrap(), "-signature", &p(&sig_path),
+            "dgst",
+            digest,
+            "-verify",
+            pem.to_str().unwrap(),
+            "-signature",
+            &p(&sig_path),
             &p("msg.bin"),
         ]);
         assert!(
@@ -124,10 +145,18 @@ async fn fips_signatures_verify_in_openssl() {
         // Negative control: a different message must NOT verify.
         std::fs::write(dir.join("bad.bin"), b"tampered").unwrap();
         let bad = openssl_ok(&[
-            "dgst", digest, "-verify", pem.to_str().unwrap(), "-signature", &p(&sig_path),
+            "dgst",
+            digest,
+            "-verify",
+            pem.to_str().unwrap(),
+            "-signature",
+            &p(&sig_path),
             &p("bad.bin"),
         ]);
-        assert!(!bad, "{kt:?}: a tampered message must fail OpenSSL verification");
+        assert!(
+            !bad,
+            "{kt:?}: a tampered message must fail OpenSSL verification"
+        );
     }
 
     let _ = std::fs::remove_dir_all(&dir);

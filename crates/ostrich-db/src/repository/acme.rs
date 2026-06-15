@@ -109,10 +109,7 @@ impl AcmeRepository {
     }
 
     /// Find authorization by primary key
-    pub async fn find_authorization_by_uuid(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<AcmeAuthorization>> {
+    pub async fn find_authorization_by_uuid(&self, id: Uuid) -> Result<Option<AcmeAuthorization>> {
         let authz = sqlx::query_as::<_, AcmeAuthorization>(
             "SELECT * FROM acme_authorizations WHERE id = $1",
         )

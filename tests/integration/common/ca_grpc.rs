@@ -108,10 +108,11 @@ pub fn assert_issued_certificate(
         !response.certificate_id.is_empty(),
         "certificate_id must be non-empty"
     );
-    uuid::Uuid::parse_str(&response.certificate_id)
-        .expect("certificate_id must be a valid UUID");
+    uuid::Uuid::parse_str(&response.certificate_id).expect("certificate_id must be a valid UUID");
     assert!(
-        response.pem_encoded.starts_with("-----BEGIN CERTIFICATE-----"),
+        response
+            .pem_encoded
+            .starts_with("-----BEGIN CERTIFICATE-----"),
         "pem_encoded must be a PEM certificate, got: {:.40}",
         response.pem_encoded
     );

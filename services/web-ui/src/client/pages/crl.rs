@@ -13,7 +13,7 @@ use serde::Deserialize;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
-use crate::components::auth::{Protected};
+use crate::components::auth::Protected;
 use crate::components::common::{Alert, AlertType};
 use crate::services::api::api;
 use crate::services::auth::use_auth;
@@ -105,7 +105,10 @@ fn crl_card(props: &CrlCardProps) -> Html {
             busy.set(true);
             error.set(None);
             spawn_local(async move {
-                match api().post::<CrlResult, _>(endpoint, &serde_json::json!({})).await {
+                match api()
+                    .post::<CrlResult, _>(endpoint, &serde_json::json!({}))
+                    .await
+                {
                     Ok(r) => result.set(Some(r)),
                     Err(e) => error.set(Some(if e.message.is_empty() {
                         format!("Generation failed (HTTP {})", e.status)

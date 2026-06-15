@@ -41,13 +41,10 @@ impl ApiClient {
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
         let url = format!("{}{}", self.base_url, path);
 
-        let response = Request::get(&url)
-            .send()
-            .await
-            .map_err(|e| ApiError {
-                status: 0,
-                message: e.to_string(),
-            })?;
+        let response = Request::get(&url).send().await.map_err(|e| ApiError {
+            status: 0,
+            message: e.to_string(),
+        })?;
 
         if !response.ok() {
             return Err(ApiError {
@@ -100,13 +97,10 @@ impl ApiClient {
     pub async fn delete(&self, path: &str) -> Result<(), ApiError> {
         let url = format!("{}{}", self.base_url, path);
 
-        let response = Request::delete(&url)
-            .send()
-            .await
-            .map_err(|e| ApiError {
-                status: 0,
-                message: e.to_string(),
-            })?;
+        let response = Request::delete(&url).send().await.map_err(|e| ApiError {
+            status: 0,
+            message: e.to_string(),
+        })?;
 
         if !response.ok() {
             return Err(ApiError {

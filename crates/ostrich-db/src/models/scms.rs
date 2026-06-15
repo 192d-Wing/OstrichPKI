@@ -263,7 +263,10 @@ mod tests {
             key_type: "EC".to_string(),
             algorithm: "ECDSA-P256".to_string(),
             key_size: Some(256),
-            usage: vec!["digital_signature".to_string(), "non_repudiation".to_string()],
+            usage: vec![
+                "digital_signature".to_string(),
+                "non_repudiation".to_string(),
+            ],
             certificate_id: Some(Uuid::new_v4()),
             created_at: now,
         };

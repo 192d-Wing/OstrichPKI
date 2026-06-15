@@ -45,13 +45,28 @@ fn assemble_certificate(tbs_der: &[u8], signature: &[u8]) -> Vec<u8> {
 fn openssl_crl_text(der: &[u8], tag: &str) -> String {
     use std::io::Write as _;
     let path = std::env::temp_dir().join(format!("ostrich-{tag}.crl"));
-    std::fs::File::create(&path).unwrap().write_all(der).unwrap();
+    std::fs::File::create(&path)
+        .unwrap()
+        .write_all(der)
+        .unwrap();
     let out = Command::new("openssl")
-        .args(["crl", "-inform", "DER", "-in", path.to_str().unwrap(), "-text", "-noout"])
+        .args([
+            "crl",
+            "-inform",
+            "DER",
+            "-in",
+            path.to_str().unwrap(),
+            "-text",
+            "-noout",
+        ])
         .output()
         .expect("openssl crl");
     let _ = std::fs::remove_file(&path);
-    assert!(out.status.success(), "openssl crl failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "openssl crl failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
@@ -118,7 +133,13 @@ async fn delta_crl_lifecycle_verified_by_openssl() {
     let pool = DatabasePool::new(&PoolConfig::from_url(&db_url).unwrap())
         .await
         .unwrap();
-    for t in ["crls", "audit_events", "certificates", "ca_certificates", "ca_keys"] {
+    for t in [
+        "crls",
+        "audit_events",
+        "certificates",
+        "ca_certificates",
+        "ca_keys",
+    ] {
         sqlx::query(&format!("DELETE FROM {t}"))
             .execute(pool.pool())
             .await
@@ -167,11 +188,31 @@ async fn delta_crl_lifecycle_verified_by_openssl() {
 
     let ca_repo = CaRepository::new(pool.clone());
     let ca_key_row = ca_repo
-        .create_ca_key(key_label, "EcP256", "EcdsaP256Sha256", "Pkcs11", Some(slot as i64), &key.key_id, false)
+        .create_ca_key(
+            key_label,
+            "EcP256",
+            "EcdsaP256Sha256",
+            "Pkcs11",
+            Some(slot as i64),
+            &key.key_id,
+            false,
+        )
         .await
         .unwrap();
     let ca_cert_row = ca_repo
-        .create_ca_certificate(ca_key_row.id, serial.as_bytes(), &dn, &dn, nb, na, &ca_der, &ca_pem, true, None, None)
+        .create_ca_certificate(
+            ca_key_row.id,
+            serial.as_bytes(),
+            &dn,
+            &dn,
+            nb,
+            na,
+            &ca_der,
+            &ca_pem,
+            true,
+            None,
+            None,
+        )
         .await
         .unwrap();
     let now = chrono::Utc::now();
@@ -231,7 +272,13 @@ async fn delta_crl_lifecycle_verified_by_openssl() {
         "delta CRL must carry the Delta CRL Indicator:\n{delta_text}"
     );
 
-    for t in ["crls", "audit_events", "certificates", "ca_certificates", "ca_keys"] {
+    for t in [
+        "crls",
+        "audit_events",
+        "certificates",
+        "ca_certificates",
+        "ca_keys",
+    ] {
         let _ = sqlx::query(&format!("DELETE FROM {t}"))
             .execute(pool.pool())
             .await;

@@ -71,8 +71,8 @@ impl CertificateAuthority {
         // certificate so issued certificates' issuer fields chain correctly.
         // (Wrapping the rendered string in new_cn produced "CN=CN=..." and
         // broke OpenSSL chain verification.)
-        let ca_dn = ostrich_x509::parser::parse_subject_dn(&ca_certificate.der_encoded)
-            .map_err(|e| {
+        let ca_dn =
+            ostrich_x509::parser::parse_subject_dn(&ca_certificate.der_encoded).map_err(|e| {
                 ostrich_crypto::Error::InvalidInput(format!(
                     "Failed to parse CA certificate subject DN: {}",
                     e

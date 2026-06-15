@@ -79,10 +79,7 @@ async fn login(
                 AuthError::AccountSuspended | AuthError::AccountDisabled => {
                     (StatusCode::FORBIDDEN, "Account unavailable".to_string())
                 }
-                _ => (
-                    StatusCode::UNAUTHORIZED,
-                    "Invalid credentials".to_string(),
-                ),
+                _ => (StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()),
             };
             return (status, Json(serde_json::json!({ "error": message }))).into_response();
         }

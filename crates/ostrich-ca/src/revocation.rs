@@ -25,7 +25,10 @@ use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
 use ostrich_crypto::{CryptoProvider, KeyHandle};
-use ostrich_db::{DatabasePool, Uuid, repository::{CertificateRepository, CrlRepository}};
+use ostrich_db::{
+    DatabasePool, Uuid,
+    repository::{CertificateRepository, CrlRepository},
+};
 use ostrich_x509::{
     crl::{CrlGenerator, RevokedCertificateInfo},
     parser::RevocationReason,
@@ -229,14 +232,10 @@ impl RevocationManager {
         // RFC 5280 §5.1.1.2 - select the signature algorithm from the CA key
         // type so the TBS AlgorithmIdentifier, the outer signatureAlgorithm, and
         // the signing call all agree (RSA / ECDSA P-256/P-384 / Ed25519).
-        let sig_alg =
-            ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type)
-                .map_err(|e| {
-                    Error::Revocation(format!(
-                        "unsupported CA key type for CRL signing: {}",
-                        e
-                    ))
-                })?;
+        let sig_alg = ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type)
+            .map_err(|e| {
+                Error::Revocation(format!("unsupported CA key type for CRL signing: {}", e))
+            })?;
 
         // Generate CRL
         let crl_generator = CrlGenerator::new(issuer_dn, self.crl_validity_hours);
@@ -368,11 +367,10 @@ impl RevocationManager {
         let crl_number_i64 = crl_repo.next_crl_number(self.ca_certificate_id).await?;
         let current_crl_number = crl_number_i64 as u64;
 
-        let sig_alg =
-            ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type)
-                .map_err(|e| {
-                    Error::Revocation(format!("unsupported CA key type for CRL signing: {}", e))
-                })?;
+        let sig_alg = ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type)
+            .map_err(|e| {
+                Error::Revocation(format!("unsupported CA key type for CRL signing: {}", e))
+            })?;
 
         let crl_generator = CrlGenerator::new(issuer_dn, self.crl_validity_hours);
         let crl_builder = crl_generator

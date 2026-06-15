@@ -571,7 +571,11 @@ mod tests {
         dn.push(rcgen::DnType::OrganizationName, "OstrichPKI");
         params.distinguished_name = dn;
         let key = rcgen::KeyPair::generate().expect("keypair");
-        let der = params.self_signed(&key).expect("self-signed").der().to_vec();
+        let der = params
+            .self_signed(&key)
+            .expect("self-signed")
+            .der()
+            .to_vec();
 
         // Render the expected DN exactly as extract_subject_dn does (x509-cert).
         let parsed = x509_cert::Certificate::from_der(&der).expect("parse");

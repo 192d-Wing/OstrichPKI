@@ -86,7 +86,10 @@ pub async fn generate_key_pair_for_client(
         .await
         .map_err(|e| Error::Internal(format!("Public key export failed: {}", e)))?;
     let private_key_pkcs8 = crypto.export_private_key(&key_handle).await.map_err(|e| {
-        Error::Internal(format!("Private key export failed (key type unsupported?): {}", e))
+        Error::Internal(format!(
+            "Private key export failed (key type unsupported?): {}",
+            e
+        ))
     })?;
 
     // Build a CSR signed by the generated key so the CA can verify

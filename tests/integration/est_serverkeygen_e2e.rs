@@ -18,12 +18,12 @@ use std::sync::Arc;
 use ostrich_audit::sink::DatabaseAuditSink;
 use ostrich_common::auth::provider::{AuthProvider, AuthResult, Credentials, SessionInfo};
 use ostrich_common::auth::user::{AuthMethod, AuthenticatedUser, UserId};
-use ostrich_common::auth::{AuthError, RbacPolicy, roles::Role};
+use ostrich_common::auth::{roles::Role, AuthError, RbacPolicy};
 use ostrich_common::types::{DistinguishedName, SerialNumber};
 use ostrich_crypto::{Algorithm, CryptoProvider, CryptoProviderFactory, KeyType};
-use ostrich_db::{DatabasePool, PoolConfig, models::Certificate, repository::CaRepository};
+use ostrich_db::{models::Certificate, repository::CaRepository, DatabasePool, PoolConfig};
 use ostrich_x509::extensions::SubjectAltName;
-use ostrich_x509::{CertificateBuilder, profile::KeyUsage};
+use ostrich_x509::{profile::KeyUsage, CertificateBuilder};
 
 /// AuthProvider that authenticates every request as a fixed RA-staff user (which
 /// holds Permission::SubmitRequest). Lets the test drive the protected
@@ -77,7 +77,7 @@ fn free_port() -> u16 {
 }
 
 fn assemble_certificate(tbs_der: &[u8], signature: &[u8]) -> Vec<u8> {
-    use der::{Decode, Encode, asn1::BitString};
+    use der::{asn1::BitString, Decode, Encode};
     use x509_cert::{Certificate as X509Cert, TbsCertificate};
     let tbs = TbsCertificate::from_der(tbs_der).expect("re-parse TBS");
     let signature_algorithm = tbs.signature.clone();
@@ -279,15 +279,10 @@ async fn est_serverkeygen_full_stack_over_http() {
     let auth: Arc<dyn AuthProvider> = Arc::new(TestAuthProvider { user: ra_user });
     let rbac = Arc::new(RbacPolicy::new());
 
-    let est_state = ostrich_est::rest::EstState::new_with_auth(
-        pool.clone(),
-        est_crypto,
-        audit,
-        auth,
-        rbac,
-    )
-    .with_ca(Some(Arc::new(ca_client)), Some(ca_der.clone()))
-    .with_profile("tls_client");
+    let est_state =
+        ostrich_est::rest::EstState::new_with_auth(pool.clone(), est_crypto, audit, auth, rbac)
+            .with_ca(Some(Arc::new(ca_client)), Some(ca_der.clone()))
+            .with_profile("tls_client");
     let router = ostrich_est::create_router(est_state);
 
     let est_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -310,28 +305,23 @@ async fn est_serverkeygen_full_stack_over_http() {
         ..Default::default()
     };
     let sans = vec![SubjectAltName::DnsName("device-42.example.com".to_string())];
-    let csr_info = ostrich_x509::builder::build_csr_info_der(&leaf_subject, &client_spki, &sans)
-        .unwrap();
+    let csr_info =
+        ostrich_x509::builder::build_csr_info_der(&leaf_subject, &client_spki, &sans).unwrap();
     let csr_raw = client_crypto
         .sign(&client_key, Algorithm::EcdsaP256Sha256, &csr_info)
         .await
         .unwrap();
     let csr_x509 =
         ostrich_x509::signing::encode_x509_signature(Algorithm::EcdsaP256Sha256, csr_raw).unwrap();
-    let client_csr = ostrich_x509::builder::assemble_csr(
-        &csr_info,
-        Algorithm::EcdsaP256Sha256,
-        &csr_x509,
-    )
-    .unwrap();
+    let client_csr =
+        ostrich_x509::builder::assemble_csr(&csr_info, Algorithm::EcdsaP256Sha256, &csr_x509)
+            .unwrap();
 
     // --- POST to /serverkeygen over HTTP ---
     use base64::Engine;
     let body = base64::engine::general_purpose::STANDARD.encode(&client_csr);
     let resp = reqwest::Client::new()
-        .post(format!(
-            "http://{est_addr}/.well-known/est/serverkeygen"
-        ))
+        .post(format!("http://{est_addr}/.well-known/est/serverkeygen"))
         .header("Authorization", "Bearer test-token")
         .header("Content-Type", "application/pkcs10")
         .body(body)
@@ -347,10 +337,7 @@ async fn est_serverkeygen_full_stack_over_http() {
         .unwrap_or("")
         .to_string();
     let text = resp.text().await.unwrap();
-    assert!(
-        status.is_success(),
-        "serverkeygen failed: {status}\n{text}"
-    );
+    assert!(status.is_success(), "serverkeygen failed: {status}\n{text}");
     assert!(
         ctype.starts_with("multipart/mixed"),
         "expected multipart/mixed, got '{ctype}'"
@@ -370,10 +357,23 @@ async fn est_serverkeygen_full_stack_over_http() {
     let dir = std::env::temp_dir();
     let kp = dir.join(format!("skg-key-{ca_port}.der"));
     let cp = dir.join(format!("skg-cert-{ca_port}.p7"));
-    std::fs::File::create(&kp).unwrap().write_all(&pkcs8).unwrap();
-    std::fs::File::create(&cp).unwrap().write_all(&pkcs7).unwrap();
+    std::fs::File::create(&kp)
+        .unwrap()
+        .write_all(&pkcs8)
+        .unwrap();
+    std::fs::File::create(&cp)
+        .unwrap()
+        .write_all(&pkcs7)
+        .unwrap();
 
-    let key_pub = run_openssl(&["pkey", "-inform", "DER", "-in", kp.to_str().unwrap(), "-pubout"]);
+    let key_pub = run_openssl(&[
+        "pkey",
+        "-inform",
+        "DER",
+        "-in",
+        kp.to_str().unwrap(),
+        "-pubout",
+    ]);
     let certs_pem = run_openssl(&[
         "pkcs7",
         "-inform",

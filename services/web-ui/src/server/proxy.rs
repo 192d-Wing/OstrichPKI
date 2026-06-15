@@ -9,12 +9,12 @@
 //! - NIST 800-53: SC-8 (Transmission Confidentiality) - Internal mTLS
 
 use axum::{
+    Router,
     body::Body,
     extract::{Path, State},
     http::{Request, StatusCode},
     response::{IntoResponse, Response},
     routing::any,
-    Router,
 };
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
@@ -106,11 +106,7 @@ async fn proxy_audit(
 }
 
 /// Generic proxy function to forward requests to a backend service
-async fn proxy_to_service(
-    base_url: &str,
-    path: &str,
-    original_request: Request<Body>,
-) -> Response {
+async fn proxy_to_service(base_url: &str, path: &str, original_request: Request<Body>) -> Response {
     let target_url = format!("{}/{}", base_url.trim_end_matches('/'), path);
 
     tracing::debug!(
@@ -151,8 +147,7 @@ async fn proxy_to_service(
     // Copy headers, excluding hop-by-hop headers and any client-supplied
     // Authorization (the proxy is the sole authority for the upstream credential).
     for (key, value) in parts.headers.iter() {
-        if is_hop_by_hop_header(key.as_str())
-            || key.as_str().eq_ignore_ascii_case("authorization")
+        if is_hop_by_hop_header(key.as_str()) || key.as_str().eq_ignore_ascii_case("authorization")
         {
             continue;
         }

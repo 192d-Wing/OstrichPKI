@@ -86,13 +86,25 @@ mod tests {
         let spki = private.to_public_key().to_public_key_der().unwrap();
 
         assert!(
-            verify_with_spki(spki.as_bytes(), Algorithm::RsaPkcs1Sha256, data, &sig, false)
-                .unwrap()
+            verify_with_spki(
+                spki.as_bytes(),
+                Algorithm::RsaPkcs1Sha256,
+                data,
+                &sig,
+                false
+            )
+            .unwrap()
         );
         // Tampered data must fail verification, not error
         assert!(
-            !verify_with_spki(spki.as_bytes(), Algorithm::RsaPkcs1Sha256, b"other", &sig, false)
-                .unwrap()
+            !verify_with_spki(
+                spki.as_bytes(),
+                Algorithm::RsaPkcs1Sha256,
+                b"other",
+                &sig,
+                false
+            )
+            .unwrap()
         );
     }
 

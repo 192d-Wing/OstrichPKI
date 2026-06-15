@@ -43,10 +43,10 @@ pub use audit::AuditRepository;
 pub use ca::CaRepository;
 pub use certificate::CertificateRepository;
 pub use crl::CrlRepository;
-pub use users::DbUserRepository;
 pub use est::EstRepository;
 pub use kra::KraRepository;
 pub use scms::ScmsRepository;
+pub use users::DbUserRepository;
 
 use crate::Result;
 use async_trait::async_trait;

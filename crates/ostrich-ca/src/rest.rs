@@ -278,7 +278,10 @@ fn sans_from_strings(sans: &[String]) -> Vec<SubjectAltName> {
                 "DNS" => Some(SubjectAltName::dns(value)),
                 "EMAIL" => Some(SubjectAltName::email(value)),
                 "URI" => Some(SubjectAltName::uri(value)),
-                "IP" => value.parse::<std::net::IpAddr>().ok().map(SubjectAltName::ip),
+                "IP" => value
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+                    .map(SubjectAltName::ip),
                 _ => None,
             }
         })
@@ -1129,7 +1132,9 @@ mod base64_opt_serde {
         let opt = Option::<String>::deserialize(deserializer)?;
         match opt {
             Some(s) => Ok(Some(
-                BASE64_STANDARD.decode(&s).map_err(serde::de::Error::custom)?,
+                BASE64_STANDARD
+                    .decode(&s)
+                    .map_err(serde::de::Error::custom)?,
             )),
             None => Ok(None),
         }

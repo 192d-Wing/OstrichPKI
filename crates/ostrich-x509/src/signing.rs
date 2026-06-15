@@ -90,44 +90,28 @@ pub fn recommended_signature_algorithm(key_type: KeyType) -> Result<Algorithm> {
 /// RFC 4055 - RSA PKCS#1 identifiers carry explicit NULL parameters
 /// RFC 5758 §3.2 - ECDSA identifiers omit parameters
 /// RFC 8410 - id-Ed25519 omits parameters
-pub fn algorithm_identifier(
-    alg: Algorithm,
-) -> Result<x509_cert::spki::AlgorithmIdentifierOwned> {
+pub fn algorithm_identifier(alg: Algorithm) -> Result<x509_cert::spki::AlgorithmIdentifierOwned> {
     use const_oid::ObjectIdentifier;
     use const_oid::db::rfc5912::{
         SHA_256_WITH_RSA_ENCRYPTION, SHA_384_WITH_RSA_ENCRYPTION, SHA_512_WITH_RSA_ENCRYPTION,
     };
 
     // RFC 5758 §3.2 - ecdsa-with-SHA256 / ecdsa-with-SHA384
-    const ECDSA_WITH_SHA256: ObjectIdentifier =
-        ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2");
-    const ECDSA_WITH_SHA384: ObjectIdentifier =
-        ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
+    const ECDSA_WITH_SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2");
+    const ECDSA_WITH_SHA384: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
     // RFC 8410 - id-Ed25519
     const ID_ED25519: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
     // NIST CSOR id-ml-dsa-* (FIPS 204), parameters absent. These match the
     // OIDs aws-lc-rs writes into the ML-DSA SubjectPublicKeyInfo.
-    const ID_ML_DSA_44: ObjectIdentifier =
-        ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.17");
-    const ID_ML_DSA_65: ObjectIdentifier =
-        ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.18");
-    const ID_ML_DSA_87: ObjectIdentifier =
-        ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.19");
+    const ID_ML_DSA_44: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.17");
+    const ID_ML_DSA_65: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.18");
+    const ID_ML_DSA_87: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.19");
 
     let (oid, parameters) = match alg {
         // RFC 4055: RSA PKCS#1 v1.5 requires explicit NULL parameters.
-        Algorithm::RsaPkcs1Sha256 => (
-            SHA_256_WITH_RSA_ENCRYPTION,
-            Some(der::Any::null()),
-        ),
-        Algorithm::RsaPkcs1Sha384 => (
-            SHA_384_WITH_RSA_ENCRYPTION,
-            Some(der::Any::null()),
-        ),
-        Algorithm::RsaPkcs1Sha512 => (
-            SHA_512_WITH_RSA_ENCRYPTION,
-            Some(der::Any::null()),
-        ),
+        Algorithm::RsaPkcs1Sha256 => (SHA_256_WITH_RSA_ENCRYPTION, Some(der::Any::null())),
+        Algorithm::RsaPkcs1Sha384 => (SHA_384_WITH_RSA_ENCRYPTION, Some(der::Any::null())),
+        Algorithm::RsaPkcs1Sha512 => (SHA_512_WITH_RSA_ENCRYPTION, Some(der::Any::null())),
 
         // RFC 5758 §3.2: ECDSA AlgorithmIdentifiers omit parameters (None).
         Algorithm::EcdsaP256Sha256 => (ECDSA_WITH_SHA256, None),
@@ -192,7 +176,10 @@ pub fn key_identifier(spki_der: &[u8]) -> Result<Vec<u8>> {
     use spki::SubjectPublicKeyInfoOwned;
 
     let spki = SubjectPublicKeyInfoOwned::try_from(spki_der).map_err(|e| {
-        Error::Encoding(format!("failed to parse SubjectPublicKeyInfo for key id: {}", e))
+        Error::Encoding(format!(
+            "failed to parse SubjectPublicKeyInfo for key id: {}",
+            e
+        ))
     })?;
 
     // RFC 5280 §4.2.1.2 - hash the BIT STRING *contents* (the raw public-key
@@ -300,9 +287,21 @@ mod tests {
         // FIPS 204 ML-DSA signing (via aws-lc-rs) maps to the ML-DSA algorithms
         // and the NIST CSOR id-ml-dsa-* OIDs with absent parameters.
         for (kt, alg, oid) in [
-            (KeyType::MlDsa44, Algorithm::MlDsa44, "2.16.840.1.101.3.4.3.17"),
-            (KeyType::MlDsa65, Algorithm::MlDsa65, "2.16.840.1.101.3.4.3.18"),
-            (KeyType::MlDsa87, Algorithm::MlDsa87, "2.16.840.1.101.3.4.3.19"),
+            (
+                KeyType::MlDsa44,
+                Algorithm::MlDsa44,
+                "2.16.840.1.101.3.4.3.17",
+            ),
+            (
+                KeyType::MlDsa65,
+                Algorithm::MlDsa65,
+                "2.16.840.1.101.3.4.3.18",
+            ),
+            (
+                KeyType::MlDsa87,
+                Algorithm::MlDsa87,
+                "2.16.840.1.101.3.4.3.19",
+            ),
         ] {
             assert_eq!(recommended_signature_algorithm(kt).unwrap(), alg);
             let ai = algorithm_identifier(alg).unwrap();
@@ -346,11 +345,15 @@ mod tests {
     fn ecdsa_algorithm_identifier_oids() {
         use const_oid::ObjectIdentifier;
         assert_eq!(
-            algorithm_identifier(Algorithm::EcdsaP256Sha256).unwrap().oid,
+            algorithm_identifier(Algorithm::EcdsaP256Sha256)
+                .unwrap()
+                .oid,
             ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2")
         );
         assert_eq!(
-            algorithm_identifier(Algorithm::EcdsaP384Sha384).unwrap().oid,
+            algorithm_identifier(Algorithm::EcdsaP384Sha384)
+                .unwrap()
+                .oid,
             ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3")
         );
         assert_eq!(
@@ -382,12 +385,10 @@ mod tests {
         fixed[31] = 0x11; // r low byte
         fixed[63] = 0x22; // s low byte
 
-        let der_bytes =
-            encode_x509_signature(Algorithm::EcdsaP256Sha256, fixed).unwrap();
+        let der_bytes = encode_x509_signature(Algorithm::EcdsaP256Sha256, fixed).unwrap();
 
         // Must parse back as SEQUENCE { INTEGER, INTEGER }.
-        let parsed =
-            der::asn1::SequenceOf::<UintRef, 2>::from_der(&der_bytes).unwrap();
+        let parsed = der::asn1::SequenceOf::<UintRef, 2>::from_der(&der_bytes).unwrap();
         let items: Vec<_> = parsed.iter().collect();
         assert_eq!(items.len(), 2, "Ecdsa-Sig-Value must hold two INTEGERs");
         assert_eq!(items[0].as_bytes(), &[0x11]);
@@ -434,8 +435,7 @@ mod tests {
         fixed[0] = 0x80; // r high byte, high bit set
         fixed[32] = 0x01; // s high byte
 
-        let der_bytes =
-            encode_x509_signature(Algorithm::EcdsaP256Sha256, fixed).unwrap();
+        let der_bytes = encode_x509_signature(Algorithm::EcdsaP256Sha256, fixed).unwrap();
 
         // Walk the DER by hand: SEQUENCE (0x30) { INTEGER (0x02) r, INTEGER s }.
         assert_eq!(der_bytes[0], 0x30, "Ecdsa-Sig-Value must be a SEQUENCE");

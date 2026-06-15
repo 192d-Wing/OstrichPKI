@@ -575,9 +575,10 @@ impl TbsCrl {
             let ext = Extension {
                 extn_id: rfc5280::ID_CE_ISSUING_DISTRIBUTION_POINT,
                 critical: true, // RFC 5280 §5.2.5: IDP is critical
-                extn_value: OctetString::new(idp.to_der().map_err(|e| {
-                    Error::Encoding(format!("Failed to encode IDP: {}", e))
-                })?)?,
+                extn_value: OctetString::new(
+                    idp.to_der()
+                        .map_err(|e| Error::Encoding(format!("Failed to encode IDP: {}", e)))?,
+                )?,
             };
             extensions.push(ext);
         }
@@ -689,15 +690,33 @@ mod tests {
             .write_all(&crl_der)
             .unwrap();
         let out = Command::new("openssl")
-            .args(["crl", "-inform", "DER", "-in", path.to_str().unwrap(), "-text", "-noout"])
+            .args([
+                "crl",
+                "-inform",
+                "DER",
+                "-in",
+                path.to_str().unwrap(),
+                "-text",
+                "-noout",
+            ])
             .output()
             .unwrap();
         let _ = std::fs::remove_file(&path);
         let text = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "openssl crl failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "openssl crl failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
-        assert!(text.contains("Delta CRL Indicator"), "missing delta indicator:\n{text}");
-        assert!(text.contains("Freshest CRL"), "missing freshest CRL:\n{text}");
+        assert!(
+            text.contains("Delta CRL Indicator"),
+            "missing delta indicator:\n{text}"
+        );
+        assert!(
+            text.contains("Freshest CRL"),
+            "missing freshest CRL:\n{text}"
+        );
         assert!(
             text.contains("Issuing Distribution Point"),
             "missing IDP:\n{text}"

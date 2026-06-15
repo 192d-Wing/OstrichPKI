@@ -26,12 +26,11 @@ impl CaRepository {
 
     /// Find a CA certificate by ID
     pub async fn find_ca_certificate(&self, id: Uuid) -> Result<Option<CaCertificate>> {
-        let cert = sqlx::query_as::<_, CaCertificate>(
-            "SELECT * FROM ca_certificates WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(self.pool.pool())
-        .await?;
+        let cert =
+            sqlx::query_as::<_, CaCertificate>("SELECT * FROM ca_certificates WHERE id = $1")
+                .bind(id)
+                .fetch_optional(self.pool.pool())
+                .await?;
         Ok(cert)
     }
 

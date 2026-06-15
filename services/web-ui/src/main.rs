@@ -25,13 +25,13 @@ use anyhow::Result;
 #[cfg(not(target_arch = "wasm32"))]
 use clap::Parser;
 #[cfg(not(target_arch = "wasm32"))]
+use server::{config::WebUiConfig, router::create_router};
+#[cfg(not(target_arch = "wasm32"))]
 use std::net::SocketAddr;
 #[cfg(not(target_arch = "wasm32"))]
 use tracing::info;
 #[cfg(not(target_arch = "wasm32"))]
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-#[cfg(not(target_arch = "wasm32"))]
-use server::{config::WebUiConfig, router::create_router};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// OstrichPKI Web UI Server
 #[cfg(not(target_arch = "wasm32"))]

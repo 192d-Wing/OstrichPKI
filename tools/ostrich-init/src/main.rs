@@ -351,9 +351,7 @@ async fn run_subordinate(
     let parent_key = ca_repo
         .find_ca_key(parent_cert.ca_key_id)
         .await?
-        .with_context(|| {
-            format!("Parent CA key {} not found", parent_cert.ca_key_id)
-        })?;
+        .with_context(|| format!("Parent CA key {} not found", parent_cert.ca_key_id))?;
 
     // Reconstruct the parent KeyHandle exactly as ca-server's bootstrap_ca does
     // (serde-string KeyType/Algorithm; ProviderId from provider_type + slot).
@@ -515,8 +513,8 @@ async fn run_subordinate(
             not_after,
             &der_encoded,
             &pem_encoded,
-            false,                 // not a root
-            Some(parent_cert.id),  // parent linkage
+            false,                // not a root
+            Some(parent_cert.id), // parent linkage
             Some(i32::from(path_len)),
         )
         .await
@@ -608,9 +606,7 @@ fn assemble_certificate(tbs_der: &[u8], signature: &[u8]) -> Result<Vec<u8>> {
         signature_algorithm,
         signature,
     };
-    certificate
-        .to_der()
-        .context("Failed to encode certificate")
+    certificate.to_der().context("Failed to encode certificate")
 }
 
 /// Serde unit-variant name for an ostrich-crypto enum (matches the string

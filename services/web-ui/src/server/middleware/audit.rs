@@ -9,12 +9,7 @@
 //! - NIAP PP-CA: FAU_GEN.1 (Audit Data Generation)
 //! - NIAP PP-CA: FAU_GEN.2 (User Identity Association)
 
-use axum::{
-    extract::Request,
-    http::Method,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, http::Method, middleware::Next, response::Response};
 use chrono::Utc;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -182,7 +177,10 @@ mod tests {
     fn test_should_audit_api_calls() {
         assert!(should_audit_request(&Method::GET, "/api/certificates"));
         assert!(should_audit_request(&Method::POST, "/api/certificates"));
-        assert!(should_audit_request(&Method::DELETE, "/api/certificates/123"));
+        assert!(should_audit_request(
+            &Method::DELETE,
+            "/api/certificates/123"
+        ));
     }
 
     #[test]

@@ -18,7 +18,7 @@
 //! - FIPS 197 / SP 800-38D: AES-256 in Galois/Counter Mode
 
 use crate::{Error, Result};
-use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
+use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
 use zeroize::Zeroizing;
 
