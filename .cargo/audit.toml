@@ -21,14 +21,6 @@ ignore = [
     # the ACME server's DNS-01 resolver. POA&M: re-evaluate when upstream fixes.
     "RUSTSEC-2026-0118",
 
-    # --- Fix available but deferred (tracked migration) ---
-
-    # hickory-proto: O(n^2) name-compression CPU exhaustion during message
-    # ENCODING. Fixed in hickory 0.26.1, but 0.26 is a breaking API change for
-    # our resolver setup (name_server module now private, TokioConnectionProvider
-    # relocated). POA&M: migrate ACME DNS to hickory 0.26 in a dedicated change.
-    "RUSTSEC-2026-0119",
-
     # --- Unmaintained / unsound (warnings; all transitive, no direct use) ---
     "RUSTSEC-2025-0141", # bincode 1.x unmaintained (transitive)
     "RUSTSEC-2024-0436", # paste unmaintained (transitive proc-macro dep)

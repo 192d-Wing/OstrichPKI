@@ -321,7 +321,7 @@ impl Dns01Validator {
     ) -> Result<bool> {
         use hickory_resolver::Resolver;
         use hickory_resolver::config::ResolverConfig;
-        use hickory_resolver::name_server::TokioConnectionProvider;
+        use hickory_resolver::net::runtime::TokioRuntimeProvider;
         use ostrich_common::util::encoding::encode_base64url;
         use sha2::{Digest, Sha256};
         use std::time::Duration;
@@ -340,17 +340,19 @@ impl Dns01Validator {
         // RFC 8555 §8.4: _acme-challenge.<domain>
         let txt_record_name = format!("_acme-challenge.{}", domain);
 
-        // Create DNS resolver using hickory-resolver 0.25 builder pattern
-        // Uses system DNS configuration with Tokio runtime
+        // Create DNS resolver using the hickory-resolver 0.26 builder pattern.
+        // The Tokio runtime provider replaces 0.25's TokioConnectionProvider
+        // (the name_server module is now private), and build() is now fallible.
         let mut resolver_opts = hickory_resolver::config::ResolverOpts::default();
         resolver_opts.timeout = Duration::from_secs(self.timeout_secs);
 
-        let resolver = Resolver::builder_with_config(
-            ResolverConfig::default(),
-            TokioConnectionProvider::default(),
-        )
-        .with_options(resolver_opts)
-        .build();
+        let resolver =
+            Resolver::builder_with_config(ResolverConfig::default(), TokioRuntimeProvider::default())
+                .with_options(resolver_opts)
+                .build()
+                .map_err(|e| {
+                    Error::ChallengeValidation(format!("DNS resolver initialization failed: {e}"))
+                })?;
 
         // Perform DNS TXT lookup with retry logic
         // Retry up to 5 times with 2-second intervals to allow for DNS propagation
@@ -359,18 +361,22 @@ impl Dns01Validator {
 
         for attempt in 1..=max_retries {
             match resolver.txt_lookup(&txt_record_name).await {
-                Ok(txt_lookup) => {
-                    // Check each TXT record for a match
-                    // TxtLookup implements Iterator, yielding TXT records
-                    for txt_record in txt_lookup.iter() {
-                        // txt_data() returns &[Box<[u8]>] - slice of byte arrays
-                        for data in txt_record.txt_data() {
-                            let txt_value = String::from_utf8_lossy(data).to_string();
+                Ok(lookup) => {
+                    use hickory_proto::rr::RData;
+                    // hickory 0.26: a lookup yields a generic `Lookup`; iterate
+                    // the answer records and match the TXT rdata (the typed
+                    // `TxtLookup` wrapper was removed). `TXT::txt_data` is now a
+                    // public field: a slice of byte strings.
+                    for record in lookup.answers() {
+                        if let RData::TXT(txt) = &record.data {
+                            for data in txt.txt_data.iter() {
+                                let txt_value = String::from_utf8_lossy(data).to_string();
 
-                            // RFC 8555 §8.4: Check if TXT record contains expected digest
-                            if txt_value == expected_value {
-                                // NIST 800-53: AU-3 - Audit content (successful validation)
-                                return Ok(true);
+                                // RFC 8555 §8.4: TXT record must carry the expected digest
+                                if txt_value == expected_value {
+                                    // NIST 800-53: AU-3 - Audit content (successful validation)
+                                    return Ok(true);
+                                }
                             }
                         }
                     }
