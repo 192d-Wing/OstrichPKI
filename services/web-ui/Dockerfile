@@ -14,7 +14,7 @@
 # ==============================================================================
 # Stage 1: WASM Builder (Yew client)
 # ==============================================================================
-FROM rust:1.83-bookworm AS wasm-builder
+FROM rust:1.96-bookworm AS wasm-builder
 
 # Install wasm target and trunk
 RUN rustup target add wasm32-unknown-unknown \
@@ -44,7 +44,7 @@ RUN trunk build --release
 # ==============================================================================
 # Stage 2: Server Builder
 # ==============================================================================
-FROM rust:1.83-bookworm AS server-builder
+FROM rust:1.96-bookworm AS server-builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
