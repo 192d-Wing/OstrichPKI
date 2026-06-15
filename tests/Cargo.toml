@@ -84,7 +84,7 @@ sha2 = "0.10"
 signature = "2.2"
 # "builder" feature enables PKCS#10 CSR generation (acme_full_flow_test)
 x509-cert = { version = "0.2", features = ["builder"] }
-der = "0.7"
+der = "0.8"
 base64 = "0.22"
 
 # Utilities
