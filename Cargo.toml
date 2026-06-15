@@ -86,6 +86,8 @@ sqlx = { version = "0.8", features = [
 # Cryptography - RustCrypto ecosystem
 x509-cert = { version = "0.2.5", features = ["builder", "pem"] }
 x509-parser = "0.18"
+# Test-only self-signed certificate generation (dev-dependencies).
+rcgen = "0.13"
 der = { version = "0.7", features = ["derive", "alloc", "oid"] }
 spki = "0.7"
 # Pinned at 0.9 to match x509-cert 0.2.5's transitive dependency. Bumping to

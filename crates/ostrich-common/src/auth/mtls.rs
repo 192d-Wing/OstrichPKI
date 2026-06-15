@@ -213,11 +213,12 @@ impl CertificateAuthProvider {
         // Parse the end-entity certificate (first in chain)
         let end_entity_cert = &cert_chain[0];
 
-        // TODO: Full RFC 5280 §6 path validation via ostrich-x509
-        // For now, we'll do basic validation and extract the subject DN
-        // This will be replaced with proper path validation in integration phase
-
-        // Extract subject DN (this is a placeholder - will use x509-cert crate)
+        // NOTE: RFC 5280 §6 chain *path* validation (signatures, trust anchor,
+        // name constraints) is performed by the TLS stack (rustls
+        // WebPkiClientVerifier) during the handshake before this provider runs;
+        // the bytes here are the already-verified peer certificate. This step
+        // maps that verified certificate to an account by its subject DN.
+        // POAM: add standalone path validation for any non-TLS caller.
         let subject_dn = self.extract_subject_dn(end_entity_cert)?;
 
         debug!(
@@ -229,33 +230,45 @@ impl CertificateAuthProvider {
         Ok(subject_dn)
     }
 
-    /// Extract subject DN from certificate
+    /// Parse the DER end-entity certificate and return its subject distinguished
+    /// name as a canonical RFC 4514 string.
     ///
-    /// Returns the subject DN in RFC 4514 string format.
+    /// This string is the identity key: it is matched verbatim against the
+    /// `certificate_subject` column (`find_by_certificate_dn`). It is rendered
+    /// with `x509-cert`, whose `Name` Display is RFC 4514-compliant — special
+    /// characters (`,` `+` `"` `;` `<` `>` `\`, leading `#`, leading/trailing
+    /// space, control chars) are escaped and RDNs are emitted in reverse order.
+    /// The canonical, escaped form is REQUIRED here: an unescaped renderer lets a
+    /// single-valued `CN="admin, O=OstrichPKI"` collide with a two-RDN subject,
+    /// which under exact-match lookup would alias one client onto another's
+    /// account. Provisioned `certificate_subject` values must use this exact
+    /// RFC 4514 form.
+    ///
+    /// A certificate with an empty subject (identity carried only in SANs) is
+    /// rejected: this provider maps accounts by subject DN and does not support
+    /// SAN-only client certificates.
     ///
     /// # COMPLIANCE MAPPING
-    /// - RFC 4514: LDAP DN String Representation
+    /// - RFC 4514: LDAP DN String Representation (escaped, reverse order)
+    /// - NIST 800-53: IA-2 - identification via the certificate subject
     fn extract_subject_dn(&self, cert_der: &[u8]) -> AuthResult<String> {
-        // TODO: Use x509-cert crate to parse certificate and extract DN
-        // For now, return a placeholder that shows the structure
-        //
-        // This will be implemented as:
-        // ```rust
-        // use x509_cert::Certificate;
-        // let cert = Certificate::from_der(cert_der)?;
-        // let subject = cert.tbs_certificate.subject.to_string();
-        // ```
+        use x509_cert::der::Decode;
 
-        // Placeholder: Return a test DN format
-        // In production, this will parse the actual DER-encoded certificate
-        if cert_der.len() < 100 {
+        let cert = x509_cert::Certificate::from_der(cert_der).map_err(|e| {
+            AuthError::CertificateValidationFailed {
+                reason: format!("failed to parse client certificate: {e}"),
+            }
+        })?;
+
+        let subject_dn = cert.tbs_certificate.subject.to_string();
+        if subject_dn.is_empty() {
             return Err(AuthError::CertificateValidationFailed {
-                reason: "Invalid certificate encoding".to_string(),
+                reason: "client certificate has an empty subject DN; SAN-only \
+                         certificates are not supported for certificate authentication"
+                    .to_string(),
             });
         }
-
-        // Placeholder DN - will be replaced with actual parsing
-        Ok("CN=placeholder,O=OstrichPKI,C=US".to_string())
+        Ok(subject_dn)
     }
 
     /// Authenticate with certificate credentials
@@ -545,19 +558,51 @@ mod tests {
         )
     }
 
+    /// Generate a real self-signed certificate with the given CommonName and
+    /// return `(der, subject_dn)` where `subject_dn` is rendered exactly as the
+    /// provider's `extract_subject_dn` would render it — so a user registered
+    /// under it will be found by `find_by_certificate_dn`.
+    fn test_cert(common_name: &str) -> (Vec<u8>, String) {
+        use x509_cert::der::Decode;
+
+        let mut params = rcgen::CertificateParams::new(vec![]).expect("params");
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(rcgen::DnType::CommonName, common_name);
+        dn.push(rcgen::DnType::OrganizationName, "OstrichPKI");
+        params.distinguished_name = dn;
+        let key = rcgen::KeyPair::generate().expect("keypair");
+        let der = params.self_signed(&key).expect("self-signed").der().to_vec();
+
+        // Render the expected DN exactly as extract_subject_dn does (x509-cert).
+        let parsed = x509_cert::Certificate::from_der(&der).expect("parse");
+        let subject_dn = parsed.tbs_certificate.subject.to_string();
+        (der, subject_dn)
+    }
+
+    #[test]
+    fn test_subject_dn_escapes_special_chars() {
+        // A CommonName whose value contains an RFC 4514 RDN separator (comma)
+        // must be escaped, so a single-valued CN cannot render identically to a
+        // genuine multi-RDN subject and alias onto another account on the
+        // exact-match lookup. (Escaping ',' and '+' is what disambiguates RDN
+        // boundaries; '=' inside a value need not be escaped.)
+        let (_der, dn) = test_cert("admin, O=Evil");
+        assert!(
+            dn.contains("admin\\,"),
+            "the comma inside the CN value must be escaped, got: {dn}"
+        );
+    }
+
     #[tokio::test]
     async fn test_certificate_auth_success() {
         let user_repo = Arc::new(InMemoryCertUserRepo::new());
         let provider = create_test_provider(user_repo.clone());
 
-        // Create test user with certificate DN
+        // Create test user keyed by the certificate's real subject DN.
+        let (cert_der, subject_dn) = test_cert("certuser.example.com");
         let account = UserAccount::new("certuser", vec![Role::OperationsStaff]);
-        let subject_dn = "CN=placeholder,O=OstrichPKI,C=US".to_string();
-
         user_repo.add_user(subject_dn.clone(), account).await;
 
-        // Create certificate credentials (placeholder cert)
-        let cert_der = vec![0u8; 200]; // Placeholder certificate
         let creds = Credentials::Certificate {
             cert_chain: vec![cert_der],
             client_ip: Some("192.0.2.1".to_string()),
@@ -579,14 +624,14 @@ mod tests {
         let user_repo = Arc::new(InMemoryCertUserRepo::new());
         let provider = create_test_provider(user_repo);
 
-        // Create certificate for unknown DN
-        let cert_der = vec![0u8; 200];
+        // A real, parseable certificate whose DN is not provisioned.
+        let (cert_der, _subject_dn) = test_cert("unknown.example.com");
         let creds = Credentials::Certificate {
             cert_chain: vec![cert_der],
             client_ip: None,
         };
 
-        // Authenticate should fail
+        // Authenticate should fail: DN parses but maps to no account.
         let result = provider.authenticate(&creds).await;
         assert!(matches!(result, Err(AuthError::CertificateNotAuthorized)));
     }
@@ -596,16 +641,13 @@ mod tests {
         let user_repo = Arc::new(InMemoryCertUserRepo::new());
         let provider = create_test_provider(user_repo.clone());
 
-        // Create locked user account
+        // Create locked user account keyed by the certificate's real subject DN.
+        let (cert_der, subject_dn) = test_cert("lockeduser.example.com");
         let mut account = UserAccount::new("lockeduser", vec![Role::Auditor]);
         account.status = AccountStatus::Locked;
         account.locked_until = Some(Utc::now() + chrono::Duration::hours(1));
-
-        let subject_dn = "CN=placeholder,O=OstrichPKI,C=US".to_string();
         user_repo.add_user(subject_dn, account).await;
 
-        // Attempt authentication
-        let cert_der = vec![0u8; 200];
         let creds = Credentials::Certificate {
             cert_chain: vec![cert_der],
             client_ip: None,
@@ -668,13 +710,11 @@ mod tests {
         let user_repo = Arc::new(InMemoryCertUserRepo::new());
         let provider = create_test_provider(user_repo.clone());
 
-        // Create test user
+        // Create test user keyed by the certificate's real subject DN.
+        let (cert_der, subject_dn) = test_cert("sessionuser.example.com");
         let account = UserAccount::new("sessionuser", vec![Role::RaStaff]);
-        let subject_dn = "CN=placeholder,O=OstrichPKI,C=US".to_string();
         user_repo.add_user(subject_dn.clone(), account).await;
 
-        // Authenticate to get user
-        let cert_der = vec![0u8; 200];
         let creds = Credentials::Certificate {
             cert_chain: vec![cert_der],
             client_ip: Some("192.0.2.1".to_string()),
