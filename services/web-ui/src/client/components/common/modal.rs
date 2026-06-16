@@ -38,7 +38,7 @@ pub struct ModalProps {
     pub title: String,
 
     /// Modal content
-    pub children: Children,
+    pub children: Html,
 
     /// Callback when modal is closed
     pub on_close: Callback<()>,
@@ -122,7 +122,7 @@ pub fn modal(props: &ModalProps) -> Html {
 
                     // Body
                     <div class="px-6 py-4">
-                        {for props.children.iter()}
+                        { props.children.clone() }
                     </div>
 
                     // Footer
