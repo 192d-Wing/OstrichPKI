@@ -109,8 +109,8 @@ sha1 = "0.10"
 hmac = "0.12"
 digest = "0.10"
 getrandom = "0.3"
-aes = "0.8"
-cipher = "0.4"
+aes = "0.9"
+cipher = "0.5"
 
 # Password hashing
 argon2 = { version = "0.5", features = ["std"] }
