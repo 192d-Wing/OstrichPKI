@@ -6,7 +6,8 @@
 //! - NIST 800-53: SA-11 (Developer Security Testing)
 //! - NIST 800-53: CP-2 (Contingency Plan) - Capacity planning
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use std::hint::black_box;
 // OsRng comes from rsa's re-exported rand_core: the rsa 0.9 APIs require the
 // rand_core 0.6 traits, while the workspace `rand` is 0.9 (rand_core 0.9).
 // Same pattern as crates/ostrich-crypto/src/software/mod.rs.

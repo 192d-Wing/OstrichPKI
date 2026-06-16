@@ -5,7 +5,8 @@
 //! COMPLIANCE MAPPING:
 //! - NIST 800-53: SA-11 (Developer Security Testing)
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use std::hint::black_box;
 
 /// Benchmark Base64 encoding
 fn bench_base64_encoding(c: &mut Criterion) {
