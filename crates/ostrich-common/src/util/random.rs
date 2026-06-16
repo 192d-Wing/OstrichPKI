@@ -2,7 +2,8 @@
 // RFC 5280 §4.1.2.2 - Serial number generation
 
 use crate::error::Result;
-use rand::{CryptoRng, RngCore, rng};
+// rand 0.10: `fill_bytes` lives on the base `Rng` trait (`RngCore` is deprecated).
+use rand::{CryptoRng, Rng, rng};
 
 /// Generate cryptographically secure random bytes
 /// NIST 800-53: SC-13 - Use cryptographically secure RNG
@@ -30,7 +31,7 @@ pub fn generate_serial_number() -> Result<Vec<u8>> {
 }
 
 /// Generate random bytes using a custom RNG
-pub fn random_bytes_with_rng<R: RngCore + CryptoRng>(rng: &mut R, length: usize) -> Vec<u8> {
+pub fn random_bytes_with_rng<R: Rng + CryptoRng>(rng: &mut R, length: usize) -> Vec<u8> {
     let mut bytes = vec![0u8; length];
     rng.fill_bytes(&mut bytes);
     bytes

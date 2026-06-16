@@ -35,7 +35,8 @@
 //! - Adi Shamir, "How to Share a Secret", Communications of the ACM, 1979
 
 use crate::{Error, Result};
-use rand::{RngCore, thread_rng};
+// rand 0.10: `fill_bytes` is on the base `Rng` trait; thread RNG is `rand::rng()`.
+use rand::Rng;
 
 /// Share in Shamir's Secret Sharing scheme
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +99,7 @@ impl ShamirSecretSharing {
             })
             .collect();
 
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
 
         // For each byte in the secret, create a polynomial and evaluate at all share indices
         for &secret_byte in secret {

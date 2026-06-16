@@ -194,7 +194,7 @@ impl Session {
 
     /// Generate a cryptographically secure session token
     fn generate_token() -> String {
-        use rand::Rng;
+        use rand::RngExt; // rand 0.10: `random()` is provided by the RngExt trait.
         let mut rng = rand::rng();
         let bytes: Vec<u8> = (0..DEFAULT_TOKEN_LENGTH).map(|_| rng.random()).collect();
         use base64::Engine;
