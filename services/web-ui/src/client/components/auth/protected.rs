@@ -20,7 +20,7 @@ pub struct ProtectedProps {
     pub permission: Option<String>,
 
     /// Child content to display if authorized
-    pub children: Children,
+    pub children: Html,
 }
 
 /// Protected route component
@@ -93,6 +93,6 @@ pub fn protected(props: &ProtectedProps) -> Html {
 
     // Authorized - render children
     html! {
-        <>{ for props.children.iter() }</>
+        <>{ props.children.clone() }</>
     }
 }

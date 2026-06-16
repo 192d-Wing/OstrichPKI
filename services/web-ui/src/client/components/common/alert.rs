@@ -46,7 +46,7 @@ pub struct AlertProps {
 
     /// Child content, rendered instead of `message` when present.
     #[prop_or_default]
-    pub children: Children,
+    pub children: Html,
 
     /// Alert type/severity
     #[prop_or_default]
@@ -109,8 +109,8 @@ pub fn alert(props: &AlertProps) -> Html {
                         <h3 class="text-sm font-medium">{title}</h3>
                     }
                     <div class={if props.title.is_some() { "mt-1 text-sm" } else { "text-sm" }}>
-                        if !props.children.is_empty() {
-                            { for props.children.iter() }
+                        if props.children != Html::default() {
+                            { props.children.clone() }
                         } else if let Some(message) = &props.message {
                             { message }
                         }

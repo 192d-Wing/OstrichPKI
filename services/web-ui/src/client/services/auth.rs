@@ -162,7 +162,7 @@ pub type AuthContextHandle = Rc<AuthContext>;
 /// Props for AuthProvider
 #[derive(Properties, PartialEq)]
 pub struct AuthProviderProps {
-    pub children: Children,
+    pub children: Html,
 }
 
 /// Authentication provider component
@@ -204,7 +204,7 @@ pub fn auth_provider(props: &AuthProviderProps) -> Html {
 
     html! {
         <ContextProvider<AuthContextHandle> context={context}>
-            { for props.children.iter() }
+            { props.children.clone() }
         </ContextProvider<AuthContextHandle>>
     }
 }

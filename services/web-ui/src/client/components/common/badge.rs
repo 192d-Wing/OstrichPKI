@@ -59,7 +59,7 @@ pub struct BadgeProps {
 
     /// Child content, rendered instead of `text` when present.
     #[prop_or_default]
-    pub children: Children,
+    pub children: Html,
 
     /// Badge variant/color
     #[prop_or_default]
@@ -104,8 +104,8 @@ pub fn badge(props: &BadgeProps) -> Html {
             if let Some(icon) = &props.icon {
                 {icon.clone()}
             }
-            if !props.children.is_empty() {
-                { for props.children.iter() }
+            if props.children != Html::default() {
+                { props.children.clone() }
             } else if let Some(text) = &props.text {
                 { text }
             }

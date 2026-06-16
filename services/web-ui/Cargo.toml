@@ -76,8 +76,8 @@ tokio-rustls = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Yew framework
-yew = { version = "0.21", features = ["csr"] }
-yew-router = "0.18"
+yew = { version = "0.23", features = ["csr"] }
+yew-router = "0.20"
 
 # Browser APIs
 gloo = "0.11"
