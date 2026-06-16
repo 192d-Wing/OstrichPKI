@@ -160,8 +160,8 @@ thiserror = "2.0"
 anyhow = "1.0"
 zeroize = { version = "1.8", features = ["derive"] }
 secrecy = "0.10"
-rand = "0.9"
-rand_core = "0.9"
+rand = "0.10"
+rand_core = "0.10"
 
 # HTTP client (for ACME challenge validation)
 reqwest = { version = "0.13", features = ["json"] }
