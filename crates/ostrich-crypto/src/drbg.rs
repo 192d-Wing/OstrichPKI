@@ -34,7 +34,7 @@
 
 use crate::{Error, Result};
 use aes::Aes256;
-use cipher::{BlockEncrypt, KeyInit};
+use cipher::{BlockCipherEncrypt, KeyInit};
 use std::sync::{Arc, Mutex};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -453,18 +453,20 @@ impl Drbg {
     ///
     /// FIPS 197: AES-256 encryption
     fn aes_encrypt(key: &[u8; KEY_LENGTH], plaintext: &[u8; COUNTER_LENGTH]) -> Result<[u8; 16]> {
-        use cipher::generic_array::GenericArray;
+        use cipher::Block;
 
-        // Create AES-256 cipher
-        let cipher = Aes256::new(GenericArray::from_slice(key));
+        // Create AES-256 cipher. cipher 0.5 replaced generic-array with
+        // hybrid-array; build the key via KeyInit::new_from_slice and the block
+        // via the re-exported `Block`/`Array` types.
+        let cipher = Aes256::new_from_slice(key)
+            .map_err(|_| Error::InvalidInput("AES-256 requires a 32-byte key".to_string()))?;
 
-        // Encrypt block
-        let mut block = GenericArray::clone_from_slice(plaintext);
+        // Encrypt one block in place (COUNTER_LENGTH == AES block size == 16).
+        let mut block = Block::<Aes256>::from(*plaintext);
         cipher.encrypt_block(&mut block);
 
-        // Convert to fixed-size array
         let mut result = [0u8; 16];
-        result.copy_from_slice(block.as_slice());
+        result.copy_from_slice(&block);
         Ok(result)
     }
 
@@ -822,6 +824,21 @@ mod tests {
         Drbg::increment_counter(&mut v);
         assert_eq!(v[15], 0, "Counter byte should overflow");
         assert_eq!(v[14], 1, "Carry should propagate");
+    }
+
+    #[test]
+    fn test_aes256_known_answer() {
+        // NIST SP 800-38A F.1.5 (ECB-AES256), first block. Locks in that the
+        // cipher 0.5 / aes 0.9 migration preserves AES-256 correctness for the
+        // DRBG's block primitive (FIPS 197).
+        let mut key = [0u8; KEY_LENGTH];
+        key[..16].copy_from_slice(&0x603deb1015ca71be2b73aef0857d7781u128.to_be_bytes());
+        key[16..].copy_from_slice(&0x1f352c073b6108d72d9810a30914dff4u128.to_be_bytes());
+        let plaintext = 0x6bc1bee22e409f96e93d7e117393172au128.to_be_bytes();
+        let expected = 0xf3eed1bdb5d2a03c064b5a7e3db181f8u128.to_be_bytes();
+
+        let ct = Drbg::aes_encrypt(&key, &plaintext).expect("AES-256 encrypt");
+        assert_eq!(ct, expected, "AES-256 ECB known-answer must match NIST vector");
     }
 
     #[test]
