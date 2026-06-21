@@ -340,6 +340,22 @@ impl SessionStore for InMemorySessionStore {
             .sessions
             .write()
             .map_err(|_| SessionError::LockPoisoned)?;
+        // Mirror the DB store's guard: never replace a terminal status with a
+        // non-terminal one, so a concurrent activity-touch cannot resurrect a
+        // session that was terminated in between. NIST 800-53: AC-12.
+        if let Some(existing) = sessions.get(&session.id) {
+            let existing_terminal = matches!(
+                existing.status,
+                SessionStatus::Terminated | SessionStatus::AdminTerminated
+            );
+            let new_terminal = matches!(
+                session.status,
+                SessionStatus::Terminated | SessionStatus::AdminTerminated
+            );
+            if existing_terminal && !new_terminal {
+                return Ok(());
+            }
+        }
         sessions.insert(session.id, session.clone());
         Ok(())
     }
@@ -365,7 +381,15 @@ impl SessionStore for InMemorySessionStore {
             .write()
             .map_err(|_| SessionError::LockPoisoned)?;
         let before = sessions.len();
-        sessions.retain(|_, s| !s.is_expired());
+        // Reap absolute-expired and terminated sessions alike (parity with the
+        // DB store); validation already rejects both.
+        sessions.retain(|_, s| {
+            !s.is_expired()
+                && !matches!(
+                    s.status,
+                    SessionStatus::Terminated | SessionStatus::AdminTerminated
+                )
+        });
         Ok((before - sessions.len()) as u64)
     }
 }
@@ -387,6 +411,9 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    /// Default cadence for the background session reaper ([`Self::spawn_reaper`]).
+    pub const DEFAULT_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
+
     /// Create a session manager backed by a non-durable in-memory store.
     ///
     /// Sessions created through this manager do not survive a restart. For
@@ -834,6 +861,42 @@ mod tests {
         // Should have no active sessions
         let sessions = manager.get_user_sessions("user1").await.unwrap();
         assert!(sessions.is_empty());
+    }
+
+    /// AC-12 - a stale activity-touch must not resurrect a terminated session.
+    #[tokio::test]
+    async fn test_terminated_not_resurrected_by_update() {
+        let store = InMemorySessionStore::new();
+        let cfg = SessionConfig::default();
+        let mut session = Session::new("user1", None, None, &cfg);
+        store.create(&session).await.unwrap();
+
+        session.terminate();
+        store.update(&session).await.unwrap();
+
+        // A concurrent validate that read the pre-termination snapshot tries to
+        // write Active back; the guard must reject the resurrection.
+        let mut revive = session.clone();
+        revive.status = SessionStatus::Active;
+        store.update(&revive).await.unwrap();
+
+        let got = store.get_by_id(&session.id).await.unwrap().unwrap();
+        assert_eq!(got.status, SessionStatus::Terminated);
+    }
+
+    /// The reaper removes terminated sessions, not only absolute-expired ones.
+    #[tokio::test]
+    async fn test_cleanup_reaps_terminated() {
+        let store = InMemorySessionStore::new();
+        let cfg = SessionConfig::default();
+        let mut session = Session::new("user1", None, None, &cfg);
+        store.create(&session).await.unwrap();
+
+        session.terminate();
+        store.update(&session).await.unwrap();
+
+        assert_eq!(store.delete_expired().await.unwrap(), 1);
+        assert!(store.get_by_id(&session.id).await.unwrap().is_none());
     }
 
     /// Test session remaining time

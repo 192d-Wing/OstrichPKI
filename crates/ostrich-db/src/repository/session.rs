@@ -168,6 +168,12 @@ impl SessionStore for DbSessionStore {
 
     async fn update(&self, session: &Session) -> Result<(), SessionError> {
         // token, user_id and created_at are immutable for a session's lifetime.
+        //
+        // The guard prevents a non-atomic read->mutate->update (e.g. a routine
+        // validate-time activity touch) from overwriting a termination that
+        // landed concurrently: a terminal status is never replaced by a
+        // non-terminal one. A terminal status may always be written (logout /
+        // admin terminate). NIST 800-53: AC-12 - a terminated token stays dead.
         sqlx::query(
             r#"
             UPDATE sessions
@@ -178,6 +184,10 @@ impl SessionStore for DbSessionStore {
                 user_agent = $6,
                 metadata = $7
             WHERE id = $1
+              AND (
+                status NOT IN ('terminated', 'admin_terminated')
+                OR $2 IN ('terminated', 'admin_terminated')
+              )
             "#,
         )
         .bind(session.id)
@@ -206,10 +216,16 @@ impl SessionStore for DbSessionStore {
     }
 
     async fn delete_expired(&self) -> Result<u64, SessionError> {
-        let result = sqlx::query("DELETE FROM sessions WHERE expires_at < NOW()")
-            .execute(self.pool.pool())
-            .await
-            .map_err(backend)?;
+        // Reap both absolute-expired sessions and terminated ones (which would
+        // otherwise linger until their original expiry). Validation already
+        // rejects every such row, so removing them only bounds table growth.
+        let result = sqlx::query(
+            "DELETE FROM sessions \
+             WHERE expires_at < NOW() OR status IN ('terminated', 'admin_terminated')",
+        )
+        .execute(self.pool.pool())
+        .await
+        .map_err(backend)?;
         Ok(result.rows_affected())
     }
 }

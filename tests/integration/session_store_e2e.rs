@@ -208,3 +208,49 @@ async fn store_crud_round_trip() {
 
     cleanup(&pool, &username).await;
 }
+
+/// A stale activity-touch (non-terminal status) must not overwrite a session
+/// that was terminated concurrently -- the DB store's guard keeps a terminated
+/// token dead (AC-12). Also confirms the reaper removes terminated rows.
+#[tokio::test]
+async fn store_guards_against_resurrection_and_reaps_terminated() {
+    let Some(pool) = pool_or_skip("store_guards_against_resurrection_and_reaps_terminated").await
+    else {
+        return;
+    };
+    let username = make_user(&pool).await;
+    let st = DbSessionStore::new(pool.clone());
+
+    let mut session = Session::new(&username, None, None, &SessionConfig::default());
+    st.create(&session).await.expect("create");
+
+    // Terminate, then replay a stale Active snapshot (as a racing touch would).
+    session.status = SessionStatus::AdminTerminated;
+    st.update(&session).await.expect("terminate");
+
+    let mut revive = session.clone();
+    revive.status = SessionStatus::Active;
+    revive.token = session.token.clone();
+    st.update(&revive).await.expect("stale update is a no-op, not an error");
+
+    let after = st
+        .get_by_id(&session.id)
+        .await
+        .expect("get_by_id")
+        .expect("still present");
+    assert_eq!(
+        after.status,
+        SessionStatus::AdminTerminated,
+        "terminated session must not be resurrected by a stale update"
+    );
+
+    // The reaper removes the terminated row even though it has not yet expired.
+    let removed = st.delete_expired().await.expect("delete_expired");
+    assert!(removed >= 1, "expected the terminated session to be reaped");
+    assert!(
+        st.get_by_id(&session.id).await.expect("get_by_id").is_none(),
+        "terminated session should be reaped"
+    );
+
+    cleanup(&pool, &username).await;
+}

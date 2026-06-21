@@ -85,11 +85,11 @@ async fn main() -> Result<()> {
         ostrich_common::auth::SessionConfig::default(),
         Arc::new(ostrich_db::repository::DbSessionStore::new(db_pool.clone())),
     ));
-    // Reap expired/terminated sessions hourly so the table does not grow
+    // Reap expired/terminated sessions periodically so the table does not grow
     // unbounded (NIST 800-53: AC-12).
-    session_manager
-        .clone()
-        .spawn_reaper(std::time::Duration::from_secs(3600));
+    session_manager.clone().spawn_reaper(
+        ostrich_common::auth::SessionManager::DEFAULT_REAP_INTERVAL,
+    );
     let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> =
         Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
             Arc::new(ostrich_db::repository::DbUserRepository::new(
