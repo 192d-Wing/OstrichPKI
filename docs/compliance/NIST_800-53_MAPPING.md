@@ -240,7 +240,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system enforces a limit of consecutive invalid logon attempts.
 
-**Implementation Status:** 🔴 **Not Implemented**
+**Implementation Status:** 🟢 **Implemented**
 
 **NIAP Mapping:**
 
@@ -248,21 +248,21 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Implementation:**
 
-- None
+- [crates/ostrich-common/src/auth/lockout.rs](../../crates/ostrich-common/src/auth/lockout.rs) - `AuthLockout` policy (threshold, lockout duration, failure window, optional permanent lockout) from `LockoutConfig`
+- [crates/ostrich-db/src/repository/users.rs](../../crates/ostrich-db/src/repository/users.rs) - `record_failed_attempt` atomically increments `failed_attempts` and sets `locked_until` at the threshold; **thresholds come from `LockoutConfig`** (no longer hardcoded). Persists across restart (enforced at [password.rs](../../crates/ostrich-common/src/auth/password.rs) login).
+- [crates/ostrich-common/src/auth/audit.rs](../../crates/ostrich-common/src/auth/audit.rs) + [crates/ostrich-audit/src/auth_hook.rs](../../crates/ostrich-audit/src/auth_hook.rs) - `AuthAuditHook` / `AuthAuditAdapter`: emit audit records for failed login, account lockout, and unlock (wired into ca/est/scms providers).
 
-**Gaps:**
+**Evidence:**
 
-- No authentication failure tracking
-- No account lockout mechanism
-- No delay after failed attempts
+- ✅ Configurable lockout policy (default 5 attempts / 15 min; `LockoutConfig::high_security` = 3 / 30 min)
+- ✅ Failed-attempt count + timed lock persisted in the DB (survives restart)
+- ✅ Failed login / lockout / unlock audited (AU-2); unit test `password::tests::test_failed_login_emits_audit`
 
-**Remediation:** Phase 16 - Implement configurable lockout policy (e.g., 5 attempts, 30 minute lockout)
+**Gaps / follow-up:**
 
-**Evidence Required for ATO:**
+- Dual enforcement (in-memory `AuthLockout` + DB) is retained; collapsing to a single DB-authoritative source — plus DB-backed lockout for the mTLS (certificate) auth path and a persisted permanent-lockout counter — is a tracked follow-up.
 
-- Lockout policy configuration
-- Failed authentication logs
-- Account unlock procedures
+**Remediation:** consolidate to DB-authoritative lockout (cert-auth + permanent-lockout schema).
 
 ---
 

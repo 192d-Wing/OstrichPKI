@@ -29,6 +29,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use super::{
+    audit::{AuthAuditEvent, AuthAuditHook, AuthAuditKind},
     lockout::AuthLockout,
     provider::{AuthError, AuthProvider, AuthResult, Credentials, SessionInfo},
     session::SessionManager,
@@ -125,8 +126,18 @@ pub trait UserRepository: Send + Sync {
     /// Update user's last login timestamp
     async fn update_last_login(&self, user_id: &UserId) -> AuthResult<()>;
 
-    /// Record a failed login attempt
-    async fn record_failed_attempt(&self, username: &str) -> AuthResult<()>;
+    /// Record a failed login attempt, applying the lockout policy.
+    ///
+    /// At `max_attempts` failures the account is timed-locked for
+    /// `lockout_secs`, atomically with the count increment. Returns `true` iff
+    /// this attempt is the one that crossed the threshold (so the caller can
+    /// audit the lockout exactly once). NIAP PP-CA: FIA_AFL.1.2.
+    async fn record_failed_attempt(
+        &self,
+        username: &str,
+        max_attempts: u32,
+        lockout_secs: i64,
+    ) -> AuthResult<bool>;
 
     /// Reset failed attempts counter
     async fn reset_failed_attempts(&self, username: &str) -> AuthResult<()>;
@@ -152,6 +163,9 @@ pub struct PasswordAuthProvider {
 
     /// Session manager
     session_manager: Arc<SessionManager>,
+
+    /// Optional audit sink for authentication events (NIST 800-53: AU-2, AC-7).
+    audit: Option<Arc<dyn AuthAuditHook>>,
 }
 
 impl PasswordAuthProvider {
@@ -166,6 +180,7 @@ impl PasswordAuthProvider {
             user_repo,
             lockout,
             session_manager,
+            audit: None,
         }
     }
 
@@ -181,6 +196,21 @@ impl PasswordAuthProvider {
             user_repo,
             lockout,
             session_manager,
+            audit: None,
+        }
+    }
+
+    /// Attach an audit sink that receives authentication events (failed login,
+    /// account lock/unlock). NIST 800-53: AU-2, AC-7.
+    pub fn with_audit_hook(mut self, audit: Arc<dyn AuthAuditHook>) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
+    /// Emit an authentication audit event, if an audit sink is attached.
+    async fn audit(&self, event: AuthAuditEvent) {
+        if let Some(sink) = &self.audit {
+            sink.record_auth_event(event).await;
         }
     }
 
@@ -294,7 +324,38 @@ impl PasswordAuthProvider {
             let _ = self
                 .lockout
                 .record_failure(username, None, "invalid_password");
-            let _ = self.user_repo.record_failed_attempt(username).await;
+            let cfg = self.lockout.config();
+            let now_locked = self
+                .user_repo
+                .record_failed_attempt(
+                    username,
+                    cfg.max_failed_attempts,
+                    cfg.lockout_duration_secs,
+                )
+                .await
+                .unwrap_or(false);
+
+            // AU-2 / AC-7: audit the failed attempt, and the lockout if this
+            // attempt crossed the threshold.
+            self.audit(AuthAuditEvent {
+                kind: AuthAuditKind::LoginFailed,
+                subject: username.to_string(),
+                ip_address: None,
+                reason: Some("invalid_password".to_string()),
+                actor: None,
+            })
+            .await;
+            if now_locked {
+                warn!(username = %username, "Account locked after repeated failed attempts");
+                self.audit(AuthAuditEvent {
+                    kind: AuthAuditKind::AccountLocked,
+                    subject: username.to_string(),
+                    ip_address: None,
+                    reason: Some("max_failed_attempts".to_string()),
+                    actor: None,
+                })
+                .await;
+            }
             return Err(AuthError::InvalidCredentials);
         }
 
@@ -390,7 +451,11 @@ impl AuthProvider for PasswordAuthProvider {
     async fn record_failed_attempt(&self, username: &str, reason: &str) -> AuthResult<()> {
         debug!(username = %username, reason = %reason, "Recording failed attempt");
         let _ = self.lockout.record_failure(username, None, reason);
-        let _ = self.user_repo.record_failed_attempt(username).await;
+        let cfg = self.lockout.config();
+        let _ = self
+            .user_repo
+            .record_failed_attempt(username, cfg.max_failed_attempts, cfg.lockout_duration_secs)
+            .await;
         Ok(())
     }
 
@@ -407,6 +472,15 @@ impl AuthProvider for PasswordAuthProvider {
         // admin_unlock requires admin_id - use system for now
         let _ = self.lockout.admin_unlock(username, "system");
         let _ = self.user_repo.reset_failed_attempts(username).await;
+        // AU-2 / AC-7: account lock cleared.
+        self.audit(AuthAuditEvent {
+            kind: AuthAuditKind::AccountUnlocked,
+            subject: username.to_string(),
+            ip_address: None,
+            reason: None,
+            actor: Some("system".to_string()),
+        })
+        .await;
         Ok(())
     }
 
@@ -456,8 +530,13 @@ mod tests {
             Ok(())
         }
 
-        async fn record_failed_attempt(&self, _username: &str) -> AuthResult<()> {
-            Ok(())
+        async fn record_failed_attempt(
+            &self,
+            _username: &str,
+            _max_attempts: u32,
+            _lockout_secs: i64,
+        ) -> AuthResult<bool> {
+            Ok(false)
         }
 
         async fn reset_failed_attempts(&self, _username: &str) -> AuthResult<()> {
@@ -536,6 +615,50 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(result, Err(AuthError::InvalidCredentials)));
+    }
+
+    #[tokio::test]
+    async fn test_failed_login_emits_audit() {
+        use crate::auth::{AuthAuditEvent, AuthAuditHook, AuthAuditKind};
+
+        #[derive(Default)]
+        struct RecordingHook {
+            events: RwLock<Vec<AuthAuditEvent>>,
+        }
+        #[async_trait]
+        impl AuthAuditHook for RecordingHook {
+            async fn record_auth_event(&self, event: AuthAuditEvent) {
+                self.events.write().await.push(event);
+            }
+        }
+
+        let repo = Arc::new(InMemoryUserRepo::new());
+        let hook = Arc::new(RecordingHook::default());
+        let provider = PasswordAuthProvider::with_config(
+            PasswordHashConfig::low_memory(),
+            Arc::clone(&repo) as Arc<dyn UserRepository>,
+            Arc::new(AuthLockout::new(LockoutConfig::default())),
+            Arc::new(SessionManager::new(SessionConfig::default())),
+        )
+        .with_audit_hook(Arc::clone(&hook) as Arc<dyn AuthAuditHook>);
+
+        let hash = provider
+            .hash_password(&SecretString::from("correct-password"))
+            .unwrap();
+        let mut user = UserAccount::new("testuser", vec![Role::Administrator]);
+        user.password_hash = Some(hash);
+        repo.add_user(user).await;
+
+        let creds = Credentials::password("testuser", "wrong-password");
+        let _ = provider.authenticate(&creds).await;
+
+        let events = hook.events.read().await;
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == AuthAuditKind::LoginFailed && e.subject == "testuser"),
+            "a failed login must emit a LoginFailed audit event"
+        );
     }
 
     #[tokio::test]

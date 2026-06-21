@@ -276,6 +276,10 @@ async fn main() -> Result<()> {
     sessions
         .clone()
         .spawn_reaper(ostrich_common::auth::SessionManager::DEFAULT_REAP_INTERVAL);
+    // Audit failed logins / lockouts / unlocks for the password path (AU-2, AC-7).
+    let auth_audit = Arc::new(ostrich_audit::AuthAuditAdapter::new(Arc::new(
+        ostrich_audit::DatabaseAuditSink::new(db_pool.clone()),
+    )));
     let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> = match auth_mode {
         EstAuthMode::MtlsWithBasicFallback => {
             tracing::info!(
@@ -294,7 +298,8 @@ async fn main() -> Result<()> {
                 user_repo.clone(),
                 lockout,
                 sessions,
-            );
+            )
+            .with_audit_hook(auth_audit.clone());
             Arc::new(
                 ostrich_common::auth::CompositeAuthProvider::new()
                     .add_provider(Box::new(cert_provider))
@@ -315,9 +320,10 @@ async fn main() -> Result<()> {
                 "EST using bearer/password authentication (no --tls-ca-cert configured); \
                  RFC 7030 §3.3 expects mTLS client authentication."
             );
-            Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
-                user_repo, lockout, sessions,
-            ))
+            Arc::new(
+                ostrich_common::auth::PasswordAuthProvider::new(user_repo, lockout, sessions)
+                    .with_audit_hook(auth_audit.clone()),
+            )
         }
     };
     let rbac_policy = Arc::new(ostrich_common::auth::RbacPolicy::new());

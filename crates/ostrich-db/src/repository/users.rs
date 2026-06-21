@@ -22,13 +22,8 @@ use sqlx::Row;
 use std::str::FromStr;
 use uuid::Uuid;
 
-/// Failed attempts before the account is automatically locked
-/// NIAP PP-CA: FIA_AFL.1.1 - administrator-configurable threshold
-const MAX_FAILED_ATTEMPTS: i32 = 5;
-
-/// Automatic lockout duration after the threshold is reached
-/// NIAP PP-CA: FIA_AFL.1.2 - lockout action
-const LOCKOUT_MINUTES: i64 = 15;
+// Lockout thresholds are no longer hardcoded here: they come from the caller's
+// LockoutConfig via record_failed_attempt (CM-6 - configured policy).
 
 /// Raw users-table row
 #[derive(Debug, FromRow)]
@@ -188,28 +183,42 @@ impl UserRepository for DbUserRepository {
 
     /// Increment the failed-attempt counter; at the threshold, transition the
     /// account to a timed lock in the same statement so the lockout is atomic
-    /// with the count (NIAP PP-CA: FIA_AFL.1.2).
-    async fn record_failed_attempt(&self, username: &str) -> AuthResult<()> {
-        sqlx::query(
+    /// with the count (NIAP PP-CA: FIA_AFL.1.2). Thresholds come from the
+    /// caller's `LockoutConfig` (CM-6: configured policy, not hardcoded). The
+    /// callers gate on the lock first, so this runs only for an unlocked
+    /// account; `failed_attempts + 1 >= max` therefore means "just locked".
+    async fn record_failed_attempt(
+        &self,
+        username: &str,
+        max_attempts: u32,
+        lockout_secs: i64,
+    ) -> AuthResult<bool> {
+        let row = sqlx::query(
             r#"
             UPDATE users
             SET failed_attempts = failed_attempts + 1,
                 locked_until = CASE
                     WHEN failed_attempts + 1 >= $2
-                        THEN NOW() + make_interval(mins => $3)
+                        THEN NOW() + make_interval(secs => $3)
                     ELSE locked_until
                 END,
                 updated_at = NOW()
             WHERE username = $1
+            RETURNING failed_attempts >= $2 AS now_locked
             "#,
         )
         .bind(username)
-        .bind(MAX_FAILED_ATTEMPTS)
-        .bind(LOCKOUT_MINUTES as i32)
-        .execute(self.pool.pool())
+        .bind(max_attempts as i32)
+        .bind(lockout_secs as f64)
+        .fetch_optional(self.pool.pool())
         .await
         .map_err(|e| AuthError::Internal(format!("Database error: {}", e)))?;
-        Ok(())
+
+        // No row => unknown username; not a lockout (and not an error here:
+        // callers must not reveal account existence via this path, SI-11).
+        Ok(row
+            .map(|r| r.get::<bool, _>("now_locked"))
+            .unwrap_or(false))
     }
 
     async fn reset_failed_attempts(&self, username: &str) -> AuthResult<()> {

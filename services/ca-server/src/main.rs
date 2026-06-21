@@ -193,8 +193,8 @@ async fn main() -> Result<()> {
     session_manager.clone().spawn_reaper(
         ostrich_common::auth::SessionManager::DEFAULT_REAP_INTERVAL,
     );
-    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> =
-        Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
+    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> = Arc::new(
+        ostrich_common::auth::PasswordAuthProvider::new(
             Arc::new(ostrich_db::repository::DbUserRepository::new(
                 db_pool.clone(),
             )),
@@ -202,7 +202,12 @@ async fn main() -> Result<()> {
                 ostrich_common::auth::LockoutConfig::default(),
             )),
             session_manager,
-        ));
+        )
+        // Audit failed logins / lockouts / unlocks (NIST 800-53: AU-2, AC-7).
+        .with_audit_hook(Arc::new(ostrich_audit::AuthAuditAdapter::new(Arc::new(
+            ostrich_audit::DatabaseAuditSink::new(db_pool.clone()),
+        )))),
+    );
 
     let app = match &ca {
         Some(ca) => {
