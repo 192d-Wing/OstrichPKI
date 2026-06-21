@@ -76,7 +76,9 @@ pub use basic::{BasicAuthLayer, MtlsOrBasicAuthLayer};
 pub use lockout::{AuthLockout, LockoutConfig, LockoutStatus};
 pub use middleware::{AuthLayer, AuthResponse, AuthUser, AuthzLayer, MtlsAuthLayer};
 pub use mtls::{CertificateAuthConfig, CertificateAuthProvider, CertificateUserRepository};
-pub use password::{PasswordAuthProvider, PasswordHashConfig, UserRepository};
+pub use password::{
+    LockoutOutcome, LockoutPolicy, PasswordAuthProvider, PasswordHashConfig, UserRepository,
+};
 pub use permissions::{
     Permission, aggregate_permissions, any_role_has_permission, permissions_for_role,
     role_has_permission,

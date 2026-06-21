@@ -101,9 +101,7 @@ async fn main() -> Result<()> {
             Arc::new(ostrich_db::repository::DbUserRepository::new(
                 db_pool.clone(),
             )),
-            Arc::new(ostrich_common::auth::AuthLockout::new(
-                ostrich_common::auth::LockoutConfig::default(),
-            )),
+            ostrich_common::auth::LockoutConfig::default(),
             session_manager,
         )
         // Audit failed logins / lockouts / unlocks (NIST 800-53: AU-2, AC-7).

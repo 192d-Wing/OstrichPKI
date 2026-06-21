@@ -181,35 +181,56 @@ impl UserRepository for DbUserRepository {
         Ok(())
     }
 
-    /// Increment the failed-attempt counter; at the threshold, transition the
-    /// account to a timed lock in the same statement so the lockout is atomic
-    /// with the count (NIAP PP-CA: FIA_AFL.1.2). Thresholds come from the
-    /// caller's `LockoutConfig` (CM-6: configured policy, not hardcoded). The
-    /// callers gate on the lock first, so this runs only for an unlocked
+    /// Record a failed attempt and apply the lockout `policy` atomically: at the
+    /// temporary threshold the account is timed-locked and the escalation
+    /// counter advances; once that counter reaches the configured permanent
+    /// threshold (when enabled) the account moves to `status = 'locked'`
+    /// (administrator unlock required). The database is the single source of
+    /// truth (NIAP PP-CA: FIA_AFL.1.2; NIST 800-53: AC-7).
+    ///
+    /// Callers gate on the lock first, so this runs only for an `active`
     /// account; `failed_attempts + 1 >= max` therefore means "just locked".
     async fn record_failed_attempt(
         &self,
         username: &str,
-        max_attempts: u32,
-        lockout_secs: i64,
-    ) -> AuthResult<bool> {
+        policy: ostrich_common::auth::LockoutPolicy,
+    ) -> AuthResult<ostrich_common::auth::LockoutOutcome> {
+        // Some(n) => escalate to a permanent lock after n consecutive temporary
+        // lockouts; None => never escalate.
+        let permanent_after = policy.permanent_after.map(|n| n as i32);
+
         let row = sqlx::query(
             r#"
             UPDATE users
             SET failed_attempts = failed_attempts + 1,
+                lockout_count = CASE
+                    WHEN failed_attempts + 1 >= $2 THEN lockout_count + 1
+                    ELSE lockout_count
+                END,
                 locked_until = CASE
                     WHEN failed_attempts + 1 >= $2
                         THEN NOW() + make_interval(secs => $3)
                     ELSE locked_until
                 END,
+                status = CASE
+                    WHEN $4 IS NOT NULL
+                     AND failed_attempts + 1 >= $2
+                     AND lockout_count + 1 >= $4
+                     AND status = 'active'
+                        THEN 'locked'
+                    ELSE status
+                END,
                 updated_at = NOW()
             WHERE username = $1
-            RETURNING failed_attempts >= $2 AS now_locked
+            RETURNING
+                (failed_attempts >= $2) AS now_locked,
+                (status = 'locked' AND $4 IS NOT NULL AND lockout_count >= $4) AS now_permanent
             "#,
         )
         .bind(username)
-        .bind(max_attempts as i32)
-        .bind(lockout_secs as f64)
+        .bind(policy.max_attempts as i32)
+        .bind(policy.lockout_secs as f64)
+        .bind(permanent_after)
         .fetch_optional(self.pool.pool())
         .await
         .map_err(|e| AuthError::Internal(format!("Database error: {}", e)))?;
@@ -217,15 +238,25 @@ impl UserRepository for DbUserRepository {
         // No row => unknown username; not a lockout (and not an error here:
         // callers must not reveal account existence via this path, SI-11).
         Ok(row
-            .map(|r| r.get::<bool, _>("now_locked"))
-            .unwrap_or(false))
+            .map(|r| ostrich_common::auth::LockoutOutcome {
+                now_locked: r.get("now_locked"),
+                now_permanent: r.get("now_permanent"),
+            })
+            .unwrap_or_default())
     }
 
     async fn reset_failed_attempts(&self, username: &str) -> AuthResult<()> {
         sqlx::query(
             r#"
             UPDATE users
-            SET failed_attempts = 0, locked_until = NULL, updated_at = NOW()
+            SET failed_attempts = 0,
+                lockout_count = 0,
+                locked_until = NULL,
+                -- Lift a permanent (status) lock too, so this doubles as the
+                -- administrative unlock. Only 'locked' is cleared; suspended /
+                -- disabled accounts are left untouched.
+                status = CASE WHEN status = 'locked' THEN 'active' ELSE status END,
+                updated_at = NOW()
             WHERE username = $1
             "#,
         )

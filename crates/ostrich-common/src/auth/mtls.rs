@@ -62,7 +62,6 @@ use chrono::Utc;
 use tracing::{debug, error, info, warn};
 
 use super::{
-    lockout::AuthLockout,
     provider::{AuthError, AuthProvider, AuthResult, Credentials, SessionInfo},
     session::SessionManager,
     user::{AuthMethod, AuthenticatedUser, UserId},
@@ -160,7 +159,6 @@ pub trait CertificateUserRepository: Send + Sync {
 pub struct CertificateAuthProvider {
     config: CertificateAuthConfig,
     user_repo: Arc<dyn CertificateUserRepository>,
-    lockout: Arc<AuthLockout>,
     session_manager: Arc<SessionManager>,
 }
 
@@ -169,13 +167,11 @@ impl CertificateAuthProvider {
     pub fn new(
         config: CertificateAuthConfig,
         user_repo: Arc<dyn CertificateUserRepository>,
-        lockout: Arc<AuthLockout>,
         session_manager: Arc<SessionManager>,
     ) -> Self {
         Self {
             config,
             user_repo,
-            lockout,
             session_manager,
         }
     }
@@ -286,44 +282,27 @@ impl CertificateAuthProvider {
             "Validating certificate authentication"
         );
 
-        // Step 2: Check lockout status for this DN
-        if !self
-            .lockout
-            .is_authentication_allowed(&subject_dn)
-            .map_err(|e| AuthError::Internal(format!("Lockout check failed: {}", e)))?
-        {
-            warn!(subject_dn = %subject_dn, "Certificate authentication blocked by lockout");
-            return Err(AuthError::AccountLocked {
-                until: "after lockout period expires".to_string(),
-            });
-        }
+        // Certificate authentication has no brute-forceable secret: an invalid
+        // certificate is rejected cryptographically, so there is no per-attempt
+        // lockout (counting cert-presentation failures against an account would
+        // be a DoS vector). Persistent account status (admin lock / suspend /
+        // disable) is still enforced below.
 
-        // Step 3: Find user account by certificate DN
+        // Step 2: Find user account by certificate DN
         let account = match self.user_repo.find_by_certificate_dn(&subject_dn).await? {
             Some(account) => account,
             None => {
                 info!(subject_dn = %subject_dn, "No user account found for certificate DN");
-                // Record failed attempt
-                let _ = self.lockout.record_failure(
-                    &subject_dn,
-                    client_ip.map(String::from),
-                    "unknown_dn",
-                );
                 return Err(AuthError::CertificateNotAuthorized);
             }
         };
 
-        // Step 4: Validate account status
+        // Step 3: Validate account status
         if !account.can_authenticate() {
             warn!(
                 username = %account.username,
                 status = %account.status,
                 "Account cannot authenticate"
-            );
-            let _ = self.lockout.record_failure(
-                &subject_dn,
-                client_ip.map(String::from),
-                "account_disabled",
             );
 
             return Err(match account.status {
@@ -339,16 +318,13 @@ impl CertificateAuthProvider {
             });
         }
 
-        // Step 5: Record successful authentication
-        let _ = self.lockout.record_success(&subject_dn);
-
-        // Step 6: Update last login timestamp
+        // Step 4: Update last login timestamp
         if let Err(e) = self.user_repo.update_last_login(&account.id).await {
             error!(error = %e, "Failed to update last login timestamp");
             // Non-fatal - continue with authentication
         }
 
-        // Step 7: Create authenticated user
+        // Step 5: Create authenticated user
         let authenticated_user = AuthenticatedUser::new(
             account.id,
             account.username.clone(),
@@ -470,24 +446,26 @@ impl AuthProvider for CertificateAuthProvider {
             })
     }
 
-    async fn record_failed_attempt(&self, username: &str, reason: &str) -> AuthResult<()> {
-        let _ = self.lockout.record_failure(username, None, reason);
+    async fn record_failed_attempt(&self, _username: &str, _reason: &str) -> AuthResult<()> {
+        // No per-attempt lockout for certificate auth (no brute-forceable
+        // secret); invalid certificates are rejected cryptographically.
         Ok(())
     }
 
     async fn is_account_locked(&self, username: &str) -> AuthResult<bool> {
-        self.lockout
-            .is_authentication_allowed(username)
-            .map(|allowed| !allowed)
-            .map_err(|e| AuthError::Internal(format!("Lockout check failed: {}", e)))
+        // Reflect the persistent account state: a permanent (status) lock or an
+        // active temporary lock from the password path.
+        match self.user_repo.find_by_username(username).await? {
+            Some(account) => Ok(account.status == super::user::AccountStatus::Locked
+                || account.is_locked()),
+            None => Ok(false),
+        }
     }
 
-    async fn unlock_account(&self, username: &str) -> AuthResult<()> {
-        // Admin unlock requires admin_id, which we don't have in this context
-        // This should be called via a higher-level API with proper authorization
-        self.lockout
-            .admin_unlock(username, "system")
-            .map_err(|e| AuthError::Internal(format!("Unlock failed: {}", e)))
+    async fn unlock_account(&self, _username: &str) -> AuthResult<()> {
+        // No certificate-specific lock to clear; account unlock is handled by
+        // the password/admin path (DB status).
+        Ok(())
     }
 
     fn provider_name(&self) -> &str {
@@ -504,7 +482,6 @@ mod tests {
     use super::*;
     use crate::auth::{
         Role,
-        lockout::LockoutConfig,
         session::SessionConfig,
         user::{AccountStatus, UserAccount},
     };
@@ -557,13 +534,11 @@ mod tests {
     }
 
     fn create_test_provider(user_repo: Arc<InMemoryCertUserRepo>) -> CertificateAuthProvider {
-        let lockout = Arc::new(AuthLockout::new(LockoutConfig::default()));
         let session_manager = Arc::new(SessionManager::new(SessionConfig::default()));
 
         CertificateAuthProvider::new(
             CertificateAuthConfig::default(),
             user_repo,
-            lockout,
             session_manager,
         )
     }

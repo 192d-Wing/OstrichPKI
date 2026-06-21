@@ -258,9 +258,6 @@ async fn main() -> Result<()> {
     let user_repo = Arc::new(ostrich_db::repository::DbUserRepository::new(
         db_pool.clone(),
     ));
-    let lockout = Arc::new(ostrich_common::auth::AuthLockout::new(
-        ostrich_common::auth::LockoutConfig::default(),
-    ));
     let sessions = Arc::new(
         ostrich_common::auth::SessionManager::with_store(
             ostrich_common::auth::SessionConfig::default(),
@@ -291,12 +288,11 @@ async fn main() -> Result<()> {
             let cert_provider = ostrich_common::auth::CertificateAuthProvider::new(
                 ostrich_common::auth::CertificateAuthConfig::default(),
                 user_repo.clone(),
-                lockout.clone(),
                 sessions.clone(),
             );
             let password_provider = ostrich_common::auth::PasswordAuthProvider::new(
                 user_repo.clone(),
-                lockout,
+                ostrich_common::auth::LockoutConfig::default(),
                 sessions,
             )
             .with_audit_hook(auth_audit.clone());
@@ -311,7 +307,6 @@ async fn main() -> Result<()> {
             Arc::new(ostrich_common::auth::CertificateAuthProvider::new(
                 ostrich_common::auth::CertificateAuthConfig::default(),
                 user_repo.clone(),
-                lockout,
                 sessions,
             ))
         }
@@ -321,8 +316,12 @@ async fn main() -> Result<()> {
                  RFC 7030 §3.3 expects mTLS client authentication."
             );
             Arc::new(
-                ostrich_common::auth::PasswordAuthProvider::new(user_repo, lockout, sessions)
-                    .with_audit_hook(auth_audit.clone()),
+                ostrich_common::auth::PasswordAuthProvider::new(
+                    user_repo,
+                    ostrich_common::auth::LockoutConfig::default(),
+                    sessions,
+                )
+                .with_audit_hook(auth_audit.clone()),
             )
         }
     };
