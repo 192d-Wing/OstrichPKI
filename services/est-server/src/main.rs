@@ -264,9 +264,9 @@ async fn main() -> Result<()> {
             Arc::new(ostrich_db::repository::DbSessionStore::new(db_pool.clone())),
         )
         // Emit login/logout/admin-termination as audit events (NIST 800-53: AU-2).
-        .with_audit_hook(Arc::new(ostrich_audit::SessionAuditAdapter::new(
-            Arc::new(ostrich_audit::DatabaseAuditSink::new(db_pool.clone())),
-        ))),
+        .with_audit_hook(Arc::new(ostrich_audit::SessionAuditAdapter::new(Arc::new(
+            ostrich_audit::DatabaseAuditSink::new(db_pool.clone()),
+        )))),
     );
     // Reap expired/terminated sessions periodically so the table does not grow
     // unbounded (NIST 800-53: AC-12).

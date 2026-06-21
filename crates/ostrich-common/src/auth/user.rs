@@ -301,12 +301,17 @@ impl UserAccount {
         // Permanent / administrative lock (status='locked'): bounded by
         // locked_until if set, otherwise indefinite (admin must unlock).
         if self.status == AccountStatus::Locked {
-            return self.locked_until.map(|until| Utc::now() < until).unwrap_or(true);
+            return self
+                .locked_until
+                .map(|until| Utc::now() < until)
+                .unwrap_or(true);
         }
         // Temporary lock: a failed-attempt threshold sets locked_until while the
         // account stays 'active'. Enforce it here so the timed lock is honored
         // (persisted in the DB), not just by an in-memory tracker.
-        self.locked_until.map(|until| Utc::now() < until).unwrap_or(false)
+        self.locked_until
+            .map(|until| Utc::now() < until)
+            .unwrap_or(false)
     }
 
     /// Check if account can authenticate

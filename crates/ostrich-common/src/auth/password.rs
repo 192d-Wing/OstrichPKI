@@ -572,9 +572,8 @@ mod tests {
             }
             acct.failed_attempts += 1;
             if acct.failed_attempts >= policy.max_attempts {
-                acct.locked_until = Some(
-                    chrono::Utc::now() + chrono::Duration::seconds(policy.lockout_secs),
-                );
+                acct.locked_until =
+                    Some(chrono::Utc::now() + chrono::Duration::seconds(policy.lockout_secs));
                 return Ok(LockoutOutcome {
                     now_locked: true,
                     now_permanent: false,

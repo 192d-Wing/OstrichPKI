@@ -122,10 +122,7 @@ async fn temporary_lockout_persists() {
     assert!(account.is_locked(), "temporary lock must persist");
 
     // Reset clears the lock.
-    fresh
-        .reset_failed_attempts(&username)
-        .await
-        .expect("reset");
+    fresh.reset_failed_attempts(&username).await.expect("reset");
     let account = fresh
         .find_by_username(&username)
         .await
@@ -194,7 +191,10 @@ async fn permanent_lockout_escalates() {
         .await
         .expect("find")
         .expect("present");
-    assert!(!account.is_locked(), "admin unlock lifts the permanent lock");
+    assert!(
+        !account.is_locked(),
+        "admin unlock lifts the permanent lock"
+    );
 
     cleanup(&pool, &username).await;
 }

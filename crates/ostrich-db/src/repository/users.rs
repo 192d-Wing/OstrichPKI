@@ -242,10 +242,18 @@ impl UserRepository for DbUserRepository {
         // A prior temporary lock that has since expired ends the episode: start
         // counting fresh and clear the stale lock timestamp.
         let prior_lock_expired = locked_until.map(|t| t <= now).unwrap_or(false);
-        let failed = if prior_lock_expired { 1 } else { prev_failed + 1 };
+        let failed = if prior_lock_expired {
+            1
+        } else {
+            prev_failed + 1
+        };
 
         let now_locked = failed >= max_attempts;
-        let mut new_locked_until = if prior_lock_expired { None } else { locked_until };
+        let mut new_locked_until = if prior_lock_expired {
+            None
+        } else {
+            locked_until
+        };
         let mut lockout_count = prev_lockout_count;
         let mut new_status = status;
         let mut now_permanent = false;

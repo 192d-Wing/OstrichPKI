@@ -184,15 +184,15 @@ async fn main() -> Result<()> {
             Arc::new(ostrich_db::repository::DbSessionStore::new(db_pool.clone())),
         )
         // Emit login/logout/admin-termination as audit events (NIST 800-53: AU-2).
-        .with_audit_hook(Arc::new(ostrich_audit::SessionAuditAdapter::new(
-            Arc::new(ostrich_audit::DatabaseAuditSink::new(db_pool.clone())),
-        ))),
+        .with_audit_hook(Arc::new(ostrich_audit::SessionAuditAdapter::new(Arc::new(
+            ostrich_audit::DatabaseAuditSink::new(db_pool.clone()),
+        )))),
     );
     // Reap expired/terminated sessions periodically so the table does not grow
     // unbounded (NIST 800-53: AC-12).
-    session_manager.clone().spawn_reaper(
-        ostrich_common::auth::SessionManager::DEFAULT_REAP_INTERVAL,
-    );
+    session_manager
+        .clone()
+        .spawn_reaper(ostrich_common::auth::SessionManager::DEFAULT_REAP_INTERVAL);
     let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> = Arc::new(
         ostrich_common::auth::PasswordAuthProvider::new(
             Arc::new(ostrich_db::repository::DbUserRepository::new(

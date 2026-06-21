@@ -456,8 +456,9 @@ impl AuthProvider for CertificateAuthProvider {
         // Reflect the persistent account state: a permanent (status) lock or an
         // active temporary lock from the password path.
         match self.user_repo.find_by_username(username).await? {
-            Some(account) => Ok(account.status == super::user::AccountStatus::Locked
-                || account.is_locked()),
+            Some(account) => {
+                Ok(account.status == super::user::AccountStatus::Locked || account.is_locked())
+            }
             None => Ok(false),
         }
     }
@@ -536,11 +537,7 @@ mod tests {
     fn create_test_provider(user_repo: Arc<InMemoryCertUserRepo>) -> CertificateAuthProvider {
         let session_manager = Arc::new(SessionManager::new(SessionConfig::default()));
 
-        CertificateAuthProvider::new(
-            CertificateAuthConfig::default(),
-            user_repo,
-            session_manager,
-        )
+        CertificateAuthProvider::new(CertificateAuthConfig::default(), user_repo, session_manager)
     }
 
     /// Generate a real self-signed certificate with the given CommonName and
