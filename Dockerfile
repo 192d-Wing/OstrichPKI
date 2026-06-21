@@ -14,8 +14,12 @@
 # ==============================================================================
 FROM rust:1.96-bookworm AS builder
 
-# Install build dependencies
+# Install build dependencies.
+# clang + libclang-dev are required by aws-lc-fips-sys (bindgen) to build the
+# FIPS-validated crypto module; without them the ostrich-crypto build fails.
 RUN apt-get update && apt-get install -y \
+    clang \
+    libclang-dev \
     cmake \
     pkg-config \
     libssl-dev \

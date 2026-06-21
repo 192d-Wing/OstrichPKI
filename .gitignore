@@ -20,3 +20,11 @@ target/
 # Security vulnerability audit reports (CONFIDENTIAL - do not commit)
 docs/security/VULNERABILITY_AUDIT_*.mdservices/web-ui/dist/
 services/web-ui/node_modules/
+
+# Kubeconfig files (contain cluster-admin credentials - do not commit)
+*.kubeconfig
+kubeconfig
+
+# Cluster admin credentials - never commit
+ostrich.kubeconfig
+*.kubeconfig
