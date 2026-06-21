@@ -1929,7 +1929,9 @@ async fn import_key(
 
 **Implementation:**
 
-- [crates/ostrich-common/src/auth/session.rs](../../crates/ostrich-common/src/auth/session.rs) - Session management
+- [crates/ostrich-common/src/auth/session.rs](../../crates/ostrich-common/src/auth/session.rs) - Session management (`SessionManager` over a pluggable `SessionStore`)
+- [crates/ostrich-db/src/repository/session.rs](../../crates/ostrich-db/src/repository/session.rs) - `DbSessionStore`: admin/TSF termination persisted so a terminated session stays terminated across a restart
+- [migrations/00011_session_persistence.sql](../../migrations/00011_session_persistence.sql) - persisted termination states (`terminated`, `admin_terminated`)
 - [ADMIN_GUIDE.md Appendix B.5](ADMIN_GUIDE.md#b5-session-timeout-configuration-fta_ssl1) - Timeout configuration
 
 **Evidence:**
@@ -1937,6 +1939,7 @@ async fn import_key(
 - ✅ Configurable idle timeout (default 15 minutes, range 5-60)
 - ✅ Maximum session duration (default 8 hours)
 - ✅ Session termination commands documented
+- ✅ Termination persists in Postgres (durable across restart, shared across instances)
 - ✅ Configuration via YAML file
 
 **NIAP Annotation:** ADMIN_GUIDE.md Appendix B.5
@@ -1953,7 +1956,8 @@ async fn import_key(
 
 **Implementation:**
 
-- [crates/ostrich-common/src/auth/session.rs](../../crates/ostrich-common/src/auth/session.rs) - Session management
+- [crates/ostrich-common/src/auth/session.rs](../../crates/ostrich-common/src/auth/session.rs) - Session management; logout calls `terminate_session`
+- [crates/ostrich-db/src/repository/session.rs](../../crates/ostrich-db/src/repository/session.rs) - `DbSessionStore`: user-initiated termination persisted (token invalid after restart)
 - [ADMIN_GUIDE.md Appendix B.5](ADMIN_GUIDE.md#b5-session-timeout-configuration-fta_ssl1) - Session commands
 
 **Evidence:**
@@ -1961,6 +1965,7 @@ async fn import_key(
 - ✅ User can terminate own session (`ostrich-admin session terminate`)
 - ✅ Administrator can terminate all user sessions
 - ✅ Session listing available for users
+- ✅ Logout persists termination in Postgres (token rejected across a restart)
 
 **NIAP Annotation:** ADMIN_GUIDE.md Appendix B.5
 

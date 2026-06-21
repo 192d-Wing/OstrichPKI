@@ -384,11 +384,15 @@ impl AuthProvider for CertificateAuthProvider {
     }
 
     async fn validate_session(&self, token: &str) -> AuthResult<SessionInfo> {
-        // Validate session via session manager (synchronous)
-        let session = self.session_manager.validate_session(token).map_err(|e| {
-            debug!(error = %e, "Session validation failed");
-            AuthError::InvalidSession
-        })?;
+        // Validate session via the session manager (DB-backed store).
+        let session = self
+            .session_manager
+            .validate_session(token)
+            .await
+            .map_err(|e| {
+                debug!(error = %e, "Session validation failed");
+                AuthError::InvalidSession
+            })?;
 
         // Check if session is still valid
         if session.expires_at < Utc::now() {
@@ -423,7 +427,7 @@ impl AuthProvider for CertificateAuthProvider {
     }
 
     async fn create_session(&self, user: &AuthenticatedUser) -> AuthResult<SessionInfo> {
-        // Create session via session manager (synchronous)
+        // Create session via the session manager (DB-backed store).
         let session = self
             .session_manager
             .create_session(
@@ -431,6 +435,7 @@ impl AuthProvider for CertificateAuthProvider {
                 user.source_ip.clone(),
                 None, // user_agent not available in certificate auth
             )
+            .await
             .map_err(|e| {
                 error!(error = %e, "Failed to create session");
                 AuthError::Internal(format!("Session creation failed: {}", e))
@@ -446,14 +451,19 @@ impl AuthProvider for CertificateAuthProvider {
 
     async fn invalidate_session(&self, token: &str) -> AuthResult<()> {
         // First validate to get session ID
-        let session = self.session_manager.validate_session(token).map_err(|e| {
-            debug!(error = %e, "Session validation failed during invalidation");
-            AuthError::InvalidSession
-        })?;
+        let session = self
+            .session_manager
+            .validate_session(token)
+            .await
+            .map_err(|e| {
+                debug!(error = %e, "Session validation failed during invalidation");
+                AuthError::InvalidSession
+            })?;
 
-        // Terminate session by ID (synchronous)
+        // Terminate session by ID
         self.session_manager
             .terminate_session(&session.id)
+            .await
             .map_err(|e| {
                 debug!(error = %e, "Session termination failed");
                 AuthError::InvalidSession

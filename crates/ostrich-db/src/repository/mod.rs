@@ -35,6 +35,7 @@ pub mod crl;
 pub mod est;
 pub mod kra;
 pub mod scms;
+pub mod session;
 pub mod users;
 
 pub use acme::AcmeRepository;
@@ -46,6 +47,7 @@ pub use crl::CrlRepository;
 pub use est::EstRepository;
 pub use kra::KraRepository;
 pub use scms::ScmsRepository;
+pub use session::DbSessionStore;
 pub use users::DbUserRepository;
 
 use crate::Result;

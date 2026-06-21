@@ -215,8 +215,8 @@ async fn main() -> Result<()> {
     // - NIST 800-53: AC-7 (Unsuccessful Logon Attempts) - lockout
     // - NIAP PP-CA: FIA_UAU.1 / FIA_AFL.1
     //
-    // POAM: sessions are in-memory (SessionManager); they do not survive a
-    // restart and do not replicate across instances.
+    // Sessions are persisted in Postgres (DbSessionStore): they survive a
+    // restart and are shared across instances (NIST 800-53: SC-23, AC-12).
     // RFC 7030 §3.3 expects EST clients to authenticate with a TLS client
     // certificate. When mTLS is configured (--tls-ca-cert), authenticate by the
     // verified client certificate (mapped to an account by certificate_subject);
@@ -261,9 +261,15 @@ async fn main() -> Result<()> {
     let lockout = Arc::new(ostrich_common::auth::AuthLockout::new(
         ostrich_common::auth::LockoutConfig::default(),
     ));
-    let sessions = Arc::new(ostrich_common::auth::SessionManager::new(
+    let sessions = Arc::new(ostrich_common::auth::SessionManager::with_store(
         ostrich_common::auth::SessionConfig::default(),
+        Arc::new(ostrich_db::repository::DbSessionStore::new(db_pool.clone())),
     ));
+    // Reap expired/terminated sessions hourly so the table does not grow
+    // unbounded (NIST 800-53: AC-12).
+    sessions
+        .clone()
+        .spawn_reaper(std::time::Duration::from_secs(3600));
     let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> = match auth_mode {
         EstAuthMode::MtlsWithBasicFallback => {
             tracing::info!(

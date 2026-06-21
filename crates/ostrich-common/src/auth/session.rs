@@ -10,10 +10,18 @@
 //!
 //! This module provides session management with automatic timeout,
 //! manual termination, and session tracking as required by NIAP PP-CA v2.1.
+//!
+//! Session state lives behind a [`SessionStore`]. The default in-memory store
+//! is process-local and does not survive a restart; a database-backed store
+//! (`ostrich_db::repository::DbSessionStore`) makes Postgres the source of
+//! truth so sessions are durable and shared across service instances
+//! (NIST 800-53: SC-23, AC-12).
 
+use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::RwLock;
 use uuid::Uuid;
 
@@ -251,7 +259,122 @@ impl Session {
     }
 }
 
+/// Pluggable persistence backend for sessions.
+///
+/// `SessionManager` holds no session state itself; it delegates storage to a
+/// `SessionStore`. The store determines durability: the Postgres-backed store
+/// (`ostrich_db::repository::DbSessionStore`) makes the database the single
+/// source of truth, so sessions survive a restart and are shared across service
+/// instances. [`InMemorySessionStore`] preserves the previous process-local
+/// behaviour for tests and for callers without a database.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-12 (Session Termination), SC-23 (Session Authenticity)
+/// - NIAP PP-CA: FTA_SSL.1/.3/.4 - session lifecycle persisted by the store
+#[async_trait]
+pub trait SessionStore: Send + Sync {
+    /// Persist a newly created session.
+    async fn create(&self, session: &Session) -> Result<(), SessionError>;
+
+    /// Fetch a session by its bearer token, if present.
+    async fn get_by_token(&self, token: &str) -> Result<Option<Session>, SessionError>;
+
+    /// Fetch a session by its identifier, if present.
+    async fn get_by_id(&self, id: &Uuid) -> Result<Option<Session>, SessionError>;
+
+    /// Persist mutable session fields (status, last_activity, expiry, metadata).
+    async fn update(&self, session: &Session) -> Result<(), SessionError>;
+
+    /// All currently active or locked sessions for a user.
+    async fn list_active_for_user(&self, user_id: &str) -> Result<Vec<Session>, SessionError>;
+
+    /// Remove sessions whose absolute expiry has passed; returns the count removed.
+    async fn delete_expired(&self) -> Result<u64, SessionError>;
+}
+
+/// In-memory `SessionStore` (process-local, non-durable).
+///
+/// Retains the original pre-persistence behaviour. Suitable for unit tests and
+/// single-process callers that do not require sessions to survive a restart.
+#[derive(Default)]
+pub struct InMemorySessionStore {
+    sessions: RwLock<HashMap<Uuid, Session>>,
+}
+
+impl InMemorySessionStore {
+    /// Create an empty in-memory store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl SessionStore for InMemorySessionStore {
+    async fn create(&self, session: &Session) -> Result<(), SessionError> {
+        let mut sessions = self
+            .sessions
+            .write()
+            .map_err(|_| SessionError::LockPoisoned)?;
+        sessions.insert(session.id, session.clone());
+        Ok(())
+    }
+
+    async fn get_by_token(&self, token: &str) -> Result<Option<Session>, SessionError> {
+        let sessions = self
+            .sessions
+            .read()
+            .map_err(|_| SessionError::LockPoisoned)?;
+        Ok(sessions.values().find(|s| s.token == token).cloned())
+    }
+
+    async fn get_by_id(&self, id: &Uuid) -> Result<Option<Session>, SessionError> {
+        let sessions = self
+            .sessions
+            .read()
+            .map_err(|_| SessionError::LockPoisoned)?;
+        Ok(sessions.get(id).cloned())
+    }
+
+    async fn update(&self, session: &Session) -> Result<(), SessionError> {
+        let mut sessions = self
+            .sessions
+            .write()
+            .map_err(|_| SessionError::LockPoisoned)?;
+        sessions.insert(session.id, session.clone());
+        Ok(())
+    }
+
+    async fn list_active_for_user(&self, user_id: &str) -> Result<Vec<Session>, SessionError> {
+        let sessions = self
+            .sessions
+            .read()
+            .map_err(|_| SessionError::LockPoisoned)?;
+        Ok(sessions
+            .values()
+            .filter(|s| {
+                s.user_id == user_id
+                    && (s.status == SessionStatus::Active || s.status == SessionStatus::Locked)
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn delete_expired(&self) -> Result<u64, SessionError> {
+        let mut sessions = self
+            .sessions
+            .write()
+            .map_err(|_| SessionError::LockPoisoned)?;
+        let before = sessions.len();
+        sessions.retain(|_, s| !s.is_expired());
+        Ok((before - sessions.len()) as u64)
+    }
+}
+
 /// Session manager
+///
+/// Applies session policy (timeouts, concurrent-session limits, lifecycle
+/// transitions) on top of a pluggable [`SessionStore`]. The store determines
+/// durability; the manager itself is stateless beyond its configuration.
 ///
 /// NIAP PP-CA: FTA_SSL.1, FTA_SSL.3, FTA_SSL.4 - Session management
 /// NIST 800-53: AC-12 - Session termination
@@ -259,24 +382,32 @@ pub struct SessionManager {
     /// Configuration
     config: SessionConfig,
 
-    /// Active sessions
-    sessions: RwLock<HashMap<Uuid, Session>>,
-
-    /// User to session ID mapping (for concurrent session tracking)
-    user_sessions: RwLock<HashMap<String, Vec<Uuid>>>,
+    /// Backing store (source of truth for session state)
+    store: Arc<dyn SessionStore>,
 }
 
 impl SessionManager {
-    /// Create new session manager
+    /// Create a session manager backed by a non-durable in-memory store.
+    ///
+    /// Sessions created through this manager do not survive a restart. For
+    /// durable, cross-instance sessions use [`SessionManager::with_store`] with
+    /// a database-backed `SessionStore`.
     pub fn new(config: SessionConfig) -> Self {
         Self {
             config,
-            sessions: RwLock::new(HashMap::new()),
-            user_sessions: RwLock::new(HashMap::new()),
+            store: Arc::new(InMemorySessionStore::new()),
         }
     }
 
-    /// Create with default configuration
+    /// Create a session manager backed by the supplied store.
+    ///
+    /// NIST 800-53: SC-23 - durable session authenticity when given a
+    /// database-backed store.
+    pub fn with_store(config: SessionConfig, store: Arc<dyn SessionStore>) -> Self {
+        Self { config, store }
+    }
+
+    /// Create with default configuration (in-memory store)
     pub fn with_defaults() -> Self {
         Self::new(SessionConfig::default())
     }
@@ -284,68 +415,33 @@ impl SessionManager {
     /// Create a new session for a user
     ///
     /// NIST 800-53: SC-23 - Session authenticity
-    pub fn create_session(
+    pub async fn create_session(
         &self,
         user_id: &str,
         ip_address: Option<String>,
         user_agent: Option<String>,
     ) -> Result<Session, SessionError> {
-        // Check concurrent session limit
-        {
-            let user_sessions = self
-                .user_sessions
-                .read()
-                .map_err(|_| SessionError::LockPoisoned)?;
-            if let Some(sessions) = user_sessions.get(user_id) {
-                let active_count = {
-                    let sessions_map = self
-                        .sessions
-                        .read()
-                        .map_err(|_| SessionError::LockPoisoned)?;
-                    sessions
-                        .iter()
-                        .filter(|id| {
-                            sessions_map
-                                .get(*id)
-                                .is_some_and(|s| s.status == SessionStatus::Active)
-                        })
-                        .count()
-                };
+        // Enforce the concurrent-session limit (NIAP PP-CA: FTA_MCS.1).
+        let active_count = self
+            .store
+            .list_active_for_user(user_id)
+            .await?
+            .iter()
+            .filter(|s| s.status == SessionStatus::Active)
+            .count();
 
-                if active_count >= self.config.max_concurrent_sessions as usize {
-                    tracing::warn!(
-                        user_id = user_id,
-                        active_sessions = active_count,
-                        max_sessions = self.config.max_concurrent_sessions,
-                        "Concurrent session limit exceeded"
-                    );
-                    return Err(SessionError::MaxConcurrentSessionsExceeded);
-                }
-            }
+        if active_count >= self.config.max_concurrent_sessions as usize {
+            tracing::warn!(
+                user_id = user_id,
+                active_sessions = active_count,
+                max_sessions = self.config.max_concurrent_sessions,
+                "Concurrent session limit exceeded"
+            );
+            return Err(SessionError::MaxConcurrentSessionsExceeded);
         }
 
         let session = Session::new(user_id, ip_address, user_agent, &self.config);
-
-        // Store session
-        {
-            let mut sessions = self
-                .sessions
-                .write()
-                .map_err(|_| SessionError::LockPoisoned)?;
-            sessions.insert(session.id, session.clone());
-        }
-
-        // Update user session mapping
-        {
-            let mut user_sessions = self
-                .user_sessions
-                .write()
-                .map_err(|_| SessionError::LockPoisoned)?;
-            user_sessions
-                .entry(user_id.to_string())
-                .or_default()
-                .push(session.id);
-        }
+        self.store.create(&session).await?;
 
         tracing::info!(
             session_id = %session.id,
@@ -359,31 +455,48 @@ impl SessionManager {
     /// Validate a session by token
     ///
     /// NIAP PP-CA: FTA_SSL.1 - Check session validity and timeout
-    pub fn validate_session(&self, token: &str) -> Result<Session, SessionError> {
-        let mut sessions = self
-            .sessions
-            .write()
-            .map_err(|_| SessionError::LockPoisoned)?;
-
-        let session = sessions
-            .values_mut()
-            .find(|s| s.token == token)
+    pub async fn validate_session(&self, token: &str) -> Result<Session, SessionError> {
+        let mut session = self
+            .store
+            .get_by_token(token)
+            .await?
             .ok_or(SessionError::SessionNotFound)?;
+        self.evaluate(&mut session).await
+    }
 
-        // Check if expired
+    /// Validate a session by ID
+    pub async fn validate_session_by_id(&self, session_id: &Uuid) -> Result<Session, SessionError> {
+        let mut session = self
+            .store
+            .get_by_id(session_id)
+            .await?
+            .ok_or(SessionError::SessionNotFound)?;
+        self.evaluate(&mut session).await
+    }
+
+    /// Apply expiry / inactivity / status policy to a fetched session,
+    /// persisting any resulting state transition (expire, lock, activity touch).
+    ///
+    /// NIAP PP-CA: FTA_SSL.1 - timeout enforcement; transitions are persisted so
+    /// they hold across a restart (NIST 800-53: SC-23).
+    async fn evaluate(&self, session: &mut Session) -> Result<Session, SessionError> {
+        // Absolute timeout
         if session.is_expired() {
-            session.status = SessionStatus::Expired;
+            if session.status != SessionStatus::Expired {
+                session.status = SessionStatus::Expired;
+                self.store.update(session).await?;
+            }
             tracing::info!(session_id = %session.id, "Session expired");
             return Err(SessionError::SessionExpired);
         }
 
-        // Check status
         match session.status {
             SessionStatus::Active => {
-                // Check inactivity
+                // Inactivity timeout
                 if session.is_inactive(self.config.inactivity_timeout_secs) {
                     if self.config.lock_on_inactivity {
                         session.lock();
+                        self.store.update(session).await?;
                         tracing::info!(
                             session_id = %session.id,
                             idle_time = session.idle_time(),
@@ -392,6 +505,7 @@ impl SessionManager {
                         return Err(SessionError::SessionLocked);
                     } else {
                         session.status = SessionStatus::Expired;
+                        self.store.update(session).await?;
                         tracing::info!(
                             session_id = %session.id,
                             idle_time = session.idle_time(),
@@ -403,46 +517,7 @@ impl SessionManager {
 
                 // Update activity
                 session.touch();
-                Ok(session.clone())
-            }
-            SessionStatus::Locked => Err(SessionError::SessionLocked),
-            SessionStatus::Expired => Err(SessionError::SessionExpired),
-            SessionStatus::Terminated | SessionStatus::AdminTerminated => {
-                Err(SessionError::SessionTerminated)
-            }
-        }
-    }
-
-    /// Validate a session by ID
-    pub fn validate_session_by_id(&self, session_id: &Uuid) -> Result<Session, SessionError> {
-        let mut sessions = self
-            .sessions
-            .write()
-            .map_err(|_| SessionError::LockPoisoned)?;
-
-        let session = sessions
-            .get_mut(session_id)
-            .ok_or(SessionError::SessionNotFound)?;
-
-        // Check if expired
-        if session.is_expired() {
-            session.status = SessionStatus::Expired;
-            return Err(SessionError::SessionExpired);
-        }
-
-        // Check status
-        match session.status {
-            SessionStatus::Active => {
-                if session.is_inactive(self.config.inactivity_timeout_secs) {
-                    if self.config.lock_on_inactivity {
-                        session.lock();
-                        return Err(SessionError::SessionLocked);
-                    } else {
-                        session.status = SessionStatus::Expired;
-                        return Err(SessionError::SessionExpired);
-                    }
-                }
-                session.touch();
+                self.store.update(session).await?;
                 Ok(session.clone())
             }
             SessionStatus::Locked => Err(SessionError::SessionLocked),
@@ -456,14 +531,11 @@ impl SessionManager {
     /// Unlock a locked session (after re-authentication)
     ///
     /// NIST 800-53: IA-11 - Re-authentication
-    pub fn unlock_session(&self, session_id: &Uuid) -> Result<(), SessionError> {
-        let mut sessions = self
-            .sessions
-            .write()
-            .map_err(|_| SessionError::LockPoisoned)?;
-
-        let session = sessions
-            .get_mut(session_id)
+    pub async fn unlock_session(&self, session_id: &Uuid) -> Result<(), SessionError> {
+        let mut session = self
+            .store
+            .get_by_id(session_id)
+            .await?
             .ok_or(SessionError::SessionNotFound)?;
 
         if session.status != SessionStatus::Locked {
@@ -473,6 +545,7 @@ impl SessionManager {
         }
 
         session.unlock();
+        self.store.update(&session).await?;
         tracing::info!(session_id = %session_id, "Session unlocked after re-authentication");
         Ok(())
     }
@@ -480,17 +553,15 @@ impl SessionManager {
     /// Terminate a session (user-initiated)
     ///
     /// NIAP PP-CA: FTA_SSL.4 - User-initiated termination
-    pub fn terminate_session(&self, session_id: &Uuid) -> Result<(), SessionError> {
-        let mut sessions = self
-            .sessions
-            .write()
-            .map_err(|_| SessionError::LockPoisoned)?;
-
-        let session = sessions
-            .get_mut(session_id)
+    pub async fn terminate_session(&self, session_id: &Uuid) -> Result<(), SessionError> {
+        let mut session = self
+            .store
+            .get_by_id(session_id)
+            .await?
             .ok_or(SessionError::SessionNotFound)?;
 
         session.terminate();
+        self.store.update(&session).await?;
         tracing::info!(session_id = %session_id, user_id = %session.user_id, "Session terminated by user");
         Ok(())
     }
@@ -498,21 +569,19 @@ impl SessionManager {
     /// Admin terminate a session
     ///
     /// NIAP PP-CA: FTA_SSL.3 - TSF-initiated termination
-    pub fn admin_terminate_session(
+    pub async fn admin_terminate_session(
         &self,
         session_id: &Uuid,
         admin_id: &str,
     ) -> Result<(), SessionError> {
-        let mut sessions = self
-            .sessions
-            .write()
-            .map_err(|_| SessionError::LockPoisoned)?;
-
-        let session = sessions
-            .get_mut(session_id)
+        let mut session = self
+            .store
+            .get_by_id(session_id)
+            .await?
             .ok_or(SessionError::SessionNotFound)?;
 
         session.admin_terminate();
+        self.store.update(&session).await?;
         tracing::info!(
             session_id = %session_id,
             user_id = %session.user_id,
@@ -525,35 +594,22 @@ impl SessionManager {
     /// Terminate all sessions for a user
     ///
     /// NIAP PP-CA: FTA_SSL.3 - Terminate all user sessions
-    pub fn terminate_user_sessions(
+    pub async fn terminate_user_sessions(
         &self,
         user_id: &str,
         admin_id: Option<&str>,
     ) -> Result<u32, SessionError> {
-        let user_sessions = self
-            .user_sessions
-            .read()
-            .map_err(|_| SessionError::LockPoisoned)?;
-
-        let session_ids = user_sessions.get(user_id).cloned().unwrap_or_default();
-        drop(user_sessions);
+        let sessions = self.store.list_active_for_user(user_id).await?;
 
         let mut terminated = 0;
-        let mut sessions = self
-            .sessions
-            .write()
-            .map_err(|_| SessionError::LockPoisoned)?;
-
-        for session_id in session_ids {
-            if let Some(session) = sessions.get_mut(&session_id)
-                && (session.status == SessionStatus::Active
-                    || session.status == SessionStatus::Locked)
-            {
+        for mut session in sessions {
+            if session.status == SessionStatus::Active || session.status == SessionStatus::Locked {
                 if admin_id.is_some() {
                     session.admin_terminate();
                 } else {
                     session.terminate();
                 }
+                self.store.update(&session).await?;
                 terminated += 1;
             }
         }
@@ -568,56 +624,48 @@ impl SessionManager {
         Ok(terminated)
     }
 
-    /// Get all active sessions for a user
-    pub fn get_user_sessions(&self, user_id: &str) -> Result<Vec<Session>, SessionError> {
-        let user_sessions = self
-            .user_sessions
-            .read()
-            .map_err(|_| SessionError::LockPoisoned)?;
-        let sessions = self
-            .sessions
-            .read()
-            .map_err(|_| SessionError::LockPoisoned)?;
-
-        let session_ids = user_sessions.get(user_id).cloned().unwrap_or_default();
-
-        let user_session_list: Vec<Session> = session_ids
-            .iter()
-            .filter_map(|id| sessions.get(id))
-            .filter(|s| s.status == SessionStatus::Active || s.status == SessionStatus::Locked)
-            .cloned()
-            .collect();
-
-        Ok(user_session_list)
+    /// Get all active (or locked) sessions for a user
+    pub async fn get_user_sessions(&self, user_id: &str) -> Result<Vec<Session>, SessionError> {
+        self.store.list_active_for_user(user_id).await
     }
 
     /// Cleanup expired sessions
     ///
-    /// Should be called periodically to clean up stale sessions
-    pub fn cleanup_expired(&self) -> Result<u32, SessionError> {
-        let mut sessions = self
-            .sessions
-            .write()
-            .map_err(|_| SessionError::LockPoisoned)?;
-
-        let expired_ids: Vec<Uuid> = sessions
-            .values()
-            .filter(|s| s.is_expired())
-            .map(|s| s.id)
-            .collect();
-
-        for id in &expired_ids {
-            if let Some(session) = sessions.get_mut(id) {
-                session.status = SessionStatus::Expired;
-            }
-        }
-
-        let count = expired_ids.len() as u32;
+    /// Should be called periodically to remove sessions past their absolute
+    /// expiry. With a database-backed store this bounds table growth; expired
+    /// sessions are already rejected at validation time regardless.
+    pub async fn cleanup_expired(&self) -> Result<u64, SessionError> {
+        let count = self.store.delete_expired().await?;
         if count > 0 {
             tracing::debug!(expired_count = count, "Cleaned up expired sessions");
         }
-
         Ok(count)
+    }
+
+    /// Spawn a background task that periodically reaps expired sessions from the
+    /// store, bounding table growth from sessions that age out or are
+    /// terminated. The task runs for the life of the process; the returned
+    /// `JoinHandle` may be dropped to detach it.
+    ///
+    /// NIST 800-53: AC-12 - sessions do not linger past their lifetime.
+    pub fn spawn_reaper(
+        self: Arc<Self>,
+        period: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(period);
+            // The first tick fires immediately; skip it so we don't sweep at
+            // startup before anything could have expired.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                match self.cleanup_expired().await {
+                    Ok(n) if n > 0 => tracing::debug!(reaped = n, "expired sessions reaped"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "session reaper sweep failed"),
+                }
+            }
+        })
     }
 
     /// Get the session configuration
@@ -653,9 +701,13 @@ pub enum SessionError {
     #[error("Maximum concurrent sessions exceeded")]
     MaxConcurrentSessionsExceeded,
 
-    /// Internal lock error
+    /// Internal lock error (in-memory store)
     #[error("Internal lock error")]
     LockPoisoned,
+
+    /// Persistence backend error (e.g. database failure)
+    #[error("Session store backend error: {0}")]
+    Backend(String),
 }
 
 #[cfg(test)]
@@ -664,11 +716,12 @@ mod tests {
     use crate::test_constants::test_ipv4;
 
     /// FTA_SSL.1 - Test session creation
-    #[test]
-    fn test_session_creation() {
+    #[tokio::test]
+    async fn test_session_creation() {
         let manager = SessionManager::with_defaults();
         let session = manager
             .create_session("user1", Some(test_ipv4::TEST_NET_1.to_string()), None) // RFC 5737 TEST-NET-1
+            .await
             .unwrap();
 
         assert_eq!(session.user_id, "user1");
@@ -677,83 +730,84 @@ mod tests {
     }
 
     /// FTA_SSL.1 - Test session validation
-    #[test]
-    fn test_session_validation() {
+    #[tokio::test]
+    async fn test_session_validation() {
         let manager = SessionManager::with_defaults();
-        let session = manager.create_session("user1", None, None).unwrap();
+        let session = manager.create_session("user1", None, None).await.unwrap();
 
-        let validated = manager.validate_session(&session.token).unwrap();
+        let validated = manager.validate_session(&session.token).await.unwrap();
         assert_eq!(validated.id, session.id);
     }
 
     /// FTA_SSL.1 - Test inactivity timeout
-    #[test]
-    fn test_inactivity_timeout() {
+    #[tokio::test]
+    async fn test_inactivity_timeout() {
         let manager = SessionManager::new(SessionConfig::new().with_inactivity_timeout(1));
-        let session = manager.create_session("user1", None, None).unwrap();
+        let session = manager.create_session("user1", None, None).await.unwrap();
 
         // Wait for inactivity
         std::thread::sleep(std::time::Duration::from_secs(2));
 
-        let result = manager.validate_session(&session.token);
+        let result = manager.validate_session(&session.token).await;
         assert!(matches!(result, Err(SessionError::SessionLocked)));
     }
 
     /// FTA_SSL.4 - Test user-initiated termination
-    #[test]
-    fn test_user_termination() {
+    #[tokio::test]
+    async fn test_user_termination() {
         let manager = SessionManager::with_defaults();
-        let session = manager.create_session("user1", None, None).unwrap();
+        let session = manager.create_session("user1", None, None).await.unwrap();
 
-        manager.terminate_session(&session.id).unwrap();
+        manager.terminate_session(&session.id).await.unwrap();
 
-        let result = manager.validate_session(&session.token);
+        let result = manager.validate_session(&session.token).await;
         assert!(matches!(result, Err(SessionError::SessionTerminated)));
     }
 
     /// FTA_SSL.3 - Test admin termination
-    #[test]
-    fn test_admin_termination() {
+    #[tokio::test]
+    async fn test_admin_termination() {
         let manager = SessionManager::with_defaults();
-        let session = manager.create_session("user1", None, None).unwrap();
+        let session = manager.create_session("user1", None, None).await.unwrap();
 
         manager
             .admin_terminate_session(&session.id, "admin")
+            .await
             .unwrap();
 
-        let result = manager.validate_session(&session.token);
+        let result = manager.validate_session(&session.token).await;
         assert!(matches!(result, Err(SessionError::SessionTerminated)));
     }
 
     /// FTA_SSL.1 - Test session unlock
-    #[test]
-    fn test_session_unlock() {
+    #[tokio::test]
+    async fn test_session_unlock() {
         let manager = SessionManager::new(SessionConfig::new().with_inactivity_timeout(1));
-        let session = manager.create_session("user1", None, None).unwrap();
+        let session = manager.create_session("user1", None, None).await.unwrap();
 
         // Wait for inactivity to lock
         std::thread::sleep(std::time::Duration::from_secs(2));
-        let _ = manager.validate_session(&session.token);
+        let _ = manager.validate_session(&session.token).await;
 
         // Unlock
-        manager.unlock_session(&session.id).unwrap();
+        manager.unlock_session(&session.id).await.unwrap();
 
         // Should be valid again
-        let validated = manager.validate_session_by_id(&session.id).unwrap();
+        let validated = manager.validate_session_by_id(&session.id).await.unwrap();
         assert_eq!(validated.status, SessionStatus::Active);
     }
 
     /// AC-12 - Test concurrent session limit
-    #[test]
-    fn test_concurrent_session_limit() {
+    #[tokio::test]
+    async fn test_concurrent_session_limit() {
         let manager = SessionManager::new(SessionConfig::new().with_max_concurrent(2));
 
         // Create two sessions
-        manager.create_session("user1", None, None).unwrap();
-        manager.create_session("user1", None, None).unwrap();
+        manager.create_session("user1", None, None).await.unwrap();
+        manager.create_session("user1", None, None).await.unwrap();
 
         // Third should fail
-        let result = manager.create_session("user1", None, None);
+        let result = manager.create_session("user1", None, None).await;
         assert!(matches!(
             result,
             Err(SessionError::MaxConcurrentSessionsExceeded)
@@ -761,31 +815,32 @@ mod tests {
     }
 
     /// FTA_SSL.3 - Test terminate all user sessions
-    #[test]
-    fn test_terminate_user_sessions() {
+    #[tokio::test]
+    async fn test_terminate_user_sessions() {
         let manager = SessionManager::new(SessionConfig::new().with_max_concurrent(5));
 
         // Create multiple sessions
-        manager.create_session("user1", None, None).unwrap();
-        manager.create_session("user1", None, None).unwrap();
-        manager.create_session("user1", None, None).unwrap();
+        manager.create_session("user1", None, None).await.unwrap();
+        manager.create_session("user1", None, None).await.unwrap();
+        manager.create_session("user1", None, None).await.unwrap();
 
         // Terminate all
         let count = manager
             .terminate_user_sessions("user1", Some("admin"))
+            .await
             .unwrap();
         assert_eq!(count, 3);
 
         // Should have no active sessions
-        let sessions = manager.get_user_sessions("user1").unwrap();
+        let sessions = manager.get_user_sessions("user1").await.unwrap();
         assert!(sessions.is_empty());
     }
 
     /// Test session remaining time
-    #[test]
-    fn test_remaining_time() {
+    #[tokio::test]
+    async fn test_remaining_time() {
         let manager = SessionManager::new(SessionConfig::new().with_absolute_timeout(60));
-        let session = manager.create_session("user1", None, None).unwrap();
+        let session = manager.create_session("user1", None, None).await.unwrap();
 
         assert!(session.remaining_time() > 55 && session.remaining_time() <= 60);
     }

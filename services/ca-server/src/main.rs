@@ -162,9 +162,31 @@ async fn main() -> Result<()> {
     // - NIST 800-53: AC-7 (Unsuccessful Logon Attempts) - lockout
     // - NIAP PP-CA: FIA_UAU.1 / FIA_AFL.1
     //
-    // POAM: sessions are in-memory (SessionManager); they do not survive a
-    // restart and do not replicate across instances. Persistent/shared
-    // session storage is a follow-up.
+    // Sessions are persisted in Postgres (DbSessionStore): they survive a
+    // restart and are shared across instances, with the database as the single
+    // source of truth (NIST 800-53: SC-23, AC-12).
+    let session_manager = Arc::new(ostrich_common::auth::SessionManager::with_store(
+        {
+            // Max concurrent sessions per user. Defaults to the secure
+            // SessionConfig default; CA_MAX_CONCURRENT_SESSIONS raises it
+            // for dev/UI testing (a single admin opening several tabs or
+            // re-logging-in would otherwise exhaust the default quota).
+            let cfg = ostrich_common::auth::SessionConfig::default();
+            match std::env::var("CA_MAX_CONCURRENT_SESSIONS")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+            {
+                Some(n) => cfg.with_max_concurrent(n),
+                None => cfg,
+            }
+        },
+        Arc::new(ostrich_db::repository::DbSessionStore::new(db_pool.clone())),
+    ));
+    // Reap expired/terminated sessions hourly so the table does not grow
+    // unbounded (NIST 800-53: AC-12).
+    session_manager
+        .clone()
+        .spawn_reaper(std::time::Duration::from_secs(3600));
     let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> =
         Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
             Arc::new(ostrich_db::repository::DbUserRepository::new(
@@ -173,20 +195,7 @@ async fn main() -> Result<()> {
             Arc::new(ostrich_common::auth::AuthLockout::new(
                 ostrich_common::auth::LockoutConfig::default(),
             )),
-            Arc::new(ostrich_common::auth::SessionManager::new({
-                // Max concurrent sessions per user. Defaults to the secure
-                // SessionConfig default; CA_MAX_CONCURRENT_SESSIONS raises it
-                // for dev/UI testing (a single admin opening several tabs or
-                // re-logging-in would otherwise exhaust the default quota).
-                let cfg = ostrich_common::auth::SessionConfig::default();
-                match std::env::var("CA_MAX_CONCURRENT_SESSIONS")
-                    .ok()
-                    .and_then(|v| v.parse::<u32>().ok())
-                {
-                    Some(n) => cfg.with_max_concurrent(n),
-                    None => cfg,
-                }
-            })),
+            session_manager,
         ));
 
     let app = match &ca {

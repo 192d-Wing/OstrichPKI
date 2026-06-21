@@ -333,10 +333,10 @@ impl AuthProvider for PasswordAuthProvider {
         let session = self
             .session_manager
             .validate_session(token)
+            .await
             .map_err(|_| AuthError::InvalidSession)?;
 
-        // Session stores user_id as a string - we'll use it as username for now
-        // In a real implementation, user_id would be a UUID and we'd look up by ID
+        // Session stores user_id as the username string; look up the account by it.
         let user_account = self
             .user_repo
             .find_by_username(&session.user_id)
@@ -362,6 +362,7 @@ impl AuthProvider for PasswordAuthProvider {
         let session = self
             .session_manager
             .create_session(&user.username, None, None) // ip_address, user_agent
+            .await
             .map_err(|e| AuthError::Internal(format!("Session creation failed: {}", e)))?;
 
         Ok(SessionInfo {
@@ -377,10 +378,12 @@ impl AuthProvider for PasswordAuthProvider {
         let session = self
             .session_manager
             .validate_session(token)
+            .await
             .map_err(|_| AuthError::InvalidSession)?;
 
         self.session_manager
             .terminate_session(&session.id) // Use 'id' field
+            .await
             .map_err(|e| AuthError::Internal(format!("Session termination failed: {}", e)))
     }
 

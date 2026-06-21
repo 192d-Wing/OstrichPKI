@@ -279,7 +279,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Implementation:**
 
-- [services/web-ui/src/server/auth/session.rs](../../services/web-ui/src/server/auth/session.rs) - Session management with timeouts
+- [crates/ostrich-common/src/auth/session.rs](../../crates/ostrich-common/src/auth/session.rs) - Core `SessionManager` (timeouts, lock-on-inactivity, user/admin termination) over a pluggable `SessionStore`
+- [crates/ostrich-db/src/repository/session.rs](../../crates/ostrich-db/src/repository/session.rs) - `DbSessionStore`: Postgres-backed session persistence (ca-server, est-server, scms-server)
+- [migrations/00011_session_persistence.sql](../../migrations/00011_session_persistence.sql) - termination states + metadata; sessions are durable across restart
+- [services/web-ui/src/server/auth/session.rs](../../services/web-ui/src/server/auth/session.rs) - Web UI session management with timeouts
 - [services/web-ui/src/server/auth/handlers.rs:178](../../services/web-ui/src/server/auth/handlers.rs#L178) - Logout handler
 - Session cookies with configurable expiration
 - Inactivity timeout and absolute session timeout support
@@ -855,7 +858,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - Certificate-based (mTLS) user authentication: provider exists but subject
   DN extraction is a placeholder
 - Multi-factor authentication for privileged users
-- Sessions are in-memory per service (POAM: persistent/shared session store)
+
+**Closed:** Sessions are now persisted in Postgres (`DbSessionStore`,
+migrations 00003 + 00011); they survive a restart and are shared across
+instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 **Remediation:** mTLS DN extraction + MFA tracked as follow-ups
 
@@ -1362,6 +1368,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **Implementation:**
 
 - [crates/ostrich-acme/src/rest.rs:127](../../crates/ostrich-acme/src/rest.rs#L127) - ACME nonce generation and validation
+- [crates/ostrich-db/src/repository/session.rs](../../crates/ostrich-db/src/repository/session.rs) - durable session store; Postgres is the authoritative source of session state (survives restart, shared across instances)
 - [services/web-ui/src/server/middleware/csp.rs](../../services/web-ui/src/server/middleware/csp.rs) - CSP nonce middleware
 - [services/web-ui/src/server/auth/oidc.rs:118](../../services/web-ui/src/server/auth/oidc.rs#L118) - PKCE challenge generation
 - TLS provides transport-level session authenticity
@@ -1369,6 +1376,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **Evidence:**
 
 - ✅ ACME nonces prevent replay attacks (RFC 8555 compliance)
+- ✅ Server-side sessions persisted in Postgres: a token's validity is decided
+  by authoritative state, not process memory, so termination/expiry hold across
+  a restart (`DbSessionStore`, migration 00011)
 - ✅ CSP nonces per-request prevent XSS attacks (NIST 800-53 SC-18 Mobile Code)
 - ✅ PKCE (S256) prevents authorization code interception
 - ✅ OAuth state parameter prevents CSRF attacks
