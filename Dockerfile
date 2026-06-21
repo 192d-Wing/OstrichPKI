@@ -43,6 +43,12 @@ COPY tools/ ./tools/
 COPY benches/ ./benches/
 COPY tests/ ./tests/
 COPY migrations/ ./migrations/
+# config/ holds JSON schemas embedded via include_str! (ostrich-common,
+# est-server); proto/ holds the gRPC definitions compiled by ostrich-protocol's
+# build.rs. Both are referenced from outside their crates, so they must be in
+# the build context.
+COPY config/ ./config/
+COPY proto/ ./proto/
 
 # Build all workspace members in release mode
 # NIST 800-53: SA-10 - Developer Configuration Management
