@@ -83,7 +83,7 @@ pub fn ml_dsa_65_placeholder_spki() -> Vec<u8> {
         0x12, // OID 2.16.840.1.101.3.4.3.18 (id-ml-dsa-65)
         0x03, 0x21, 0x00, // BIT STRING, 33 bytes, 0 unused bits
     ];
-    spki.extend(std::iter::repeat(0xAA).take(32)); // dummy key body
+    spki.extend(std::iter::repeat_n(0xAA, 32)); // dummy key body
     spki
 }
 

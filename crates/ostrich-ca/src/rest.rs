@@ -1089,27 +1089,6 @@ pub struct ApprovalDecisionResponse {
     pub updated_status: String,
 }
 
-// Custom serde module for base64 encoding
-mod base64_serde {
-    use base64::prelude::*;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&BASE64_STANDARD.encode(bytes))
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        BASE64_STANDARD.decode(&s).map_err(serde::de::Error::custom)
-    }
-}
-
 /// base64 (de)serialization for an `Option<Vec<u8>>` field (None when absent/null).
 mod base64_opt_serde {
     use base64::prelude::*;
