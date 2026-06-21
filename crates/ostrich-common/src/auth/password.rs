@@ -134,9 +134,11 @@ impl From<&LockoutConfig> for LockoutPolicy {
         Self {
             max_attempts: c.max_failed_attempts,
             lockout_secs: c.lockout_duration_secs,
+            // Clamp to >= 1 so a misconfigured `lockouts_before_permanent = 0`
+            // does not silently make the first lockout permanent.
             permanent_after: c
                 .permanent_lockout
-                .then_some(c.lockouts_before_permanent),
+                .then(|| c.lockouts_before_permanent.max(1)),
         }
     }
 }
@@ -171,8 +173,13 @@ pub trait UserRepository: Send + Sync {
         policy: LockoutPolicy,
     ) -> AuthResult<LockoutOutcome>;
 
-    /// Reset failed-attempt and lockout-escalation counters (on success).
+    /// Reset failed-attempt and lockout-escalation counters (on success). Does
+    /// not change account status.
     async fn reset_failed_attempts(&self, username: &str) -> AuthResult<()>;
+
+    /// Administrative unlock: clear the counters and lift a permanent
+    /// (status-level) lock. NIST 800-53: AC-7; NIAP PP-CA: FIA_AFL.1.
+    async fn unlock_account(&self, username: &str) -> AuthResult<()>;
 }
 
 /// Password-based authentication provider
@@ -478,21 +485,19 @@ impl AuthProvider for PasswordAuthProvider {
     }
 
     async fn is_account_locked(&self, username: &str) -> AuthResult<bool> {
-        // Lock state lives in the DB (temporary lock via locked_until, permanent
-        // via status='locked').
+        // Lock state lives in the DB; is_locked() covers both a temporary lock
+        // (locked_until) and a permanent one (status='locked').
         match self.user_repo.find_by_username(username).await? {
-            Some(account) => {
-                Ok(account.is_locked() || account.status == AccountStatus::Locked)
-            }
+            Some(account) => Ok(account.is_locked()),
             None => Ok(false),
         }
     }
 
     async fn unlock_account(&self, username: &str) -> AuthResult<()> {
         info!(username = %username, "Unlocking account (admin action)");
-        // reset_failed_attempts clears the failed-attempt / lockout counters and
-        // lifts a permanent (status) lock in the database.
-        let _ = self.user_repo.reset_failed_attempts(username).await;
+        // Administrative unlock clears the counters AND lifts a permanent
+        // (status) lock; distinct from the success-path reset_failed_attempts.
+        let _ = self.user_repo.unlock_account(username).await;
         // AU-2 / AC-7: account lock cleared.
         self.audit(AuthAuditEvent {
             kind: AuthAuditKind::AccountUnlocked,
@@ -561,6 +566,10 @@ mod tests {
             let Some(acct) = users.get_mut(username) else {
                 return Ok(LockoutOutcome::default());
             };
+            // No-op if already locked or not active (matches the DB store).
+            if acct.is_locked() || acct.status != AccountStatus::Active {
+                return Ok(LockoutOutcome::default());
+            }
             acct.failed_attempts += 1;
             if acct.failed_attempts >= policy.max_attempts {
                 acct.locked_until = Some(
@@ -578,6 +587,17 @@ mod tests {
             if let Some(acct) = self.users.write().await.get_mut(username) {
                 acct.failed_attempts = 0;
                 acct.locked_until = None;
+            }
+            Ok(())
+        }
+
+        async fn unlock_account(&self, username: &str) -> AuthResult<()> {
+            if let Some(acct) = self.users.write().await.get_mut(username) {
+                acct.failed_attempts = 0;
+                acct.locked_until = None;
+                if acct.status == AccountStatus::Locked {
+                    acct.status = AccountStatus::Active;
+                }
             }
             Ok(())
         }

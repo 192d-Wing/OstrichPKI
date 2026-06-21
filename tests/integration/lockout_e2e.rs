@@ -52,14 +52,33 @@ async fn cleanup(pool: &DatabasePool, username: &str) {
         .expect("cleanup test user");
 }
 
-/// Force a temporary lock to look expired, so the next failure starts a new
-/// lockout episode (as it would after the lock period elapses in production).
+/// Force a temporary lock to look expired, so the next episode of failures can
+/// proceed (as it would after the lock period elapses in production).
 async fn expire_lock(pool: &DatabasePool, username: &str) {
     sqlx::query("UPDATE users SET locked_until = NOW() - INTERVAL '1 minute' WHERE username = $1")
         .bind(username)
         .execute(pool.pool())
         .await
         .expect("expire lock");
+}
+
+/// Drive `max_attempts` failures, asserting only the last one locks. Used to
+/// exercise one full lockout episode.
+async fn one_episode(repo: &DbUserRepository, username: &str, policy: LockoutPolicy) -> bool {
+    let mut last_permanent = false;
+    for i in 1..=policy.max_attempts {
+        let o = repo
+            .record_failed_attempt(username, policy)
+            .await
+            .expect("record");
+        if i < policy.max_attempts {
+            assert!(!o.now_locked, "should not lock before the threshold");
+        } else {
+            assert!(o.now_locked, "should lock at the threshold");
+            last_permanent = o.now_permanent;
+        }
+    }
+    last_permanent
 }
 
 /// A temporary lock set by failed attempts is persisted and visible to a fresh
@@ -132,16 +151,22 @@ async fn permanent_lockout_escalates() {
         permanent_after: Some(2),
     };
 
-    // Episode 1: two failures -> temporary lock, escalation count = 1.
-    repo.record_failed_attempt(&username, policy).await.unwrap();
-    let o = repo.record_failed_attempt(&username, policy).await.unwrap();
-    assert!(o.now_locked && !o.now_permanent, "first episode is temporary");
+    // Episode 1: a full episode of failures -> temporary lock, not yet permanent.
+    assert!(
+        !one_episode(&repo, &username, policy).await,
+        "first episode is temporary"
+    );
 
-    // Simulate the lock elapsing, then a further failure starts episode 2 and
-    // reaches the permanent threshold.
-    expire_lock(&pool, &username).await;
+    // While locked, further failures are no-ops (no double counting).
     let o = repo.record_failed_attempt(&username, policy).await.unwrap();
-    assert!(o.now_permanent, "second episode must escalate to permanent");
+    assert!(!o.now_locked && !o.now_permanent, "no-op while locked");
+
+    // The lock elapses; a second full episode reaches the permanent threshold.
+    expire_lock(&pool, &username).await;
+    assert!(
+        one_episode(&repo, &username, policy).await,
+        "second episode escalates to permanent"
+    );
 
     let account = repo
         .find_by_username(&username)
@@ -150,14 +175,26 @@ async fn permanent_lockout_escalates() {
         .expect("present");
     assert!(account.is_locked(), "permanently locked account is locked");
 
-    // Admin unlock (reset) lifts the permanent lock back to active.
+    // A successful-login reset does NOT lift a permanent (status) lock...
     repo.reset_failed_attempts(&username).await.unwrap();
     let account = repo
         .find_by_username(&username)
         .await
         .expect("find")
         .expect("present");
-    assert!(!account.is_locked(), "reset lifts the permanent lock");
+    assert!(
+        account.is_locked(),
+        "reset_failed_attempts must not lift a permanent lock"
+    );
+
+    // ...only an administrative unlock does.
+    repo.unlock_account(&username).await.unwrap();
+    let account = repo
+        .find_by_username(&username)
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(!account.is_locked(), "admin unlock lifts the permanent lock");
 
     cleanup(&pool, &username).await;
 }

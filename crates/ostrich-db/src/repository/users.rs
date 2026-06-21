@@ -181,80 +181,144 @@ impl UserRepository for DbUserRepository {
         Ok(())
     }
 
-    /// Record a failed attempt and apply the lockout `policy` atomically: at the
-    /// temporary threshold the account is timed-locked and the escalation
+    /// Record a failed attempt and apply the lockout `policy` atomically (row is
+    /// `SELECT ... FOR UPDATE`d): a fresh "episode" of failures counts up to the
+    /// threshold, at which point the account is timed-locked and the escalation
     /// counter advances; once that counter reaches the configured permanent
     /// threshold (when enabled) the account moves to `status = 'locked'`
     /// (administrator unlock required). The database is the single source of
     /// truth (NIAP PP-CA: FIA_AFL.1.2; NIST 800-53: AC-7).
     ///
-    /// Callers gate on the lock first, so this runs only for an `active`
-    /// account; `failed_attempts + 1 >= max` therefore means "just locked".
+    /// This is a no-op for an account that is already locked (temporary or
+    /// permanent) or not active, so `now_locked`/`now_permanent` are reported
+    /// exactly once, on the transition. Note: lock *episodes* are delimited by
+    /// the lock period; `LockoutConfig::failure_window_secs` (sliding-window
+    /// decay) is not applied on the DB path.
     async fn record_failed_attempt(
         &self,
         username: &str,
         policy: ostrich_common::auth::LockoutPolicy,
     ) -> AuthResult<ostrich_common::auth::LockoutOutcome> {
-        // Some(n) => escalate to a permanent lock after n consecutive temporary
-        // lockouts; None => never escalate.
-        let permanent_after = policy.permanent_after.map(|n| n as i32);
+        use chrono::{Duration, Utc};
+
+        let max_attempts = policy.max_attempts.max(1) as i32;
+        let now = Utc::now();
+
+        let mut tx = self
+            .pool
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| AuthError::Internal(format!("Database error: {}", e)))?;
 
         let row = sqlx::query(
-            r#"
-            UPDATE users
-            SET failed_attempts = failed_attempts + 1,
-                lockout_count = CASE
-                    WHEN failed_attempts + 1 >= $2 THEN lockout_count + 1
-                    ELSE lockout_count
-                END,
-                locked_until = CASE
-                    WHEN failed_attempts + 1 >= $2
-                        THEN NOW() + make_interval(secs => $3)
-                    ELSE locked_until
-                END,
-                status = CASE
-                    WHEN $4 IS NOT NULL
-                     AND failed_attempts + 1 >= $2
-                     AND lockout_count + 1 >= $4
-                     AND status = 'active'
-                        THEN 'locked'
-                    ELSE status
-                END,
-                updated_at = NOW()
-            WHERE username = $1
-            RETURNING
-                (failed_attempts >= $2) AS now_locked,
-                (status = 'locked' AND $4 IS NOT NULL AND lockout_count >= $4) AS now_permanent
-            "#,
+            "SELECT failed_attempts, lockout_count, locked_until, status \
+             FROM users WHERE username = $1 FOR UPDATE",
         )
         .bind(username)
-        .bind(policy.max_attempts as i32)
-        .bind(policy.lockout_secs as f64)
-        .bind(permanent_after)
-        .fetch_optional(self.pool.pool())
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| AuthError::Internal(format!("Database error: {}", e)))?;
 
         // No row => unknown username; not a lockout (and not an error here:
         // callers must not reveal account existence via this path, SI-11).
-        Ok(row
-            .map(|r| ostrich_common::auth::LockoutOutcome {
-                now_locked: r.get("now_locked"),
-                now_permanent: r.get("now_permanent"),
-            })
-            .unwrap_or_default())
+        let Some(row) = row else {
+            return Ok(ostrich_common::auth::LockoutOutcome::default());
+        };
+
+        let prev_failed: i32 = row.get("failed_attempts");
+        let prev_lockout_count: i32 = row.get("lockout_count");
+        let locked_until: Option<chrono::DateTime<Utc>> = row.get("locked_until");
+        let status: String = row.get("status");
+
+        // Already locked (temp or permanent) or not active: nothing to do. This
+        // keeps the transition flags edge-triggered even if a caller does not
+        // gate on the lock first.
+        let temp_locked = locked_until.map(|t| t > now).unwrap_or(false);
+        if status != "active" || temp_locked {
+            return Ok(ostrich_common::auth::LockoutOutcome::default());
+        }
+
+        // A prior temporary lock that has since expired ends the episode: start
+        // counting fresh and clear the stale lock timestamp.
+        let prior_lock_expired = locked_until.map(|t| t <= now).unwrap_or(false);
+        let failed = if prior_lock_expired { 1 } else { prev_failed + 1 };
+
+        let now_locked = failed >= max_attempts;
+        let mut new_locked_until = if prior_lock_expired { None } else { locked_until };
+        let mut lockout_count = prev_lockout_count;
+        let mut new_status = status;
+        let mut now_permanent = false;
+
+        if now_locked {
+            new_locked_until = Some(now + Duration::seconds(policy.lockout_secs));
+            lockout_count += 1;
+            if let Some(threshold) = policy.permanent_after
+                && lockout_count >= threshold as i32
+            {
+                new_status = "locked".to_string();
+                now_permanent = true;
+            }
+        }
+
+        sqlx::query(
+            "UPDATE users \
+             SET failed_attempts = $2, lockout_count = $3, locked_until = $4, \
+                 status = $5, updated_at = NOW() \
+             WHERE username = $1",
+        )
+        .bind(username)
+        .bind(failed)
+        .bind(lockout_count)
+        .bind(new_locked_until)
+        .bind(&new_status)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AuthError::Internal(format!("Database error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| AuthError::Internal(format!("Database error: {}", e)))?;
+
+        Ok(ostrich_common::auth::LockoutOutcome {
+            now_locked,
+            now_permanent,
+        })
     }
 
     async fn reset_failed_attempts(&self, username: &str) -> AuthResult<()> {
+        // Clears the failed-attempt counters on a successful login. Does NOT
+        // change `status`: a successful login only happens for an account that
+        // passed the lock check, so there is no permanent lock to lift here.
+        // Administrative unlock (which DOES clear status='locked') is a separate
+        // method, `unlock_account`.
         sqlx::query(
             r#"
             UPDATE users
             SET failed_attempts = 0,
                 lockout_count = 0,
                 locked_until = NULL,
-                -- Lift a permanent (status) lock too, so this doubles as the
-                -- administrative unlock. Only 'locked' is cleared; suspended /
-                -- disabled accounts are left untouched.
+                updated_at = NOW()
+            WHERE username = $1
+            "#,
+        )
+        .bind(username)
+        .execute(self.pool.pool())
+        .await
+        .map_err(|e| AuthError::Internal(format!("Database error: {}", e)))?;
+        Ok(())
+    }
+
+    async fn unlock_account(&self, username: &str) -> AuthResult<()> {
+        // Administrative unlock: clear the counters AND lift a permanent
+        // (status='locked') lock back to active. Suspended/disabled accounts are
+        // left untouched. NIST 800-53: AC-7; NIAP PP-CA: FIA_AFL.1.
+        sqlx::query(
+            r#"
+            UPDATE users
+            SET failed_attempts = 0,
+                lockout_count = 0,
+                locked_until = NULL,
                 status = CASE WHEN status = 'locked' THEN 'active' ELSE status END,
                 updated_at = NOW()
             WHERE username = $1

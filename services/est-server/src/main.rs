@@ -284,7 +284,8 @@ async fn main() -> Result<()> {
                  (RFC 7030 §3.3 + §3.2.3 bootstrap enrollment)"
             );
             // Composite: certificate identity preferred, password (Basic) fallback.
-            // Both providers share the same lockout and session managers.
+            // Both providers share the same user repository and session manager;
+            // lockout state is shared via the database (the user repository).
             let cert_provider = ostrich_common::auth::CertificateAuthProvider::new(
                 ostrich_common::auth::CertificateAuthConfig::default(),
                 user_repo.clone(),
