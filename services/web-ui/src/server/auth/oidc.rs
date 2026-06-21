@@ -273,40 +273,39 @@ impl OidcClient {
 
     /// Extract roles from Keycloak-specific claims
     fn extract_roles(&self, userinfo: &serde_json::Value) -> Vec<String> {
+        // A JSON value is a role source only if it is an array of strings.
+        fn as_string_list(value: &serde_json::Value) -> Option<Vec<String>> {
+            Some(
+                value
+                    .as_array()?
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect(),
+            )
+        }
+
         // Try realm_access.roles first (Keycloak default)
-        if let Some(realm_access) = userinfo.get("realm_access") {
-            if let Some(roles) = realm_access.get("roles") {
-                if let Some(roles_array) = roles.as_array() {
-                    return roles_array
-                        .iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect();
-                }
-            }
+        if let Some(realm_access) = userinfo.get("realm_access")
+            && let Some(roles) = realm_access.get("roles")
+            && let Some(list) = as_string_list(roles)
+        {
+            return list;
         }
 
         // Try resource_access.<client_id>.roles
-        if let Some(resource_access) = userinfo.get("resource_access") {
-            if let Some(client_roles) = resource_access.get(&self.config.client_id) {
-                if let Some(roles) = client_roles.get("roles") {
-                    if let Some(roles_array) = roles.as_array() {
-                        return roles_array
-                            .iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect();
-                    }
-                }
-            }
+        if let Some(resource_access) = userinfo.get("resource_access")
+            && let Some(client_roles) = resource_access.get(&self.config.client_id)
+            && let Some(roles) = client_roles.get("roles")
+            && let Some(list) = as_string_list(roles)
+        {
+            return list;
         }
 
         // Try groups claim
-        if let Some(groups) = userinfo.get("groups") {
-            if let Some(groups_array) = groups.as_array() {
-                return groups_array
-                    .iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect();
-            }
+        if let Some(groups) = userinfo.get("groups")
+            && let Some(list) = as_string_list(groups)
+        {
+            return list;
         }
 
         Vec::new()
@@ -324,7 +323,7 @@ fn generate_pkce_challenge(verifier: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(verifier.as_bytes());
     let hash = hasher.finalize();
-    URL_SAFE_NO_PAD.encode(&hash)
+    URL_SAFE_NO_PAD.encode(hash)
 }
 
 /// Generate a random state token
