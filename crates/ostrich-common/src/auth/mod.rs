@@ -87,7 +87,7 @@ pub use rbac::{AuthorizationError, AuthzResult, RbacMiddleware, RbacPolicy};
 pub use roles::{Role, RoleValidationError, validate_role_set};
 pub use routes::auth_routes;
 pub use session::{
-    InMemorySessionStore, Session, SessionConfig, SessionError, SessionManager, SessionStatus,
-    SessionStore,
+    InMemorySessionStore, Session, SessionAuditEvent, SessionAuditHook, SessionAuditKind,
+    SessionConfig, SessionError, SessionManager, SessionStatus, SessionStore,
 };
 pub use user::{AccountStatus, AuthMethod, AuthenticatedUser, UserAccount, UserId};

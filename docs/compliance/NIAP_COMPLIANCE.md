@@ -68,6 +68,7 @@ This document tracks OstrichPKI's compliance with the NIAP Protection Profile fo
 
 - [crates/ostrich-audit/src/event.rs:47-110](../../crates/ostrich-audit/src/event.rs#L47-L110) - `AuditEvent` struct with all required fields
 - [crates/ostrich-audit/src/lib.rs:25-85](../../crates/ostrich-audit/src/lib.rs#L25-L85) - `AuditLogger` implementation
+- [crates/ostrich-audit/src/session_hook.rs](../../crates/ostrich-audit/src/session_hook.rs) - `SessionAuditAdapter` generates audit records for session lifecycle events (login / logout / admin termination), associating each with the subject (FAU_GEN.2) via `with_session` / actor
 
 **Evidence:**
 
@@ -75,6 +76,7 @@ This document tracks OstrichPKI's compliance with the NIAP Protection Profile fo
 - ✅ Hash chain for integrity (previous_hash, event_hash)
 - ✅ Request ID for correlation
 - ✅ Additional context in `details` field
+- ✅ Session lifecycle audit generation verified end-to-end (`tests/integration/session_store_e2e.rs::session_create_emits_audit_event`)
 
 **NIAP Annotation Required:** ✅ Phase 15 Task
 

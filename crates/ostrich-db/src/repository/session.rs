@@ -45,6 +45,16 @@ fn backend(e: sqlx::Error) -> SessionError {
     SessionError::Backend(e.to_string())
 }
 
+/// Canonicalize a client IP for storage in `ip_address VARCHAR(45)`. A value
+/// that does not parse as an `IpAddr` (zoned/scoped address, proxy chain, junk)
+/// is dropped to `None` rather than risking a length-overflow on insert.
+/// A canonical IPv6 string is at most 45 chars, so this never truncates.
+/// NIST 800-53: SI-10 - input validation.
+fn normalize_ip(ip: Option<&str>) -> Option<String> {
+    ip.and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        .map(|addr| addr.to_string())
+}
+
 /// Persisted status text <-> `SessionStatus`. Values match the
 /// `chk_sessions_status` constraint (migration 00011).
 fn status_to_str(status: SessionStatus) -> &'static str {
@@ -109,7 +119,40 @@ const SELECT_SESSION: &str = r#"
 
 #[async_trait]
 impl SessionStore for DbSessionStore {
-    async fn create(&self, session: &Session) -> Result<(), SessionError> {
+    async fn create(&self, session: &Session, max_concurrent: u32) -> Result<(), SessionError> {
+        // The concurrent-active count and the insert must be atomic, otherwise
+        // two racing logins both pass the check and exceed the cap (FTA_MCS.1).
+        // A per-user transaction-scoped advisory lock serializes creates for the
+        // same user (auto-released at COMMIT/ROLLBACK) without blocking others.
+        let mut tx = self.pool.pool().begin().await.map_err(backend)?;
+
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(&session.user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+
+        let active: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sessions s \
+             JOIN users u ON u.id = s.user_id \
+             WHERE u.username = $1 AND s.status = 'active'",
+        )
+        .bind(&session.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(backend)?;
+
+        if active as u64 >= max_concurrent as u64 {
+            // Dropping `tx` rolls back; nothing was written.
+            return Err(SessionError::MaxConcurrentSessionsExceeded);
+        }
+
+        // Validate/normalize the client IP to a canonical address so an
+        // unparseable or over-long value (e.g. a zoned IPv6 or an
+        // X-Forwarded-For chain) cannot overflow ip_address VARCHAR(45) and fail
+        // the insert. NIST 800-53: SI-10 - input validation.
+        let ip_address = normalize_ip(session.ip_address.as_deref());
+
         // Resolve the username to its users.id for the FK in a single statement.
         // If the user does not exist the INSERT...SELECT affects zero rows; treat
         // that as a backend error rather than silently dropping the session.
@@ -126,14 +169,14 @@ impl SessionStore for DbSessionStore {
         .bind(session.id)
         .bind(&session.token)
         .bind(status_to_str(session.status))
-        .bind(&session.ip_address)
+        .bind(&ip_address)
         .bind(&session.user_agent)
         .bind(session.created_at)
         .bind(session.last_activity)
         .bind(session.expires_at)
         .bind(&session.metadata)
         .bind(&session.user_id)
-        .execute(self.pool.pool())
+        .execute(&mut *tx)
         .await
         .map_err(backend)?;
 
@@ -143,6 +186,8 @@ impl SessionStore for DbSessionStore {
                 session.user_id
             )));
         }
+
+        tx.commit().await.map_err(backend)?;
         Ok(())
     }
 

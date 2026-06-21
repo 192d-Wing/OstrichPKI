@@ -144,7 +144,7 @@ async fn store_crud_round_trip() {
 
     // create + read back by token and by id
     let session = Session::new(&username, None, None, &SessionConfig::default());
-    st.create(&session).await.expect("create");
+    st.create(&session, 16).await.expect("create");
 
     let by_token = st
         .get_by_token(&session.token)
@@ -209,6 +209,73 @@ async fn store_crud_round_trip() {
     cleanup(&pool, &username).await;
 }
 
+/// The store enforces the per-user concurrent-active cap (FTA_MCS.1): once the
+/// limit is reached, another create is rejected rather than inserted.
+#[tokio::test]
+async fn store_enforces_concurrent_limit() {
+    let Some(pool) = pool_or_skip("store_enforces_concurrent_limit").await else {
+        return;
+    };
+    let username = make_user(&pool).await;
+    let st = DbSessionStore::new(pool.clone());
+    let cfg = SessionConfig::default();
+
+    let s1 = Session::new(&username, None, None, &cfg);
+    st.create(&s1, 2).await.expect("first within limit");
+    let s2 = Session::new(&username, None, None, &cfg);
+    st.create(&s2, 2).await.expect("second within limit");
+
+    let s3 = Session::new(&username, None, None, &cfg);
+    let result = st.create(&s3, 2).await;
+    assert!(
+        matches!(result, Err(SessionError::MaxConcurrentSessionsExceeded)),
+        "third create over the cap should be rejected, got {result:?}"
+    );
+
+    cleanup(&pool, &username).await;
+}
+
+/// The audit hook writes an Authentication audit record when a session is
+/// created -- end-to-end AU-2 evidence, not just that the wiring compiles.
+#[tokio::test]
+async fn session_create_emits_audit_event() {
+    let Some(pool) = pool_or_skip("session_create_emits_audit_event").await else {
+        return;
+    };
+    let username = make_user(&pool).await;
+
+    let audit = Arc::new(ostrich_audit::SessionAuditAdapter::new(Arc::new(
+        ostrich_audit::DatabaseAuditSink::new(pool.clone()),
+    )));
+    let mgr = SessionManager::with_store(
+        SessionConfig::default(),
+        Arc::new(DbSessionStore::new(pool.clone())),
+    )
+    .with_audit_hook(audit);
+
+    let session = mgr
+        .create_session(&username, None, None)
+        .await
+        .expect("create");
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events WHERE session_id = $1 AND action = 'session_created'",
+    )
+    .bind(session.id.to_string())
+    .fetch_one(pool.pool())
+    .await
+    .expect("query audit_events");
+    assert_eq!(count, 1, "expected exactly one session_created audit record");
+
+    // audit_events is independent of users (no cascade); clean it explicitly.
+    sqlx::query("DELETE FROM audit_events WHERE session_id = $1")
+        .bind(session.id.to_string())
+        .execute(pool.pool())
+        .await
+        .expect("cleanup audit");
+    cleanup(&pool, &username).await;
+}
+
 /// A stale activity-touch (non-terminal status) must not overwrite a session
 /// that was terminated concurrently -- the DB store's guard keeps a terminated
 /// token dead (AC-12). Also confirms the reaper removes terminated rows.
@@ -222,7 +289,7 @@ async fn store_guards_against_resurrection_and_reaps_terminated() {
     let st = DbSessionStore::new(pool.clone());
 
     let mut session = Session::new(&username, None, None, &SessionConfig::default());
-    st.create(&session).await.expect("create");
+    st.create(&session, 16).await.expect("create");
 
     // Terminate, then replay a stale Active snapshot (as a racing touch would).
     session.status = SessionStatus::AdminTerminated;

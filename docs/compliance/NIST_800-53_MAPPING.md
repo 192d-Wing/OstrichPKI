@@ -352,11 +352,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 - [crates/ostrich-audit/src/event.rs:15-45](../../crates/ostrich-audit/src/event.rs#L15-L45) - `EventType` enum with comprehensive event types
 - [crates/ostrich-scms/src/rest.rs](../../crates/ostrich-scms/src/rest.rs) — `audit_token_event` helper called by every state-changing SCMS handler (Phase 1b). 11 distinct token lifecycle actions audited.
+- [crates/ostrich-audit/src/session_hook.rs](../../crates/ostrich-audit/src/session_hook.rs) — `SessionAuditAdapter` emits an `Authentication` audit record for every session lifecycle transition (session_created / session_terminated / session_admin_terminated). Wired into ca/est/scms `SessionManager` via `with_audit_hook`. The seam is `ostrich_common::auth::SessionAuditHook` (the auth layer cannot depend on `ostrich-audit`).
 
 **Evidence:**
 
 - ✅ Certificate issuance, revocation, renewal events
-- ✅ Authentication events (when implemented)
+- ✅ Session lifecycle events: login (create), logout (user terminate), admin termination — `session_hook.rs`; covered by `tests/integration/session_store_e2e.rs::session_create_emits_audit_event`
+- ⏳ Login *failure* and account-lockout auditing (separate auth code paths) remains a follow-up
 - ✅ Configuration changes
 - ✅ Cryptographic operations
 - ✅ Access control decisions

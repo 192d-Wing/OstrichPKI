@@ -24,10 +24,12 @@
 
 pub mod error;
 pub mod event;
+pub mod session_hook;
 pub mod sink;
 
 pub use error::{Error, Result};
 pub use event::{AuditEvent, AuditEventBuilder, EventOutcome, EventType};
+pub use session_hook::SessionAuditAdapter;
 pub use sink::{AuditSink, DatabaseAuditSink};
 
 #[cfg(any(test, feature = "testing"))]

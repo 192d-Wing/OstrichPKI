@@ -36,6 +36,11 @@ pub const DEFAULT_ABSOLUTE_TIMEOUT_SECS: i64 = 28800;
 /// Default session token length in bytes
 pub const DEFAULT_TOKEN_LENGTH: usize = 32;
 
+/// Minimum elapsed idle time (seconds) before a successful validation persists
+/// the refreshed last-activity timestamp. Bounds validate-time DB writes on the
+/// hot path while keeping the inactivity timeout accurate to within this window.
+pub const ACTIVITY_PERSIST_INTERVAL_SECS: i64 = 60;
+
 /// Session status
 ///
 /// NIAP PP-CA: FTA_SSL.1 - Session states
@@ -273,8 +278,10 @@ impl Session {
 /// - NIAP PP-CA: FTA_SSL.1/.3/.4 - session lifecycle persisted by the store
 #[async_trait]
 pub trait SessionStore: Send + Sync {
-    /// Persist a newly created session.
-    async fn create(&self, session: &Session) -> Result<(), SessionError>;
+    /// Persist a newly created session, enforcing the per-user concurrent-active
+    /// limit atomically so two racing logins cannot both exceed it. Returns
+    /// `MaxConcurrentSessionsExceeded` if inserting would breach `max_concurrent`.
+    async fn create(&self, session: &Session, max_concurrent: u32) -> Result<(), SessionError>;
 
     /// Fetch a session by its bearer token, if present.
     async fn get_by_token(&self, token: &str) -> Result<Option<Session>, SessionError>;
@@ -310,11 +317,20 @@ impl InMemorySessionStore {
 
 #[async_trait]
 impl SessionStore for InMemorySessionStore {
-    async fn create(&self, session: &Session) -> Result<(), SessionError> {
+    async fn create(&self, session: &Session, max_concurrent: u32) -> Result<(), SessionError> {
         let mut sessions = self
             .sessions
             .write()
             .map_err(|_| SessionError::LockPoisoned)?;
+        // Count + insert under one lock: atomic, so concurrent creates cannot
+        // both pass the limit check (NIAP PP-CA: FTA_MCS.1).
+        let active = sessions
+            .values()
+            .filter(|s| s.user_id == session.user_id && s.status == SessionStatus::Active)
+            .count();
+        if active >= max_concurrent as usize {
+            return Err(SessionError::MaxConcurrentSessionsExceeded);
+        }
         sessions.insert(session.id, session.clone());
         Ok(())
     }
@@ -394,6 +410,51 @@ impl SessionStore for InMemorySessionStore {
     }
 }
 
+/// A security-relevant session lifecycle event, surfaced for audit emission.
+///
+/// Kind of session lifecycle transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAuditKind {
+    /// A new session was established (login).
+    Created,
+    /// The user terminated their own session (logout).
+    TerminatedByUser,
+    /// An administrator terminated the session.
+    TerminatedByAdmin,
+}
+
+/// A session lifecycle event for audit emission.
+///
+/// Defined in the auth layer (not in `ostrich-audit`) so the foundational
+/// `ostrich-common` crate stays independent of the audit crate; `ostrich-audit`
+/// provides the adapter that turns these into hash-chained audit records.
+/// NIST 800-53: AU-2 (auditable events), AU-3 (content).
+#[derive(Debug, Clone)]
+pub struct SessionAuditEvent {
+    /// What happened.
+    pub kind: SessionAuditKind,
+    /// The session's subject (username).
+    pub user_id: String,
+    /// The affected session.
+    pub session_id: Uuid,
+    /// Client IP, when known.
+    pub ip_address: Option<String>,
+    /// The acting administrator, for `TerminatedByAdmin`.
+    pub actor: Option<String>,
+}
+
+/// Sink for session lifecycle audit events.
+///
+/// `SessionManager` calls this on every persisted lifecycle transition.
+/// Implementations must not panic and must swallow their own backend errors:
+/// audit emission must never fail the session operation it describes.
+/// NIST 800-53: AU-2. NIAP PP-CA: FAU_GEN.1.
+#[async_trait]
+pub trait SessionAuditHook: Send + Sync {
+    /// Record a session lifecycle event.
+    async fn record_session_event(&self, event: SessionAuditEvent);
+}
+
 /// Session manager
 ///
 /// Applies session policy (timeouts, concurrent-session limits, lifecycle
@@ -408,6 +469,9 @@ pub struct SessionManager {
 
     /// Backing store (source of truth for session state)
     store: Arc<dyn SessionStore>,
+
+    /// Optional audit sink for session lifecycle events (NIST 800-53: AU-2).
+    audit: Option<Arc<dyn SessionAuditHook>>,
 }
 
 impl SessionManager {
@@ -423,6 +487,7 @@ impl SessionManager {
         Self {
             config,
             store: Arc::new(InMemorySessionStore::new()),
+            audit: None,
         }
     }
 
@@ -431,7 +496,25 @@ impl SessionManager {
     /// NIST 800-53: SC-23 - durable session authenticity when given a
     /// database-backed store.
     pub fn with_store(config: SessionConfig, store: Arc<dyn SessionStore>) -> Self {
-        Self { config, store }
+        Self {
+            config,
+            store,
+            audit: None,
+        }
+    }
+
+    /// Attach an audit sink that receives every session lifecycle event
+    /// (create / terminate). NIST 800-53: AU-2 - auditable events.
+    pub fn with_audit_hook(mut self, audit: Arc<dyn SessionAuditHook>) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
+    /// Emit a session lifecycle audit event, if an audit sink is attached.
+    async fn audit(&self, event: SessionAuditEvent) {
+        if let Some(sink) = &self.audit {
+            sink.record_session_event(event).await;
+        }
     }
 
     /// Create with default configuration (in-memory store)
@@ -448,33 +531,35 @@ impl SessionManager {
         ip_address: Option<String>,
         user_agent: Option<String>,
     ) -> Result<Session, SessionError> {
-        // Enforce the concurrent-session limit (NIAP PP-CA: FTA_MCS.1).
-        let active_count = self
-            .store
-            .list_active_for_user(user_id)
-            .await?
-            .iter()
-            .filter(|s| s.status == SessionStatus::Active)
-            .count();
-
-        if active_count >= self.config.max_concurrent_sessions as usize {
-            tracing::warn!(
-                user_id = user_id,
-                active_sessions = active_count,
-                max_sessions = self.config.max_concurrent_sessions,
-                "Concurrent session limit exceeded"
-            );
-            return Err(SessionError::MaxConcurrentSessionsExceeded);
+        // A non-positive absolute timeout yields expires_at <= created_at, which
+        // the database rejects (chk_sessions_expires_after_created). Surface a
+        // clear configuration error instead of an opaque backend failure.
+        if self.config.absolute_timeout_secs <= 0 {
+            return Err(SessionError::InvalidState(
+                "absolute_timeout_secs must be positive".to_string(),
+            ));
         }
 
         let session = Session::new(user_id, ip_address, user_agent, &self.config);
-        self.store.create(&session).await?;
+        // The store enforces the per-user concurrent-active limit atomically
+        // (NIAP PP-CA: FTA_MCS.1); see SessionStore::create.
+        self.store
+            .create(&session, self.config.max_concurrent_sessions)
+            .await?;
 
         tracing::info!(
             session_id = %session.id,
             user_id = user_id,
             "Session created"
         );
+        self.audit(SessionAuditEvent {
+            kind: SessionAuditKind::Created,
+            user_id: session.user_id.clone(),
+            session_id: session.id,
+            ip_address: session.ip_address.clone(),
+            actor: None,
+        })
+        .await;
 
         Ok(session)
     }
@@ -542,9 +627,17 @@ impl SessionManager {
                     }
                 }
 
-                // Update activity
-                session.touch();
-                self.store.update(session).await?;
+                // Persist the activity timestamp, but throttle it: only write
+                // once it has advanced enough to matter for the inactivity
+                // timeout, so a busy session does not issue a DB write on every
+                // authenticated request.
+                let persist_after = ACTIVITY_PERSIST_INTERVAL_SECS
+                    .min(self.config.inactivity_timeout_secs / 2)
+                    .max(1);
+                if session.idle_time() >= persist_after {
+                    session.touch();
+                    self.store.update(session).await?;
+                }
                 Ok(session.clone())
             }
             SessionStatus::Locked => Err(SessionError::SessionLocked),
@@ -590,6 +683,14 @@ impl SessionManager {
         session.terminate();
         self.store.update(&session).await?;
         tracing::info!(session_id = %session_id, user_id = %session.user_id, "Session terminated by user");
+        self.audit(SessionAuditEvent {
+            kind: SessionAuditKind::TerminatedByUser,
+            user_id: session.user_id.clone(),
+            session_id: session.id,
+            ip_address: session.ip_address.clone(),
+            actor: None,
+        })
+        .await;
         Ok(())
     }
 
@@ -615,6 +716,14 @@ impl SessionManager {
             admin_id = admin_id,
             "Session terminated by admin"
         );
+        self.audit(SessionAuditEvent {
+            kind: SessionAuditKind::TerminatedByAdmin,
+            user_id: session.user_id.clone(),
+            session_id: session.id,
+            ip_address: session.ip_address.clone(),
+            actor: Some(admin_id.to_string()),
+        })
+        .await;
         Ok(())
     }
 
@@ -869,7 +978,7 @@ mod tests {
         let store = InMemorySessionStore::new();
         let cfg = SessionConfig::default();
         let mut session = Session::new("user1", None, None, &cfg);
-        store.create(&session).await.unwrap();
+        store.create(&session, 10).await.unwrap();
 
         session.terminate();
         store.update(&session).await.unwrap();
@@ -890,7 +999,7 @@ mod tests {
         let store = InMemorySessionStore::new();
         let cfg = SessionConfig::default();
         let mut session = Session::new("user1", None, None, &cfg);
-        store.create(&session).await.unwrap();
+        store.create(&session, 10).await.unwrap();
 
         session.terminate();
         store.update(&session).await.unwrap();

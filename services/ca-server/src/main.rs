@@ -165,23 +165,29 @@ async fn main() -> Result<()> {
     // Sessions are persisted in Postgres (DbSessionStore): they survive a
     // restart and are shared across instances, with the database as the single
     // source of truth (NIST 800-53: SC-23, AC-12).
-    let session_manager = Arc::new(ostrich_common::auth::SessionManager::with_store(
-        {
-            // Max concurrent sessions per user. Defaults to the secure
-            // SessionConfig default; CA_MAX_CONCURRENT_SESSIONS raises it
-            // for dev/UI testing (a single admin opening several tabs or
-            // re-logging-in would otherwise exhaust the default quota).
-            let cfg = ostrich_common::auth::SessionConfig::default();
-            match std::env::var("CA_MAX_CONCURRENT_SESSIONS")
-                .ok()
-                .and_then(|v| v.parse::<u32>().ok())
+    let session_manager = Arc::new(
+        ostrich_common::auth::SessionManager::with_store(
             {
-                Some(n) => cfg.with_max_concurrent(n),
-                None => cfg,
-            }
-        },
-        Arc::new(ostrich_db::repository::DbSessionStore::new(db_pool.clone())),
-    ));
+                // Max concurrent sessions per user. Defaults to the secure
+                // SessionConfig default; CA_MAX_CONCURRENT_SESSIONS raises it
+                // for dev/UI testing (a single admin opening several tabs or
+                // re-logging-in would otherwise exhaust the default quota).
+                let cfg = ostrich_common::auth::SessionConfig::default();
+                match std::env::var("CA_MAX_CONCURRENT_SESSIONS")
+                    .ok()
+                    .and_then(|v| v.parse::<u32>().ok())
+                {
+                    Some(n) => cfg.with_max_concurrent(n),
+                    None => cfg,
+                }
+            },
+            Arc::new(ostrich_db::repository::DbSessionStore::new(db_pool.clone())),
+        )
+        // Emit login/logout/admin-termination as audit events (NIST 800-53: AU-2).
+        .with_audit_hook(Arc::new(ostrich_audit::SessionAuditAdapter::new(
+            Arc::new(ostrich_audit::DatabaseAuditSink::new(db_pool.clone())),
+        ))),
+    );
     // Reap expired/terminated sessions periodically so the table does not grow
     // unbounded (NIST 800-53: AC-12).
     session_manager.clone().spawn_reaper(
