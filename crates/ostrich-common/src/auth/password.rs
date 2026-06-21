@@ -29,7 +29,8 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use super::{
-    lockout::AuthLockout,
+    audit::{AuthAuditEvent, AuthAuditHook, AuthAuditKind},
+    lockout::LockoutConfig,
     provider::{AuthError, AuthProvider, AuthResult, Credentials, SessionInfo},
     session::SessionManager,
     user::{AccountStatus, AuthMethod, AuthenticatedUser, UserAccount, UserId},
@@ -114,6 +115,43 @@ pub fn hash_password(config: &PasswordHashConfig, password: &SecretString) -> Au
     Ok(password_hash.to_string())
 }
 
+/// Lockout policy applied when recording a failed attempt, derived from
+/// [`LockoutConfig`]. Passed to the repository so the database (the single
+/// source of truth) enforces the configured thresholds.
+#[derive(Debug, Clone, Copy)]
+pub struct LockoutPolicy {
+    /// Failures before a temporary lock.
+    pub max_attempts: u32,
+    /// Temporary lock duration, in seconds.
+    pub lockout_secs: i64,
+    /// Consecutive temporary lockouts before a permanent (admin-unlock) lock;
+    /// `None` disables permanent escalation.
+    pub permanent_after: Option<u32>,
+}
+
+impl From<&LockoutConfig> for LockoutPolicy {
+    fn from(c: &LockoutConfig) -> Self {
+        Self {
+            max_attempts: c.max_failed_attempts,
+            lockout_secs: c.lockout_duration_secs,
+            // Clamp to >= 1 so a misconfigured `lockouts_before_permanent = 0`
+            // does not silently make the first lockout permanent.
+            permanent_after: c
+                .permanent_lockout
+                .then(|| c.lockouts_before_permanent.max(1)),
+        }
+    }
+}
+
+/// Outcome of recording a failed attempt, so the caller can audit transitions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LockoutOutcome {
+    /// This attempt crossed the temporary-lockout threshold.
+    pub now_locked: bool,
+    /// This attempt escalated the account to a permanent (admin-unlock) lock.
+    pub now_permanent: bool,
+}
+
 /// User repository trait for password provider
 ///
 /// Abstracts database access for user authentication
@@ -125,11 +163,23 @@ pub trait UserRepository: Send + Sync {
     /// Update user's last login timestamp
     async fn update_last_login(&self, user_id: &UserId) -> AuthResult<()>;
 
-    /// Record a failed login attempt
-    async fn record_failed_attempt(&self, username: &str) -> AuthResult<()>;
+    /// Record a failed login attempt, applying `policy` atomically with the
+    /// count increment. The database is the single source of truth for lockout
+    /// state. Returns which lock transitions (if any) this attempt caused, so
+    /// the caller can audit them exactly once. NIAP PP-CA: FIA_AFL.1.2.
+    async fn record_failed_attempt(
+        &self,
+        username: &str,
+        policy: LockoutPolicy,
+    ) -> AuthResult<LockoutOutcome>;
 
-    /// Reset failed attempts counter
+    /// Reset failed-attempt and lockout-escalation counters (on success). Does
+    /// not change account status.
     async fn reset_failed_attempts(&self, username: &str) -> AuthResult<()>;
+
+    /// Administrative unlock: clear the counters and lift a permanent
+    /// (status-level) lock. NIST 800-53: AC-7; NIAP PP-CA: FIA_AFL.1.
+    async fn unlock_account(&self, username: &str) -> AuthResult<()>;
 }
 
 /// Password-based authentication provider
@@ -144,28 +194,32 @@ pub struct PasswordAuthProvider {
     /// Password hashing configuration
     config: PasswordHashConfig,
 
-    /// User repository for database access
+    /// User repository for database access (the source of truth for lockout)
     user_repo: Arc<dyn UserRepository>,
 
-    /// Account lockout manager
-    lockout: Arc<AuthLockout>,
+    /// Lockout policy (thresholds/durations); enforcement is persisted in the DB
+    lockout_config: LockoutConfig,
 
     /// Session manager
     session_manager: Arc<SessionManager>,
+
+    /// Optional audit sink for authentication events (NIST 800-53: AU-2, AC-7).
+    audit: Option<Arc<dyn AuthAuditHook>>,
 }
 
 impl PasswordAuthProvider {
     /// Create a new password authentication provider
     pub fn new(
         user_repo: Arc<dyn UserRepository>,
-        lockout: Arc<AuthLockout>,
+        lockout_config: LockoutConfig,
         session_manager: Arc<SessionManager>,
     ) -> Self {
         Self {
             config: PasswordHashConfig::default(),
             user_repo,
-            lockout,
+            lockout_config,
             session_manager,
+            audit: None,
         }
     }
 
@@ -173,14 +227,29 @@ impl PasswordAuthProvider {
     pub fn with_config(
         config: PasswordHashConfig,
         user_repo: Arc<dyn UserRepository>,
-        lockout: Arc<AuthLockout>,
+        lockout_config: LockoutConfig,
         session_manager: Arc<SessionManager>,
     ) -> Self {
         Self {
             config,
             user_repo,
-            lockout,
+            lockout_config,
             session_manager,
+            audit: None,
+        }
+    }
+
+    /// Attach an audit sink that receives authentication events (failed login,
+    /// account lock/unlock). NIST 800-53: AU-2, AC-7.
+    pub fn with_audit_hook(mut self, audit: Arc<dyn AuthAuditHook>) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
+    /// Emit an authentication audit event, if an audit sink is attached.
+    async fn audit(&self, event: AuthAuditEvent) {
+        if let Some(sink) = &self.audit {
+            sink.record_auth_event(event).await;
         }
     }
 
@@ -217,23 +286,10 @@ impl PasswordAuthProvider {
         username: &str,
         password: &SecretString,
     ) -> AuthResult<AuthenticatedUser> {
-        // Check if account is locked
-        // NIAP PP-CA: FIA_AFL.1.2 - Prevent authentication when locked
-        let is_allowed = self
-            .lockout
-            .is_authentication_allowed(username)
-            .map_err(|e| AuthError::Internal(format!("Lockout check failed: {}", e)))?;
-
-        if !is_allowed {
-            let remaining = self
-                .lockout
-                .get_remaining_lockout_time(username)
-                .unwrap_or(0);
-            warn!(username = %username, "Authentication blocked: account locked");
-            return Err(AuthError::AccountLocked {
-                until: format!("{} seconds remaining", remaining),
-            });
-        }
+        // Lockout is enforced from the database (the single source of truth):
+        // the account-status / `is_locked()` checks below reject a locked
+        // account, and persist across restarts and instances.
+        // NIAP PP-CA: FIA_AFL.1.2 - prevent authentication when locked.
 
         // Find user in database
         let user_account = self
@@ -288,19 +344,51 @@ impl PasswordAuthProvider {
         let valid = self.verify_password(password, password_hash)?;
 
         if !valid {
-            // Record failed attempt
+            // Record failed attempt in the DB (single source of truth), which
+            // applies the lockout policy atomically.
             // NIAP PP-CA: FIA_AFL.1.1 - Track failed attempts
             warn!(username = %username, "Invalid password");
-            let _ = self
-                .lockout
-                .record_failure(username, None, "invalid_password");
-            let _ = self.user_repo.record_failed_attempt(username).await;
+            let outcome = self
+                .user_repo
+                .record_failed_attempt(username, LockoutPolicy::from(&self.lockout_config))
+                .await
+                .unwrap_or_default();
+
+            // AU-2 / AC-7: audit the failed attempt, and the lockout if this
+            // attempt crossed the threshold.
+            self.audit(AuthAuditEvent {
+                kind: AuthAuditKind::LoginFailed,
+                subject: username.to_string(),
+                ip_address: None,
+                reason: Some("invalid_password".to_string()),
+                actor: None,
+            })
+            .await;
+            if outcome.now_locked {
+                let reason = if outcome.now_permanent {
+                    "permanent_lockout"
+                } else {
+                    "max_failed_attempts"
+                };
+                warn!(
+                    username = %username,
+                    permanent = outcome.now_permanent,
+                    "Account locked after repeated failed attempts"
+                );
+                self.audit(AuthAuditEvent {
+                    kind: AuthAuditKind::AccountLocked,
+                    subject: username.to_string(),
+                    ip_address: None,
+                    reason: Some(reason.to_string()),
+                    actor: None,
+                })
+                .await;
+            }
             return Err(AuthError::InvalidCredentials);
         }
 
-        // Password is valid - reset lockout and create authenticated user
+        // Password is valid - reset the DB lockout counters and create user.
         info!(username = %username, "Password authentication successful");
-        let _ = self.lockout.record_success(username);
         let _ = self.user_repo.reset_failed_attempts(username).await;
         let _ = self.user_repo.update_last_login(&user_account.id).await;
 
@@ -333,10 +421,10 @@ impl AuthProvider for PasswordAuthProvider {
         let session = self
             .session_manager
             .validate_session(token)
+            .await
             .map_err(|_| AuthError::InvalidSession)?;
 
-        // Session stores user_id as a string - we'll use it as username for now
-        // In a real implementation, user_id would be a UUID and we'd look up by ID
+        // Session stores user_id as the username string; look up the account by it.
         let user_account = self
             .user_repo
             .find_by_username(&session.user_id)
@@ -362,6 +450,7 @@ impl AuthProvider for PasswordAuthProvider {
         let session = self
             .session_manager
             .create_session(&user.username, None, None) // ip_address, user_agent
+            .await
             .map_err(|e| AuthError::Internal(format!("Session creation failed: {}", e)))?;
 
         Ok(SessionInfo {
@@ -377,33 +466,47 @@ impl AuthProvider for PasswordAuthProvider {
         let session = self
             .session_manager
             .validate_session(token)
+            .await
             .map_err(|_| AuthError::InvalidSession)?;
 
         self.session_manager
             .terminate_session(&session.id) // Use 'id' field
+            .await
             .map_err(|e| AuthError::Internal(format!("Session termination failed: {}", e)))
     }
 
     async fn record_failed_attempt(&self, username: &str, reason: &str) -> AuthResult<()> {
         debug!(username = %username, reason = %reason, "Recording failed attempt");
-        let _ = self.lockout.record_failure(username, None, reason);
-        let _ = self.user_repo.record_failed_attempt(username).await;
+        let _ = self
+            .user_repo
+            .record_failed_attempt(username, LockoutPolicy::from(&self.lockout_config))
+            .await;
         Ok(())
     }
 
     async fn is_account_locked(&self, username: &str) -> AuthResult<bool> {
-        let is_allowed = self
-            .lockout
-            .is_authentication_allowed(username)
-            .unwrap_or(false);
-        Ok(!is_allowed)
+        // Lock state lives in the DB; is_locked() covers both a temporary lock
+        // (locked_until) and a permanent one (status='locked').
+        match self.user_repo.find_by_username(username).await? {
+            Some(account) => Ok(account.is_locked()),
+            None => Ok(false),
+        }
     }
 
     async fn unlock_account(&self, username: &str) -> AuthResult<()> {
         info!(username = %username, "Unlocking account (admin action)");
-        // admin_unlock requires admin_id - use system for now
-        let _ = self.lockout.admin_unlock(username, "system");
-        let _ = self.user_repo.reset_failed_attempts(username).await;
+        // Administrative unlock clears the counters AND lifts a permanent
+        // (status) lock; distinct from the success-path reset_failed_attempts.
+        let _ = self.user_repo.unlock_account(username).await;
+        // AU-2 / AC-7: account lock cleared.
+        self.audit(AuthAuditEvent {
+            kind: AuthAuditKind::AccountUnlocked,
+            subject: username.to_string(),
+            ip_address: None,
+            reason: None,
+            actor: Some("system".to_string()),
+        })
+        .await;
         Ok(())
     }
 
@@ -453,23 +556,59 @@ mod tests {
             Ok(())
         }
 
-        async fn record_failed_attempt(&self, _username: &str) -> AuthResult<()> {
+        async fn record_failed_attempt(
+            &self,
+            username: &str,
+            policy: LockoutPolicy,
+        ) -> AuthResult<LockoutOutcome> {
+            // Mirror the DB store closely enough to exercise the lockout flow.
+            let mut users = self.users.write().await;
+            let Some(acct) = users.get_mut(username) else {
+                return Ok(LockoutOutcome::default());
+            };
+            // No-op if already locked or not active (matches the DB store).
+            if acct.is_locked() || acct.status != AccountStatus::Active {
+                return Ok(LockoutOutcome::default());
+            }
+            acct.failed_attempts += 1;
+            if acct.failed_attempts >= policy.max_attempts {
+                acct.locked_until =
+                    Some(chrono::Utc::now() + chrono::Duration::seconds(policy.lockout_secs));
+                return Ok(LockoutOutcome {
+                    now_locked: true,
+                    now_permanent: false,
+                });
+            }
+            Ok(LockoutOutcome::default())
+        }
+
+        async fn reset_failed_attempts(&self, username: &str) -> AuthResult<()> {
+            if let Some(acct) = self.users.write().await.get_mut(username) {
+                acct.failed_attempts = 0;
+                acct.locked_until = None;
+            }
             Ok(())
         }
 
-        async fn reset_failed_attempts(&self, _username: &str) -> AuthResult<()> {
+        async fn unlock_account(&self, username: &str) -> AuthResult<()> {
+            if let Some(acct) = self.users.write().await.get_mut(username) {
+                acct.failed_attempts = 0;
+                acct.locked_until = None;
+                if acct.status == AccountStatus::Locked {
+                    acct.status = AccountStatus::Active;
+                }
+            }
             Ok(())
         }
     }
 
     fn create_test_provider(repo: Arc<dyn UserRepository>) -> PasswordAuthProvider {
-        let lockout = Arc::new(AuthLockout::new(LockoutConfig::default()));
         let session_manager = Arc::new(SessionManager::new(SessionConfig::default()));
 
         PasswordAuthProvider::with_config(
             PasswordHashConfig::low_memory(), // Use low memory for faster tests
             repo,
-            lockout,
+            LockoutConfig::default(),
             session_manager,
         )
     }
@@ -536,6 +675,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_failed_login_emits_audit() {
+        use crate::auth::{AuthAuditEvent, AuthAuditHook, AuthAuditKind};
+
+        #[derive(Default)]
+        struct RecordingHook {
+            events: RwLock<Vec<AuthAuditEvent>>,
+        }
+        #[async_trait]
+        impl AuthAuditHook for RecordingHook {
+            async fn record_auth_event(&self, event: AuthAuditEvent) {
+                self.events.write().await.push(event);
+            }
+        }
+
+        let repo = Arc::new(InMemoryUserRepo::new());
+        let hook = Arc::new(RecordingHook::default());
+        let provider = PasswordAuthProvider::with_config(
+            PasswordHashConfig::low_memory(),
+            Arc::clone(&repo) as Arc<dyn UserRepository>,
+            LockoutConfig::default(),
+            Arc::new(SessionManager::new(SessionConfig::default())),
+        )
+        .with_audit_hook(Arc::clone(&hook) as Arc<dyn AuthAuditHook>);
+
+        let hash = provider
+            .hash_password(&SecretString::from("correct-password"))
+            .unwrap();
+        let mut user = UserAccount::new("testuser", vec![Role::Administrator]);
+        user.password_hash = Some(hash);
+        repo.add_user(user).await;
+
+        let creds = Credentials::password("testuser", "wrong-password");
+        let _ = provider.authenticate(&creds).await;
+
+        let events = hook.events.read().await;
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == AuthAuditKind::LoginFailed && e.subject == "testuser"),
+            "a failed login must emit a LoginFailed audit event"
+        );
+    }
+
+    #[tokio::test]
     async fn test_user_not_found() {
         let repo = Arc::new(InMemoryUserRepo::new());
         let provider = create_test_provider(repo);
@@ -585,12 +768,8 @@ mod tests {
             let _ = provider.authenticate(&creds).await;
         }
 
-        // Account should be locked
-        let is_allowed = provider
-            .lockout
-            .is_authentication_allowed("testuser")
-            .unwrap();
-        assert!(!is_allowed);
+        // Account should be locked (persisted lock state, via the repository).
+        assert!(provider.is_account_locked("testuser").await.unwrap());
 
         // Even correct password should fail
         let creds = Credentials::password("testuser", "password");

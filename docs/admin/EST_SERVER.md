@@ -212,8 +212,9 @@ first start; the server applies migrations on startup.
 
 - **Health checks**: `GET /health` (liveness), `GET /ready` (readiness; checks DB
   connectivity). See [HEALTH_CHECKS.md](../HEALTH_CHECKS.md).
-- **Sessions** are in-memory (bearer/Basic modes): they do not survive a restart
-  and do not replicate across instances.
+- **Sessions** (bearer/Basic modes) are persisted in Postgres: they survive a
+  restart and are shared across instances, with the database as the single
+  source of truth.
 - **Auditing**: every enrollment outcome and security-relevant failure (failed
   PoP, identity-binding denial, CA issuance failure) is written to the audit log.
 

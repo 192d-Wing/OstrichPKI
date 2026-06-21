@@ -162,18 +162,12 @@ async fn main() -> Result<()> {
     // - NIST 800-53: AC-7 (Unsuccessful Logon Attempts) - lockout
     // - NIAP PP-CA: FIA_UAU.1 / FIA_AFL.1
     //
-    // POAM: sessions are in-memory (SessionManager); they do not survive a
-    // restart and do not replicate across instances. Persistent/shared
-    // session storage is a follow-up.
-    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> =
-        Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
-            Arc::new(ostrich_db::repository::DbUserRepository::new(
-                db_pool.clone(),
-            )),
-            Arc::new(ostrich_common::auth::AuthLockout::new(
-                ostrich_common::auth::LockoutConfig::default(),
-            )),
-            Arc::new(ostrich_common::auth::SessionManager::new({
+    // Sessions are persisted in Postgres (DbSessionStore): they survive a
+    // restart and are shared across instances, with the database as the single
+    // source of truth (NIST 800-53: SC-23, AC-12).
+    let session_manager = Arc::new(
+        ostrich_common::auth::SessionManager::with_store(
+            {
                 // Max concurrent sessions per user. Defaults to the secure
                 // SessionConfig default; CA_MAX_CONCURRENT_SESSIONS raises it
                 // for dev/UI testing (a single admin opening several tabs or
@@ -186,8 +180,32 @@ async fn main() -> Result<()> {
                     Some(n) => cfg.with_max_concurrent(n),
                     None => cfg,
                 }
-            })),
-        ));
+            },
+            Arc::new(ostrich_db::repository::DbSessionStore::new(db_pool.clone())),
+        )
+        // Emit login/logout/admin-termination as audit events (NIST 800-53: AU-2).
+        .with_audit_hook(Arc::new(ostrich_audit::SessionAuditAdapter::new(Arc::new(
+            ostrich_audit::DatabaseAuditSink::new(db_pool.clone()),
+        )))),
+    );
+    // Reap expired/terminated sessions periodically so the table does not grow
+    // unbounded (NIST 800-53: AC-12).
+    session_manager
+        .clone()
+        .spawn_reaper(ostrich_common::auth::SessionManager::DEFAULT_REAP_INTERVAL);
+    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> = Arc::new(
+        ostrich_common::auth::PasswordAuthProvider::new(
+            Arc::new(ostrich_db::repository::DbUserRepository::new(
+                db_pool.clone(),
+            )),
+            ostrich_common::auth::LockoutConfig::default(),
+            session_manager,
+        )
+        // Audit failed logins / lockouts / unlocks (NIST 800-53: AU-2, AC-7).
+        .with_audit_hook(Arc::new(ostrich_audit::AuthAuditAdapter::new(Arc::new(
+            ostrich_audit::DatabaseAuditSink::new(db_pool.clone()),
+        )))),
+    );
 
     let app = match &ca {
         Some(ca) => {

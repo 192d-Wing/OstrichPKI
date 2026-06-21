@@ -56,6 +56,7 @@
 //! policy.authorize(&user, Permission::IssueCertificate, "cert:123")?;
 //! ```
 
+pub mod audit;
 pub mod basic;
 pub mod lockout;
 pub mod middleware;
@@ -70,11 +71,14 @@ pub mod session;
 pub mod user;
 
 // Re-export commonly used types
+pub use audit::{AuthAuditEvent, AuthAuditHook, AuthAuditKind};
 pub use basic::{BasicAuthLayer, MtlsOrBasicAuthLayer};
 pub use lockout::{AuthLockout, LockoutConfig, LockoutStatus};
 pub use middleware::{AuthLayer, AuthResponse, AuthUser, AuthzLayer, MtlsAuthLayer};
 pub use mtls::{CertificateAuthConfig, CertificateAuthProvider, CertificateUserRepository};
-pub use password::{PasswordAuthProvider, PasswordHashConfig, UserRepository};
+pub use password::{
+    LockoutOutcome, LockoutPolicy, PasswordAuthProvider, PasswordHashConfig, UserRepository,
+};
 pub use permissions::{
     Permission, aggregate_permissions, any_role_has_permission, permissions_for_role,
     role_has_permission,
@@ -86,5 +90,8 @@ pub use provider::{
 pub use rbac::{AuthorizationError, AuthzResult, RbacMiddleware, RbacPolicy};
 pub use roles::{Role, RoleValidationError, validate_role_set};
 pub use routes::auth_routes;
-pub use session::{Session, SessionConfig, SessionManager, SessionStatus};
+pub use session::{
+    InMemorySessionStore, Session, SessionAuditEvent, SessionAuditHook, SessionAuditKind,
+    SessionConfig, SessionError, SessionManager, SessionStatus, SessionStore,
+};
 pub use user::{AccountStatus, AuthMethod, AuthenticatedUser, UserAccount, UserId};

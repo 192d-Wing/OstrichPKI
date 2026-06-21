@@ -298,17 +298,20 @@ impl UserAccount {
     ///
     /// NIAP PP-CA: FIA_AFL.1 - Account lockout check
     pub fn is_locked(&self) -> bool {
-        match self.status {
-            AccountStatus::Locked => {
-                // Check if lock has expired
-                if let Some(until) = self.locked_until {
-                    Utc::now() < until
-                } else {
-                    true // Locked indefinitely (admin must unlock)
-                }
-            }
-            _ => false,
+        // Permanent / administrative lock (status='locked'): bounded by
+        // locked_until if set, otherwise indefinite (admin must unlock).
+        if self.status == AccountStatus::Locked {
+            return self
+                .locked_until
+                .map(|until| Utc::now() < until)
+                .unwrap_or(true);
         }
+        // Temporary lock: a failed-attempt threshold sets locked_until while the
+        // account stays 'active'. Enforce it here so the timed lock is honored
+        // (persisted in the DB), not just by an in-memory tracker.
+        self.locked_until
+            .map(|until| Utc::now() < until)
+            .unwrap_or(false)
     }
 
     /// Check if account can authenticate

@@ -67,9 +67,11 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
         }
     };
 
-    // Server-side session manager (in-memory).
-    // POAM: in-memory sessions do not survive a restart and do not replicate
-    // across instances - DB-backed session storage is a tracked follow-up.
+    // Server-side session manager. Web-UI sessions are ephemeral by design (a
+    // stateless BFF; users re-auth via OIDC on restart, and the proxy
+    // backend_token cannot be persisted). Storage sits behind WebUiSessionStore,
+    // so a durable backend can be supplied via SessionManager::with_store for
+    // multi-instance deployments. See auth/session.rs module docs.
     let session_manager = Arc::new(auth::SessionManager::new(
         config.session.inactivity_timeout_secs,
         config.session.absolute_timeout_secs,

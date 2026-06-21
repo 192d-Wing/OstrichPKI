@@ -77,21 +77,38 @@ async fn main() -> Result<()> {
     // - NIST 800-53: IA-2, IA-5(1), AC-7 (lockout)
     // - NIAP PP-CA: FIA_UAU.1 / FIA_AFL.1
     //
-    // POAM: sessions are in-memory; persistent/shared session storage is a
-    // follow-up. Note each service holds its own session store, so a token
-    // issued by ca-server is not valid here - log in per service.
-    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> =
-        Arc::new(ostrich_common::auth::PasswordAuthProvider::new(
+    // Sessions are persisted in Postgres (DbSessionStore): they survive a
+    // restart and are shared across instances (NIST 800-53: SC-23, AC-12). Each
+    // service still scopes sessions to its own login (a token issued by
+    // ca-server is not presented here) - the shared table is keyed by token.
+    let session_manager = Arc::new(
+        ostrich_common::auth::SessionManager::with_store(
+            ostrich_common::auth::SessionConfig::default(),
+            Arc::new(ostrich_db::repository::DbSessionStore::new(db_pool.clone())),
+        )
+        // Emit login/logout/admin-termination as audit events (NIST 800-53: AU-2).
+        .with_audit_hook(Arc::new(ostrich_audit::SessionAuditAdapter::new(Arc::new(
+            ostrich_audit::DatabaseAuditSink::new(db_pool.clone()),
+        )))),
+    );
+    // Reap expired/terminated sessions periodically so the table does not grow
+    // unbounded (NIST 800-53: AC-12).
+    session_manager
+        .clone()
+        .spawn_reaper(ostrich_common::auth::SessionManager::DEFAULT_REAP_INTERVAL);
+    let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> = Arc::new(
+        ostrich_common::auth::PasswordAuthProvider::new(
             Arc::new(ostrich_db::repository::DbUserRepository::new(
                 db_pool.clone(),
             )),
-            Arc::new(ostrich_common::auth::AuthLockout::new(
-                ostrich_common::auth::LockoutConfig::default(),
-            )),
-            Arc::new(ostrich_common::auth::SessionManager::new(
-                ostrich_common::auth::SessionConfig::default(),
-            )),
-        ));
+            ostrich_common::auth::LockoutConfig::default(),
+            session_manager,
+        )
+        // Audit failed logins / lockouts / unlocks (NIST 800-53: AU-2, AC-7).
+        .with_audit_hook(Arc::new(ostrich_audit::AuthAuditAdapter::new(Arc::new(
+            ostrich_audit::DatabaseAuditSink::new(db_pool.clone()),
+        )))),
+    );
 
     // RBAC policy: enforces per-permission checks at handler entry.
     // NIST 800-53: AC-3 (Access Enforcement), AC-5 (Separation of Duties)

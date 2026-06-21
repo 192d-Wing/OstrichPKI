@@ -240,7 +240,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Control:** The information system enforces a limit of consecutive invalid logon attempts.
 
-**Implementation Status:** 🔴 **Not Implemented**
+**Implementation Status:** 🟢 **Implemented**
 
 **NIAP Mapping:**
 
@@ -248,21 +248,21 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Implementation:**
 
-- None
+- [crates/ostrich-common/src/auth/lockout.rs](../../crates/ostrich-common/src/auth/lockout.rs) - `AuthLockout` policy (threshold, lockout duration, failure window, optional permanent lockout) from `LockoutConfig`
+- [crates/ostrich-db/src/repository/users.rs](../../crates/ostrich-db/src/repository/users.rs) - `record_failed_attempt` atomically increments `failed_attempts` and sets `locked_until` at the threshold; **thresholds come from `LockoutConfig`** (no longer hardcoded). Persists across restart (enforced at [password.rs](../../crates/ostrich-common/src/auth/password.rs) login).
+- [crates/ostrich-common/src/auth/audit.rs](../../crates/ostrich-common/src/auth/audit.rs) + [crates/ostrich-audit/src/auth_hook.rs](../../crates/ostrich-audit/src/auth_hook.rs) - `AuthAuditHook` / `AuthAuditAdapter`: emit audit records for failed login, account lockout, and unlock (wired into ca/est/scms providers).
 
-**Gaps:**
+**Evidence:**
 
-- No authentication failure tracking
-- No account lockout mechanism
-- No delay after failed attempts
+- ✅ Configurable lockout policy (default 5 attempts / 15 min; `LockoutConfig::high_security` = 3 / 30 min)
+- ✅ Failed-attempt count + timed lock persisted in the DB (survives restart)
+- ✅ Failed login / lockout / unlock audited (AU-2); unit test `password::tests::test_failed_login_emits_audit`
 
-**Remediation:** Phase 16 - Implement configurable lockout policy (e.g., 5 attempts, 30 minute lockout)
+**Gaps / follow-up:**
 
-**Evidence Required for ATO:**
+- Dual enforcement (in-memory `AuthLockout` + DB) is retained; collapsing to a single DB-authoritative source — plus DB-backed lockout for the mTLS (certificate) auth path and a persisted permanent-lockout counter — is a tracked follow-up.
 
-- Lockout policy configuration
-- Failed authentication logs
-- Account unlock procedures
+**Remediation:** consolidate to DB-authoritative lockout (cert-auth + permanent-lockout schema).
 
 ---
 
@@ -279,7 +279,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 **Implementation:**
 
-- [services/web-ui/src/server/auth/session.rs](../../services/web-ui/src/server/auth/session.rs) - Session management with timeouts
+- [crates/ostrich-common/src/auth/session.rs](../../crates/ostrich-common/src/auth/session.rs) - Core `SessionManager` (timeouts, lock-on-inactivity, user/admin termination) over a pluggable `SessionStore`
+- [crates/ostrich-db/src/repository/session.rs](../../crates/ostrich-db/src/repository/session.rs) - `DbSessionStore`: Postgres-backed session persistence (ca-server, est-server, scms-server)
+- [migrations/00011_session_persistence.sql](../../migrations/00011_session_persistence.sql) - termination states + metadata; sessions are durable across restart
+- [services/web-ui/src/server/auth/session.rs](../../services/web-ui/src/server/auth/session.rs) - Web UI session management with timeouts. Web-UI sessions are ephemeral **by design** (stateless BFF: users re-auth via OIDC on restart, and the per-login proxy `backend_token` cannot be persisted); storage sits behind the `WebUiSessionStore` trait so a durable backend can be added for multi-instance deployments without changing session policy.
 - [services/web-ui/src/server/auth/handlers.rs:178](../../services/web-ui/src/server/auth/handlers.rs#L178) - Logout handler
 - Session cookies with configurable expiration
 - Inactivity timeout and absolute session timeout support
@@ -349,11 +352,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 - [crates/ostrich-audit/src/event.rs:15-45](../../crates/ostrich-audit/src/event.rs#L15-L45) - `EventType` enum with comprehensive event types
 - [crates/ostrich-scms/src/rest.rs](../../crates/ostrich-scms/src/rest.rs) — `audit_token_event` helper called by every state-changing SCMS handler (Phase 1b). 11 distinct token lifecycle actions audited.
+- [crates/ostrich-audit/src/session_hook.rs](../../crates/ostrich-audit/src/session_hook.rs) — `SessionAuditAdapter` emits an `Authentication` audit record for every session lifecycle transition (session_created / session_terminated / session_admin_terminated). Wired into ca/est/scms `SessionManager` via `with_audit_hook`. The seam is `ostrich_common::auth::SessionAuditHook` (the auth layer cannot depend on `ostrich-audit`).
 
 **Evidence:**
 
 - ✅ Certificate issuance, revocation, renewal events
-- ✅ Authentication events (when implemented)
+- ✅ Session lifecycle events: login (create), logout (user terminate), admin termination — `session_hook.rs`; covered by `tests/integration/session_store_e2e.rs::session_create_emits_audit_event`
+- ⏳ Login *failure* and account-lockout auditing (separate auth code paths) remains a follow-up
 - ✅ Configuration changes
 - ✅ Cryptographic operations
 - ✅ Access control decisions
@@ -855,7 +860,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - Certificate-based (mTLS) user authentication: provider exists but subject
   DN extraction is a placeholder
 - Multi-factor authentication for privileged users
-- Sessions are in-memory per service (POAM: persistent/shared session store)
+
+**Closed:** Sessions are now persisted in Postgres (`DbSessionStore`,
+migrations 00003 + 00011); they survive a restart and are shared across
+instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 **Remediation:** mTLS DN extraction + MFA tracked as follow-ups
 
@@ -1362,6 +1370,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **Implementation:**
 
 - [crates/ostrich-acme/src/rest.rs:127](../../crates/ostrich-acme/src/rest.rs#L127) - ACME nonce generation and validation
+- [crates/ostrich-db/src/repository/session.rs](../../crates/ostrich-db/src/repository/session.rs) - durable session store; Postgres is the authoritative source of session state (survives restart, shared across instances)
 - [services/web-ui/src/server/middleware/csp.rs](../../services/web-ui/src/server/middleware/csp.rs) - CSP nonce middleware
 - [services/web-ui/src/server/auth/oidc.rs:118](../../services/web-ui/src/server/auth/oidc.rs#L118) - PKCE challenge generation
 - TLS provides transport-level session authenticity
@@ -1369,6 +1378,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **Evidence:**
 
 - ✅ ACME nonces prevent replay attacks (RFC 8555 compliance)
+- ✅ Server-side sessions persisted in Postgres: a token's validity is decided
+  by authoritative state, not process memory, so termination/expiry hold across
+  a restart (`DbSessionStore`, migration 00011)
 - ✅ CSP nonces per-request prevent XSS attacks (NIST 800-53 SC-18 Mobile Code)
 - ✅ PKCE (S256) prevents authorization code interception
 - ✅ OAuth state parameter prevents CSRF attacks

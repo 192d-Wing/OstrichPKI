@@ -41,6 +41,14 @@ name = "mtls_peercert_e2e"
 path = "integration/mtls_peercert_e2e.rs"
 
 [[test]]
+name = "session_store_e2e"
+path = "integration/session_store_e2e.rs"
+
+[[test]]
+name = "lockout_e2e"
+path = "integration/lockout_e2e.rs"
+
+[[test]]
 name = "mlkem_openssl_interop"
 path = "integration/mlkem_openssl_interop.rs"
 

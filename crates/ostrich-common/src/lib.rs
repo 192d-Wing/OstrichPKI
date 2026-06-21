@@ -14,6 +14,9 @@ pub mod types;
 pub mod util;
 
 // Re-exports for convenience
-pub use auth::{AuthLockout, LockoutConfig, Session, SessionConfig, SessionManager};
+pub use auth::{
+    AuthLockout, InMemorySessionStore, LockoutConfig, Session, SessionConfig, SessionError,
+    SessionManager, SessionStore,
+};
 pub use error::{Error, Result};
 pub use grpc_client::{CaGrpcClient, CircuitBreaker, GrpcClientConfig};
