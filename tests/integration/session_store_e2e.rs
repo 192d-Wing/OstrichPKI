@@ -200,9 +200,15 @@ async fn store_crud_round_trip() {
     .await
     .expect("age the session");
     let removed = st.delete_expired().await.expect("delete_expired");
-    assert!(removed >= 1, "expected to reap at least our expired session");
     assert!(
-        st.get_by_id(&session.id).await.expect("get_by_id").is_none(),
+        removed >= 1,
+        "expected to reap at least our expired session"
+    );
+    assert!(
+        st.get_by_id(&session.id)
+            .await
+            .expect("get_by_id")
+            .is_none(),
         "expired session should be gone"
     );
 
@@ -265,7 +271,10 @@ async fn session_create_emits_audit_event() {
     .fetch_one(pool.pool())
     .await
     .expect("query audit_events");
-    assert_eq!(count, 1, "expected exactly one session_created audit record");
+    assert_eq!(
+        count, 1,
+        "expected exactly one session_created audit record"
+    );
 
     // audit_events is independent of users (no cascade); clean it explicitly.
     sqlx::query("DELETE FROM audit_events WHERE session_id = $1")
@@ -298,7 +307,9 @@ async fn store_guards_against_resurrection_and_reaps_terminated() {
     let mut revive = session.clone();
     revive.status = SessionStatus::Active;
     revive.token = session.token.clone();
-    st.update(&revive).await.expect("stale update is a no-op, not an error");
+    st.update(&revive)
+        .await
+        .expect("stale update is a no-op, not an error");
 
     let after = st
         .get_by_id(&session.id)
@@ -315,7 +326,10 @@ async fn store_guards_against_resurrection_and_reaps_terminated() {
     let removed = st.delete_expired().await.expect("delete_expired");
     assert!(removed >= 1, "expected the terminated session to be reaped");
     assert!(
-        st.get_by_id(&session.id).await.expect("get_by_id").is_none(),
+        st.get_by_id(&session.id)
+            .await
+            .expect("get_by_id")
+            .is_none(),
         "terminated session should be reaped"
     );
 

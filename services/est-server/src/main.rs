@@ -258,18 +258,15 @@ async fn main() -> Result<()> {
     let user_repo = Arc::new(ostrich_db::repository::DbUserRepository::new(
         db_pool.clone(),
     ));
-    let lockout = Arc::new(ostrich_common::auth::AuthLockout::new(
-        ostrich_common::auth::LockoutConfig::default(),
-    ));
     let sessions = Arc::new(
         ostrich_common::auth::SessionManager::with_store(
             ostrich_common::auth::SessionConfig::default(),
             Arc::new(ostrich_db::repository::DbSessionStore::new(db_pool.clone())),
         )
         // Emit login/logout/admin-termination as audit events (NIST 800-53: AU-2).
-        .with_audit_hook(Arc::new(ostrich_audit::SessionAuditAdapter::new(
-            Arc::new(ostrich_audit::DatabaseAuditSink::new(db_pool.clone())),
-        ))),
+        .with_audit_hook(Arc::new(ostrich_audit::SessionAuditAdapter::new(Arc::new(
+            ostrich_audit::DatabaseAuditSink::new(db_pool.clone()),
+        )))),
     );
     // Reap expired/terminated sessions periodically so the table does not grow
     // unbounded (NIST 800-53: AC-12).
@@ -287,16 +284,16 @@ async fn main() -> Result<()> {
                  (RFC 7030 §3.3 + §3.2.3 bootstrap enrollment)"
             );
             // Composite: certificate identity preferred, password (Basic) fallback.
-            // Both providers share the same lockout and session managers.
+            // Both providers share the same user repository and session manager;
+            // lockout state is shared via the database (the user repository).
             let cert_provider = ostrich_common::auth::CertificateAuthProvider::new(
                 ostrich_common::auth::CertificateAuthConfig::default(),
                 user_repo.clone(),
-                lockout.clone(),
                 sessions.clone(),
             );
             let password_provider = ostrich_common::auth::PasswordAuthProvider::new(
                 user_repo.clone(),
-                lockout,
+                ostrich_common::auth::LockoutConfig::default(),
                 sessions,
             )
             .with_audit_hook(auth_audit.clone());
@@ -311,7 +308,6 @@ async fn main() -> Result<()> {
             Arc::new(ostrich_common::auth::CertificateAuthProvider::new(
                 ostrich_common::auth::CertificateAuthConfig::default(),
                 user_repo.clone(),
-                lockout,
                 sessions,
             ))
         }
@@ -321,8 +317,12 @@ async fn main() -> Result<()> {
                  RFC 7030 §3.3 expects mTLS client authentication."
             );
             Arc::new(
-                ostrich_common::auth::PasswordAuthProvider::new(user_repo, lockout, sessions)
-                    .with_audit_hook(auth_audit.clone()),
+                ostrich_common::auth::PasswordAuthProvider::new(
+                    user_repo,
+                    ostrich_common::auth::LockoutConfig::default(),
+                    sessions,
+                )
+                .with_audit_hook(auth_audit.clone()),
             )
         }
     };

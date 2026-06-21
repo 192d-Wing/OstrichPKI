@@ -838,7 +838,10 @@ mod tests {
         let expected = 0xf3eed1bdb5d2a03c064b5a7e3db181f8u128.to_be_bytes();
 
         let ct = Drbg::aes_encrypt(&key, &plaintext).expect("AES-256 encrypt");
-        assert_eq!(ct, expected, "AES-256 ECB known-answer must match NIST vector");
+        assert_eq!(
+            ct, expected,
+            "AES-256 ECB known-answer must match NIST vector"
+        );
     }
 
     #[test]

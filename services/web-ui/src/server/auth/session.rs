@@ -161,7 +161,8 @@ impl WebUiSessionStore for InMemoryWebUiSessionStore {
     async fn update(&self, token: &str, data: SessionData) {
         let mut sessions = self.sessions.write().await;
         // Only update an existing entry; never resurrect a removed session.
-        if let std::collections::hash_map::Entry::Occupied(mut e) = sessions.entry(token.to_string())
+        if let std::collections::hash_map::Entry::Occupied(mut e) =
+            sessions.entry(token.to_string())
         {
             e.insert(data);
         }

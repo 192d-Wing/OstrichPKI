@@ -346,13 +346,15 @@ impl Dns01Validator {
         let mut resolver_opts = hickory_resolver::config::ResolverOpts::default();
         resolver_opts.timeout = Duration::from_secs(self.timeout_secs);
 
-        let resolver =
-            Resolver::builder_with_config(ResolverConfig::default(), TokioRuntimeProvider::default())
-                .with_options(resolver_opts)
-                .build()
-                .map_err(|e| {
-                    Error::ChallengeValidation(format!("DNS resolver initialization failed: {e}"))
-                })?;
+        let resolver = Resolver::builder_with_config(
+            ResolverConfig::default(),
+            TokioRuntimeProvider::default(),
+        )
+        .with_options(resolver_opts)
+        .build()
+        .map_err(|e| {
+            Error::ChallengeValidation(format!("DNS resolver initialization failed: {e}"))
+        })?;
 
         // Perform DNS TXT lookup with retry logic
         // Retry up to 5 times with 2-second intervals to allow for DNS propagation
