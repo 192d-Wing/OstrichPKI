@@ -18,4 +18,4 @@ pub mod session;
 pub use oidc::OidcClient;
 // Session types are available for future use when session management is integrated
 #[allow(unused_imports)]
-pub use session::{SessionData, SessionManager};
+pub use session::{InMemoryWebUiSessionStore, SessionData, SessionManager, WebUiSessionStore};

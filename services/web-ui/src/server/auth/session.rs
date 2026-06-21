@@ -1,7 +1,25 @@
 //! Session Management
 //!
-//! Manages user sessions after OIDC authentication.
-//! This module provides session lifecycle management for future integration.
+//! Manages web-UI user sessions after OIDC (or internal-auth) login.
+//!
+//! ## Durability: ephemeral by design
+//!
+//! Web-UI sessions are intentionally **in-memory and process-local** — they do
+//! not survive a restart and are not shared across instances. This is a
+//! deliberate choice for a stateless BFF, not an oversight:
+//!
+//! - On restart, users simply re-authenticate via OIDC, which is cheap and
+//!   already the expected flow when an id-token expires.
+//! - [`SessionData::backend_token`] (the upstream CA credential used to proxy in
+//!   internal-auth mode) is `#[serde(skip_serializing)]` and **cannot be
+//!   persisted** — it is a live per-login bearer token. A restored session would
+//!   therefore be unable to proxy until the user re-authenticated anyway, so
+//!   persisting the rest buys little in that mode.
+//!
+//! Storage is nonetheless kept behind the [`WebUiSessionStore`] trait so a
+//! durable backend (database or Redis, for multi-instance deployments) can be
+//! dropped in later via [`SessionManager::with_store`] without touching the
+//! session-policy logic. The default is [`InMemoryWebUiSessionStore`].
 //!
 //! COMPLIANCE MAPPING:
 //! - NIST 800-53: AC-12 (Session Termination)
@@ -9,17 +27,18 @@
 //! - NIAP PP-CA: FTA_SSL.1 (TSF-initiated Session Locking)
 //! - NIAP PP-CA: FTA_SSL.3 (TSF-initiated Session Termination)
 
-#![allow(dead_code)] // Module prepared for future integration
+#![allow(dead_code)] // Some lifecycle helpers are used only by future integration
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use uuid::Uuid;
 
+use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64};
 use ostrich_common::util::random::secure_random_bytes;
+use tokio::sync::RwLock;
+use uuid::Uuid;
 
 /// Session token length in bytes
 const SESSION_TOKEN_LENGTH: usize = 32;
@@ -61,6 +80,9 @@ pub struct SessionData {
     /// to the CA as the actual admin rather than relying on network position
     /// (closes the confused-deputy gap). `None` in OIDC mode.
     ///
+    /// `skip_serializing`: this is a live credential and is never written to any
+    /// durable store; it lives only in process memory for the session's lifetime.
+    ///
     /// COMPLIANCE MAPPING:
     /// - NIST 800-53: AC-3 (Access Enforcement) - end-to-end authenticated proxy
     /// - NIST 800-53: IA-2 - the upstream call carries the user's own credential
@@ -85,13 +107,90 @@ impl SessionData {
     }
 }
 
-/// Session manager for in-memory session storage
+/// Pluggable storage backend for web-UI sessions, keyed by session token.
 ///
-/// In production, this should be backed by Redis or a database
-/// for multi-instance deployments.
+/// The default [`InMemoryWebUiSessionStore`] is process-local (ephemeral by
+/// design — see the module docs). A durable implementation (database/Redis) can
+/// be supplied via [`SessionManager::with_store`] for multi-instance
+/// deployments without changing the session-policy logic in [`SessionManager`].
+#[async_trait]
+pub trait WebUiSessionStore: Send + Sync {
+    /// Store a session under its token.
+    async fn insert(&self, token: String, data: SessionData);
+
+    /// Fetch a session by token.
+    async fn get(&self, token: &str) -> Option<SessionData>;
+
+    /// Persist mutated session fields. Must not create a session that is absent
+    /// (an update to a removed token is a no-op).
+    async fn update(&self, token: &str, data: SessionData);
+
+    /// Remove a session, returning it if present.
+    async fn remove(&self, token: &str) -> Option<SessionData>;
+
+    /// Drop all expired sessions; returns how many were removed.
+    async fn purge_expired(&self) -> usize;
+
+    /// Number of stored sessions (for monitoring).
+    async fn count(&self) -> usize;
+}
+
+/// In-memory [`WebUiSessionStore`] (process-local, non-durable).
+#[derive(Default)]
+pub struct InMemoryWebUiSessionStore {
+    sessions: RwLock<HashMap<String, SessionData>>,
+}
+
+impl InMemoryWebUiSessionStore {
+    /// Create an empty in-memory store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl WebUiSessionStore for InMemoryWebUiSessionStore {
+    async fn insert(&self, token: String, data: SessionData) {
+        self.sessions.write().await.insert(token, data);
+    }
+
+    async fn get(&self, token: &str) -> Option<SessionData> {
+        self.sessions.read().await.get(token).cloned()
+    }
+
+    async fn update(&self, token: &str, data: SessionData) {
+        let mut sessions = self.sessions.write().await;
+        // Only update an existing entry; never resurrect a removed session.
+        if let std::collections::hash_map::Entry::Occupied(mut e) = sessions.entry(token.to_string())
+        {
+            e.insert(data);
+        }
+    }
+
+    async fn remove(&self, token: &str) -> Option<SessionData> {
+        self.sessions.write().await.remove(token)
+    }
+
+    async fn purge_expired(&self) -> usize {
+        let mut sessions = self.sessions.write().await;
+        let before = sessions.len();
+        sessions.retain(|_, s| !s.is_expired());
+        before - sessions.len()
+    }
+
+    async fn count(&self) -> usize {
+        self.sessions.read().await.len()
+    }
+}
+
+/// Session manager.
+///
+/// Owns session policy (token generation, inactivity locking, absolute expiry)
+/// over a pluggable [`WebUiSessionStore`]. The default store is in-memory; see
+/// the module docs for why web-UI sessions are ephemeral by design.
 pub struct SessionManager {
-    /// Session storage (token -> session data)
-    sessions: Arc<RwLock<HashMap<String, SessionData>>>,
+    /// Backing store (token -> session data)
+    store: Arc<dyn WebUiSessionStore>,
 
     /// Inactivity timeout
     inactivity_timeout: Duration,
@@ -101,10 +200,24 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    /// Create a new session manager
+    /// Create a session manager backed by the default in-memory store.
     pub fn new(inactivity_timeout_secs: i64, absolute_timeout_secs: i64) -> Self {
+        Self::with_store(
+            Arc::new(InMemoryWebUiSessionStore::new()),
+            inactivity_timeout_secs,
+            absolute_timeout_secs,
+        )
+    }
+
+    /// Create a session manager backed by the supplied store. Use this to plug
+    /// in a durable backend (database/Redis) for multi-instance deployments.
+    pub fn with_store(
+        store: Arc<dyn WebUiSessionStore>,
+        inactivity_timeout_secs: i64,
+        absolute_timeout_secs: i64,
+    ) -> Self {
         Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
+            store,
             inactivity_timeout: Duration::seconds(inactivity_timeout_secs),
             absolute_timeout: Duration::seconds(absolute_timeout_secs),
         }
@@ -156,13 +269,9 @@ impl SessionManager {
             backend_token,
         };
 
-        {
-            let mut sessions = self.sessions.write().await;
-            sessions.insert(token.clone(), session.clone());
-
-            // Clean up expired sessions
-            sessions.retain(|_, s| !s.is_expired());
-        }
+        self.store.insert(token.clone(), session.clone()).await;
+        // Opportunistic cleanup of any sessions that have aged out.
+        self.store.purge_expired().await;
 
         tracing::info!(
             session_id = %session.id,
@@ -176,41 +285,33 @@ impl SessionManager {
 
     /// Validate a session token and return session data
     pub async fn validate_session(&self, token: &str) -> Option<SessionData> {
-        let mut sessions = self.sessions.write().await;
+        let mut session = self.store.get(token).await?;
 
-        // First check if session exists and if it's expired
-        let session_state = sessions.get(token).map(|s| (s.id.clone(), s.is_expired()));
-
-        if let Some((session_id, true)) = session_state {
-            sessions.remove(token);
-            tracing::debug!(session_id = %session_id, "Session expired");
+        // Absolute expiry: drop and reject.
+        if session.is_expired() {
+            self.store.remove(token).await;
+            tracing::debug!(session_id = %session.id, "Session expired");
             return None;
         }
 
-        if let Some(session) = sessions.get_mut(token) {
-            // Check if should be locked due to inactivity
-            if session.should_lock(self.inactivity_timeout) && !session.locked {
-                session.locked = true;
-                tracing::info!(
-                    session_id = %session.id,
-                    "Session locked due to inactivity"
-                );
-                // Return the locked session (client should prompt for re-auth)
-                return Some(session.clone());
-            }
-
-            // Update last activity
-            session.touch();
-            return Some(session.clone());
+        // Inactivity lock: flag and persist, then return the locked session so
+        // the client can prompt for re-authentication.
+        if session.should_lock(self.inactivity_timeout) && !session.locked {
+            session.locked = true;
+            tracing::info!(session_id = %session.id, "Session locked due to inactivity");
+            self.store.update(token, session.clone()).await;
+            return Some(session);
         }
 
-        None
+        // Active: refresh last activity.
+        session.touch();
+        self.store.update(token, session.clone()).await;
+        Some(session)
     }
 
     /// Invalidate (delete) a session
     pub async fn invalidate_session(&self, token: &str) -> bool {
-        let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.remove(token) {
+        if let Some(session) = self.store.remove(token).await {
             tracing::info!(
                 session_id = %session.id,
                 user = ?session.username,
@@ -224,32 +325,24 @@ impl SessionManager {
 
     /// Unlock a session after re-authentication
     pub async fn unlock_session(&self, token: &str) -> Option<SessionData> {
-        let mut sessions = self.sessions.write().await;
+        let mut session = self.store.get(token).await?;
 
-        if let Some(session) = sessions.get_mut(token) {
-            if session.is_expired() {
-                sessions.remove(token);
-                return None;
-            }
-
-            session.locked = false;
-            session.last_activity = Utc::now();
-
-            tracing::info!(
-                session_id = %session.id,
-                "Session unlocked"
-            );
-
-            return Some(session.clone());
+        if session.is_expired() {
+            self.store.remove(token).await;
+            return None;
         }
 
-        None
+        session.locked = false;
+        session.last_activity = Utc::now();
+        self.store.update(token, session.clone()).await;
+
+        tracing::info!(session_id = %session.id, "Session unlocked");
+        Some(session)
     }
 
     /// Get session count (for monitoring)
     pub async fn session_count(&self) -> usize {
-        let sessions = self.sessions.read().await;
-        sessions.len()
+        self.store.count().await
     }
 }
 
@@ -320,6 +413,30 @@ mod tests {
 
         // Session should be gone
         assert!(manager.validate_session(&token).await.is_none());
+    }
+
+    /// An update to an already-removed session must not resurrect it.
+    #[tokio::test]
+    async fn test_update_does_not_resurrect() {
+        let store = InMemoryWebUiSessionStore::new();
+        let now = Utc::now();
+        let data = SessionData {
+            id: "s1".to_string(),
+            user_subject: "user".to_string(),
+            username: None,
+            email: None,
+            roles: vec![],
+            created_at: now,
+            last_activity: now,
+            expires_at: now + Duration::hours(1),
+            locked: false,
+            backend_token: None,
+        };
+        store.insert("tok".to_string(), data.clone()).await;
+        store.remove("tok").await;
+        store.update("tok", data).await;
+        assert!(store.get("tok").await.is_none());
+        assert_eq!(store.count().await, 0);
     }
 
     #[test]

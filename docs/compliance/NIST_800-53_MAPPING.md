@@ -282,7 +282,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - [crates/ostrich-common/src/auth/session.rs](../../crates/ostrich-common/src/auth/session.rs) - Core `SessionManager` (timeouts, lock-on-inactivity, user/admin termination) over a pluggable `SessionStore`
 - [crates/ostrich-db/src/repository/session.rs](../../crates/ostrich-db/src/repository/session.rs) - `DbSessionStore`: Postgres-backed session persistence (ca-server, est-server, scms-server)
 - [migrations/00011_session_persistence.sql](../../migrations/00011_session_persistence.sql) - termination states + metadata; sessions are durable across restart
-- [services/web-ui/src/server/auth/session.rs](../../services/web-ui/src/server/auth/session.rs) - Web UI session management with timeouts
+- [services/web-ui/src/server/auth/session.rs](../../services/web-ui/src/server/auth/session.rs) - Web UI session management with timeouts. Web-UI sessions are ephemeral **by design** (stateless BFF: users re-auth via OIDC on restart, and the per-login proxy `backend_token` cannot be persisted); storage sits behind the `WebUiSessionStore` trait so a durable backend can be added for multi-instance deployments without changing session policy.
 - [services/web-ui/src/server/auth/handlers.rs:178](../../services/web-ui/src/server/auth/handlers.rs#L178) - Logout handler
 - Session cookies with configurable expiration
 - Inactivity timeout and absolute session timeout support
