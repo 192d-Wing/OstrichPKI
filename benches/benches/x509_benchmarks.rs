@@ -7,8 +7,8 @@
 //! - RFC 5280 - X.509 PKI Certificate Profile
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use std::hint::black_box;
 use der::{Decode, Encode};
+use std::hint::black_box;
 use x509_cert::name::Name;
 
 // A sample self-signed certificate in DER format (RSA 2048)
