@@ -142,6 +142,7 @@ impl KeyEscrow {
     ///
     /// - **SC-12**: Cryptographic key establishment for key escrow.
     /// - **AU-3**: Audit record contains who, what, when, where, outcome.
+    ///
     /// Escrow a private key.
     ///
     /// Returns the escrow record AND the M-of-N Shamir shares of the KEK. The

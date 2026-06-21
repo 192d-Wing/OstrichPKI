@@ -190,11 +190,7 @@ async fn readiness_check(State(state): State<AppState>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
-    use tower::ServiceExt;
+    use axum::http::StatusCode;
 
     #[tokio::test]
     async fn test_health_check() {
