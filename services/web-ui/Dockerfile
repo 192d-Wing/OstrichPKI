@@ -55,9 +55,17 @@ RUN trunk build --release
 # ==============================================================================
 FROM rust:1.96-bookworm AS server-builder
 
-# Install build dependencies
+# Install build dependencies. The server binary's dependency graph pulls in the
+# FIPS crypto module (aws-lc-fips-sys, via rustls / ostrich-crypto), which builds
+# from source with cmake and additionally needs clang/libclang (bindgen) plus
+# golang + perl (aws-lc/cmake/go.cmake code/asm generation). Without these the
+# aws-lc cmake build panics. Mirrors the root Dockerfile's builder stage.
 RUN apt-get update && apt-get install -y \
+    clang \
+    libclang-dev \
     cmake \
+    golang-go \
+    perl \
     pkg-config \
     libssl-dev \
     libpq-dev \
