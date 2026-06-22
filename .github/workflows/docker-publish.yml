@@ -4,6 +4,9 @@ name: Publish container images
 # GitHub Container Registry (GHCR):
 #   ghcr.io/<owner>/{ca-service,acme-service,est-service,ocsp-service,
 #                    scms-service,kra-service,cli}
+# The web UI has its own multi-stage Dockerfile (Trunk WASM client + Axum
+# server) and is published alongside them as:
+#   ghcr.io/<owner>/web-ui
 # Tags: the short commit SHA always; plus :latest and :<workspace-version> on
 # the default branch, and :<tag> for a pushed git tag.
 #
@@ -86,4 +89,25 @@ jobs:
             echo "::endgroup::"
           done
 
-          echo "Published images for: ca-service acme-service est-service ocsp-service scms-service kra-service cli"
+          # The web UI builds from its own Dockerfile (services/web-ui/Dockerfile):
+          # a Trunk/WASM client stage + an Axum server stage, combined into one
+          # runtime image. Build context is the repo root so the Dockerfile can
+          # COPY the workspace. Its build graph differs from the root image, so it
+          # uses a separate cache scope.
+          webui_tags=( --tag "ghcr.io/${owner}/web-ui:sha-${sha}" )
+          for t in "${extra_tags[@]}"; do
+            webui_tags+=( --tag "ghcr.io/${owner}/web-ui:${t}" )
+          done
+
+          echo "::group::build web-ui (${webui_tags[*]})"
+          docker buildx build \
+            --file services/web-ui/Dockerfile \
+            --target runtime \
+            "${webui_tags[@]}" \
+            --cache-from "type=gha,scope=ostrich-web-ui" \
+            --cache-to "type=gha,scope=ostrich-web-ui,mode=max" \
+            --push \
+            .
+          echo "::endgroup::"
+
+          echo "Published images for: ca-service acme-service est-service ocsp-service scms-service kra-service cli web-ui"

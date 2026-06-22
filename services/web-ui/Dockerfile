@@ -27,10 +27,19 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 WORKDIR /app
 
-# Copy workspace files
+# Copy the full workspace. Even though the wasm32 client only compiles its own
+# (yew/wasm-bindgen) dependency set, Cargo must be able to LOAD every workspace
+# member's manifest to resolve the workspace at all, so all member directories
+# must be present. config/ + proto/ mirror the server build context.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
-COPY services/web-ui/ ./services/web-ui/
+COPY services/ ./services/
+COPY tools/ ./tools/
+COPY benches/ ./benches/
+COPY tests/ ./tests/
+COPY migrations/ ./migrations/
+COPY config/ ./config/
+COPY proto/ ./proto/
 
 # Build the WASM client
 WORKDIR /app/services/web-ui
@@ -57,7 +66,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy workspace files
+# Copy workspace files. config/ holds JSON schemas embedded via include_str!
+# (ostrich-common) and proto/ holds gRPC definitions compiled by build.rs; both
+# are required to compile the server binary's dependency graph.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 COPY services/ ./services/
@@ -65,6 +76,8 @@ COPY tools/ ./tools/
 COPY benches/ ./benches/
 COPY tests/ ./tests/
 COPY migrations/ ./migrations/
+COPY config/ ./config/
+COPY proto/ ./proto/
 
 # Build only the web-ui server binary
 RUN cargo build --release -p ostrich-web-ui
