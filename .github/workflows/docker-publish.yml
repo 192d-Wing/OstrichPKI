@@ -7,6 +7,9 @@ name: Publish container images
 # Tags: the short commit SHA always; plus :latest and :<workspace-version> on
 # the default branch, and :<tag> for a pushed git tag.
 #
+# Built on a native linux/arm64 runner (the target k3s cluster is arm64). Public
+# repos get free `ubuntu-24.04-arm` runners, so this avoids slow QEMU emulation.
+#
 # COMPLIANCE MAPPING:
 # - NIST 800-53: SA-10 (Developer Configuration Management) - reproducible image build
 # - NIST 800-53: SI-7 (Software/Firmware Integrity) - images built from source in CI
@@ -29,7 +32,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
