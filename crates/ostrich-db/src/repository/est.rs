@@ -360,7 +360,7 @@ impl EstRepository {
             r#"
             UPDATE est_enrollment_tokens
             SET used_at = now()
-            WHERE id = $1 AND used_at IS NULL
+            WHERE id = $1 AND used_at IS NULL AND expires_at > now()
             "#,
         )
         .bind(id)
