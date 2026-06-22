@@ -152,7 +152,7 @@ Phase 1a RBAC route-wiring change:
 | AC-3      | NIST 800-53 | `crates/ostrich-common/src/auth/rbac.rs`, `crates/ostrich-common/src/auth/middleware.rs`, per-route wiring in `ostrich-ca/src/rest.rs`, `ostrich-scms/src/rest.rs`, `ostrich-est/src/rest.rs` |
 | AC-5      | NIST 800-53 | `roles.rs::validate_role_set`, `permissions.rs::permissions_for_role`, `rbac.rs::verify_can_approve` |
 | FMT_MOF.1 | NIAP PP-CA  | `AuthzLayer` per-route enforcement; permission decorators on management routes |
-| FMT_MTD.1 | NIAP PP-CA  | Permission-gated access to tokens, profiles, keys, audit events; certificate-inventory read (`GET /api/v1/certificates`, `/{id}`) gated by `Permission::ViewCertificate`, `page_size` clamped 1..=1000 as a secure default, reads logged with actor + resource (AU-2/AU-3) |
+| FMT_MTD.1 | NIAP PP-CA  | Permission-gated access to tokens, profiles, keys, audit events; certificate-inventory read (`GET /api/v1/certificates`, `/{id}`) gated by `Permission::ViewCertificate`, `page_size` clamped 1..=1000 as a secure default, reads logged with actor + resource (AU-2/AU-3); EST enrollment-token minting (`POST /api/v1/est/enrollment-tokens`) gated by `Permission::GenerateEstToken` — single-use + TTL-clamped (60s..=7d), only the SHA-256 is stored, raw entropy zeroized, mint + consume both emit audit events, and the token bearer is a least-privilege `EstEnrollee` (SubmitRequest only) with a token-pinned identity (`crates/ostrich-est/src/enrollment_token.rs`) |
 | FDP_IFC.1 | NIAP PP-CA  | Explicit public-endpoint allowlist with RFC justifications in OCSP and ACME routers |
 
 Test evidence:

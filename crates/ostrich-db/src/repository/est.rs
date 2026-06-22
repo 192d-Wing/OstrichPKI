@@ -292,22 +292,24 @@ impl EstRepository {
         Ok(row)
     }
 
-    /// Atomically mark a token consumed (single-use). Returns `true` only if this
-    /// call transitioned an unused token to used, so concurrent enrollments race
-    /// safely — at most one wins. NIST 800-53: AU-3 (accurate outcome).
+    /// Atomically mark a token consumed (single-use), keyed by its row id (the
+    /// id is carried on the authenticated principal, so no token re-hashing is
+    /// needed). Returns `true` only if this call transitioned an unused token to
+    /// used, so concurrent enrollments race safely — at most one wins.
+    /// NIST 800-53: AU-3 (accurate outcome).
     pub async fn consume_enrollment_token(
         &self,
-        token_hash: &[u8],
+        id: Uuid,
         used_by_cert: Option<Uuid>,
     ) -> Result<bool> {
         let result = sqlx::query(
             r#"
             UPDATE est_enrollment_tokens
             SET used_at = now(), used_by_cert = $2
-            WHERE token_hash = $1 AND used_at IS NULL
+            WHERE id = $1 AND used_at IS NULL
             "#,
         )
-        .bind(token_hash)
+        .bind(id)
         .bind(used_by_cert)
         .execute(self.pool.pool())
         .await?;

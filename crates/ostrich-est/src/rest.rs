@@ -581,7 +581,6 @@ pub(crate) fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
 async fn simple_enroll(
     State(state): State<EstState>,
     AuthUser(user): AuthUser,
-    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response> {
     // Use authenticated user identity as client identifier
@@ -632,7 +631,7 @@ async fn simple_enroll(
         .and_then(|dn| dn.common_name);
     if !identity_authorized(
         &state,
-        client_identifier,
+        &user,
         csr_cn.as_deref(),
         &parsed_csr.subject_alternative_names,
     )
@@ -711,30 +710,9 @@ async fn simple_enroll(
         }
     };
 
-    // Single-use enrollment tokens: if this request was authorized by an EST
-    // enrollment token, consume it now that a certificate has been issued, so it
-    // cannot be reused. A no-op for normal session/mTLS authentication (the
-    // presented credential is not in the enrollment-token store).
-    if let Some(bearer) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "))
-    {
-        let token_repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
-        match token_repo
-            .consume_enrollment_token(
-                &crate::enrollment_token::hash_token(bearer),
-                Some(certificate_id),
-            )
-            .await
-        {
-            Ok(true) => {
-                tracing::info!(actor = %client_identifier, "EST enrollment token consumed (single-use)")
-            }
-            Ok(false) => {} // session/mTLS auth — nothing to consume
-            Err(e) => tracing::warn!(error = %e, "failed to consume EST enrollment token"),
-        }
-    }
+    // Single-use: consume the enrollment token (if this was token-authenticated)
+    // now that a certificate has been issued.
+    consume_enrollment_token_if_present(&state, &user, certificate_id).await;
 
     // Load the issued certificate and wrap it in a certs-only PKCS#7.
     // RFC 7030 §4.2.3 - Response is a degenerate PKCS#7 with the issued cert.
@@ -904,10 +882,28 @@ fn validate_identity(raw: &str) -> Result<String> {
 /// - NIAP PP-CA: FDP_ACC.1 / FDP_ACF.1 - access control on issuance identity
 async fn identity_authorized(
     state: &EstState,
-    username: &str,
+    user: &ostrich_common::auth::AuthenticatedUser,
     cn: Option<&str>,
     sans: &[String],
 ) -> Result<bool> {
+    let username = &user.username;
+
+    // EST enrollment-token principals (Role::EstEnrollee): the identity was
+    // pinned and operator-authorized at mint time, so the CSR need only name
+    // that identity. Match in canonical form (case-insensitive) and independent
+    // of the deployment's identity policy — the token *is* the authorization and
+    // its identity is fixed, so an allow-list lookup keyed by the device name
+    // (which has no rows) must not deny it.
+    if user.has_role(ostrich_common::auth::Role::EstEnrollee) {
+        let want = normalize_identity(username);
+        let matches = cn.map(normalize_identity).is_some_and(|c| c == want)
+            || sans.iter().any(|san| {
+                let value = san.split_once(':').map(|(_, v)| v).unwrap_or(san.as_str());
+                normalize_identity(value) == want
+            });
+        return Ok(matches);
+    }
+
     match state.identity_policy {
         EstIdentityPolicy::MatchUsername => Ok(csr_identity_matches_principal(username, cn, sans)),
         EstIdentityPolicy::AccountAllowList => {
@@ -929,6 +925,63 @@ async fn identity_authorized(
                 .all(|id| allowed.contains(&normalize_identity(id))))
         }
     }
+}
+
+/// Single-use enforcement: if `user` authenticated via an EST enrollment token
+/// (`Role::EstEnrollee`), atomically consume that token — keyed by the token id
+/// carried on the principal (`user.id`), so no header re-parsing is needed — so
+/// it cannot be reused, and audit the consumption. A no-op for session/mTLS
+/// enrollments. Applies to every issuance path the token can reach (simpleenroll
+/// AND serverkeygen), keeping the single-use guarantee on both.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: IA-5 (authenticator lifecycle), AU-2/AU-3 (auditable state change)
+/// - NIAP PP-CA: FMT_MTD.1 (enrollment-credential management)
+async fn consume_enrollment_token_if_present(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+    certificate_id: uuid::Uuid,
+) {
+    if !user.has_role(ostrich_common::auth::Role::EstEnrollee) {
+        return; // session/mTLS auth — no enrollment token to consume
+    }
+    let token_id = *user.id.as_uuid();
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let outcome = match repo
+        .consume_enrollment_token(token_id, Some(certificate_id))
+        .await
+    {
+        Ok(true) => {
+            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token consumed (single-use)");
+            ostrich_audit::EventOutcome::Success
+        }
+        Ok(false) => {
+            // Already consumed or missing at consume time (e.g. a concurrent
+            // enrollment won the race). The certificate was still issued.
+            tracing::warn!(actor = %user.username, token_id = %token_id, "EST enrollment token already consumed at consume time");
+            ostrich_audit::EventOutcome::Failure
+        }
+        Err(e) => {
+            tracing::error!(error = %e, token_id = %token_id, "failed to consume EST enrollment token");
+            ostrich_audit::EventOutcome::Failure
+        }
+    };
+    // AU-2/AU-3: the token lifecycle (unused -> used) is a security-relevant
+    // state change and must leave an audit record, not just a log line.
+    let mut event = ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::ConfigurationChange,
+        &user.username,
+        "est:enrollment-tokens".to_string(),
+        "consume_est_token",
+        outcome,
+    )
+    .with_details(serde_json::json!({
+        "identity": user.username,
+        "token_id": token_id.to_string(),
+        "certificate_id": certificate_id.to_string(),
+    }))
+    .build();
+    let _ = state.audit_sink.record(&mut event).await;
 }
 
 /// Simple re-enrollment (RFC 7030 S4.2.2)
@@ -1276,7 +1329,7 @@ async fn server_key_gen(
     // (CN or a SAN must equal `client_identifier`). Fail secure: deny + audit.
     if !identity_authorized(
         &state,
-        client_identifier,
+        &user,
         subject.common_name.as_deref(),
         &parsed.subject_alternative_names,
     )
@@ -1384,6 +1437,11 @@ async fn server_key_gen(
             return Err(e);
         }
     };
+
+    // Single-use: serverkeygen is reachable by an enrollment token (it also
+    // requires SubmitRequest), so it must consume the token too — otherwise the
+    // token would be reusable here, defeating single-use.
+    consume_enrollment_token_if_present(&state, &user, certificate_id).await;
 
     // Fetch the issued certificate and encode it as a certs-only PKCS#7.
     let cert = ostrich_db::repository::CertificateRepository::new(state.db_pool.clone())
@@ -1528,9 +1586,10 @@ async fn create_enrollment_token(
         .clamp(MIN_TTL, MAX_TTL);
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl);
 
-    // 256-bit URL-safe token; only its SHA-256 is stored.
-    let token_bytes: [u8; 32] = rand::random();
-    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes);
+    // 256-bit URL-safe token; only its SHA-256 is stored. Zeroize the raw
+    // entropy after encoding (NIST 800-53 SI-12: protect secrets in memory).
+    let token_bytes = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&token_bytes[..]);
     let token_hash = crate::enrollment_token::hash_token(&token);
     let token_id = uuid::Uuid::new_v4();
 

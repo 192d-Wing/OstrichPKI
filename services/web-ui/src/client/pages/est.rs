@@ -187,15 +187,14 @@ struct MintTokenRequest {
     ttl_seconds: i64,
 }
 
-/// One-time response carrying the plaintext token.
+/// One-time response carrying the plaintext token. (The EST API also returns
+/// `expiresInSeconds`; serde ignores fields we don't bind.)
 #[derive(Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct MintTokenResponse {
     token: String,
     identity: String,
     expires_at: String,
-    #[allow(dead_code)]
-    expires_in_seconds: i64,
 }
 
 /// Operator panel: mint a single-use, time-limited EST enrollment token bound to
