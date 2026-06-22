@@ -99,9 +99,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
     detail — read access to the issued-certificate inventory, distinct from the
     IssueCertificate POST on the same path)
   - `crates/ostrich-est/src/rest.rs` — SubmitRequest, RenewCertificate,
-    GenerateEstToken (POST `/api/v1/est/enrollment-tokens` — mint single-use,
-    time-limited device enrollment tokens; the token bearer authenticates as a
-    least-privilege `EstEnrollee` principal holding only SubmitRequest, AC-6)
+    GenerateEstToken (mint/list/revoke device enrollment tokens — POST/GET
+    `/api/v1/est/enrollment-tokens`, DELETE `…/{id}`; single-use, time-limited;
+    the token bearer authenticates as a least-privilege `EstEnrollee` principal
+    holding only SubmitRequest, AC-6; mint/consume/revoke all audited, AU-2)
   - `crates/ostrich-scms/src/rest.rs` — CreateUser, ModifyUser, DeleteUser,
     ViewUsers, UnlockAccount, ViewConfig, ModifyConfig, ReadAuditLog
     (see the route→permission mapping table in `create_router`)

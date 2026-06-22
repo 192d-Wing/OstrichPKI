@@ -9,6 +9,21 @@ use crate::{
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+/// A row of the EST enrollment-token inventory (operator review). The token
+/// itself is never returned — only its lifecycle metadata. A status is derived
+/// by the caller: live (unused, unexpired), expired, used (consumed by an
+/// enrollment), or revoked (consumed early with no certificate).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct EstEnrollmentTokenRow {
+    pub id: Uuid,
+    pub identity: String,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
+    pub used_by_cert: Option<Uuid>,
+}
+
 /// EST Repository
 ///
 /// Manages EST enrollments and authorized clients
@@ -311,6 +326,44 @@ impl EstRepository {
         )
         .bind(id)
         .bind(used_by_cert)
+        .execute(self.pool.pool())
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// List recently minted enrollment tokens (most recent first), for operator
+    /// review. Never returns the token itself (only its hash is stored); callers
+    /// derive a status from `used_at`/`used_by_cert`/`expires_at`.
+    pub async fn list_enrollment_tokens(&self, limit: i64) -> Result<Vec<EstEnrollmentTokenRow>> {
+        let rows = sqlx::query_as::<_, EstEnrollmentTokenRow>(
+            r#"
+            SELECT id, identity, created_by, created_at, expires_at, used_at, used_by_cert
+            FROM est_enrollment_tokens
+            ORDER BY created_at DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(self.pool.pool())
+        .await?;
+
+        Ok(rows)
+    }
+
+    /// Revoke a live enrollment token before it is used, by marking it consumed
+    /// with no associated certificate (so it derives as "revoked", distinct from
+    /// "used"). Returns `true` only if a live token was actually revoked.
+    /// NIST 800-53: IA-5 (authenticator revocation), AU-3 (accurate outcome).
+    pub async fn revoke_enrollment_token(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query(
+            r#"
+            UPDATE est_enrollment_tokens
+            SET used_at = now()
+            WHERE id = $1 AND used_at IS NULL
+            "#,
+        )
+        .bind(id)
         .execute(self.pool.pool())
         .await?;
 
