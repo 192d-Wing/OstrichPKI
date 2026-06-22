@@ -206,6 +206,242 @@ fn parse_certificate_extensions(cert: &X509Certificate) -> Result<ExtensionsResu
     Ok((basic_constraints, key_usage, subject_alt_names))
 }
 
+/// One parsed extension, for a human-facing detail view.
+#[derive(Debug, Clone)]
+pub struct CertificateExtensionInfo {
+    /// Dotted OID (e.g. `2.5.29.37`).
+    pub oid: String,
+    /// Friendly name, or the OID if unknown.
+    pub name: String,
+    /// RFC 5280 §4.2 criticality flag.
+    pub critical: bool,
+    /// Short human summary of the extension value (may be empty).
+    pub value: String,
+}
+
+/// Rich, display-oriented description of a certificate for a detail view.
+///
+/// Best-effort: fields that cannot be extracted are left empty/None rather than
+/// failing the whole parse, so the caller can render what is available.
+#[derive(Debug, Clone, Default)]
+pub struct CertificateDescription {
+    pub key_algorithm: String,
+    pub key_size: u32,
+    pub signature_algorithm: String,
+    pub fingerprint_sha256: String,
+    pub fingerprint_sha1: String,
+    pub key_usage: Vec<String>,
+    pub extended_key_usage: Vec<String>,
+    pub subject_alt_names: Vec<String>,
+    pub authority_key_id: Option<String>,
+    pub subject_key_id: Option<String>,
+    pub crl_distribution_points: Vec<String>,
+    pub ocsp_urls: Vec<String>,
+    pub extensions: Vec<CertificateExtensionInfo>,
+}
+
+/// Map a public-key or signature algorithm OID to a friendly name (empty if
+/// unknown, so the caller can fall back to the OID).
+fn algorithm_name(oid: &str) -> &'static str {
+    match oid {
+        "1.2.840.113549.1.1.1" => "RSA",
+        "1.2.840.113549.1.1.5" => "SHA1withRSA",
+        "1.2.840.113549.1.1.11" => "SHA256withRSA",
+        "1.2.840.113549.1.1.12" => "SHA384withRSA",
+        "1.2.840.113549.1.1.13" => "SHA512withRSA",
+        "1.2.840.113549.1.1.10" => "RSASSA-PSS",
+        "1.2.840.10045.2.1" => "ECDSA",
+        "1.2.840.10045.4.3.2" => "SHA256withECDSA",
+        "1.2.840.10045.4.3.3" => "SHA384withECDSA",
+        "1.2.840.10045.4.3.4" => "SHA512withECDSA",
+        "1.3.101.112" => "Ed25519",
+        "1.3.101.113" => "Ed448",
+        _ => "",
+    }
+}
+
+/// Friendly name for a standard X.509 extension OID (empty if unknown).
+fn extension_name(oid: &str) -> &'static str {
+    match oid {
+        "2.5.29.14" => "Subject Key Identifier",
+        "2.5.29.15" => "Key Usage",
+        "2.5.29.17" => "Subject Alternative Name",
+        "2.5.29.19" => "Basic Constraints",
+        "2.5.29.31" => "CRL Distribution Points",
+        "2.5.29.32" => "Certificate Policies",
+        "2.5.29.35" => "Authority Key Identifier",
+        "2.5.29.37" => "Extended Key Usage",
+        "1.3.6.1.5.5.7.1.1" => "Authority Information Access",
+        _ => "",
+    }
+}
+
+/// Produce a rich, display-oriented description of a DER-encoded certificate:
+/// key algorithm/size, signature algorithm, SHA-1/SHA-256 fingerprints, key
+/// usage, EKU, SANs, AKI/SKI, CRL distribution points, OCSP URLs, and the raw
+/// extension inventory.
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 5280 §4.1/§4.2: certificate fields and standard extensions
+pub fn describe_certificate(der: &[u8]) -> Result<CertificateDescription> {
+    use sha1::Sha1;
+    use sha2::{Digest, Sha256};
+    use x509_parser::public_key::PublicKey;
+
+    let (_, cert) = X509Certificate::from_der(der)
+        .map_err(|e| Error::Parse(format!("Failed to parse X.509 certificate: {}", e)))?;
+
+    let mut d = CertificateDescription {
+        fingerprint_sha256: hex::encode(Sha256::digest(der)),
+        fingerprint_sha1: hex::encode(Sha1::digest(der)),
+        ..Default::default()
+    };
+
+    // Signature algorithm (friendly name, falling back to the OID).
+    let sig_oid = cert.signature_algorithm.algorithm.to_id_string();
+    let sig_name = algorithm_name(&sig_oid);
+    d.signature_algorithm = if sig_name.is_empty() {
+        sig_oid
+    } else {
+        sig_name.to_string()
+    };
+
+    // Public key algorithm + size.
+    let spki = cert.public_key();
+    let key_oid = spki.algorithm.algorithm.to_id_string();
+    match spki.parsed() {
+        Ok(PublicKey::RSA(rsa)) => {
+            d.key_algorithm = "RSA".to_string();
+            // Modulus bit length (strip a leading sign byte if present).
+            let m = rsa.modulus;
+            let m = m.strip_prefix(&[0u8]).unwrap_or(m);
+            d.key_size = (m.len() * 8) as u32;
+        }
+        Ok(PublicKey::EC(ec)) => {
+            d.key_algorithm = "ECDSA".to_string();
+            // Uncompressed point = 0x04 || X || Y; field size = (len-1)/2 bytes.
+            let pt = ec.data();
+            d.key_size = (pt.len().saturating_sub(1) / 2 * 8) as u32;
+        }
+        _ => {
+            let name = algorithm_name(&key_oid);
+            d.key_algorithm = if name.is_empty() {
+                key_oid.clone()
+            } else {
+                name.to_string()
+            };
+            d.key_size = match key_oid.as_str() {
+                "1.3.101.112" => 256, // Ed25519
+                "1.3.101.113" => 448, // Ed448
+                _ => 0,
+            };
+        }
+    }
+
+    // Reuse the existing extension parser for key usage + SANs.
+    if let Ok((_, ku, sans)) = parse_certificate_extensions(&cert) {
+        d.key_usage = ku.unwrap_or_default();
+        d.subject_alt_names = sans;
+    }
+
+    // Walk extensions for the richer fields and the raw inventory.
+    for ext in cert.extensions() {
+        let oid = ext.oid.to_id_string();
+        let value = match ext.parsed_extension() {
+            ParsedExtension::ExtendedKeyUsage(eku) => {
+                let mut v = Vec::new();
+                if eku.any {
+                    v.push("Any".to_string());
+                }
+                if eku.server_auth {
+                    v.push("TLS Web Server Authentication".to_string());
+                }
+                if eku.client_auth {
+                    v.push("TLS Web Client Authentication".to_string());
+                }
+                if eku.code_signing {
+                    v.push("Code Signing".to_string());
+                }
+                if eku.email_protection {
+                    v.push("Email Protection".to_string());
+                }
+                if eku.time_stamping {
+                    v.push("Time Stamping".to_string());
+                }
+                if eku.ocsp_signing {
+                    v.push("OCSP Signing".to_string());
+                }
+                for o in &eku.other {
+                    v.push(o.to_id_string());
+                }
+                d.extended_key_usage = v.clone();
+                v.join(", ")
+            }
+            ParsedExtension::SubjectKeyIdentifier(ki) => {
+                let h = hex::encode(ki.0);
+                d.subject_key_id = Some(h.clone());
+                h
+            }
+            ParsedExtension::AuthorityKeyIdentifier(aki) => match &aki.key_identifier {
+                Some(ki) => {
+                    let h = hex::encode(ki.0);
+                    d.authority_key_id = Some(h.clone());
+                    h
+                }
+                None => String::new(),
+            },
+            ParsedExtension::KeyUsage(_) => d.key_usage.join(", "),
+            ParsedExtension::BasicConstraints(bc) => {
+                if bc.ca {
+                    match bc.path_len_constraint {
+                        Some(n) => format!("CA:TRUE, pathlen:{n}"),
+                        None => "CA:TRUE".to_string(),
+                    }
+                } else {
+                    "CA:FALSE".to_string()
+                }
+            }
+            ParsedExtension::SubjectAlternativeName(_) => d.subject_alt_names.join(", "),
+            ParsedExtension::CRLDistributionPoints(crl) => {
+                for p in crl.iter() {
+                    if let Some(DistributionPointName::FullName(names)) = &p.distribution_point {
+                        for gn in names {
+                            if let GeneralName::URI(u) = gn {
+                                d.crl_distribution_points.push(u.to_string());
+                            }
+                        }
+                    }
+                }
+                d.crl_distribution_points.join(", ")
+            }
+            ParsedExtension::AuthorityInfoAccess(aia) => {
+                for ad in &aia.accessdescs {
+                    if ad.access_method.to_id_string() == "1.3.6.1.5.5.7.48.1" {
+                        if let GeneralName::URI(u) = &ad.access_location {
+                            d.ocsp_urls.push(u.to_string());
+                        }
+                    }
+                }
+                d.ocsp_urls.join(", ")
+            }
+            _ => String::new(),
+        };
+        let name = extension_name(&oid);
+        d.extensions.push(CertificateExtensionInfo {
+            name: if name.is_empty() {
+                oid.clone()
+            } else {
+                name.to_string()
+            },
+            oid,
+            critical: ext.critical,
+            value,
+        });
+    }
+
+    Ok(d)
+}
+
 /// Parse a PEM-encoded X.509 certificate
 ///
 /// RFC 5280 - PEM encoding
