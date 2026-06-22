@@ -53,6 +53,7 @@
 
 pub mod ca_integration;
 pub mod enrollment;
+pub mod enrollment_token;
 pub mod error;
 pub mod mtls;
 pub mod rest;

@@ -3508,6 +3508,7 @@ dependencies = [
  "ostrich-db",
  "ostrich-protocol",
  "ostrich-x509",
+ "rand 0.10.1",
  "rustls",
  "rustls-pki-types",
  "serde",

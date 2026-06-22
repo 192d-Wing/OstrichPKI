@@ -65,6 +65,13 @@ pub enum Permission {
     /// View pending requests
     ViewRequests,
 
+    // ===== EST Enrollment =====
+    /// Generate time-limited bearer tokens for EST initial enrollment.
+    /// Distinct from SubmitRequest: lets an operator MINT an enrollment
+    /// credential without themselves being able to enroll a certificate.
+    /// NIAP PP-CA: FMT_SMF.1 - management of enrollment credentials
+    GenerateEstToken,
+
     // ===== Audit Operations =====
     /// Read audit logs
     /// NIAP PP-CA: FAU_SAR.1 - Audit review
@@ -161,6 +168,7 @@ impl Permission {
             Permission::ApproveRequest => "approve_request",
             Permission::RejectRequest => "reject_request",
             Permission::ViewRequests => "view_requests",
+            Permission::GenerateEstToken => "generate_est_token",
             Permission::ReadAuditLog => "read_audit_log",
             Permission::ExportAuditLog => "export_audit_log",
             Permission::SearchAuditLog => "search_audit_log",
@@ -199,6 +207,7 @@ impl Permission {
             Permission::ApproveRequest => "Approve certificate requests",
             Permission::RejectRequest => "Reject certificate requests",
             Permission::ViewRequests => "View pending requests",
+            Permission::GenerateEstToken => "Generate EST enrollment tokens",
             Permission::ReadAuditLog => "Read audit logs",
             Permission::ExportAuditLog => "Export audit logs",
             Permission::SearchAuditLog => "Search audit logs",
@@ -260,6 +269,8 @@ pub fn permissions_for_role(role: Role) -> &'static [Permission] {
             // Service operations
             Permission::ViewServiceHealth,
             Permission::RestartService,
+            // EST enrollment-token management
+            Permission::GenerateEstToken,
             // View operations (read-only)
             Permission::ViewCertificate,
             Permission::ViewCrl,
@@ -298,6 +309,8 @@ pub fn permissions_for_role(role: Role) -> &'static [Permission] {
             Permission::ViewOcspStatus,
             // Request viewing (not approval)
             Permission::ViewRequests,
+            // EST: mint time-limited enrollment tokens for device bootstrap
+            Permission::GenerateEstToken,
             // Service health
             Permission::ViewServiceHealth,
         ],
@@ -325,6 +338,12 @@ pub fn permissions_for_role(role: Role) -> &'static [Permission] {
             // Read-only views
             Permission::ViewCertificate,
         ],
+
+        // Machine-only EST enrollment principal: exactly one capability, so a
+        // leaked/abused enrollment token can do nothing but complete an
+        // enrollment whose identity is already pinned by the token (H1).
+        // NIST 800-53: AC-6 (least privilege).
+        Role::EstEnrollee => &[Permission::SubmitRequest],
     }
 }
 

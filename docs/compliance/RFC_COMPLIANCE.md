@@ -841,6 +841,16 @@ path (§4.2.1). Authorization bug fixed: chained `Router::route_layer` calls
 stacked /simplereenroll's RenewCertificate check onto /simpleenroll, 403-ing
 RaStaff enrollers; permission layers are now per-route (AC-3).
 
+**Bearer-token bootstrap (§3.2.3, non-mTLS client auth):** operators may mint
+single-use, time-limited enrollment tokens (`POST /api/v1/est/enrollment-tokens`,
+`Permission::GenerateEstToken`). A device presents the token as
+`Authorization: Bearer …` to `/simpleenroll` (or `/serverkeygen`); it resolves
+to a least-privilege `EstEnrollee` principal whose identity is pinned by the
+token, the §3.x identity binding (H1) forces the CSR CN/SAN to equal that
+identity, and the token is consumed on first successful issuance (single-use).
+Only the token's SHA-256 is stored. See `crates/ostrich-est/src/enrollment_token.rs`
+and `migrations/00013_est_enrollment_tokens.sql`.
+
 Re-enrollment subject binding (RFC 7030 §4.2.2): `simplereenroll` now requires
 the CSR subject to structurally match a certificate previously issued to the
 same client (resolved from this client's prior issued enrollments, since the

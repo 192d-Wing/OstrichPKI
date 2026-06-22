@@ -85,6 +85,16 @@ pub enum Role {
     ///
     /// NIAP PP-CA: FDP_CER_EXT.3 - Certificate request approval
     Aor,
+
+    /// EST Enrollee (machine identity, not human-assignable)
+    ///
+    /// Synthetic role carried by a principal authenticated via a single-use EST
+    /// enrollment token. Grants only `SubmitRequest` so the bearer can complete
+    /// one initial enrollment and nothing else. Never stored on a user account
+    /// and intentionally excluded from [`Role::all`] (not selectable in role UIs).
+    ///
+    /// NIAP PP-CA: FDP_CER_EXT.1 - certificate enrollment; AC-6 - least privilege
+    EstEnrollee,
 }
 
 impl Role {
@@ -108,6 +118,8 @@ impl Role {
             Role::Administrator => &[],
             Role::RaStaff => &[],
             Role::Aor => &[],
+            // Machine-only enrollment principal; never combined with human roles.
+            Role::EstEnrollee => &[],
         }
     }
 
@@ -126,6 +138,7 @@ impl Role {
             Role::OperationsStaff => "Certificate issuance, revocation, and CRL generation",
             Role::RaStaff => "Certificate request approval (Registration Authority)",
             Role::Aor => "Certificate request approval (Authorized Organization Representative)",
+            Role::EstEnrollee => "EST enrollment token principal (single-use, machine identity)",
         }
     }
 
@@ -137,6 +150,7 @@ impl Role {
             Role::OperationsStaff => "operations_staff",
             Role::RaStaff => "ra_staff",
             Role::Aor => "aor",
+            Role::EstEnrollee => "est_enrollee",
         }
     }
 
@@ -148,6 +162,7 @@ impl Role {
             "operations_staff" | "operations" | "operator" => Some(Role::OperationsStaff),
             "ra_staff" | "ra" | "registration_authority" => Some(Role::RaStaff),
             "aor" | "authorized_org_rep" => Some(Role::Aor),
+            "est_enrollee" => Some(Role::EstEnrollee),
             _ => None,
         }
     }
@@ -180,6 +195,7 @@ impl std::str::FromStr for Role {
             "operations_staff" | "OperationsStaff" => Ok(Role::OperationsStaff),
             "ra_staff" | "RaStaff" => Ok(Role::RaStaff),
             "aor" | "Aor" | "AOR" => Ok(Role::Aor),
+            "est_enrollee" | "EstEnrollee" => Ok(Role::EstEnrollee),
             _ => Err(format!("Unknown role: {}", s)),
         }
     }

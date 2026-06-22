@@ -1408,6 +1408,7 @@ let username = extract_cn_from_subject(&cert.subject)?;
 
 - Certificate issuance data - Requires `Permission::IssueCertificate`
 - Certificate inventory read (`GET /api/v1/certificates`, `GET /api/v1/certificates/{id}`) - Requires `Permission::ViewCertificate` (Administrator, Auditor, OperationsStaff); see [crates/ostrich-ca/src/rest.rs](../../crates/ostrich-ca/src/rest.rs) `list_certificates` / `get_certificate`
+- EST enrollment tokens (`POST /api/v1/est/enrollment-tokens`) - Requires `Permission::GenerateEstToken` (Administrator, OperationsStaff). Mints single-use, time-limited bearer tokens for device bootstrap enrollment; only the token's SHA-256 is stored, and the bearer authenticates as a least-privilege `EstEnrollee` (SubmitRequest only) whose certificate identity is pinned by the token (H1). See [crates/ostrich-est/src/rest.rs](../../crates/ostrich-est/src/rest.rs) `create_enrollment_token` and [crates/ostrich-est/src/enrollment_token.rs](../../crates/ostrich-est/src/enrollment_token.rs)
 - Certificate revocation data - Requires `Permission::RevokeCertificate`
 - CRL generation data - Requires `Permission::GenerateCrl`
 - Trust anchor database - Requires `Permission::ManageTrustAnchors` (Administrator role)
