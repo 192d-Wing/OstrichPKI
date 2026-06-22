@@ -20,10 +20,14 @@ FROM rust:1.96-bookworm AS wasm-builder
 RUN rustup target add wasm32-unknown-unknown \
     && cargo install trunk wasm-bindgen-cli
 
-# Install Node.js for Tailwind CSS
+# Install Node.js for Tailwind CSS. Pin Tailwind to v3 to match the project's
+# package.json (^3.4.19): the styles use v3 syntax (@tailwind directives, JS
+# tailwind.config.js, @apply). Tailwind v4 moved the CLI to @tailwindcss/cli, so
+# an unpinned `npm install -g tailwindcss` installs v4 and `npx tailwindcss`
+# fails with "could not determine executable to run".
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
-    && npm install -g tailwindcss
+    && npm install -g tailwindcss@^3.4.19
 
 WORKDIR /app
 
