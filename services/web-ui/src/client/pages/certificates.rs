@@ -18,7 +18,7 @@ use crate::components::common::{
 };
 use crate::services::api::{ApiError, api};
 use crate::types::api::{
-    CertificateDetails, CertificateFilter, CertificateListResponse, CertificateStatus,
+    CertificateDetails, CertificateListResponse, CertificateStatus,
     CertificateSummary, RevocationReason, RevocationRequest,
 };
 
@@ -407,31 +407,23 @@ pub fn certificates() -> Html {
 
 /// Fetch certificates from API
 async fn fetch_certificates(state: &CertListState) -> Result<CertificateListResponse, ApiError> {
-    let filter = CertificateFilter {
-        search: if state.search.is_empty() {
-            None
-        } else {
-            Some(state.search.clone())
-        },
-        status: if state.status_filter == "all" {
-            None
-        } else {
-            Some(state.status_filter.clone())
-        },
-        page: state.page,
-        page_size: state.page_size,
-    };
+    // Percent-encode every parameter: a subject search can contain spaces, '&',
+    // '=', ',' etc., which would otherwise corrupt the query string.
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("page", &state.page.to_string());
+    query.append_pair("pageSize", &state.page_size.to_string());
+    if state.status_filter != "all" && !state.status_filter.is_empty() {
+        query.append_pair("status", &state.status_filter);
+    }
+    if !state.search.is_empty() {
+        query.append_pair("search", &state.search);
+    }
+    let query = query.finish();
 
     // Proxied to the CA's GET /api/v1/certificates (real issued inventory).
     // Errors propagate so the UI shows an honest failure rather than mock data.
     api()
-        .get::<CertificateListResponse>(&format!(
-            "/ca/api/v1/certificates?page={}&pageSize={}&status={}&search={}",
-            filter.page,
-            filter.page_size,
-            filter.status.as_deref().unwrap_or(""),
-            filter.search.as_deref().unwrap_or("")
-        ))
+        .get::<CertificateListResponse>(&format!("/ca/api/v1/certificates?{query}"))
         .await
 }
 
@@ -748,9 +740,11 @@ fn certificate_detail_content(props: &CertificateDetailContentProps) -> Html {
                         <h2 class="text-lg font-semibold text-gray-900">{ "Key Information" }</h2>
                     </div>
                     <div class="card-body space-y-3">
-                        <DetailRow label="Algorithm" value={cert.key_algorithm.clone()} mono={false} />
-                        <DetailRow label="Key Size" value={format!("{} bits", cert.key_size)} mono={false} />
-                        <DetailRow label="Signature Algorithm" value={cert.signature_algorithm.clone()} mono={false} />
+                        // Show a dash for fields the backend cannot yet populate,
+                        // rather than a misleading empty value or "0 bits".
+                        <DetailRow label="Algorithm" value={display_or_dash(&cert.key_algorithm)} mono={false} />
+                        <DetailRow label="Key Size" value={if cert.key_size > 0 { format!("{} bits", cert.key_size) } else { "\u{2014}".to_string() }} mono={false} />
+                        <DetailRow label="Signature Algorithm" value={display_or_dash(&cert.signature_algorithm)} mono={false} />
                         if let Some(ref ski) = cert.subject_key_id {
                             <DetailRow label="Subject Key ID" value={ski.clone()} mono={true} />
                         }
@@ -792,8 +786,8 @@ fn certificate_detail_content(props: &CertificateDetailContentProps) -> Html {
                         <h2 class="text-lg font-semibold text-gray-900">{ "Fingerprints" }</h2>
                     </div>
                     <div class="card-body space-y-3">
-                        <DetailRow label="SHA-256" value={cert.fingerprint_sha256.clone()} mono={true} />
-                        <DetailRow label="SHA-1" value={cert.fingerprint_sha1.clone()} mono={true} />
+                        <DetailRow label="SHA-256" value={display_or_dash(&cert.fingerprint_sha256)} mono={true} />
+                        <DetailRow label="SHA-1" value={display_or_dash(&cert.fingerprint_sha1)} mono={true} />
                     </div>
                 </div>
 
@@ -916,6 +910,16 @@ fn certificate_detail_content(props: &CertificateDetailContentProps) -> Html {
                 }
             </div>
         </>
+    }
+}
+
+/// Render a value, or an em-dash when the backend left it empty (a field it
+/// cannot yet populate), so blanks are never shown as authoritative data.
+fn display_or_dash(value: &str) -> String {
+    if value.is_empty() {
+        "\u{2014}".to_string()
+    } else {
+        value.to_string()
     }
 }
 

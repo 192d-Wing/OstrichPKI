@@ -473,47 +473,93 @@ struct CertificateDetailsDto {
 /// - NIAP PP-CA: FMT_MTD.1 - Authorized read access to TSF data
 async fn list_certificates(
     State(state): State<Arc<ApiState>>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Query(query): Query<ListCertificatesQuery>,
 ) -> Result<Json<CertificateListResponseDto>> {
+    // Upper bound on rows scanned when a filter is active (each row carries the
+    // full DER/PEM). Inventories beyond this are logged, never silently
+    // truncated; a filtered SQL query is the proper fix at larger scale.
+    const MAX_FILTER_SCAN: i64 = 5_000;
+
     let repo = CertificateRepository::new(state.db_pool.clone());
-
     let page = query.page.unwrap_or(1).max(1);
-    let page_size = query.page_size.unwrap_or(50).clamp(1, 500);
-    let offset = i64::from(page - 1) * i64::from(page_size);
-
-    let total = repo.count().await? as u64;
-    let certs = repo
-        .list(Some(i64::from(page_size)), Some(offset))
-        .await?;
-
+    let page_size = query.page_size.unwrap_or(50).clamp(1, 1000);
+    let offset = (page as usize - 1) * page_size as usize;
     let now = chrono::Utc::now();
-    let status_filter = query.status.as_deref().filter(|s| !s.is_empty());
-    let search = query.search.as_deref().filter(|s| !s.is_empty());
 
-    let certificates = certs
-        .into_iter()
-        .map(|c| CertificateSummaryDto {
+    let status_filter = query.status.as_deref().filter(|s| !s.is_empty());
+    let search = query
+        .search
+        .as_deref()
+        .map(str::to_lowercase)
+        .filter(|s| !s.is_empty());
+
+    // Map a stored row to its summary DTO (status derived before fields move).
+    let to_summary = |c: Certificate| {
+        let status = cert_status_str(&c, now).to_string();
+        CertificateSummaryDto {
             id: c.id.to_string(),
             serial_number: hex::encode(&c.serial_number),
-            subject: c.subject_dn.clone(),
-            issuer: c.issuer_dn.clone(),
+            subject: c.subject_dn,
+            issuer: c.issuer_dn,
             valid_from: c.not_before.to_rfc3339(),
             valid_to: c.not_after.to_rfc3339(),
-            status: cert_status_str(&c, now).to_string(),
+            status,
             key_algorithm: None,
-        })
-        // Best-effort filtering of the returned page. (Note: `total` reflects the
-        // unfiltered inventory; filtering here narrows the visible rows only.)
-        .filter(|s| status_filter.is_none_or(|f| s.status == f))
-        .filter(|s| {
-            search.is_none_or(|q| {
-                let q = q.to_lowercase();
-                s.subject.to_lowercase().contains(&q)
-                    || s.serial_number.to_lowercase().contains(&q)
-            })
-        })
-        .collect();
+        }
+    };
+
+    // `total` must describe the same population as the returned rows. With no
+    // filter, page directly in SQL (cheap). With a filter, scan → filter →
+    // paginate in memory so the count and cross-page filtering stay consistent.
+    let (total, certificates): (u64, Vec<CertificateSummaryDto>) =
+        if status_filter.is_none() && search.is_none() {
+            let total = repo.count().await? as u64;
+            let rows = repo
+                .list(
+                    Some(i64::from(page_size)),
+                    Some(i64::from(page - 1) * i64::from(page_size)),
+                )
+                .await?;
+            (total, rows.into_iter().map(to_summary).collect())
+        } else {
+            if repo.count().await? > MAX_FILTER_SCAN {
+                tracing::warn!(
+                    cap = MAX_FILTER_SCAN,
+                    "certificate filter scans only the most recent {MAX_FILTER_SCAN} certificates"
+                );
+            }
+            let filtered: Vec<CertificateSummaryDto> = repo
+                .list(Some(MAX_FILTER_SCAN), Some(0))
+                .await?
+                .into_iter()
+                .map(to_summary)
+                .filter(|s| status_filter.is_none_or(|f| s.status == f))
+                .filter(|s| {
+                    search.as_deref().is_none_or(|q| {
+                        s.subject.to_lowercase().contains(q) || s.serial_number.contains(q)
+                    })
+                })
+                .collect();
+            let total = filtered.len() as u64;
+            let rows = filtered
+                .into_iter()
+                .skip(offset)
+                .take(page_size as usize)
+                .collect();
+            (total, rows)
+        };
+
+    // NIST 800-53 AU-2/AU-3: record who enumerated the inventory and the outcome.
+    tracing::info!(
+        actor = %user.username,
+        resource = "certificates",
+        page,
+        page_size,
+        returned = certificates.len(),
+        total,
+        "certificate inventory listed"
+    );
 
     Ok(Json(CertificateListResponseDto {
         certificates,
@@ -530,7 +576,7 @@ async fn list_certificates(
 /// - NIAP PP-CA: FMT_SMF.1 - Security management: certificate inspection
 async fn get_certificate(
     State(state): State<Arc<ApiState>>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Response> {
     let cert_id = match uuid::Uuid::parse_str(&id) {
@@ -593,7 +639,8 @@ async fn get_certificate(
         issuer_dn: cert.issuer_dn.clone(),
         valid_from: cert.not_before.to_rfc3339(),
         valid_to: cert.not_after.to_rfc3339(),
-        days_remaining: Some((cert.not_after - now).num_days()),
+        // Clamp at 0 so an expired certificate reads "0", never a negative count.
+        days_remaining: Some((cert.not_after - now).num_days().max(0)),
         // Key algorithm/size and the full extension set are not yet extracted by
         // ostrich-x509's parser; expose what we can and leave the rest empty.
         key_algorithm: String::new(),
@@ -613,6 +660,13 @@ async fn get_certificate(
         revocation_reason,
         pem: cert.pem_encoded.clone(),
     };
+
+    // NIST 800-53 AU-2/AU-3: record who inspected which certificate.
+    tracing::info!(
+        actor = %user.username,
+        resource = %cert.id,
+        "certificate detail viewed"
+    );
 
     Ok(Json(details).into_response())
 }

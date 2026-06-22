@@ -103,8 +103,11 @@ async fn fetch_dashboard_data() -> Result<DashboardData, ApiError> {
     // the CA-computed status, so they reflect actual issued certificates rather
     // than placeholder values. Trend/expiry/approval metrics are left at zero
     // until backing endpoints exist (better empty than fabricated).
+    // pageSize is the CA's max page (clamped server-side); counts are accurate up
+    // to that many certs. A dedicated aggregate-count endpoint is the proper fix
+    // for larger inventories.
     let response = api()
-        .get::<CertificateListResponse>("/ca/api/v1/certificates?page=1&pageSize=500")
+        .get::<CertificateListResponse>("/ca/api/v1/certificates?page=1&pageSize=1000")
         .await?;
 
     let count_status = |status: CertificateStatus| {

@@ -1407,6 +1407,7 @@ let username = extract_cn_from_subject(&cert.subject)?;
 **✅ TSF Data Access Control:**
 
 - Certificate issuance data - Requires `Permission::IssueCertificate`
+- Certificate inventory read (`GET /api/v1/certificates`, `GET /api/v1/certificates/{id}`) - Requires `Permission::ViewCertificate` (Administrator, Auditor, OperationsStaff); see [crates/ostrich-ca/src/rest.rs](../../crates/ostrich-ca/src/rest.rs) `list_certificates` / `get_certificate`
 - Certificate revocation data - Requires `Permission::RevokeCertificate`
 - CRL generation data - Requires `Permission::GenerateCrl`
 - Trust anchor database - Requires `Permission::ManageTrustAnchors` (Administrator role)
