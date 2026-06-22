@@ -18,8 +18,8 @@ use crate::components::common::{
 };
 use crate::services::api::{ApiError, api};
 use crate::types::api::{
-    CertificateDetails, CertificateFilter, CertificateListResponse, CertificateStatus,
-    CertificateSummary, RevocationReason, RevocationRequest,
+    CertificateDetails, CertificateListResponse, CertificateStatus, CertificateSummary,
+    RevocationReason, RevocationRequest,
 };
 
 /// Loading state for async data
@@ -161,7 +161,7 @@ pub fn certificates() -> Html {
                     };
                     if (api()
                         .post::<serde_json::Value, _>(
-                            &format!("/ca/certificates/{}/revoke", cert.id),
+                            &format!("/ca/api/v1/certificates/{}/revoke", cert.id),
                             &request,
                         )
                         .await)
@@ -407,162 +407,24 @@ pub fn certificates() -> Html {
 
 /// Fetch certificates from API
 async fn fetch_certificates(state: &CertListState) -> Result<CertificateListResponse, ApiError> {
-    let filter = CertificateFilter {
-        search: if state.search.is_empty() {
-            None
-        } else {
-            Some(state.search.clone())
-        },
-        status: if state.status_filter == "all" {
-            None
-        } else {
-            Some(state.status_filter.clone())
-        },
-        page: state.page,
-        page_size: state.page_size,
-    };
+    // Percent-encode every parameter: a subject search can contain spaces, '&',
+    // '=', ',' etc., which would otherwise corrupt the query string.
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("page", &state.page.to_string());
+    query.append_pair("pageSize", &state.page_size.to_string());
+    if state.status_filter != "all" && !state.status_filter.is_empty() {
+        query.append_pair("status", &state.status_filter);
+    }
+    if !state.search.is_empty() {
+        query.append_pair("search", &state.search);
+    }
+    let query = query.finish();
 
-    // Try API, fall back to mock data
-    match api()
-        .get::<CertificateListResponse>(&format!(
-            "/ca/certificates?page={}&pageSize={}&status={}&search={}",
-            filter.page,
-            filter.page_size,
-            filter.status.as_deref().unwrap_or(""),
-            filter.search.as_deref().unwrap_or("")
-        ))
+    // Proxied to the CA's GET /api/v1/certificates (real issued inventory).
+    // Errors propagate so the UI shows an honest failure rather than mock data.
+    api()
+        .get::<CertificateListResponse>(&format!("/ca/api/v1/certificates?{query}"))
         .await
-    {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(get_mock_certificates(&filter)),
-    }
-}
-
-/// Generate mock certificate data
-fn get_mock_certificates(filter: &CertificateFilter) -> CertificateListResponse {
-    let all_certs = vec![
-        CertificateSummary {
-            id: "cert-001".to_string(),
-            serial_number: "A1B2C3D4E5F60001".to_string(),
-            subject: "CN=api.example.com, O=Example Corp, C=US".to_string(),
-            issuer: "CN=OstrichPKI Intermediate CA, O=OstrichPKI, C=US".to_string(),
-            valid_from: "2024-01-15".to_string(),
-            valid_to: "2025-01-15".to_string(),
-            status: CertificateStatus::Active,
-            key_algorithm: Some("ECDSA P-256".to_string()),
-        },
-        CertificateSummary {
-            id: "cert-002".to_string(),
-            serial_number: "A1B2C3D4E5F60002".to_string(),
-            subject: "CN=web.example.com, O=Example Corp, C=US".to_string(),
-            issuer: "CN=OstrichPKI Intermediate CA, O=OstrichPKI, C=US".to_string(),
-            valid_from: "2024-02-01".to_string(),
-            valid_to: "2025-02-01".to_string(),
-            status: CertificateStatus::Active,
-            key_algorithm: Some("RSA 2048".to_string()),
-        },
-        CertificateSummary {
-            id: "cert-003".to_string(),
-            serial_number: "A1B2C3D4E5F60003".to_string(),
-            subject: "CN=mail.example.com, O=Example Corp, C=US".to_string(),
-            issuer: "CN=OstrichPKI Intermediate CA, O=OstrichPKI, C=US".to_string(),
-            valid_from: "2024-03-01".to_string(),
-            valid_to: "2025-03-01".to_string(),
-            status: CertificateStatus::Active,
-            key_algorithm: Some("ECDSA P-384".to_string()),
-        },
-        CertificateSummary {
-            id: "cert-004".to_string(),
-            serial_number: "A1B2C3D4E5F60004".to_string(),
-            subject: "CN=old-server.local, O=Example Corp, C=US".to_string(),
-            issuer: "CN=OstrichPKI Intermediate CA, O=OstrichPKI, C=US".to_string(),
-            valid_from: "2023-06-01".to_string(),
-            valid_to: "2024-06-01".to_string(),
-            status: CertificateStatus::Revoked,
-            key_algorithm: Some("RSA 2048".to_string()),
-        },
-        CertificateSummary {
-            id: "cert-005".to_string(),
-            serial_number: "A1B2C3D4E5F60005".to_string(),
-            subject: "CN=legacy.example.com, O=Example Corp, C=US".to_string(),
-            issuer: "CN=OstrichPKI Intermediate CA, O=OstrichPKI, C=US".to_string(),
-            valid_from: "2022-01-01".to_string(),
-            valid_to: "2023-01-01".to_string(),
-            status: CertificateStatus::Expired,
-            key_algorithm: Some("RSA 2048".to_string()),
-        },
-        CertificateSummary {
-            id: "cert-006".to_string(),
-            serial_number: "A1B2C3D4E5F60006".to_string(),
-            subject: "CN=new-service.example.com, O=Example Corp, C=US".to_string(),
-            issuer: "CN=OstrichPKI Intermediate CA, O=OstrichPKI, C=US".to_string(),
-            valid_from: "2024-01-20".to_string(),
-            valid_to: "2025-01-20".to_string(),
-            status: CertificateStatus::Pending,
-            key_algorithm: Some("ML-DSA-65".to_string()),
-        },
-        CertificateSummary {
-            id: "cert-007".to_string(),
-            serial_number: "A1B2C3D4E5F60007".to_string(),
-            subject: "CN=db.example.com, O=Example Corp, C=US".to_string(),
-            issuer: "CN=OstrichPKI Intermediate CA, O=OstrichPKI, C=US".to_string(),
-            valid_from: "2024-01-10".to_string(),
-            valid_to: "2025-01-10".to_string(),
-            status: CertificateStatus::Active,
-            key_algorithm: Some("ECDSA P-256".to_string()),
-        },
-        CertificateSummary {
-            id: "cert-008".to_string(),
-            serial_number: "A1B2C3D4E5F60008".to_string(),
-            subject: "CN=cache.example.com, O=Example Corp, C=US".to_string(),
-            issuer: "CN=OstrichPKI Intermediate CA, O=OstrichPKI, C=US".to_string(),
-            valid_from: "2024-02-15".to_string(),
-            valid_to: "2025-02-15".to_string(),
-            status: CertificateStatus::Active,
-            key_algorithm: Some("ECDSA P-256".to_string()),
-        },
-    ];
-
-    // Apply filters
-    let filtered: Vec<CertificateSummary> = all_certs
-        .into_iter()
-        .filter(|cert| {
-            // Status filter
-            if let Some(ref status) = filter.status {
-                let cert_status = cert.status.to_string().to_lowercase();
-                if cert_status != *status {
-                    return false;
-                }
-            }
-            // Search filter
-            if let Some(ref search) = filter.search {
-                let search_lower = search.to_lowercase();
-                if !cert.subject.to_lowercase().contains(&search_lower)
-                    && !cert.serial_number.to_lowercase().contains(&search_lower)
-                {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect();
-
-    let total = filtered.len() as u64;
-
-    // Apply pagination
-    let start = ((filter.page - 1) * filter.page_size) as usize;
-    let certificates: Vec<CertificateSummary> = filtered
-        .into_iter()
-        .skip(start)
-        .take(filter.page_size as usize)
-        .collect();
-
-    CertificateListResponse {
-        certificates,
-        total,
-        page: filter.page,
-        page_size: filter.page_size,
-    }
 }
 
 // =============================================================================
@@ -757,98 +619,11 @@ pub fn certificate_detail(props: &CertificateDetailProps) -> Html {
 
 /// Fetch certificate details from API
 async fn fetch_certificate_details(id: &str) -> Result<CertificateDetails, ApiError> {
-    match api()
-        .get::<CertificateDetails>(&format!("/ca/certificates/{}", id))
+    // Proxied to the CA's GET /api/v1/certificates/{id}. Errors propagate so the
+    // UI shows a real failure rather than fabricated detail.
+    api()
+        .get::<CertificateDetails>(&format!("/ca/api/v1/certificates/{}", id))
         .await
-    {
-        Ok(cert) => Ok(cert),
-        Err(_) => Ok(get_mock_certificate_details(id)),
-    }
-}
-
-/// Generate mock certificate details
-fn get_mock_certificate_details(id: &str) -> CertificateDetails {
-    CertificateDetails {
-        id: id.to_string(),
-        serial_number: "A1B2C3D4E5F60001".to_string(),
-        version: 3,
-        status: CertificateStatus::Active,
-        subject_dn: "CN=api.example.com, O=Example Corp, L=San Francisco, ST=California, C=US"
-            .to_string(),
-        issuer_dn: "CN=OstrichPKI Intermediate CA, O=OstrichPKI, C=US".to_string(),
-        valid_from: "2024-01-15T00:00:00Z".to_string(),
-        valid_to: "2025-01-15T23:59:59Z".to_string(),
-        days_remaining: Some(365),
-        key_algorithm: "ECDSA".to_string(),
-        key_size: 256,
-        signature_algorithm: "SHA256withECDSA".to_string(),
-        fingerprint_sha256: "AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90".to_string(),
-        fingerprint_sha1: "AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90:AB:CD:EF:12".to_string(),
-        extensions: vec![
-            crate::types::api::CertificateExtension {
-                oid: "2.5.29.15".to_string(),
-                name: "Key Usage".to_string(),
-                critical: true,
-                value: "Digital Signature, Key Encipherment".to_string(),
-            },
-            crate::types::api::CertificateExtension {
-                oid: "2.5.29.37".to_string(),
-                name: "Extended Key Usage".to_string(),
-                critical: false,
-                value: "TLS Web Server Authentication, TLS Web Client Authentication".to_string(),
-            },
-            crate::types::api::CertificateExtension {
-                oid: "2.5.29.19".to_string(),
-                name: "Basic Constraints".to_string(),
-                critical: true,
-                value: "CA: FALSE".to_string(),
-            },
-        ],
-        subject_alt_names: vec![
-            crate::types::api::SubjectAltName {
-                name_type: "DNS".to_string(),
-                value: "api.example.com".to_string(),
-            },
-            crate::types::api::SubjectAltName {
-                name_type: "DNS".to_string(),
-                value: "*.api.example.com".to_string(),
-            },
-            crate::types::api::SubjectAltName {
-                name_type: "IP".to_string(),
-                value: "192.168.1.100".to_string(),
-            },
-        ],
-        key_usage: vec![
-            "Digital Signature".to_string(),
-            "Key Encipherment".to_string(),
-        ],
-        extended_key_usage: vec![
-            "TLS Web Server Authentication".to_string(),
-            "TLS Web Client Authentication".to_string(),
-        ],
-        authority_key_id: Some(
-            "12:34:56:78:90:AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78".to_string(),
-        ),
-        subject_key_id: Some(
-            "AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90:AB:CD:EF:12".to_string(),
-        ),
-        crl_distribution_points: vec![
-            "http://crl.ostrichpki.example.com/intermediate.crl".to_string()
-        ],
-        ocsp_responder_urls: vec!["http://ocsp.ostrichpki.example.com".to_string()],
-        revocation_time: None,
-        revocation_reason: None,
-        pem: r#"-----BEGIN CERTIFICATE-----
-MIIDazCCAlOgAwIBAgIUdGVzdC1jZXJ0aWZpY2F0ZS0wMDEwDQYJKoZIhvcNAQEL
-BQAwRTELMAkGA1UEBhMCVVMxEzARBgNVBAgMCkNhbGlmb3JuaWExITAfBgNVBAoM
-GEludGVybmV0IFdpZGdpdHMgUHR5IEx0ZDAeFw0yNDAxMTUwMDAwMDBaFw0yNTAx
-MTUyMzU5NTlaME0xCzAJBgNVBAYTAlVTMRMwEQYDVQQIDApDYWxpZm9ybmlhMRYw
-FAYDVQQHDA1TYW4gRnJhbmNpc2NvMREwDwYDVQQKDAhFeGFtcGxlMIIBIjANBgkq
-hkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7
-...
------END CERTIFICATE-----"#
-            .to_string(),
-    }
 }
 
 /// Certificate detail content properties
@@ -965,9 +740,11 @@ fn certificate_detail_content(props: &CertificateDetailContentProps) -> Html {
                         <h2 class="text-lg font-semibold text-gray-900">{ "Key Information" }</h2>
                     </div>
                     <div class="card-body space-y-3">
-                        <DetailRow label="Algorithm" value={cert.key_algorithm.clone()} mono={false} />
-                        <DetailRow label="Key Size" value={format!("{} bits", cert.key_size)} mono={false} />
-                        <DetailRow label="Signature Algorithm" value={cert.signature_algorithm.clone()} mono={false} />
+                        // Show a dash for fields the backend cannot yet populate,
+                        // rather than a misleading empty value or "0 bits".
+                        <DetailRow label="Algorithm" value={display_or_dash(&cert.key_algorithm)} mono={false} />
+                        <DetailRow label="Key Size" value={if cert.key_size > 0 { format!("{} bits", cert.key_size) } else { "\u{2014}".to_string() }} mono={false} />
+                        <DetailRow label="Signature Algorithm" value={display_or_dash(&cert.signature_algorithm)} mono={false} />
                         if let Some(ref ski) = cert.subject_key_id {
                             <DetailRow label="Subject Key ID" value={ski.clone()} mono={true} />
                         }
@@ -1009,8 +786,8 @@ fn certificate_detail_content(props: &CertificateDetailContentProps) -> Html {
                         <h2 class="text-lg font-semibold text-gray-900">{ "Fingerprints" }</h2>
                     </div>
                     <div class="card-body space-y-3">
-                        <DetailRow label="SHA-256" value={cert.fingerprint_sha256.clone()} mono={true} />
-                        <DetailRow label="SHA-1" value={cert.fingerprint_sha1.clone()} mono={true} />
+                        <DetailRow label="SHA-256" value={display_or_dash(&cert.fingerprint_sha256)} mono={true} />
+                        <DetailRow label="SHA-1" value={display_or_dash(&cert.fingerprint_sha1)} mono={true} />
                     </div>
                 </div>
 
@@ -1133,6 +910,16 @@ fn certificate_detail_content(props: &CertificateDetailContentProps) -> Html {
                 }
             </div>
         </>
+    }
+}
+
+/// Render a value, or an em-dash when the backend left it empty (a field it
+/// cannot yet populate), so blanks are never shown as authoritative data.
+fn display_or_dash(value: &str) -> String {
+    if value.is_empty() {
+        "\u{2014}".to_string()
+    } else {
+        value.to_string()
     }
 }
 

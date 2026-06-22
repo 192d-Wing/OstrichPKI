@@ -107,7 +107,13 @@ async fn proxy_audit(
 
 /// Generic proxy function to forward requests to a backend service
 async fn proxy_to_service(base_url: &str, path: &str, original_request: Request<Body>) -> Response {
-    let target_url = format!("{}/{}", base_url.trim_end_matches('/'), path);
+    // Preserve the query string (pagination, filters) — the `{*path}` capture
+    // excludes it, so it must be re-appended or backends see no query at all.
+    let base = base_url.trim_end_matches('/');
+    let target_url = match original_request.uri().query() {
+        Some(query) => format!("{base}/{path}?{query}"),
+        None => format!("{base}/{path}"),
+    };
 
     tracing::debug!(
         target = %target_url,

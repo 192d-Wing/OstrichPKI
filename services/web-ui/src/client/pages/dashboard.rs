@@ -11,7 +11,9 @@ use yew::prelude::*;
 use crate::components::auth::Protected;
 use crate::components::common::{Alert, AlertType, Loading};
 use crate::services::api::{ApiError, api};
-use crate::types::api::{ActivityItem, DashboardData, DashboardStats};
+use crate::types::api::{
+    CertificateListResponse, CertificateStatus, DashboardData, DashboardStats,
+};
 
 /// Loading state for async data
 #[derive(Clone, PartialEq)]
@@ -96,72 +98,35 @@ pub fn dashboard() -> Html {
 
 /// Fetch dashboard data from API
 async fn fetch_dashboard_data() -> Result<DashboardData, ApiError> {
-    // Try to fetch from API, fall back to mock data for development
-    match api().get::<DashboardData>("/dashboard").await {
-        Ok(data) => Ok(data),
-        Err(_) => {
-            // Return mock data for development when API isn't available
-            Ok(get_mock_dashboard_data())
-        }
-    }
-}
+    // There is no dedicated stats endpoint yet, so derive the headline counts
+    // from the real certificate inventory (GET /api/v1/certificates). Counts use
+    // the CA-computed status, so they reflect actual issued certificates rather
+    // than placeholder values. Trend/expiry/approval metrics are left at zero
+    // until backing endpoints exist (better empty than fabricated).
+    // pageSize is the CA's max page (clamped server-side); counts are accurate up
+    // to that many certs. A dedicated aggregate-count endpoint is the proper fix
+    // for larger inventories.
+    let response = api()
+        .get::<CertificateListResponse>("/ca/api/v1/certificates?page=1&pageSize=1000")
+        .await?;
 
-/// Generate mock dashboard data for development
-fn get_mock_dashboard_data() -> DashboardData {
-    DashboardData {
+    let count_status = |status: CertificateStatus| {
+        response
+            .certificates
+            .iter()
+            .filter(|c| c.status == status)
+            .count() as u64
+    };
+
+    Ok(DashboardData {
         stats: DashboardStats {
-            active_certificates: 1234,
-            active_change_percent: 12.5,
-            pending_approvals: 23,
-            pending_change: 5,
-            expiring_soon: 47,
+            active_certificates: count_status(CertificateStatus::Active),
+            revoked_certificates: count_status(CertificateStatus::Revoked),
             expiring_days: 30,
-            revoked_certificates: 89,
-            revoked_today: 3,
+            ..Default::default()
         },
-        recent_activity: vec![
-            ActivityItem {
-                id: "1".to_string(),
-                action: "Certificate issued".to_string(),
-                subject: "CN=api.example.com".to_string(),
-                actor: "admin@example.com".to_string(),
-                timestamp: "2024-01-15T10:30:00Z".to_string(),
-                relative_time: "2 minutes ago".to_string(),
-            },
-            ActivityItem {
-                id: "2".to_string(),
-                action: "Approval granted".to_string(),
-                subject: "Request #1234".to_string(),
-                actor: "ra@example.com".to_string(),
-                timestamp: "2024-01-15T10:15:00Z".to_string(),
-                relative_time: "15 minutes ago".to_string(),
-            },
-            ActivityItem {
-                id: "3".to_string(),
-                action: "Certificate revoked".to_string(),
-                subject: "CN=old-server.local".to_string(),
-                actor: "admin@example.com".to_string(),
-                timestamp: "2024-01-15T09:30:00Z".to_string(),
-                relative_time: "1 hour ago".to_string(),
-            },
-            ActivityItem {
-                id: "4".to_string(),
-                action: "CRL generated".to_string(),
-                subject: "CRL #567".to_string(),
-                actor: "system".to_string(),
-                timestamp: "2024-01-15T08:30:00Z".to_string(),
-                relative_time: "2 hours ago".to_string(),
-            },
-            ActivityItem {
-                id: "5".to_string(),
-                action: "User logged in".to_string(),
-                subject: "admin@example.com".to_string(),
-                actor: "admin@example.com".to_string(),
-                timestamp: "2024-01-15T08:00:00Z".to_string(),
-                relative_time: "2.5 hours ago".to_string(),
-            },
-        ],
-    }
+        recent_activity: Vec::new(),
+    })
 }
 
 /// Dashboard content properties

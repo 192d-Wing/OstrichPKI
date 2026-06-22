@@ -25,7 +25,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
@@ -36,9 +36,13 @@ use ostrich_common::auth::provider::AuthProvider;
 use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy};
 use ostrich_common::types::DistinguishedName;
 use ostrich_db::DatabasePool;
-use ostrich_db::repository::{ApprovalRepository, CrlRepository};
+use ostrich_db::models::Certificate;
+use ostrich_db::repository::{
+    ApprovalRepository, CertificateRepository, CrlRepository, Repository,
+};
 use ostrich_x509::{extensions::SubjectAltName, parser::RevocationReason};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 /// REST API state
@@ -155,6 +159,17 @@ pub fn create_router(
         .route(
             "/api/v1/certificates",
             post(issue_certificate).route_layer(authz(Permission::IssueCertificate)),
+        )
+        // Read access to the issued-certificate inventory. Separate from the
+        // POST (issuance) on the same path, with its own permission, mirroring
+        // the GET/POST split already used for /api/v1/approvals.
+        .route(
+            "/api/v1/certificates",
+            get(list_certificates).route_layer(authz(Permission::ViewCertificate)),
+        )
+        .route(
+            "/api/v1/certificates/{id}",
+            get(get_certificate).route_layer(authz(Permission::ViewCertificate)),
         )
         .route(
             "/api/v1/certificates/{id}/revoke",
@@ -361,6 +376,301 @@ async fn issue_certificate(
         not_before: issued.not_before.to_rfc3339(),
         not_after: issued.not_after.to_rfc3339(),
     }))
+}
+
+/// Derive the relying-party-visible status of a stored certificate.
+///
+/// RFC 5280 §5: a certificate is "revoked" once it appears on the CRL;
+/// otherwise its temporal validity (§4.1.2.5) determines active/expired/pending.
+fn cert_status_str(cert: &Certificate, now: chrono::DateTime<chrono::Utc>) -> &'static str {
+    if cert.revoked {
+        "revoked"
+    } else if cert.not_after < now {
+        "expired"
+    } else if cert.not_before > now {
+        "pending"
+    } else {
+        "active"
+    }
+}
+
+/// Query parameters for the certificate inventory listing.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListCertificatesQuery {
+    page: Option<u32>,
+    page_size: Option<u32>,
+    status: Option<String>,
+    search: Option<String>,
+}
+
+/// One row in the certificate inventory listing.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CertificateSummaryDto {
+    id: String,
+    serial_number: String,
+    subject: String,
+    issuer: String,
+    valid_from: String,
+    valid_to: String,
+    status: String,
+    key_algorithm: Option<String>,
+}
+
+/// Paginated response for the certificate inventory listing.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CertificateListResponseDto {
+    certificates: Vec<CertificateSummaryDto>,
+    total: u64,
+    page: u32,
+    page_size: u32,
+}
+
+/// A Subject Alternative Name entry in the certificate detail view.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SanDto {
+    name_type: String,
+    value: String,
+}
+
+/// Full detail view of a single stored certificate.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CertificateDetailsDto {
+    id: String,
+    serial_number: String,
+    version: u8,
+    status: String,
+    subject_dn: String,
+    issuer_dn: String,
+    valid_from: String,
+    valid_to: String,
+    days_remaining: Option<i64>,
+    key_algorithm: String,
+    key_size: u32,
+    signature_algorithm: String,
+    fingerprint_sha256: String,
+    fingerprint_sha1: String,
+    extensions: Vec<serde_json::Value>,
+    subject_alt_names: Vec<SanDto>,
+    key_usage: Vec<String>,
+    extended_key_usage: Vec<String>,
+    authority_key_id: Option<String>,
+    subject_key_id: Option<String>,
+    crl_distribution_points: Vec<String>,
+    ocsp_responder_urls: Vec<String>,
+    revocation_time: Option<String>,
+    revocation_reason: Option<String>,
+    pem: String,
+}
+
+/// List issued certificates (paginated).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3 - Access enforcement (Permission::ViewCertificate via middleware)
+/// - NIAP PP-CA: FMT_SMF.1 - Security management: certificate inventory query
+/// - NIAP PP-CA: FMT_MTD.1 - Authorized read access to TSF data
+async fn list_certificates(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Query(query): Query<ListCertificatesQuery>,
+) -> Result<Json<CertificateListResponseDto>> {
+    // Upper bound on rows scanned when a filter is active (each row carries the
+    // full DER/PEM). Inventories beyond this are logged, never silently
+    // truncated; a filtered SQL query is the proper fix at larger scale.
+    const MAX_FILTER_SCAN: i64 = 5_000;
+
+    let repo = CertificateRepository::new(state.db_pool.clone());
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(50).clamp(1, 1000);
+    let offset = (page as usize - 1) * page_size as usize;
+    let now = chrono::Utc::now();
+
+    let status_filter = query.status.as_deref().filter(|s| !s.is_empty());
+    let search = query
+        .search
+        .as_deref()
+        .map(str::to_lowercase)
+        .filter(|s| !s.is_empty());
+
+    // Map a stored row to its summary DTO (status derived before fields move).
+    let to_summary = |c: Certificate| {
+        let status = cert_status_str(&c, now).to_string();
+        CertificateSummaryDto {
+            id: c.id.to_string(),
+            serial_number: hex::encode(&c.serial_number),
+            subject: c.subject_dn,
+            issuer: c.issuer_dn,
+            valid_from: c.not_before.to_rfc3339(),
+            valid_to: c.not_after.to_rfc3339(),
+            status,
+            key_algorithm: None,
+        }
+    };
+
+    // `total` must describe the same population as the returned rows. With no
+    // filter, page directly in SQL (cheap). With a filter, scan → filter →
+    // paginate in memory so the count and cross-page filtering stay consistent.
+    let (total, certificates): (u64, Vec<CertificateSummaryDto>) =
+        if status_filter.is_none() && search.is_none() {
+            let total = repo.count().await? as u64;
+            let rows = repo
+                .list(
+                    Some(i64::from(page_size)),
+                    Some(i64::from(page - 1) * i64::from(page_size)),
+                )
+                .await?;
+            (total, rows.into_iter().map(to_summary).collect())
+        } else {
+            if repo.count().await? > MAX_FILTER_SCAN {
+                tracing::warn!(
+                    cap = MAX_FILTER_SCAN,
+                    "certificate filter scans only the most recent {MAX_FILTER_SCAN} certificates"
+                );
+            }
+            let filtered: Vec<CertificateSummaryDto> = repo
+                .list(Some(MAX_FILTER_SCAN), Some(0))
+                .await?
+                .into_iter()
+                .map(to_summary)
+                .filter(|s| status_filter.is_none_or(|f| s.status == f))
+                .filter(|s| {
+                    search.as_deref().is_none_or(|q| {
+                        s.subject.to_lowercase().contains(q) || s.serial_number.contains(q)
+                    })
+                })
+                .collect();
+            let total = filtered.len() as u64;
+            let rows = filtered
+                .into_iter()
+                .skip(offset)
+                .take(page_size as usize)
+                .collect();
+            (total, rows)
+        };
+
+    // NIST 800-53 AU-2/AU-3: record who enumerated the inventory and the outcome.
+    tracing::info!(
+        actor = %user.username,
+        resource = "certificates",
+        page,
+        page_size,
+        returned = certificates.len(),
+        total,
+        "certificate inventory listed"
+    );
+
+    Ok(Json(CertificateListResponseDto {
+        certificates,
+        total,
+        page,
+        page_size,
+    }))
+}
+
+/// Get a single certificate by id, with parsed X.509 detail.
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3 - Access enforcement (Permission::ViewCertificate via middleware)
+/// - NIAP PP-CA: FMT_SMF.1 - Security management: certificate inspection
+async fn get_certificate(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Response> {
+    let cert_id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return Ok((StatusCode::BAD_REQUEST, "invalid certificate id").into_response());
+        }
+    };
+
+    let repo = CertificateRepository::new(state.db_pool.clone());
+    let cert = match repo.find_by_id(cert_id).await? {
+        Some(cert) => cert,
+        None => return Ok((StatusCode::NOT_FOUND, "certificate not found").into_response()),
+    };
+
+    let now = chrono::Utc::now();
+    let parsed = ostrich_x509::parser::parse_certificate(&cert.der_encoded).ok();
+
+    // SANs come back as "DNS:host" / "email:addr" strings; split into type+value.
+    let subject_alt_names = parsed
+        .as_ref()
+        .map(|p| {
+            p.subject_alt_names
+                .iter()
+                .map(|san| match san.split_once(':') {
+                    Some((kind, value)) => SanDto {
+                        name_type: kind.to_string(),
+                        value: value.to_string(),
+                    },
+                    None => SanDto {
+                        name_type: "DNS".to_string(),
+                        value: san.clone(),
+                    },
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let key_usage = parsed
+        .as_ref()
+        .and_then(|p| p.key_usage.clone())
+        .unwrap_or_default();
+    let signature_algorithm = parsed
+        .as_ref()
+        .map(|p| p.signature_algorithm.clone())
+        .unwrap_or_default();
+
+    let revocation_reason = cert.revocation_reason.map(|r| {
+        RevocationReason::from_i32(r)
+            .map(|reason| format!("{reason:?}"))
+            .unwrap_or_else(|| r.to_string())
+    });
+
+    let details = CertificateDetailsDto {
+        id: cert.id.to_string(),
+        serial_number: hex::encode(&cert.serial_number),
+        version: 3, // RFC 5280 §4.1.2.1 - X.509 v3 (all certs this CA issues)
+        status: cert_status_str(&cert, now).to_string(),
+        subject_dn: cert.subject_dn.clone(),
+        issuer_dn: cert.issuer_dn.clone(),
+        valid_from: cert.not_before.to_rfc3339(),
+        valid_to: cert.not_after.to_rfc3339(),
+        // Clamp at 0 so an expired certificate reads "0", never a negative count.
+        days_remaining: Some((cert.not_after - now).num_days().max(0)),
+        // Key algorithm/size and the full extension set are not yet extracted by
+        // ostrich-x509's parser; expose what we can and leave the rest empty.
+        key_algorithm: String::new(),
+        key_size: 0,
+        signature_algorithm,
+        fingerprint_sha256: hex::encode(Sha256::digest(&cert.der_encoded)),
+        fingerprint_sha1: String::new(),
+        extensions: Vec::new(),
+        subject_alt_names,
+        key_usage,
+        extended_key_usage: Vec::new(),
+        authority_key_id: None,
+        subject_key_id: None,
+        crl_distribution_points: Vec::new(),
+        ocsp_responder_urls: Vec::new(),
+        revocation_time: cert.revocation_time.map(|t| t.to_rfc3339()),
+        revocation_reason,
+        pem: cert.pem_encoded.clone(),
+    };
+
+    // NIST 800-53 AU-2/AU-3: record who inspected which certificate.
+    tracing::info!(
+        actor = %user.username,
+        resource = %cert.id,
+        "certificate detail viewed"
+    );
+
+    Ok(Json(details).into_response())
 }
 
 /// Revoke a certificate
