@@ -56,7 +56,11 @@
 
     <!-- Yew WASM application (Trunk handles this) -->
     <!-- data-target-name selects the cdylib client lib (the package also has a host-only server bin). -->
-    <link data-trunk rel="rust" href="Cargo.toml" data-target-name="ostrich_web_ui_client" data-wasm-opt="z" />
+    <!-- wasm-opt disabled (data-wasm-opt="0"): rustc emits bulk-memory ops
+         (memory.copy/fill) that binaryen's wasm-opt rejects unless built with
+         matching feature flags, which Trunk doesn't expose. Optimization here is
+         only size reduction; the module is correct without it. -->
+    <link data-trunk rel="rust" href="Cargo.toml" data-target-name="ostrich_web_ui_client" data-wasm-opt="0" />
 
     <!-- No-script fallback -->
     <noscript>
