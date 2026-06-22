@@ -98,7 +98,7 @@ pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
 pkcs1 = { version = "0.7", features = ["pem"] }
 cms = "0.2"
 pem-rfc7468 = { version = "1", features = ["alloc"] }
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 
 # Cryptographic primitives
 ring = "0.17"
