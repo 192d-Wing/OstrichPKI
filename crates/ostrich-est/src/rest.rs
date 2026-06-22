@@ -414,12 +414,19 @@ pub fn create_router(state: EstState) -> Router {
             "/api/v1/est/accounts/{account}/identities/{*identity}",
             axum::routing::delete(delete_account_identity),
         )
-        // Mint single-use, time-limited enrollment tokens (Permission::GenerateEstToken,
-        // enforced inside the handler). Authenticated as an operator session — NOT
-        // via the enrollment-token wrapper, so a device token cannot mint more.
+        // Enrollment-token management (all Permission::GenerateEstToken, enforced
+        // inside the handlers). Authenticated as an operator session — NOT via the
+        // enrollment-token wrapper, so a device token cannot mint/list/revoke.
+        //   POST   …/enrollment-tokens       mint a single-use, time-limited token
+        //   GET    …/enrollment-tokens       list outstanding tokens (metadata only)
+        //   DELETE …/enrollment-tokens/{id}  revoke a live token before use
         .route(
             "/api/v1/est/enrollment-tokens",
-            post(create_enrollment_token),
+            post(create_enrollment_token).get(list_enrollment_tokens),
+        )
+        .route(
+            "/api/v1/est/enrollment-tokens/{id}",
+            axum::routing::delete(revoke_enrollment_token),
         );
     let admin_routes = match state.auth_mode {
         EstAuthMode::Mtls => admin_routes.layer(middleware::from_fn_with_state(
@@ -1651,6 +1658,135 @@ async fn create_enrollment_token(
         }),
     )
         .into_response())
+}
+
+/// One row of the enrollment-token inventory (no secret material).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnrollmentTokenSummaryDto {
+    id: String,
+    identity: String,
+    created_by: String,
+    created_at: String,
+    expires_at: String,
+    /// live | used | revoked | expired
+    status: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnrollmentTokenListResponse {
+    tokens: Vec<EnrollmentTokenSummaryDto>,
+}
+
+/// Enforce `GenerateEstToken` for token-management endpoints, auditing denials.
+async fn authorize_token_mgmt(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+    action: &str,
+) -> Result<()> {
+    if state
+        .rbac_policy
+        .authorize(user, Permission::GenerateEstToken, "est-enrollment-tokens")
+        .is_err()
+    {
+        emit_failure_audit(
+            state,
+            &user.username,
+            "est:enrollment-tokens",
+            &format!("{action}_denied"),
+        )
+        .await;
+        tracing::warn!(actor = %user.username, action, "EST token management denied");
+        return Err(Error::Forbidden("insufficient permission".to_string()));
+    }
+    Ok(())
+}
+
+/// List recently minted enrollment tokens (operator review).
+///
+/// `GET /api/v1/est/enrollment-tokens` — requires `Permission::GenerateEstToken`.
+/// Returns lifecycle metadata only (never the token); a status is derived from
+/// the consume/expiry state.
+async fn list_enrollment_tokens(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+) -> Result<Response> {
+    authorize_token_mgmt(&state, &user, "list_est_tokens").await?;
+
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let rows = repo
+        .list_enrollment_tokens(200)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to list enrollment tokens: {e}")))?;
+
+    let now = chrono::Utc::now();
+    let tokens = rows
+        .into_iter()
+        .map(|r| {
+            let status = match (&r.used_at, &r.used_by_cert) {
+                (Some(_), Some(_)) => "used",
+                (Some(_), None) => "revoked",
+                (None, _) if r.expires_at <= now => "expired",
+                (None, _) => "live",
+            };
+            EnrollmentTokenSummaryDto {
+                id: r.id.to_string(),
+                identity: r.identity,
+                created_by: r.created_by,
+                created_at: r.created_at.to_rfc3339(),
+                expires_at: r.expires_at.to_rfc3339(),
+                status: status.to_string(),
+            }
+        })
+        .collect();
+
+    Ok((StatusCode::OK, Json(EnrollmentTokenListResponse { tokens })).into_response())
+}
+
+/// Revoke a live enrollment token before it is used.
+///
+/// `DELETE /api/v1/est/enrollment-tokens/{id}` — requires `Permission::GenerateEstToken`.
+/// Idempotent-ish: returns 404 if no *live* token with that id exists (already
+/// used/revoked/expired or unknown). Audited (AU-2).
+async fn revoke_enrollment_token(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Response> {
+    authorize_token_mgmt(&state, &user, "revoke_est_token").await?;
+
+    let token_id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return Ok((StatusCode::BAD_REQUEST, "invalid token id").into_response()),
+    };
+
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let revoked = repo
+        .revoke_enrollment_token(token_id)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to revoke enrollment token: {e}")))?;
+
+    let mut event = ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::ConfigurationChange,
+        &user.username,
+        "est:enrollment-tokens".to_string(),
+        "revoke_est_token",
+        if revoked {
+            ostrich_audit::EventOutcome::Success
+        } else {
+            ostrich_audit::EventOutcome::Failure
+        },
+    )
+    .with_details(serde_json::json!({ "token_id": token_id.to_string(), "revoked": revoked }))
+    .build();
+    let _ = state.audit_sink.record(&mut event).await;
+
+    if !revoked {
+        return Ok((StatusCode::NOT_FOUND, "no live token with that id").into_response());
+    }
+    tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token revoked");
+    Ok((StatusCode::OK, Json(serde_json::json!({ "revoked": true }))).into_response())
 }
 
 /// Enforce an admin permission on the authenticated user (FMT_MTD.1), auditing

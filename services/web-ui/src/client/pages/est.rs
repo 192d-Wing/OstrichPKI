@@ -197,6 +197,23 @@ struct MintTokenResponse {
     expires_at: String,
 }
 
+/// A row of the enrollment-token inventory (metadata only; no secret).
+#[derive(Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct TokenSummary {
+    id: String,
+    identity: String,
+    created_by: String,
+    created_at: String,
+    expires_at: String,
+    status: String, // live | used | revoked | expired
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+struct TokenListResponse {
+    tokens: Vec<TokenSummary>,
+}
+
 /// Operator panel: mint a single-use, time-limited EST enrollment token bound to
 /// a device identity. The plaintext token is shown exactly once.
 #[function_component(EnrollmentTokenPanel)]
@@ -206,6 +223,39 @@ fn enrollment_token_panel() -> Html {
     let result = use_state(|| None::<MintTokenResponse>);
     let error = use_state(|| None::<String>);
     let busy = use_state(|| false);
+    let tokens = use_state(Vec::<TokenSummary>::new);
+    // Bumped after a mint or revoke to reload the outstanding-token list.
+    let refresh = use_state(|| 0u32);
+
+    // Load the outstanding-token list on mount and whenever `refresh` changes.
+    {
+        let tokens = tokens.clone();
+        use_effect_with(*refresh, move |_| {
+            let tokens = tokens.clone();
+            spawn_local(async move {
+                if let Ok(resp) = api()
+                    .get::<TokenListResponse>("/est/api/v1/est/enrollment-tokens")
+                    .await
+                {
+                    tokens.set(resp.tokens);
+                }
+            });
+            || ()
+        });
+    }
+
+    let on_revoke = {
+        let refresh = refresh.clone();
+        Callback::from(move |id: String| {
+            let refresh = refresh.clone();
+            spawn_local(async move {
+                let _ = api()
+                    .delete(&format!("/est/api/v1/est/enrollment-tokens/{id}"))
+                    .await;
+                refresh.set(*refresh + 1);
+            });
+        })
+    };
 
     let on_identity = {
         let identity = identity.clone();
@@ -233,6 +283,7 @@ fn enrollment_token_panel() -> Html {
         let result = result.clone();
         let error = error.clone();
         let busy = busy.clone();
+        let refresh = refresh.clone();
         Callback::from(move |e: SubmitEvent| {
             e.prevent_default();
             let id_val = (*identity).trim().to_string();
@@ -246,6 +297,7 @@ fn enrollment_token_panel() -> Html {
             let result = result.clone();
             let error = error.clone();
             let busy = busy.clone();
+            let refresh = refresh.clone();
             busy.set(true);
             error.set(None);
             result.set(None);
@@ -258,7 +310,10 @@ fn enrollment_token_panel() -> Html {
                     .post::<MintTokenResponse, _>("/est/api/v1/est/enrollment-tokens", &req)
                     .await
                 {
-                    Ok(resp) => result.set(Some(resp)),
+                    Ok(resp) => {
+                        result.set(Some(resp));
+                        refresh.set(*refresh + 1); // reload the outstanding-token list
+                    }
                     Err(e) => error.set(Some(e.message)),
                 }
                 busy.set(false);
@@ -267,6 +322,7 @@ fn enrollment_token_panel() -> Html {
     };
 
     html! {
+        <>
         <div class="card mb-6">
             <div class="card-body">
                 <h2 class="text-lg font-semibold text-gray-900">{ "Generate enrollment token" }</h2>
@@ -328,5 +384,54 @@ fn enrollment_token_panel() -> Html {
                   } else { html! {} } }
             </div>
         </div>
+
+        <div class="card mb-6">
+            <div class="card-body">
+                <h2 class="text-lg font-semibold text-gray-900 mb-3">{ "Outstanding tokens" }</h2>
+                { if tokens.is_empty() {
+                    html! { <p class="text-sm text-gray-500">{ "No enrollment tokens minted yet." }</p> }
+                  } else {
+                    html! {
+                        <table class="table">
+                            <thead class="table-header">
+                                <tr>
+                                    <th class="table-header-cell">{ "Identity" }</th>
+                                    <th class="table-header-cell">{ "Created by" }</th>
+                                    <th class="table-header-cell">{ "Expires" }</th>
+                                    <th class="table-header-cell">{ "Status" }</th>
+                                    <th class="table-header-cell">{ "" }</th>
+                                </tr>
+                            </thead>
+                            <tbody class="table-body">
+                                { for tokens.iter().map(|t| {
+                                    let badge = match t.status.as_str() {
+                                        "live" => html! { <Badge variant={BadgeVariant::Success} dot={true}>{ "live" }</Badge> },
+                                        "used" => html! { <Badge variant={BadgeVariant::Gray}>{ "used" }</Badge> },
+                                        "revoked" => html! { <Badge variant={BadgeVariant::Danger}>{ "revoked" }</Badge> },
+                                        _ => html! { <Badge variant={BadgeVariant::Warning}>{ "expired" }</Badge> },
+                                    };
+                                    let revoke = if t.status == "live" {
+                                        let id = t.id.clone();
+                                        let on_revoke = on_revoke.clone();
+                                        let onclick = Callback::from(move |_| on_revoke.emit(id.clone()));
+                                        html! { <button class="text-sm font-medium text-red-600 hover:text-red-700" {onclick}>{ "Revoke" }</button> }
+                                    } else { html! {} };
+                                    html! {
+                                        <tr>
+                                            <td class="table-cell font-mono">{ &t.identity }</td>
+                                            <td class="table-cell text-gray-500">{ &t.created_by }</td>
+                                            <td class="table-cell text-gray-500 text-xs font-mono">{ &t.expires_at }</td>
+                                            <td class="table-cell">{ badge }</td>
+                                            <td class="table-cell text-right">{ revoke }</td>
+                                        </tr>
+                                    }
+                                }) }
+                            </tbody>
+                        </table>
+                    }
+                  } }
+            </div>
+        </div>
+        </>
     }
 }

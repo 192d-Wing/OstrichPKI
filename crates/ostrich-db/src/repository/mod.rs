@@ -44,7 +44,7 @@ pub use audit::AuditRepository;
 pub use ca::CaRepository;
 pub use certificate::CertificateRepository;
 pub use crl::CrlRepository;
-pub use est::EstRepository;
+pub use est::{EstEnrollmentTokenRow, EstRepository};
 pub use kra::KraRepository;
 pub use scms::ScmsRepository;
 pub use session::DbSessionStore;
