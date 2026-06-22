@@ -94,7 +94,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   service routers.
 - Per-endpoint permission wiring:
   - `crates/ostrich-ca/src/rest.rs` — IssueCertificate, RevokeCertificate, GenerateCrl,
-    ApproveRequest, RejectRequest, SubmitRequest, ViewRequests, ViewConfig (profiles)
+    ApproveRequest, RejectRequest, SubmitRequest, ViewRequests, ViewConfig (profiles),
+    ViewCertificate (GET `/api/v1/certificates` list + GET `/api/v1/certificates/{id}`
+    detail — read access to the issued-certificate inventory, distinct from the
+    IssueCertificate POST on the same path)
   - `crates/ostrich-est/src/rest.rs` — SubmitRequest, RenewCertificate
   - `crates/ostrich-scms/src/rest.rs` — CreateUser, ModifyUser, DeleteUser,
     ViewUsers, UnlockAccount, ViewConfig, ModifyConfig, ReadAuditLog
