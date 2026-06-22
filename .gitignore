@@ -28,3 +28,6 @@ kubeconfig
 # Cluster admin credentials - never commit
 ostrich.kubeconfig
 *.kubeconfig
+
+# Cluster-specific test deploy (dev creds, node pinning)
+deploy/cluster/
