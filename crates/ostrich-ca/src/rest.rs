@@ -42,7 +42,6 @@ use ostrich_db::repository::{
 };
 use ostrich_x509::{extensions::SubjectAltName, parser::RevocationReason};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 /// REST API state
@@ -436,6 +435,16 @@ struct SanDto {
     value: String,
 }
 
+/// A parsed X.509 extension entry in the certificate detail view.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionDto {
+    oid: String,
+    name: String,
+    critical: bool,
+    value: String,
+}
+
 /// Full detail view of a single stored certificate.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -454,7 +463,7 @@ struct CertificateDetailsDto {
     signature_algorithm: String,
     fingerprint_sha256: String,
     fingerprint_sha1: String,
-    extensions: Vec<serde_json::Value>,
+    extensions: Vec<ExtensionDto>,
     subject_alt_names: Vec<SanDto>,
     key_usage: Vec<String>,
     extended_key_usage: Vec<String>,
@@ -595,13 +604,15 @@ async fn get_certificate(
     };
 
     let now = chrono::Utc::now();
-    let parsed = ostrich_x509::parser::parse_certificate(&cert.der_encoded).ok();
+    // Rich X.509 detail (key alg/size, fingerprints, EKU, AKI/SKI, extension
+    // inventory, …). Best-effort: an unparseable cert yields the DB fields only.
+    let desc = ostrich_x509::parser::describe_certificate(&cert.der_encoded).ok();
+    let d = desc.as_ref();
 
     // SANs come back as "DNS:host" / "email:addr" strings; split into type+value.
-    let subject_alt_names = parsed
-        .as_ref()
-        .map(|p| {
-            p.subject_alt_names
+    let subject_alt_names = d
+        .map(|d| {
+            d.subject_alt_names
                 .iter()
                 .map(|san| match san.split_once(':') {
                     Some((kind, value)) => SanDto {
@@ -617,13 +628,18 @@ async fn get_certificate(
         })
         .unwrap_or_default();
 
-    let key_usage = parsed
-        .as_ref()
-        .and_then(|p| p.key_usage.clone())
-        .unwrap_or_default();
-    let signature_algorithm = parsed
-        .as_ref()
-        .map(|p| p.signature_algorithm.clone())
+    let extensions = d
+        .map(|d| {
+            d.extensions
+                .iter()
+                .map(|e| ExtensionDto {
+                    oid: e.oid.clone(),
+                    name: e.name.clone(),
+                    critical: e.critical,
+                    value: e.value.clone(),
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
     let revocation_reason = cert.revocation_reason.map(|r| {
@@ -643,21 +659,21 @@ async fn get_certificate(
         valid_to: cert.not_after.to_rfc3339(),
         // Clamp at 0 so an expired certificate reads "0", never a negative count.
         days_remaining: Some((cert.not_after - now).num_days().max(0)),
-        // Key algorithm/size and the full extension set are not yet extracted by
-        // ostrich-x509's parser; expose what we can and leave the rest empty.
-        key_algorithm: String::new(),
-        key_size: 0,
-        signature_algorithm,
-        fingerprint_sha256: hex::encode(Sha256::digest(&cert.der_encoded)),
-        fingerprint_sha1: String::new(),
-        extensions: Vec::new(),
+        key_algorithm: d.map(|d| d.key_algorithm.clone()).unwrap_or_default(),
+        key_size: d.map(|d| d.key_size).unwrap_or(0),
+        signature_algorithm: d.map(|d| d.signature_algorithm.clone()).unwrap_or_default(),
+        fingerprint_sha256: d.map(|d| d.fingerprint_sha256.clone()).unwrap_or_default(),
+        fingerprint_sha1: d.map(|d| d.fingerprint_sha1.clone()).unwrap_or_default(),
+        extensions,
         subject_alt_names,
-        key_usage,
-        extended_key_usage: Vec::new(),
-        authority_key_id: None,
-        subject_key_id: None,
-        crl_distribution_points: Vec::new(),
-        ocsp_responder_urls: Vec::new(),
+        key_usage: d.map(|d| d.key_usage.clone()).unwrap_or_default(),
+        extended_key_usage: d.map(|d| d.extended_key_usage.clone()).unwrap_or_default(),
+        authority_key_id: d.and_then(|d| d.authority_key_id.clone()),
+        subject_key_id: d.and_then(|d| d.subject_key_id.clone()),
+        crl_distribution_points: d
+            .map(|d| d.crl_distribution_points.clone())
+            .unwrap_or_default(),
+        ocsp_responder_urls: d.map(|d| d.ocsp_urls.clone()).unwrap_or_default(),
         revocation_time: cert.revocation_time.map(|t| t.to_rfc3339()),
         revocation_reason,
         pem: cert.pem_encoded.clone(),
