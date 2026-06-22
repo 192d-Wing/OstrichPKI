@@ -33,10 +33,13 @@ stage = "pre_build"
 command = "sh"
 command_arguments = ["-c", "mkdir -p dist && { npx --no-install tailwindcss -i ./input.css -o ./dist/output.css --minify 2>/dev/null || echo '/* tailwindcss CLI unavailable; UI renders unstyled */' > ./dist/output.css; }"]
 
-# WASM optimization settings
-[tools]
-# Use wasm-opt for production builds
-wasm_opt = "Oz"
+# WASM optimization settings.
+#
+# NOTE: the [tools] wasm_opt key is the binaryen *version* to fetch, NOT the
+# optimization level. The previous value "Oz" made Trunk request a nonexistent
+# release (binaryen-Oz-<arch>.tar.gz -> 404). The optimization LEVEL is set on
+# the rust link in index.html (data-wasm-opt="z"); with no version pinned here,
+# Trunk downloads its known-good default binaryen.
 
 # Proxy configuration for development
 [serve]
