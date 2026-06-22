@@ -57,6 +57,7 @@ fn role_permissions() -> HashMap<&'static str, Vec<&'static str>> {
         "view_crl",
         "view_config",
         "manage_users",
+        "generate_est_token",
         "admin",
     ];
     map.insert("Administrator", admin.clone());
@@ -71,6 +72,7 @@ fn role_permissions() -> HashMap<&'static str, Vec<&'static str>> {
         "manage_tokens",
         "view_crl",
         "generate_crl",
+        "generate_est_token",
     ];
     map.insert("OperationsStaff", ops);
 

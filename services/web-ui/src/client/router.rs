@@ -122,7 +122,7 @@ impl Route {
             Route::CertificateIssue => Some("issue_certificates"),
             Route::Crl => Some("view_crl"),
             Route::Profiles => Some("view_config"),
-            Route::Est => Some("view_config"),
+            Route::Est => Some("generate_est_token"),
             Route::Approvals => Some("view_approvals"),
             Route::AuditLogs => Some("read_audit_log"),
             Route::Scms => Some("view_tokens"),

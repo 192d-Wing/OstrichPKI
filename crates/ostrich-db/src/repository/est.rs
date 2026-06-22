@@ -6,7 +6,7 @@ use crate::{
     DatabasePool, Result,
     models::{EstClient, EstEnrollment},
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 /// EST Repository
@@ -229,6 +229,86 @@ impl EstRepository {
         )
         .bind(account_username)
         .bind(identity)
+        .execute(self.pool.pool())
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ==============================
+    // EST Enrollment Token Operations
+    // ==============================
+
+    /// Store a freshly minted single-use enrollment token (only its SHA-256 hash
+    /// is persisted; the plaintext is returned to the operator once).
+    ///
+    /// NIST 800-53: IA-5 (authenticator management); NIAP PP-CA: FMT_MTD.1
+    pub async fn create_enrollment_token(
+        &self,
+        id: Uuid,
+        token_hash: &[u8],
+        identity: &str,
+        profile: Option<&str>,
+        created_by: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO est_enrollment_tokens
+                (id, token_hash, identity, profile, created_by, expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(id)
+        .bind(token_hash)
+        .bind(identity)
+        .bind(profile)
+        .bind(created_by)
+        .bind(expires_at)
+        .execute(self.pool.pool())
+        .await?;
+
+        Ok(())
+    }
+
+    /// Look up a live (unused, unexpired) enrollment token by its hash, returning
+    /// `(token_id, bound_identity, expires_at)`. Returns `None` if the token is
+    /// unknown, already used, or expired.
+    pub async fn find_live_enrollment_token(
+        &self,
+        token_hash: &[u8],
+    ) -> Result<Option<(Uuid, String, DateTime<Utc>)>> {
+        let row: Option<(Uuid, String, DateTime<Utc>)> = sqlx::query_as(
+            r#"
+            SELECT id, identity, expires_at
+            FROM est_enrollment_tokens
+            WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+            "#,
+        )
+        .bind(token_hash)
+        .fetch_optional(self.pool.pool())
+        .await?;
+
+        Ok(row)
+    }
+
+    /// Atomically mark a token consumed (single-use). Returns `true` only if this
+    /// call transitioned an unused token to used, so concurrent enrollments race
+    /// safely — at most one wins. NIST 800-53: AU-3 (accurate outcome).
+    pub async fn consume_enrollment_token(
+        &self,
+        token_hash: &[u8],
+        used_by_cert: Option<Uuid>,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            r#"
+            UPDATE est_enrollment_tokens
+            SET used_at = now(), used_by_cert = $2
+            WHERE token_hash = $1 AND used_at IS NULL
+            "#,
+        )
+        .bind(token_hash)
+        .bind(used_by_cert)
         .execute(self.pool.pool())
         .await?;
 

@@ -367,10 +367,21 @@ pub fn create_router(state: EstState) -> Router {
                 ostrich_common::auth::MtlsOrBasicAuthLayer::authenticate,
             ))
         }
-        EstAuthMode::BearerToken => protected_routes.layer(middleware::from_fn_with_state(
-            auth_provider,
-            AuthLayer::authenticate,
-        )),
+        // Bearer mode also accepts single-use EST enrollment tokens: the wrapper
+        // resolves a live token to a least-privilege EstEnrollee principal whose
+        // username is the token's bound identity, falling through to normal
+        // session auth for anything else.
+        EstAuthMode::BearerToken => {
+            let enroll_provider: Arc<dyn AuthProvider> =
+                Arc::new(crate::enrollment_token::EnrollmentTokenAuthProvider::new(
+                    ostrich_db::repository::EstRepository::new(state.db_pool.clone()),
+                    auth_provider,
+                ));
+            protected_routes.layer(middleware::from_fn_with_state(
+                enroll_provider,
+                AuthLayer::authenticate,
+            ))
+        }
     };
 
     // Admin/management API for the per-account identity allow-list
@@ -402,6 +413,13 @@ pub fn create_router(state: EstState) -> Router {
         .route(
             "/api/v1/est/accounts/{account}/identities/{*identity}",
             axum::routing::delete(delete_account_identity),
+        )
+        // Mint single-use, time-limited enrollment tokens (Permission::GenerateEstToken,
+        // enforced inside the handler). Authenticated as an operator session — NOT
+        // via the enrollment-token wrapper, so a device token cannot mint more.
+        .route(
+            "/api/v1/est/enrollment-tokens",
+            post(create_enrollment_token),
         );
     let admin_routes = match state.auth_mode {
         EstAuthMode::Mtls => admin_routes.layer(middleware::from_fn_with_state(
@@ -563,6 +581,7 @@ pub(crate) fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
 async fn simple_enroll(
     State(state): State<EstState>,
     AuthUser(user): AuthUser,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response> {
     // Use authenticated user identity as client identifier
@@ -691,6 +710,31 @@ async fn simple_enroll(
             return Err(e);
         }
     };
+
+    // Single-use enrollment tokens: if this request was authorized by an EST
+    // enrollment token, consume it now that a certificate has been issued, so it
+    // cannot be reused. A no-op for normal session/mTLS authentication (the
+    // presented credential is not in the enrollment-token store).
+    if let Some(bearer) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+    {
+        let token_repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+        match token_repo
+            .consume_enrollment_token(
+                &crate::enrollment_token::hash_token(bearer),
+                Some(certificate_id),
+            )
+            .await
+        {
+            Ok(true) => {
+                tracing::info!(actor = %client_identifier, "EST enrollment token consumed (single-use)")
+            }
+            Ok(false) => {} // session/mTLS auth — nothing to consume
+            Err(e) => tracing::warn!(error = %e, "failed to consume EST enrollment token"),
+        }
+    }
 
     // Load the issued certificate and wrap it in a certs-only PKCS#7.
     // RFC 7030 §4.2.3 - Response is a degenerate PKCS#7 with the issued cert.
@@ -1414,6 +1458,140 @@ struct AddIdentityRequest {
 struct IdentitiesResponse {
     account: String,
     identities: Vec<String>,
+}
+
+/// Request to mint a single-use EST enrollment token (camelCase to match the UI).
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MintEnrollmentTokenRequest {
+    /// Device identity (CN) the enrolled certificate must carry (H1 binding).
+    identity: String,
+    /// Token lifetime in seconds; clamped to [60, 604800], default 3600.
+    ttl_seconds: Option<i64>,
+}
+
+/// One-time response carrying the plaintext token. The token is never persisted
+/// in plaintext and cannot be retrieved again — treat it like an API key.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MintEnrollmentTokenResponse {
+    token: String,
+    identity: String,
+    expires_at: String,
+    expires_in_seconds: i64,
+}
+
+/// Mint a single-use, time-limited EST enrollment token bound to a device
+/// identity.
+///
+/// `POST /api/v1/est/enrollment-tokens` — requires `Permission::GenerateEstToken`.
+/// The operator hands the returned token to a device, which presents it once to
+/// `/simpleenroll`; the H1 binding forces the CSR identity to equal `identity`,
+/// and the token is consumed on success.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-3 (access enforcement), AC-6 (least privilege),
+///   IA-5 (authenticator management), AU-2 (auditable credential lifecycle)
+/// - NIAP PP-CA: FMT_SMF.1 / FMT_MTD.1, FDP_CER_EXT.1
+async fn create_enrollment_token(
+    State(state): State<EstState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<MintEnrollmentTokenRequest>,
+) -> Result<Response> {
+    // AC-3: only GenerateEstToken holders may mint. Audit the denial (AU-2).
+    if state
+        .rbac_policy
+        .authorize(&user, Permission::GenerateEstToken, "est-enrollment-tokens")
+        .is_err()
+    {
+        emit_failure_audit(
+            &state,
+            &user.username,
+            "est:enrollment-tokens",
+            "generate_est_token_denied",
+        )
+        .await;
+        tracing::warn!(actor = %user.username, "EST enrollment-token generation denied");
+        return Err(Error::Forbidden("insufficient permission".to_string()));
+    }
+
+    // SI-10: validate + canonicalize the bound identity (trim/lowercase/bounds).
+    let identity = validate_identity(&req.identity)?;
+
+    // Clamp the lifetime: at least 1 minute, at most 7 days.
+    const MIN_TTL: i64 = 60;
+    const MAX_TTL: i64 = 7 * 24 * 3600;
+    const DEFAULT_TTL: i64 = 3600;
+    let ttl = req
+        .ttl_seconds
+        .unwrap_or(DEFAULT_TTL)
+        .clamp(MIN_TTL, MAX_TTL);
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl);
+
+    // 256-bit URL-safe token; only its SHA-256 is stored.
+    let token_bytes: [u8; 32] = rand::random();
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes);
+    let token_hash = crate::enrollment_token::hash_token(&token);
+    let token_id = uuid::Uuid::new_v4();
+
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let outcome = if repo
+        .create_enrollment_token(
+            token_id,
+            &token_hash,
+            &identity,
+            None,
+            &user.username,
+            expires_at,
+        )
+        .await
+        .is_ok()
+    {
+        ostrich_audit::EventOutcome::Success
+    } else {
+        ostrich_audit::EventOutcome::Failure
+    };
+
+    // AU-2 / FAU_GEN.1: record who minted a credential for which identity.
+    let mut event = ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::ConfigurationChange,
+        &user.username,
+        "est:enrollment-tokens".to_string(),
+        "generate_est_token",
+        outcome,
+    )
+    .with_details(serde_json::json!({
+        "identity": identity,
+        "ttl_seconds": ttl,
+        "token_id": token_id.to_string(),
+    }))
+    .build();
+    let _ = state.audit_sink.record(&mut event).await;
+
+    if outcome == ostrich_audit::EventOutcome::Failure {
+        return Err(Error::Internal(
+            "Failed to store enrollment token".to_string(),
+        ));
+    }
+
+    tracing::info!(
+        actor = %user.username,
+        identity = %identity,
+        ttl_seconds = ttl,
+        token_id = %token_id,
+        "EST enrollment token minted"
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(MintEnrollmentTokenResponse {
+            token,
+            identity,
+            expires_at: expires_at.to_rfc3339(),
+            expires_in_seconds: ttl,
+        }),
+    )
+        .into_response())
 }
 
 /// Enforce an admin permission on the authenticated user (FMT_MTD.1), auditing
