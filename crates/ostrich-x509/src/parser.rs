@@ -319,9 +319,9 @@ pub fn describe_certificate(der: &[u8]) -> Result<CertificateDescription> {
         }
         Ok(PublicKey::EC(ec)) => {
             d.key_algorithm = "ECDSA".to_string();
-            // Uncompressed point = 0x04 || X || Y; field size = (len-1)/2 bytes.
-            let pt = ec.data();
-            d.key_size = (pt.len().saturating_sub(1) / 2 * 8) as u32;
+            // Let x509-parser size the curve (handles compressed + uncompressed
+            // points), falling back to 0 for an unrecognized encoding.
+            d.key_size = ec.key_size() as u32;
         }
         _ => {
             let name = algorithm_name(&key_oid);
@@ -416,10 +416,12 @@ pub fn describe_certificate(der: &[u8]) -> Result<CertificateDescription> {
             }
             ParsedExtension::AuthorityInfoAccess(aia) => {
                 for ad in &aia.accessdescs {
-                    if ad.access_method.to_id_string() == "1.3.6.1.5.5.7.48.1" {
-                        if let GeneralName::URI(u) = &ad.access_location {
-                            d.ocsp_urls.push(u.to_string());
-                        }
+                    // id-ad-ocsp (RFC 5280 §4.2.2.1)
+                    if ad.access_method.to_id_string() != "1.3.6.1.5.5.7.48.1" {
+                        continue;
+                    }
+                    if let GeneralName::URI(u) = &ad.access_location {
+                        d.ocsp_urls.push(u.to_string());
                     }
                 }
                 d.ocsp_urls.join(", ")
