@@ -18,8 +18,8 @@ use crate::components::common::{
 };
 use crate::services::api::{ApiError, api};
 use crate::types::api::{
-    CertificateDetails, CertificateListResponse, CertificateStatus,
-    CertificateSummary, RevocationReason, RevocationRequest,
+    CertificateDetails, CertificateListResponse, CertificateStatus, CertificateSummary,
+    RevocationReason, RevocationRequest,
 };
 
 /// Loading state for async data

@@ -37,7 +37,9 @@ use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPoli
 use ostrich_common::types::DistinguishedName;
 use ostrich_db::DatabasePool;
 use ostrich_db::models::Certificate;
-use ostrich_db::repository::{ApprovalRepository, CertificateRepository, CrlRepository, Repository};
+use ostrich_db::repository::{
+    ApprovalRepository, CertificateRepository, CrlRepository, Repository,
+};
 use ostrich_x509::{extensions::SubjectAltName, parser::RevocationReason};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
