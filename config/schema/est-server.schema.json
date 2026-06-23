@@ -12,8 +12,13 @@
     },
     "bindAddress": {
       "type": "string",
-      "description": "HTTPS listen address (host:port).",
+      "description": "Primary listen address (host:port). In mtlsTokenBootstrap mode this is the plain-HTTP in-cluster listener; otherwise the single listener.",
       "examples": ["0.0.0.0:8443", "[::]:8443"]
+    },
+    "mtlsBindAddress": {
+      "type": "string",
+      "description": "Separate HTTPS + optional-mTLS listen address for external enrollment, used only with mtlsTokenBootstrap (Traefik passes raw TLS through to it).",
+      "examples": ["0.0.0.0:8444"]
     },
     "databaseUrl": {
       "type": "string",

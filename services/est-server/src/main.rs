@@ -29,9 +29,18 @@ struct Args {
     #[arg(long, env = "EST_CONFIG")]
     config: Option<PathBuf>,
 
-    /// HTTPS bind address (default: 0.0.0.0:8443)
+    /// Primary bind address. In --mtls-token-bootstrap mode this is the
+    /// plain-HTTP in-cluster listener (web-ui proxy, metrics, probes); otherwise
+    /// it is the single listener (HTTPS when TLS is configured).
     #[arg(long, env = "EST_BIND_ADDRESS")]
     bind_address: Option<String>,
+
+    /// Separate HTTPS + optional-mTLS bind address for external enrollment, used
+    /// only with --mtls-token-bootstrap. Traefik passes raw TLS through to this
+    /// port so the pod can authenticate /simplereenroll by the client cert,
+    /// while --bind-address stays plain HTTP for in-cluster traffic.
+    #[arg(long, env = "EST_MTLS_BIND_ADDRESS")]
+    mtls_bind_address: Option<String>,
 
     /// Database URL
     #[arg(long, env = "DATABASE_URL")]
@@ -118,6 +127,7 @@ struct Args {
 /// built-in defaults (in that precedence order).
 struct Settings {
     bind_address: String,
+    mtls_bind_address: Option<String>,
     database_url: String,
     ca_grpc_url: Option<String>,
     ca_grpc_client_cert: Option<String>,
@@ -151,6 +161,7 @@ impl Settings {
                 .bind_address
                 .or(file.bind_address)
                 .unwrap_or_else(|| "0.0.0.0:8443".to_string()),
+            mtls_bind_address: args.mtls_bind_address.or(file.mtls_bind_address),
             database_url,
             ca_grpc_url: args.ca_grpc_url.or(file.ca_grpc_url),
             ca_grpc_client_cert: args.ca_grpc_client_cert.or(file.ca_grpc_client_cert),
@@ -480,31 +491,71 @@ async fn main() -> Result<()> {
     let app = ostrich_est::rest::create_router(state)
         .merge(ostrich_common::auth::auth_routes(auth_provider));
 
-    // Parse bind address
+    // Parse primary bind address.
     let addr: SocketAddr = settings.bind_address.parse().expect("Invalid bind address");
 
-    tracing::info!(%addr, "Starting EST server");
-
-    // Serve HTTPS when TLS is configured (HTTP fallback warns at startup).
-    // RFC 7030 §3.3 requires TLS for EST; --tls-ca-cert enables the mTLS
-    // client authentication EST relies on for enrollment identity.
-    // NIST 800-53: SC-8 - Transmission Confidentiality and Integrity
     let tls = ostrich_common::tls::TlsSettings::from_options(
         settings.tls_cert,
         settings.tls_key,
         settings.tls_ca_cert,
     )?;
-    // Shared-port mode requests but does not require client certs, so a
-    // certificate-less bootstrap client still completes the handshake while a
-    // re-enrolling client's presented certificate is verified (RFC 7030 §3.3).
-    let tls = tls.map(|t| {
-        if auth_mode == EstAuthMode::MtlsWithTokenBootstrap {
-            t.with_optional_client_auth(true)
-        } else {
-            t
-        }
-    });
-    ostrich_common::tls::serve(addr, app, tls.as_ref(), shutdown_signal()).await?;
+
+    if auth_mode == EstAuthMode::MtlsWithTokenBootstrap {
+        // Two-port deployment. The primary --bind-address stays plain HTTP for
+        // in-cluster consumers (web-ui proxy, Prometheus /metrics, k8s probes),
+        // and a SEPARATE --mtls-bind-address serves HTTPS with optional client
+        // auth for external enrollment (Traefik passes raw TLS through to it).
+        // The same router runs on both: on the HTTPS port a presented client
+        // cert authenticates /simplereenroll (RFC 7030 §3.3); over plain HTTP
+        // (no cert) the layer falls back to a bearer token. This keeps the pod
+        // reachable over HTTP in-cluster while enabling mTLS re-enrollment.
+        // NIST 800-53: SC-8 (TLS for external) / AC-17 (mTLS client auth).
+        let mtls_addr: SocketAddr = settings
+            .mtls_bind_address
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--mtls-token-bootstrap requires --mtls-bind-address (the HTTPS/mTLS \
+                     enrollment port); --bind-address stays plain HTTP for in-cluster traffic"
+                )
+            })?
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid --mtls-bind-address: {e}"))?;
+        let tls = tls
+            .ok_or_else(|| {
+                anyhow::anyhow!("--mtls-token-bootstrap requires TLS cert/key for the mTLS port")
+            })?
+            // Request but do not require client certs (certificate-less bootstrap
+            // still completes the handshake; a presented cert is verified).
+            .with_optional_client_auth(true);
+
+        tracing::info!(
+            http = %addr, https_mtls = %mtls_addr,
+            "Starting EST server (two-port: in-cluster HTTP + external HTTPS/optional-mTLS)"
+        );
+
+        // One shutdown signal fans out to both listeners.
+        let (sig_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+        let mut sig_http = sig_tx.subscribe();
+        let mut sig_https = sig_tx.subscribe();
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            let _ = sig_tx.send(());
+        });
+
+        let http_app = app.clone();
+        tokio::try_join!(
+            ostrich_common::tls::serve(addr, http_app, None, async move {
+                let _ = sig_http.recv().await;
+            }),
+            ostrich_common::tls::serve(mtls_addr, app, Some(&tls), async move {
+                let _ = sig_https.recv().await;
+            }),
+        )?;
+    } else {
+        tracing::info!(%addr, "Starting EST server");
+        ostrich_common::tls::serve(addr, app, tls.as_ref(), shutdown_signal()).await?;
+    }
 
     tracing::info!("EST Server shutdown complete");
     Ok(())

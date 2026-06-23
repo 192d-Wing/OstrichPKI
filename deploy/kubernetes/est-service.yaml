@@ -1,7 +1,11 @@
 # OstrichPKI EST Service (RFC 7030)
 #
+# Two ports: 8443 plain HTTP for in-cluster consumers (web-ui proxy, Prometheus
+# /metrics, k8s probes), and 8444 HTTPS + optional mTLS for external enrollment
+# (the Traefik IngressRouteTCP passes raw TLS through to 8444).
+#
 # COMPLIANCE MAPPING:
-# - NIST 800-53: SC-17 (PKI Certificates)
+# - NIST 800-53: SC-17 (PKI Certificates), SC-8 (TLS for external enrollment)
 apiVersion: v1
 kind: Service
 metadata:
@@ -15,3 +19,4 @@ spec:
     app: est-server
   ports:
     - { name: http, port: 8443, targetPort: http }
+    - { name: https, port: 8444, targetPort: https }
