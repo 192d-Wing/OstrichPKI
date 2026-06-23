@@ -1319,12 +1319,83 @@ openssl ocsp -issuer ca.pem -cert cert.pem -url http://ocsp.example.com -resp_te
 
 ---
 
+## Trust Anchor Management
+
+### RFC 5934: Trust Anchor Management Protocol (TAMP)
+
+**Status:** 🟢 **Implemented (manager / authority role)**
+
+OstrichPKI implements the TAMP **manager** role: it composes, CMS-signs, and
+distributes trust-anchor management messages to remote cryptographic modules,
+and verifies and records the targets' signed confirmations and status
+responses. The crate is `ostrich-tamp`; the service is `ostrich-tamp-server`.
+
+**Implementation:**
+
+- [crates/ostrich-tamp/src/asn1.rs](../../crates/ostrich-tamp/src/asn1.rs) -
+  DER message structures (App. A.1): all message types and `TrustAnchorChoice`.
+- [crates/ostrich-tamp/src/oids.rs](../../crates/ostrich-tamp/src/oids.rs) -
+  `id-tamp` content-type arc (`2.16.840.1.101.2.1.2.77`) and attribute OIDs.
+- [crates/ostrich-tamp/src/statuscode.rs](../../crates/ostrich-tamp/src/statuscode.rs) -
+  full `StatusCode` ENUMERATED (§5).
+- [crates/ostrich-tamp/src/cms.rs](../../crates/ostrich-tamp/src/cms.rs) -
+  CMS `SignedData` protection (§2.2): one SignerInfo, subjectKeyIdentifier sid,
+  `content-type` + `message-digest` signed attributes.
+- [crates/ostrich-tamp/src/manager.rs](../../crates/ostrich-tamp/src/manager.rs) -
+  message composition and the update state machine (§4).
+- [crates/ostrich-db/src/repository/tamp.rs](../../crates/ostrich-db/src/repository/tamp.rs)
+  and [migrations/00014_tamp_trust_anchor_store.sql](../../migrations/00014_tamp_trust_anchor_store.sql) -
+  durable trust-anchor store and per-signer sequence numbers (§4.1).
+
+**Evidence:**
+
+- ✅ §2.2.1 - CMS protection: exactly one SignerInfo, subjectKeyIdentifier
+  signer form, mandatory `content-type` / `message-digest` signed attributes.
+  Inbound responses are verified against the target's registered signing key
+  resolved by SKI (`tamp_target_signers`), never a caller-supplied key.
+- ✅ §4.1 - Sequence numbers strictly increasing per signer; replay rejected
+  via a row-locked check-and-advance (`check_and_advance_seq`). NIST SC-23.
+- ✅ §4.1/§4.2 - `TAMPStatusQuery` / `TAMPStatusResponse` (terse + verbose).
+- ✅ §4.3/§4.4 - `TAMPUpdate` / `TAMPUpdateConfirm` (add / remove / change),
+  with re-add of an existing public key rejected (`improperTAAddition`).
+- ✅ §4.5/§4.6 - `TAMPApexUpdate` / `TAMPApexUpdateConfirm` (operational +
+  contingency apex, optional clear of subordinate TAs / communities).
+- ✅ §4.7/§4.8 - `TAMPCommunityUpdate` / confirm (atomic remove-then-add).
+- ✅ §4.9/§4.10 - `SequenceNumberAdjust` / confirm.
+- ✅ §4.11 - `TAMPError` with `StatusCode` mapping from every processing error.
+- ✅ §5 - complete `StatusCode` enumeration, DER round-trip tested.
+- ✅ §2.2.4.1 - Contingency-key unsigned attribute
+  (`id-aa-TAMP-contingencyPublicKeyDecryptKey`): an apex update can carry the
+  plaintext symmetric unwrap key as a CMS unsigned attribute
+  (`sign_message_with_unsigned_attrs`); the key material is held in `Zeroizing`
+  (SI-12) and the attachment is round-trip tested. Wrapping the contingency
+  *public* key into the `id-pe-wrappedApexContinKey` extension is delegated to
+  the caller/HSM (`ApexContingencyKey` type provided).
+- ℹ️ Target (recipient) role is out of scope; OstrichPKI is the manager.
+
+**DER tagging note:** the RFC 5934 / 5914 modules are `IMPLICIT TAGS`; per
+X.680 §31.2.7 an implicit tag on a `CHOICE` (e.g. `add [1] TrustAnchorChoice`,
+`issuer [n] Name`) is promoted to EXPLICIT. This is reflected in the type
+definitions and validated by round-trip tests.
+
+### RFC 5914: Trust Anchor Format
+
+**Status:** 🟢 **Implemented**
+
+`TrustAnchorChoice` (`certificate` / `tbsCert` / `taInfo`), `TrustAnchorInfo`,
+and `CertPathControls` are implemented in
+[crates/ostrich-tamp/src/asn1.rs](../../crates/ostrich-tamp/src/asn1.rs) and
+consumed by the TAMP messages above.
+
+---
+
 ## Document Change History
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-01-03 | OstrichPKI Team | Initial RFC compliance assessment based on v0.10.0 codebase |
 | 1.2 | 2026-01-04 | OstrichPKI Team | Added RFC 4514 DN parsing implementation, documented SAN parsing from CSR extensions, updated compliance to 70% |
+| 1.7 | 2026-06-23 | OstrichPKI Team | Added RFC 5934 (TAMP manager role) and RFC 5914 (Trust Anchor Format) implementation in the `ostrich-tamp` crate and `ostrich-tamp-server` |
 
 ---
 

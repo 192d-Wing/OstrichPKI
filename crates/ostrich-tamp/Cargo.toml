@@ -1,0 +1,48 @@
+[package]
+name = "ostrich-tamp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Internal
+ostrich-common = { workspace = true }
+ostrich-db = { workspace = true }
+ostrich-crypto = { workspace = true }
+ostrich-audit = { workspace = true }
+ostrich-x509 = { workspace = true }
+
+# Web
+axum = { workspace = true }
+async-trait = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+base64 = { workspace = true }
+
+# ASN.1 / CMS / X.509 (RFC 5934 / 5914 / 5652 / 5280)
+der = { workspace = true }
+cms = { workspace = true }
+x509-cert = { workspace = true }
+spki = { workspace = true }
+const-oid = { workspace = true }
+sha2 = { workspace = true }
+
+# Utilities
+thiserror = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# MemoryAuditSink for manager unit tests
+ostrich-audit = { workspace = true, features = ["testing"] }

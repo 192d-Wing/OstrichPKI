@@ -221,6 +221,8 @@ impl DatabaseAuditSink {
             "token_lifecycle" => EventType::TokenLifecycle,
             "acme_protocol" => EventType::AcmeProtocol,
             "est_protocol" => EventType::EstProtocol,
+            "ocsp_protocol" => EventType::OcspProtocol,
+            "tamp_protocol" => EventType::TampProtocol,
             "system" => EventType::System,
             "database" => EventType::Database,
             _ => EventType::Other,

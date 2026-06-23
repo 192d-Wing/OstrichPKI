@@ -2242,6 +2242,7 @@ The following SFRs require a complete authentication system:
 | 2.1 | 2026-01-04 | OstrichPKI Team | Phase 18: FDP family 100% - FDP_CER_EXT.2 (certificate request linkage) and FDP_CER_EXT.3 (approval workflow) implemented; Overall 96% |
 | 2.4 | 2026-01-04 | OstrichPKI Team | Phase 19: HSM enforcement, 98% compliance |
 | 2.5 | 2026-01-07 | OstrichPKI Team | Phase 20: Web UI service - OIDC authentication (FIA_UAU_EXT.1), CSP nonces (FPT_TRP_EXT.1), session mgmt (FTA_SSL.3/4) |
+| 2.6 | 2026-06-23 | OstrichPKI Team | TAMP (RFC 5934) manager: FMT_SMF.1 (trust anchor management functions), FCS_COP.1 (CMS sign/verify), FAU_GEN.1 (TampProtocol audit), FPT_STM.1 — `ostrich-tamp` crate + `ostrich-tamp-server` |
 
 ---
 

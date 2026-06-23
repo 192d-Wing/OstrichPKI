@@ -1717,6 +1717,37 @@ Mitigation: System deployed in trusted environment with network access controls
 
 ---
 
+## Trust Anchor Management Protocol (RFC 5934) — Control Evidence
+
+The `ostrich-tamp` crate and `ostrich-tamp-server` (TAMP manager role)
+implement the following controls:
+
+- **SC-12 (Cryptographic Key Establishment and Management):** durable
+  authoritative trust-anchor store; trust anchors added / removed / changed and
+  the apex rotated via signed TAMP messages.
+  [crates/ostrich-tamp/src/manager.rs](../../crates/ostrich-tamp/src/manager.rs),
+  [crates/ostrich-db/src/repository/tamp.rs](../../crates/ostrich-db/src/repository/tamp.rs).
+- **SC-13 (Cryptographic Protection):** messages protected with CMS `SignedData`
+  using FIPS-validated signing/verification (AWS-LC via `ostrich-crypto`).
+  [crates/ostrich-tamp/src/cms.rs](../../crates/ostrich-tamp/src/cms.rs).
+- **SC-23 (Session Authenticity):** monotonic per-signer sequence numbers with a
+  transactional, row-locked check-and-advance reject replays (RFC 5934 §4.1).
+  `TampRepository::check_and_advance_seq`.
+- **SI-10 (Information Input Validation):** strict DER decoding of all received
+  CMS / TAMP structures; malformed input is rejected with `decodeFailure`.
+- **SI-12 (Information Handling and Retention):** contingency-key plaintext
+  material is held in `zeroize`-backed buffers.
+- **AU-2 / AU-3 / AU-12 (Audit):** every issued message, ingested confirmation,
+  and trust-anchor state change emits an `EventType::TampProtocol` audit event
+  (actor, target, action, outcome, sequence number, signer SKI).
+- **IA-7 (Cryptographic Module Authentication):** the apex/management signing
+  key is provided by the crypto provider (HSM/PKCS#11 in production).
+- **AC-3 (Access Enforcement):** REST endpoints require `ModifyConfig`
+  (mutating) / `ViewConfig` (read) RBAC permissions.
+  [crates/ostrich-tamp/src/rest.rs](../../crates/ostrich-tamp/src/rest.rs).
+
+---
+
 ## Document Change History
 
 | Version | Date | Author | Changes |
@@ -1724,6 +1755,7 @@ Mitigation: System deployed in trusted environment with network access controls
 | 1.0 | 2026-01-03 | OstrichPKI Team | Initial NIST 800-53 mapping based on v0.10.0 codebase |
 | 1.5 | 2026-01-04 | OstrichPKI Team | HSM enforcement and 98% NIAP compliance |
 | 1.6 | 2026-01-07 | OstrichPKI Team | Web UI: AC-2 partial (OIDC), AC-12 implemented (sessions), SC-23 implemented (CSP nonces, PKCE) |
+| 1.7 | 2026-06-23 | OstrichPKI Team | TAMP (RFC 5934) manager: SC-12/SC-13/SC-23/SI-10/SI-12/AU-2/AU-3/AU-12/IA-7/AC-3 evidence (`ostrich-tamp`) |
 
 ---
 

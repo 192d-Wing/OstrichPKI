@@ -114,6 +114,12 @@ pub enum EventType {
     /// OCSP protocol event
     OcspProtocol,
 
+    /// TAMP protocol event (RFC 5934 trust anchor management)
+    ///
+    /// NIST 800-53: SC-12 - Trust anchor (key) management events
+    /// NIAP PP-CA: FAU_GEN.1.1 / FMT_SMF.1 - Trust anchor management functions
+    TampProtocol,
+
     /// System event (startup, shutdown, etc.)
     ///
     /// NIAP PP-CA: FAU_GEN.1.1 - Startup and shutdown of audit functions
@@ -163,6 +169,7 @@ impl EventType {
             EventType::AcmeProtocol => "acme_protocol",
             EventType::EstProtocol => "est_protocol",
             EventType::OcspProtocol => "ocsp_protocol",
+            EventType::TampProtocol => "tamp_protocol",
             EventType::System => "system",
             EventType::Database => "database",
             EventType::Other => "other",
