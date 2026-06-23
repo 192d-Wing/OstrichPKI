@@ -175,6 +175,20 @@ pub struct CertificateDetails {
     pub pem: String,
 }
 
+/// Inventory-wide certificate counts by status (dashboard summary cards).
+///
+/// Sourced from `GET /api/v1/certificates/stats`, so the cards show true totals
+/// independent of the table's status filter and pagination.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertificateStats {
+    pub total: u64,
+    pub active: u64,
+    pub revoked: u64,
+    pub expired: u64,
+    pub pending: u64,
+}
+
 /// Revocation reason codes per RFC 5280 §5.3.1
 ///
 /// Serialized form is PascalCase to match the CA's `RevocationReason` wire

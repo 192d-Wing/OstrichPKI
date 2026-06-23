@@ -18,8 +18,8 @@ use crate::components::common::{
 };
 use crate::services::api::{ApiError, api};
 use crate::types::api::{
-    CertificateDetails, CertificateListResponse, CertificateStatus, CertificateSummary,
-    RevocationReason, RevocationRequest,
+    CertificateDetails, CertificateListResponse, CertificateStats, CertificateStatus,
+    CertificateSummary, RevocationReason, RevocationRequest,
 };
 
 /// Loading state for async data
@@ -53,7 +53,9 @@ impl Default for CertListState {
             page: 1,
             page_size: 10,
             search: String::new(),
-            status_filter: "all".to_string(),
+            // Default the table to Active certificates; operators almost always
+            // want the live inventory first and can switch to All/Revoked/etc.
+            status_filter: "active".to_string(),
         }
     }
 }
@@ -67,6 +69,27 @@ pub fn certificates() -> Html {
     // Error from the last revoke attempt; keeps the modal open so the operator
     // sees why it failed instead of the dialog silently closing.
     let revoke_error = use_state(|| None::<String>);
+    // Inventory-wide status counts for the summary cards (independent of the
+    // table filter). Bumping `stats_refresh` re-fetches them, e.g. after a revoke.
+    let stats = use_state(|| None::<CertificateStats>);
+    let stats_refresh = use_state(|| 0u32);
+
+    // Fetch inventory-wide stats on mount and whenever `stats_refresh` changes.
+    {
+        let stats = stats.clone();
+        use_effect_with(*stats_refresh, move |_| {
+            let stats = stats.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(s) = api()
+                    .get::<CertificateStats>("/ca/api/v1/certificates/stats")
+                    .await
+                {
+                    stats.set(Some(s));
+                }
+            });
+            || ()
+        });
+    }
 
     // Fetch certificates on mount and when filters change
     {
@@ -107,6 +130,17 @@ pub fn certificates() -> Html {
             let mut new_state = (*state).clone();
             new_state.search = input.value();
             new_state.page = 1; // Reset to first page on search
+            state.set(new_state);
+        })
+    };
+
+    // Clear the search box (the inline ✕ button).
+    let on_clear_search = {
+        let state = state.clone();
+        Callback::from(move |_| {
+            let mut new_state = (*state).clone();
+            new_state.search = String::new();
+            new_state.page = 1;
             state.set(new_state);
         })
     };
@@ -159,11 +193,13 @@ pub fn certificates() -> Html {
         let revoke_cert = revoke_cert.clone();
         let revoke_error = revoke_error.clone();
         let state = state.clone();
+        let stats_refresh = stats_refresh.clone();
         Callback::from(move |(reason, notes): (RevocationReason, Option<String>)| {
             if let Some(cert) = (*revoke_cert).clone() {
                 let revoke_cert = revoke_cert.clone();
                 let revoke_error = revoke_error.clone();
                 let state = state.clone();
+                let stats_refresh = stats_refresh.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     let request = RevocationRequest { reason, notes };
                     match api()
@@ -174,13 +210,14 @@ pub fn certificates() -> Html {
                         .await
                     {
                         Ok(_) => {
-                            // Refresh list, clear any prior error, close the modal.
+                            // Refresh list + stats, clear any prior error, close.
                             if let Ok(response) = fetch_certificates(&state).await {
                                 let mut new_state = (*state).clone();
                                 new_state.certificates = response.certificates;
                                 new_state.total = response.total;
                                 state.set(new_state);
                             }
+                            stats_refresh.set(*stats_refresh + 1);
                             revoke_error.set(None);
                             revoke_cert.set(None);
                         }
@@ -273,23 +310,37 @@ pub fn certificates() -> Html {
 
             // Actions bar
             <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
-                <div class="flex flex-col sm:flex-row gap-4 w-full md:w-auto">
+                <div class="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                     // Search
-                    <div class="relative">
+                    <div class="relative w-full sm:w-96">
+                        <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
+                            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                        </div>
                         <input
                             type="text"
-                            placeholder="Search by subject or serial..."
+                            placeholder="Search by subject or serial…"
                             value={state.search.clone()}
                             oninput={on_search}
-                            class="form-input w-full sm:w-80 pl-10"
+                            class="block w-full rounded-full border border-gray-200 bg-gray-50 py-2.5 pl-11 pr-10 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition-colors focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30"
                         />
-                        <svg class="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                        </svg>
+                        if !state.search.is_empty() {
+                            <button
+                                type="button"
+                                aria-label="Clear search"
+                                onclick={on_clear_search}
+                                class="absolute inset-y-0 right-0 flex items-center pr-3.5 text-gray-400 hover:text-gray-600"
+                            >
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        }
                     </div>
-                    // Filter dropdown
+                    // Filter dropdown (matches the search pill)
                     <select
-                        class="form-select w-full sm:w-auto"
+                        class="w-full sm:w-auto rounded-full border border-gray-200 bg-gray-50 py-2.5 pl-4 pr-10 text-sm text-gray-900 shadow-sm transition-colors focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30"
                         onchange={on_status_filter}
                         value={state.status_filter.clone()}
                     >
@@ -325,28 +376,31 @@ pub fn certificates() -> Html {
                     },
                     LoadState::Loaded(_) => html! {
                         <>
-                            // Summary stats
+                            // Summary stats — inventory-wide totals from the
+                            // /stats endpoint, independent of the table filter.
                             <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                                 <div class="bg-white rounded-lg border border-gray-200 p-4">
                                     <p class="text-sm text-gray-500">{ "Total Certificates" }</p>
-                                    <p class="text-2xl font-bold text-gray-900">{ state.total }</p>
+                                    <p class="text-2xl font-bold text-gray-900">
+                                        { (*stats).as_ref().map_or(0, |s| s.total) }
+                                    </p>
                                 </div>
                                 <div class="bg-white rounded-lg border border-gray-200 p-4">
                                     <p class="text-sm text-gray-500">{ "Active" }</p>
                                     <p class="text-2xl font-bold text-green-600">
-                                        { state.certificates.iter().filter(|c| c.status == CertificateStatus::Active).count() }
+                                        { (*stats).as_ref().map_or(0, |s| s.active) }
                                     </p>
                                 </div>
                                 <div class="bg-white rounded-lg border border-gray-200 p-4">
                                     <p class="text-sm text-gray-500">{ "Revoked" }</p>
                                     <p class="text-2xl font-bold text-red-600">
-                                        { state.certificates.iter().filter(|c| c.status == CertificateStatus::Revoked).count() }
+                                        { (*stats).as_ref().map_or(0, |s| s.revoked) }
                                     </p>
                                 </div>
                                 <div class="bg-white rounded-lg border border-gray-200 p-4">
                                     <p class="text-sm text-gray-500">{ "Expired" }</p>
                                     <p class="text-2xl font-bold text-amber-600">
-                                        { state.certificates.iter().filter(|c| c.status == CertificateStatus::Expired).count() }
+                                        { (*stats).as_ref().map_or(0, |s| s.expired) }
                                     </p>
                                 </div>
                             </div>

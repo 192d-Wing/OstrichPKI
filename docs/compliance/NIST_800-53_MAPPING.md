@@ -96,8 +96,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   - `crates/ostrich-ca/src/rest.rs` — IssueCertificate, RevokeCertificate, GenerateCrl,
     ApproveRequest, RejectRequest, SubmitRequest, ViewRequests, ViewConfig (profiles),
     ViewCertificate (GET `/api/v1/certificates` list + GET `/api/v1/certificates/{id}`
-    detail — read access to the issued-certificate inventory, distinct from the
-    IssueCertificate POST on the same path)
+    detail + GET `/api/v1/certificates/stats` inventory-wide status counts — read
+    access to the issued-certificate inventory, distinct from the IssueCertificate
+    POST on the same path)
   - `crates/ostrich-est/src/rest.rs` — SubmitRequest, RenewCertificate,
     GenerateEstToken (mint/list/revoke device enrollment tokens — POST/GET
     `/api/v1/est/enrollment-tokens`, DELETE `…/{id}`; single-use, time-limited;

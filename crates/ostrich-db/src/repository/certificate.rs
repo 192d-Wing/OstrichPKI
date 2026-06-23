@@ -8,6 +8,19 @@ use async_trait::async_trait;
 use sqlx::Row;
 use uuid::Uuid;
 
+/// Inventory-wide certificate counts grouped by derived status.
+///
+/// Mirrors `cert_status_str` precedence (revoked wins, then expired, then
+/// pending, else active) so the figures match the list view's per-row status.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CertificateStatusCounts {
+    pub total: i64,
+    pub active: i64,
+    pub revoked: i64,
+    pub expired: i64,
+    pub pending: i64,
+}
+
 /// Repository for certificate operations
 pub struct CertificateRepository {
     pool: DatabasePool,
@@ -163,6 +176,39 @@ impl CertificateRepository {
 
         let count: i64 = result.get("count");
         Ok(count > 0)
+    }
+
+    /// Count certificates grouped by derived status in a single aggregate query.
+    ///
+    /// Inventory-wide (independent of any list filter/pagination), so the UI can
+    /// show true totals while the table shows a filtered subset.
+    pub async fn count_by_status(&self) -> Result<CertificateStatusCounts> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (
+                    WHERE NOT revoked AND not_after >= NOW() AND not_before <= NOW()
+                ) AS active,
+                COUNT(*) FILTER (WHERE revoked) AS revoked,
+                COUNT(*) FILTER (WHERE NOT revoked AND not_after < NOW()) AS expired,
+                COUNT(*) FILTER (
+                    WHERE NOT revoked AND not_after >= NOW() AND not_before > NOW()
+                ) AS pending
+            FROM certificates
+            "#,
+        )
+        .fetch_one(self.pool.pool())
+        .await
+        .map_err(|e| Error::Query(e.to_string()))?;
+
+        Ok(CertificateStatusCounts {
+            total: row.get("total"),
+            active: row.get("active"),
+            revoked: row.get("revoked"),
+            expired: row.get("expired"),
+            pending: row.get("pending"),
+        })
     }
 }
 
