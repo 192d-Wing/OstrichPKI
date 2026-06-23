@@ -554,7 +554,7 @@ pub fn users() -> Html {
                 <div class="card-body">
                     <div class="flex flex-wrap gap-4 items-end">
                         <div class="flex-1 min-w-[200px]">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                            <label class="form-label">
                                 {"Search"}
                             </label>
                             <input
@@ -566,7 +566,7 @@ pub fn users() -> Html {
                             />
                         </div>
                         <div class="w-40">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                            <label class="form-label">
                                 {"Status"}
                             </label>
                             <select
@@ -582,7 +582,7 @@ pub fn users() -> Html {
                             </select>
                         </div>
                         <div class="w-40">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                            <label class="form-label">
                                 {"Role"}
                             </label>
                             <select
@@ -731,7 +731,7 @@ pub fn users() -> Html {
                         <form class="space-y-4">
                             <div class="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                                    <label class="form-label">
                                         {"Full Name"}
                                         <span class="text-red-500 ml-1">{"*"}</span>
                                     </label>
@@ -742,7 +742,7 @@ pub fn users() -> Html {
                                     />
                                 </div>
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                                    <label class="form-label">
                                         {"Username"}
                                     </label>
                                     <input
@@ -754,7 +754,7 @@ pub fn users() -> Html {
                                 </div>
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label class="form-label">
                                     {"Email"}
                                     <span class="text-red-500 ml-1">{"*"}</span>
                                 </label>
@@ -765,7 +765,7 @@ pub fn users() -> Html {
                                 />
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label class="form-label">
                                     {"Status"}
                                 </label>
                                 <select class="form-select w-full">
@@ -830,7 +830,7 @@ pub fn users() -> Html {
                     <form class="space-y-4">
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label class="form-label">
                                     {"Full Name"}
                                     <span class="text-red-500 ml-1">{"*"}</span>
                                 </label>
@@ -841,7 +841,7 @@ pub fn users() -> Html {
                                 />
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label class="form-label">
                                     {"Username"}
                                     <span class="text-red-500 ml-1">{"*"}</span>
                                 </label>
@@ -853,7 +853,7 @@ pub fn users() -> Html {
                             </div>
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                            <label class="form-label">
                                 {"Email"}
                                 <span class="text-red-500 ml-1">{"*"}</span>
                             </label>

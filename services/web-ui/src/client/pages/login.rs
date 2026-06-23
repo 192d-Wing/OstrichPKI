@@ -99,20 +99,20 @@ pub fn login() -> Html {
                         }
 
                         <form onsubmit={on_submit}>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">{ "Username" }</label>
+                            <label class="form-label">{ "Username" }</label>
                             <input
                                 type="text"
-                                class="w-full mb-4 px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring focus:border-blue-400"
+                                class="form-input mb-4"
                                 value={(*username).clone()}
                                 oninput={on_user}
                                 autocomplete="username"
                                 required=true
                             />
 
-                            <label class="block text-sm font-medium text-gray-700 mb-1">{ "Password" }</label>
+                            <label class="form-label">{ "Password" }</label>
                             <input
                                 type="password"
-                                class="w-full mb-6 px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring focus:border-blue-400"
+                                class="form-input mb-6"
                                 value={(*password).clone()}
                                 oninput={on_pass}
                                 autocomplete="current-password"

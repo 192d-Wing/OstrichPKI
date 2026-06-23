@@ -392,7 +392,7 @@ pub fn approvals() -> Html {
                 <div class="card-body">
                     <div class="flex flex-wrap gap-4 items-end">
                         <div class="flex-1 min-w-[200px]">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                            <label class="form-label">
                                 {"Status"}
                             </label>
                             <select
@@ -407,7 +407,7 @@ pub fn approvals() -> Html {
                             </select>
                         </div>
                         <div class="flex-1 min-w-[200px]">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                            <label class="form-label">
                                 {"Request Type"}
                             </label>
                             <select
@@ -499,7 +499,7 @@ pub fn approvals() -> Html {
                                 </div>
                             </dl>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label class="form-label">
                                     {"Approval Notes (Optional)"}
                                 </label>
                                 <textarea
@@ -555,7 +555,7 @@ pub fn approvals() -> Html {
                                 </div>
                             </dl>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label class="form-label">
                                     {"Denial Reason"}
                                     <span class="text-red-500 ml-1">{"*"}</span>
                                 </label>
