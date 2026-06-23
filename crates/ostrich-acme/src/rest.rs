@@ -850,6 +850,21 @@ async fn respond_to_challenge(
         )
         .await?;
 
+    // RFC 8555 §7.5.1: the challenge response MUST carry a Link header with
+    // rel="up" pointing to the authorization. Clients (lego, certbot) use it to
+    // locate the authorization to poll after responding; without it the client
+    // has no poll target and aborts. Resolve the authorization's public id from
+    // the challenge's FK before the challenge value is moved into validation.
+    let up_link = repo
+        .find_authorization_by_uuid(db_challenge.authorization_id)
+        .await?
+        .map(|a| {
+            format!(
+                "<{}/acme/authz/{}>;rel=\"up\"",
+                state.base_url, a.authorization_id
+            )
+        });
+
     // RFC 8555 §8.3/§8.4 - perform the actual domain-control validation.
     // NIAP PP-CA: FIA_UAU.1 - proof of identifier control before issuance.
     tokio::spawn(run_challenge_validation(state.clone(), db_challenge));
@@ -858,7 +873,15 @@ async fn respond_to_challenge(
 
     let nonce = generate_nonce(&state).await;
 
-    Ok((StatusCode::OK, [("Replay-Nonce", nonce)], Json(challenge)).into_response())
+    let mut response = (StatusCode::OK, Json(challenge)).into_response();
+    let headers = response.headers_mut();
+    if let Ok(v) = axum::http::HeaderValue::from_str(&nonce) {
+        headers.insert("Replay-Nonce", v);
+    }
+    if let Some(v) = up_link.and_then(|link| axum::http::HeaderValue::from_str(&link).ok()) {
+        headers.insert(axum::http::header::LINK, v);
+    }
+    Ok(response)
 }
 
 /// Asynchronous challenge validation (RFC 8555 §7.5.1).
