@@ -1,28 +1,30 @@
-# OstrichPKI ACME Service Deployment
+# OstrichPKI ACME Service Deployment (RFC 8555)
 #
 # COMPLIANCE MAPPING:
-# - RFC 8555: ACME Protocol
-# - NIST 800-53: SC-17 (PKI Certificates)
-
+# - NIST 800-53: SC-17 (PKI Certificates), SC-23 (replay protection)
+# - NIST 800-53: CM-2 (Baseline Configuration)
+#
+# Per-service image (ghcr.io/192d-wing/acme-service). Finalizes orders via the
+# CA over gRPC; waits for the CA to be bootstrapped first. ACME_BASE_URL is a
+# placeholder here — set it per environment to the externally reachable
+# directory URL. The SSRF guard stays ON (ACME_ALLOW_PRIVATE_IP_DOMAINS=false);
+# only an in-cluster E2E flips it.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ostrich-pki-acme
+  name: acme-server
   namespace: ostrich-pki
   labels:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: acme
+    app: acme-server
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: ostrich-pki
-      app.kubernetes.io/component: acme
+      app: acme-server
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: ostrich-pki
-        app.kubernetes.io/component: acme
+        app: acme-server
     spec:
       serviceAccountName: ostrich-pki
       securityContext:
@@ -32,73 +34,51 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
-      containers:
-        - name: acme
-          image: ostrich-pki:latest
-          imagePullPolicy: IfNotPresent
+      initContainers:
+        - name: wait-ca
+          image: postgres:16-alpine
+          command: ["sh", "-c"]
           args:
-            - --target
-            - acme-service
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1000
-            capabilities:
-              drop:
-                - ALL
-          ports:
-            - name: http
-              containerPort: 8080
-              protocol: TCP
+            - |
+              until psql "$DATABASE_URL" -tAc "SELECT 1 FROM ca_certificates WHERE is_root = false LIMIT 1" 2>/dev/null | grep -q 1; do
+                echo "waiting for CA bootstrap..."; sleep 3;
+              done
           env:
-            - name: RUST_LOG
-              valueFrom:
-                configMapKeyRef:
-                  name: ostrich-pki-config
-                  key: RUST_LOG
-            - name: LOG_JSON
-              valueFrom:
-                configMapKeyRef:
-                  name: ostrich-pki-config
-                  key: LOG_JSON
             - name: DATABASE_URL
-              value: "postgresql://ostrich:$(DATABASE_PASSWORD)@ostrich-pki-postgresql:5432/ostrich_pki"
-            - name: DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: ostrich-pki-db
-                  key: password
-            - name: ACME_BIND_ADDRESS
-              value: "0.0.0.0:8080"
-            - name: ACME_BASE_URL
-              value: "https://acme.example.com"
+                  name: ostrich-secrets
+                  key: DATABASE_URL
+      containers:
+        - name: acme-server
+          image: ghcr.io/192d-wing/acme-service:latest
+          imagePullPolicy: Always
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: RUST_LOG, value: "info" }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ostrich-secrets
+                  key: DATABASE_URL
+            - { name: ACME_BIND_ADDRESS, value: "0.0.0.0:8080" }
+            - { name: ACME_BASE_URL, value: "https://acme.example.com" }
+            - { name: CA_GRPC_URL, value: "http://ca-service:50051" }
+            - { name: CA_GRPC_INSECURE, value: "true" }
+            - { name: ACME_ALLOW_PRIVATE_IP_DOMAINS, value: "false" }
+            - { name: ACME_HTTP01_PORT, value: "80" }
           livenessProbe:
-            httpGet:
-              path: /health
-              port: http
+            httpGet: { path: /health, port: http }
             initialDelaySeconds: 10
-            periodSeconds: 30
-            timeoutSeconds: 10
-            failureThreshold: 3
+            periodSeconds: 20
           readinessProbe:
-            httpGet:
-              path: /ready
-              port: http
+            httpGet: { path: /ready, port: http }
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
           resources:
-            limits:
-              cpu: 500m
-              memory: 256Mi
-            requests:
-              cpu: 100m
-              memory: 64Mi
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
-      volumes:
-        - name: tmp
-          emptyDir: {}
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }

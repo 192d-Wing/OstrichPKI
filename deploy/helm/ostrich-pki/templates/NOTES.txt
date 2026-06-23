@@ -12,11 +12,11 @@ Getting Started
 {{- if .Values.ca.enabled }}
 
 2. Access the CA REST API:
-   kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-ca-rest 8080:{{ .Values.ca.rest.service.port }} -n {{ .Release.Namespace }}
+   kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-ca 8080:{{ .Values.ca.rest.service.port }} -n {{ .Release.Namespace }}
    curl http://localhost:8080/health
 
 3. Access the CA gRPC API:
-   kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-ca-grpc 50051:{{ .Values.ca.grpc.service.port }} -n {{ .Release.Namespace }}
+   kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-ca 50051:{{ .Values.ca.grpc.service.port }} -n {{ .Release.Namespace }}
 
 {{- end }}
 

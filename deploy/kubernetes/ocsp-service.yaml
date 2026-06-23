@@ -1,23 +1,17 @@
-# OstrichPKI OCSP Service
+# OstrichPKI OCSP Service (RFC 6960)
 #
 # COMPLIANCE MAPPING:
-# - RFC 6960: OCSP Protocol
-
+# - NIST 800-53: SC-17 (PKI Certificates)
 apiVersion: v1
 kind: Service
 metadata:
-  name: ostrich-pki-ocsp
+  name: ocsp-service
   namespace: ostrich-pki
   labels:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: ocsp
+    app: ocsp-server
 spec:
   type: ClusterIP
-  ports:
-    - port: 8081
-      targetPort: http
-      protocol: TCP
-      name: http
   selector:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: ocsp
+    app: ocsp-server
+  ports:
+    - { name: http, port: 8081, targetPort: http }

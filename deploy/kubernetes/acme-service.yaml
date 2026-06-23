@@ -1,23 +1,17 @@
-# OstrichPKI ACME Service
+# OstrichPKI ACME Service (RFC 8555)
 #
 # COMPLIANCE MAPPING:
-# - RFC 8555: ACME Protocol
-
+# - NIST 800-53: SC-17 (PKI Certificates)
 apiVersion: v1
 kind: Service
 metadata:
-  name: ostrich-pki-acme
+  name: acme-service
   namespace: ostrich-pki
   labels:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: acme
+    app: acme-server
 spec:
   type: ClusterIP
-  ports:
-    - port: 8080
-      targetPort: http
-      protocol: TCP
-      name: http
   selector:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: acme
+    app: acme-server
+  ports:
+    - { name: http, port: 8080, targetPort: http }

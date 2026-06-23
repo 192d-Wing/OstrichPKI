@@ -1,15 +1,18 @@
 {{/*
-OstrichPKI CA Service - Kubernetes Services
+OstrichPKI CA Service
 
 COMPLIANCE MAPPING:
 - NIST 800-53: SC-8 (Transmission Confidentiality)
+
+The CA exposes REST (http) and gRPC on a single Service, matching the running
+cluster's "ca-service" (one Service, two ports). Other services reach the gRPC
+endpoint via "ostrich-pki.caGrpcUrl".
 */}}
 {{- if .Values.ca.enabled -}}
----
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "ostrich-pki.fullname" . }}-ca-rest
+  name: {{ include "ostrich-pki.fullname" . }}-ca
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "ostrich-pki.labels" . | nindent 4 }}
@@ -21,21 +24,6 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
-  selector:
-    {{- include "ostrich-pki.selectorLabels" . | nindent 4 }}
-    app.kubernetes.io/component: ca
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ include "ostrich-pki.fullname" . }}-ca-grpc
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "ostrich-pki.labels" . | nindent 4 }}
-    app.kubernetes.io/component: ca
-spec:
-  type: {{ .Values.ca.grpc.service.type }}
-  ports:
     - port: {{ .Values.ca.grpc.service.port }}
       targetPort: grpc
       protocol: TCP

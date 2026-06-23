@@ -70,15 +70,56 @@ Create the name of the service account to use
 {{/*
 Create image name with registry
 */}}
+{{/*
+Per-service image name.
+
+Each service ships as its own image, published as
+  <registry>/<service>-service:<tag>
+by .github/workflows/docker-publish.yml (e.g. ghcr.io/192d-wing/ca-service).
+
+Call with: (dict "service" "ca" "repository" .Values.ca.image.repository "tag" .Values.ca.image.tag "root" .)
+- service:    short name ("ca","acme","est","ocsp"); used to derive "<service>-service"
+- repository: optional per-service override of the full image repository
+- tag:        optional per-service tag override
+- root:       the root context (.)
+*/}}
 {{- define "ostrich-pki.image" -}}
-{{- $registry := .Values.global.imageRegistry | default "" -}}
-{{- $repository := .repository | default .Values.image.repository -}}
-{{- $tag := .tag | default .Values.image.tag | default .Chart.AppVersion -}}
-{{- if $registry }}
-{{- printf "%s/%s:%s" $registry $repository $tag }}
-{{- else }}
-{{- printf "%s:%s" $repository $tag }}
+{{- $registry := .root.Values.global.imageRegistry | default .root.Values.image.registry -}}
+{{- $repository := .repository | default (printf "%s-service" .service) -}}
+{{- $tag := .tag | default .root.Values.image.tag | default .root.Chart.AppVersion -}}
+{{- printf "%s/%s:%s" $registry $repository $tag -}}
 {{- end }}
+
+{{/*
+In-cluster CA gRPC URL. The CA exposes REST (http) and gRPC on a single
+Service named "<fullname>-ca"; gRPC listens on .Values.ca.grpc.service.port.
+*/}}
+{{- define "ostrich-pki.caGrpcUrl" -}}
+{{- printf "http://%s-ca:%d" (include "ostrich-pki.fullname" .) (.Values.ca.grpc.service.port | int) -}}
+{{- end }}
+
+{{/*
+Init container that blocks until the CA has been bootstrapped (an issuing,
+non-root CA certificate exists). Used by est/ocsp/acme, which finalize against
+the CA over gRPC and cannot serve before it is ready.
+*/}}
+{{- define "ostrich-pki.waitForCa" -}}
+- name: wait-ca
+  image: postgres:16-alpine
+  command: ["sh", "-c"]
+  args:
+    - |
+      until psql "$DATABASE_URL" -tAc "SELECT 1 FROM ca_certificates WHERE is_root = false LIMIT 1" 2>/dev/null | grep -q 1; do
+        echo "waiting for CA bootstrap..."; sleep 3;
+      done
+  env:
+    - name: DATABASE_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: {{ include "ostrich-pki.databaseSecretName" . }}
+          key: {{ include "ostrich-pki.databasePasswordKey" . }}
+    - name: DATABASE_URL
+      value: {{ include "ostrich-pki.databaseUrl" . }}
 {{- end }}
 
 {{/*

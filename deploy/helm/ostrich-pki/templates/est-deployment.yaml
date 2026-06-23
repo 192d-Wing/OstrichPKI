@@ -36,15 +36,14 @@ spec:
       serviceAccountName: {{ include "ostrich-pki.serviceAccountName" . }}
       securityContext:
         {{- include "ostrich-pki.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        {{- include "ostrich-pki.waitForCa" . | nindent 8 }}
       containers:
         - name: est
           securityContext:
             {{- include "ostrich-pki.securityContext" . | nindent 12 }}
-          image: {{ include "ostrich-pki.image" (dict "repository" .Values.est.image.repository "tag" .Values.est.image.tag "Values" .Values "Chart" .Chart) }}
+          image: {{ include "ostrich-pki.image" (dict "service" "est" "repository" .Values.est.image.repository "tag" .Values.est.image.tag "root" .) }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args:
-            - --target
-            - est-service
           ports:
             - name: https
               containerPort: 8443
@@ -53,6 +52,12 @@ spec:
             {{- include "ostrich-pki.commonEnv" . | nindent 12 }}
             - name: EST_BIND_ADDRESS
               value: "0.0.0.0:8443"
+            - name: CA_GRPC_URL
+              value: {{ include "ostrich-pki.caGrpcUrl" . | quote }}
+            - name: CA_GRPC_INSECURE
+              value: "true"
+            - name: EST_ALLOW_BEARER_AUTH
+              value: {{ .Values.est.allowBearerAuth | quote }}
             {{- if .Values.est.tls.certFile }}
             - name: TLS_CERT_FILE
               value: {{ .Values.est.tls.certFile | quote }}

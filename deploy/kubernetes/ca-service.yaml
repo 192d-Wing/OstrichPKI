@@ -1,42 +1,19 @@
-# OstrichPKI CA Services
+# OstrichPKI CA Service — one ClusterIP exposing both the REST API (8080) and
+# the gRPC issuance API (50051), matching the running cluster's ca-service.
 #
 # COMPLIANCE MAPPING:
-# - NIST 800-53: SC-8 (Transmission Confidentiality)
-
+# - NIST 800-53: SC-17 (PKI Certificates), AC-4 (information flow)
 apiVersion: v1
 kind: Service
 metadata:
-  name: ostrich-pki-ca-rest
+  name: ca-service
   namespace: ostrich-pki
   labels:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: ca
+    app: ca-server
 spec:
   type: ClusterIP
-  ports:
-    - port: 8080
-      targetPort: http
-      protocol: TCP
-      name: http
   selector:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: ca
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ostrich-pki-ca-grpc
-  namespace: ostrich-pki
-  labels:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: ca
-spec:
-  type: ClusterIP
+    app: ca-server
   ports:
-    - port: 50051
-      targetPort: grpc
-      protocol: TCP
-      name: grpc
-  selector:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: ca
+    - { name: http, port: 8080, targetPort: http }
+    - { name: grpc, port: 50051, targetPort: grpc }

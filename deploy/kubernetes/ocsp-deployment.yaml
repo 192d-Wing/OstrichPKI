@@ -1,28 +1,27 @@
-# OstrichPKI OCSP Responder Deployment
+# OstrichPKI OCSP Responder Deployment (RFC 6960)
 #
 # COMPLIANCE MAPPING:
-# - RFC 6960: OCSP Protocol
-# - NIST 800-53: SC-17 (PKI Certificates)
-
+# - NIST 800-53: SC-17 (PKI Certificates) — revocation status
+# - NIST 800-53: CM-2 (Baseline Configuration)
+#
+# Per-service image (ghcr.io/192d-wing/ocsp-service). Reads revocation status
+# from the shared database; waits for the CA to be bootstrapped first.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ostrich-pki-ocsp
+  name: ocsp-server
   namespace: ostrich-pki
   labels:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: ocsp
+    app: ocsp-server
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app.kubernetes.io/name: ostrich-pki
-      app.kubernetes.io/component: ocsp
+      app: ocsp-server
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: ostrich-pki
-        app.kubernetes.io/component: ocsp
+        app: ocsp-server
     spec:
       serviceAccountName: ostrich-pki
       securityContext:
@@ -32,81 +31,46 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
-      containers:
-        - name: ocsp
-          image: ostrich-pki:latest
-          imagePullPolicy: IfNotPresent
+      initContainers:
+        - name: wait-ca
+          image: postgres:16-alpine
+          command: ["sh", "-c"]
           args:
-            - --target
-            - ocsp-service
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1000
-            capabilities:
-              drop:
-                - ALL
-          ports:
-            - name: http
-              containerPort: 8081
-              protocol: TCP
+            - |
+              until psql "$DATABASE_URL" -tAc "SELECT 1 FROM ca_certificates WHERE is_root = false LIMIT 1" 2>/dev/null | grep -q 1; do
+                echo "waiting for CA bootstrap..."; sleep 3;
+              done
           env:
-            - name: RUST_LOG
-              valueFrom:
-                configMapKeyRef:
-                  name: ostrich-pki-config
-                  key: RUST_LOG
-            - name: LOG_JSON
-              valueFrom:
-                configMapKeyRef:
-                  name: ostrich-pki-config
-                  key: LOG_JSON
             - name: DATABASE_URL
-              value: "postgresql://ostrich:$(DATABASE_PASSWORD)@ostrich-pki-postgresql:5432/ostrich_pki"
-            - name: DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: ostrich-pki-db
-                  key: password
-            - name: OCSP_BIND_ADDRESS
-              value: "0.0.0.0:8081"
-            - name: OCSP_SIGNING_CERT
-              value: "/app/certs/tls.crt"
-            - name: OCSP_SIGNING_KEY
-              value: "/app/certs/tls.key"
+                  name: ostrich-secrets
+                  key: DATABASE_URL
+      containers:
+        - name: ocsp-server
+          image: ghcr.io/192d-wing/ocsp-service:latest
+          imagePullPolicy: Always
+          ports:
+            - { name: http, containerPort: 8081 }
+          env:
+            - { name: RUST_LOG, value: "info" }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ostrich-secrets
+                  key: DATABASE_URL
+            - { name: OCSP_BIND_ADDRESS, value: "0.0.0.0:8081" }
           livenessProbe:
-            httpGet:
-              path: /health
-              port: http
+            httpGet: { path: /health, port: http }
             initialDelaySeconds: 10
             periodSeconds: 30
-            timeoutSeconds: 10
-            failureThreshold: 3
           readinessProbe:
-            httpGet:
-              path: /ready
-              port: http
+            httpGet: { path: /ready, port: http }
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
           resources:
-            limits:
-              cpu: 500m
-              memory: 256Mi
-            requests:
-              cpu: 100m
-              memory: 64Mi
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
-            - name: ocsp-certs
-              mountPath: /app/certs
-              readOnly: true
-      volumes:
-        - name: tmp
-          emptyDir: {}
-        - name: ocsp-certs
-          secret:
-            secretName: ostrich-pki-ocsp-certs
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
