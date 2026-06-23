@@ -91,15 +91,7 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  # Dependency vulnerability scan. Advisory here because Dependabot
-  # (.github/dependabot.yml) is the primary channel for vuln-driven updates;
-  # this gives an in-CI signal on the committed Cargo.lock.
-  audit:
-    name: cargo audit (advisory)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v6
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+  # NOTE: the dependency vulnerability scan (cargo audit) lives in its own
+  # workflow (.github/workflows/audit.yml). It only depends on the dependency
+  # set, so it runs when a manifest/lockfile changes or on a weekly schedule —
+  # not on every PR — which keeps it off the per-PR critical path.

@@ -1,0 +1,50 @@
+# Dependency vulnerability scan (cargo audit)
+#
+# The scan only depends on the dependency set, so it runs when a manifest or the
+# lockfile changes, plus a weekly safety-net schedule that catches newly
+# disclosed advisories against unchanged dependencies. Keeping it out of ci.yml
+# removes its ~3-minute advisory-DB build from the per-PR critical path.
+#
+# Advisory (continue-on-error): Dependabot (.github/dependabot.yml) is the
+# primary channel for vuln-driven updates; this gives an in-CI signal on the
+# committed Cargo.lock.
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: RA-5 (Vulnerability Monitoring and Scanning)
+# - NIST 800-53: SI-2 (Flaw Remediation) - surfaces vulnerable dependencies
+
+name: cargo audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+  # Weekly safety net: advisories can be published against dependencies that
+  # have not changed, so scan on a schedule too.
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: cargo audit (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
