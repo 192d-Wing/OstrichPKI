@@ -470,6 +470,73 @@ impl AuditRepository {
 
         Ok(events)
     }
+
+    /// List audit records with optional filters (actor substring, exact event
+    /// type, exact outcome, time window), newest first, paginated — with
+    /// filtering, counting, and pagination all performed in SQL. Returns
+    /// `(page rows, total matching count)`.
+    ///
+    /// Backs the audit-review UI (FAU_SAR.1 / AU-6). `actor` is a
+    /// case-insensitive literal substring; the rest are exact matches. All
+    /// values are bound — no user input is interpolated.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_filtered(
+        &self,
+        actor: Option<&str>,
+        event_type: Option<&str>,
+        outcome: Option<&str>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<AuditEvent>, i64)> {
+        const PREDICATE: &str = r#"
+            ($1::text IS NULL OR POSITION(LOWER($1) IN LOWER(actor)) > 0)
+            AND ($2::text IS NULL OR event_type = $2)
+            AND ($3::text IS NULL OR outcome = $3)
+            AND ($4::timestamptz IS NULL OR timestamp >= $4)
+            AND ($5::timestamptz IS NULL OR timestamp <= $5)
+        "#;
+
+        let rows = sqlx::query_as::<_, AuditEvent>(&format!(
+            "SELECT * FROM audit_events WHERE {PREDICATE} ORDER BY timestamp DESC LIMIT $6 OFFSET $7"
+        ))
+        .bind(actor)
+        .bind(event_type)
+        .bind(outcome)
+        .bind(start)
+        .bind(end)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(self.pool.pool())
+        .await
+        .map_err(|e| Error::Query(e.to_string()))?;
+
+        let total: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM audit_events WHERE {PREDICATE}"
+        ))
+        .bind(actor)
+        .bind(event_type)
+        .bind(outcome)
+        .bind(start)
+        .bind(end)
+        .fetch_one(self.pool.pool())
+        .await
+        .map_err(|e| Error::Query(e.to_string()))?;
+
+        Ok((rows, total))
+    }
+
+    /// Count total audit records and how many carry a signature (AU-10). Used
+    /// by the integrity-verification report so operators see signed coverage.
+    pub async fn signed_counts(&self) -> Result<(i64, i64)> {
+        let row =
+            sqlx::query("SELECT COUNT(*) AS total, COUNT(signature) AS signed FROM audit_events")
+                .fetch_one(self.pool.pool())
+                .await
+                .map_err(|e| Error::Query(e.to_string()))?;
+        Ok((row.get("total"), row.get("signed")))
+    }
 }
 
 #[async_trait]
