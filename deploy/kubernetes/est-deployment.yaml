@@ -51,7 +51,12 @@ spec:
           image: ghcr.io/192d-wing/est-service:latest
           imagePullPolicy: Always
           ports:
+            # In-cluster plain HTTP (web-ui proxy, Prometheus /metrics, probes).
             - { name: http, containerPort: 8443 }
+            # External HTTPS + optional mTLS for enrollment (Traefik passes raw
+            # TLS through to this port; the pod terminates it and can see the
+            # client cert for /simplereenroll). RFC 7030 §3.3.
+            - { name: https, containerPort: 8444 }
           env:
             - { name: RUST_LOG, value: "info" }
             - name: DATABASE_URL
@@ -60,10 +65,21 @@ spec:
                   name: ostrich-secrets
                   key: DATABASE_URL
             - { name: EST_BIND_ADDRESS, value: "0.0.0.0:8443" }
+            - { name: EST_MTLS_BIND_ADDRESS, value: "0.0.0.0:8444" }
             - { name: CA_GRPC_URL, value: "http://ca-service:50051" }
             - { name: CA_GRPC_INSECURE, value: "true" }
-            - { name: EST_ALLOW_BEARER_AUTH, value: "true" }
+            # mTLS enrollment port (8444): server cert + re-enrollment client CA.
+            - { name: TLS_CERT_FILE, value: "/etc/est/tls/tls.crt" }
+            - { name: TLS_KEY_FILE, value: "/etc/est/tls/tls.key" }
+            - { name: TLS_CA_CERT_FILE, value: "/etc/est/client-ca/ca.crt" }
+            - { name: EST_MTLS_TOKEN_BOOTSTRAP, value: "true" }
+          volumeMounts:
+            # Server cert for est.oopl.dev.mil (the cert Traefik formerly served).
+            - { name: est-tls, mountPath: /etc/est/tls, readOnly: true }
+            # CA that issued the device bootstrap certs; verifies re-enroll certs.
+            - { name: est-client-ca, mountPath: /etc/est/client-ca, readOnly: true }
           livenessProbe:
+            # Probes use the in-cluster HTTP port (8443); /health is public.
             httpGet: { path: /health, port: http }
             initialDelaySeconds: 10
             periodSeconds: 20
@@ -77,3 +93,14 @@ spec:
           resources:
             requests: { cpu: "50m", memory: "64Mi" }
             limits: { cpu: "500m", memory: "256Mi" }
+      volumes:
+        # Server cert/key for the mTLS port (kubernetes.io/tls: tls.crt + tls.key);
+        # reuses the existing ingress certificate secret.
+        - name: est-tls
+          secret:
+            secretName: ostrich-ingress-tls
+        # Re-enrollment client CA (key ca.crt). Provisioned out-of-band; see
+        # secrets.yaml.
+        - name: est-client-ca
+          secret:
+            secretName: est-client-ca

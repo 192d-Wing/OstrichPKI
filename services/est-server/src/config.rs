@@ -30,6 +30,7 @@ pub struct FileConfig {
     pub schema: Option<String>,
 
     pub bind_address: Option<String>,
+    pub mtls_bind_address: Option<String>,
     pub database_url: Option<String>,
 
     pub ca_grpc_url: Option<String>,
