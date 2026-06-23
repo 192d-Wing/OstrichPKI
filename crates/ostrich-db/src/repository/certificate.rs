@@ -210,6 +210,67 @@ impl CertificateRepository {
             pending: row.get("pending"),
         })
     }
+
+    /// List certificates with optional status filter + substring search, with
+    /// filtering, counting, and pagination performed entirely in SQL.
+    ///
+    /// This replaces an in-memory scan-and-filter (which capped at a few
+    /// thousand rows and loaded the full DER/PEM of every scanned row): the
+    /// database now does the work and only the requested page is returned.
+    ///
+    /// - `status`: `all` | `active` | `revoked` | `expired` | `pending`,
+    ///   mirroring `cert_status_str` precedence (revoked → expired → pending →
+    ///   active). Any other value matches nothing.
+    /// - `search`: case-insensitive **literal** substring (no LIKE wildcards)
+    ///   matched against the subject DN and the hex-encoded serial number.
+    ///
+    /// Returns `(page rows, total matching count)`.
+    pub async fn list_filtered(
+        &self,
+        status: &str,
+        search: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Certificate>, i64)> {
+        // No user input is interpolated here — only bind placeholders — so the
+        // shared predicate is safe to splice into both queries.
+        const PREDICATE: &str = r#"
+            (
+                $1 = 'all'
+                OR ($1 = 'revoked' AND revoked)
+                OR ($1 = 'expired' AND NOT revoked AND not_after < NOW())
+                OR ($1 = 'pending' AND NOT revoked AND not_after >= NOW() AND not_before > NOW())
+                OR ($1 = 'active'  AND NOT revoked AND not_after >= NOW() AND not_before <= NOW())
+            )
+            AND (
+                $2::text IS NULL
+                OR POSITION(LOWER($2) IN LOWER(subject_dn)) > 0
+                OR POSITION(LOWER($2) IN encode(serial_number, 'hex')) > 0
+            )
+        "#;
+
+        let rows = sqlx::query_as::<_, Certificate>(&format!(
+            "SELECT * FROM certificates WHERE {PREDICATE} ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+        ))
+        .bind(status)
+        .bind(search)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(self.pool.pool())
+        .await
+        .map_err(|e| Error::Query(e.to_string()))?;
+
+        let total: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM certificates WHERE {PREDICATE}"
+        ))
+        .bind(status)
+        .bind(search)
+        .fetch_one(self.pool.pool())
+        .await
+        .map_err(|e| Error::Query(e.to_string()))?;
+
+        Ok((rows, total))
+    }
 }
 
 #[async_trait]

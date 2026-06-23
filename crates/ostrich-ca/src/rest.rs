@@ -37,9 +37,7 @@ use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPoli
 use ostrich_common::types::DistinguishedName;
 use ostrich_db::DatabasePool;
 use ostrich_db::models::Certificate;
-use ostrich_db::repository::{
-    ApprovalRepository, CertificateRepository, CrlRepository, Repository,
-};
+use ostrich_db::repository::{ApprovalRepository, CertificateRepository, CrlRepository};
 use ostrich_x509::{extensions::SubjectAltName, parser::RevocationReason};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -504,23 +502,26 @@ async fn list_certificates(
     AuthUser(user): AuthUser,
     Query(query): Query<ListCertificatesQuery>,
 ) -> Result<Json<CertificateListResponseDto>> {
-    // Upper bound on rows scanned when a filter is active (each row carries the
-    // full DER/PEM). Inventories beyond this are logged, never silently
-    // truncated; a filtered SQL query is the proper fix at larger scale.
-    const MAX_FILTER_SCAN: i64 = 5_000;
-
     let repo = CertificateRepository::new(state.db_pool.clone());
     let page = query.page.unwrap_or(1).max(1);
     let page_size = query.page_size.unwrap_or(50).clamp(1, 1000);
-    let offset = (page as usize - 1) * page_size as usize;
+    let offset = i64::from(page - 1) * i64::from(page_size);
     let now = chrono::Utc::now();
 
-    let status_filter = query.status.as_deref().filter(|s| !s.is_empty());
+    // Status defaults to "all"; lowercased so it matches cert_status_str output.
+    let status = query
+        .status
+        .as_deref()
+        .map(str::to_lowercase)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "all".to_string());
+    // Trimmed literal substring; empty search means "no search".
     let search = query
         .search
         .as_deref()
-        .map(str::to_lowercase)
-        .filter(|s| !s.is_empty());
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     // Map a stored row to its summary DTO (status derived before fields move).
     let to_summary = |c: Certificate| {
@@ -537,46 +538,13 @@ async fn list_certificates(
         }
     };
 
-    // `total` must describe the same population as the returned rows. With no
-    // filter, page directly in SQL (cheap). With a filter, scan → filter →
-    // paginate in memory so the count and cross-page filtering stay consistent.
-    let (total, certificates): (u64, Vec<CertificateSummaryDto>) =
-        if status_filter.is_none() && search.is_none() {
-            let total = repo.count().await? as u64;
-            let rows = repo
-                .list(
-                    Some(i64::from(page_size)),
-                    Some(i64::from(page - 1) * i64::from(page_size)),
-                )
-                .await?;
-            (total, rows.into_iter().map(to_summary).collect())
-        } else {
-            if repo.count().await? > MAX_FILTER_SCAN {
-                tracing::warn!(
-                    cap = MAX_FILTER_SCAN,
-                    "certificate filter scans only the most recent {MAX_FILTER_SCAN} certificates"
-                );
-            }
-            let filtered: Vec<CertificateSummaryDto> = repo
-                .list(Some(MAX_FILTER_SCAN), Some(0))
-                .await?
-                .into_iter()
-                .map(to_summary)
-                .filter(|s| status_filter.is_none_or(|f| s.status == f))
-                .filter(|s| {
-                    search.as_deref().is_none_or(|q| {
-                        s.subject.to_lowercase().contains(q) || s.serial_number.contains(q)
-                    })
-                })
-                .collect();
-            let total = filtered.len() as u64;
-            let rows = filtered
-                .into_iter()
-                .skip(offset)
-                .take(page_size as usize)
-                .collect();
-            (total, rows)
-        };
+    // Filter + search + paginate + count entirely in SQL — no in-memory scan,
+    // no row cap, and `total` always describes the full matching population.
+    let (rows, total) = repo
+        .list_filtered(&status, search.as_deref(), i64::from(page_size), offset)
+        .await?;
+    let certificates: Vec<CertificateSummaryDto> = rows.into_iter().map(to_summary).collect();
+    let total = total as u64;
 
     // NIST 800-53 AU-2/AU-3: record who enumerated the inventory and the outcome.
     tracing::info!(
