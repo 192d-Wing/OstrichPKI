@@ -624,3 +624,87 @@ async fn test_concurrent_operations() {
         }
     }
 }
+
+// ============================================================================
+// Key lifecycle: inventory (list_keys) and destruction (FCS_CKM.4)
+// ============================================================================
+
+/// Construct a provider with a SINGLE `C_Initialize` (slot index 0 — the test
+/// token is the only one). `init_test_provider` additionally calls
+/// `find_slot_index_by_label`, which initializes a second Cryptoki context;
+/// PKCS#11 permits only one `C_Initialize` per process, so this lifecycle test
+/// runs standalone with one provider.
+async fn single_init_provider() -> Pkcs11Provider {
+    let module_path = get_softhsm_path();
+    Pkcs11Provider::new(Path::new(&module_path), 0, "1234")
+        .await
+        .expect("Failed to initialize PKCS#11 provider")
+}
+
+#[tokio::test]
+async fn test_key_lifecycle_list_and_destroy() {
+    // NIAP PP-CA: FCS_CKM.4 (destruction); NIST 800-53: SC-12 (lifecycle/inventory)
+    let provider = single_init_provider().await;
+
+    // Clean any keys left by a previous (possibly failed) run of this test so
+    // the label-based assertions below are unambiguous. Dogfoods list+destroy.
+    for k in provider.list_keys().await.expect("list_keys (cleanup)") {
+        if k.label.starts_with("test-lifecycle-") {
+            let _ = provider.destroy_key(&k).await;
+        }
+    }
+
+    let rsa = provider
+        .generate_key_pair(KeyType::Rsa2048, "test-lifecycle-rsa2048", false)
+        .await
+        .expect("generate rsa");
+    let ec = provider
+        .generate_key_pair(KeyType::EcP384, "test-lifecycle-ecp384", false)
+        .await
+        .expect("generate ec");
+
+    // --- list_keys surfaces both with the correct mapped types ---
+    let keys = provider.list_keys().await.expect("list_keys");
+    let rsa_found = keys
+        .iter()
+        .find(|k| k.label == "test-lifecycle-rsa2048")
+        .expect("RSA key present in listing");
+    assert_eq!(rsa_found.key_type, KeyType::Rsa2048);
+    assert_eq!(rsa_found.key_id, rsa.key_id);
+    let ec_found = keys
+        .iter()
+        .find(|k| k.label == "test-lifecycle-ecp384")
+        .expect("EC key present in listing");
+    assert_eq!(ec_found.key_type, KeyType::EcP384);
+
+    // --- destroy_key removes the key material (FCS_CKM.4): the key disappears
+    //     from the inventory, proving the private object is gone ---
+    provider.destroy_key(&rsa).await.expect("destroy rsa");
+    let after_one = provider.list_keys().await.expect("list_keys after destroy");
+    assert!(
+        !after_one
+            .iter()
+            .any(|k| k.label == "test-lifecycle-rsa2048"),
+        "destroyed RSA key must not appear in the listing (FCS_CKM.4)"
+    );
+    assert!(
+        after_one.iter().any(|k| k.label == "test-lifecycle-ecp384"),
+        "the still-live EC key must remain in the listing"
+    );
+
+    // --- destroy is idempotent: destroying the same key again is not an error ---
+    provider
+        .destroy_key(&rsa)
+        .await
+        .expect("second destroy is idempotent");
+
+    // --- destroy the EC key too; the inventory is then clear of both ---
+    provider.destroy_key(&ec).await.expect("destroy ec");
+    let after_both = provider.list_keys().await.expect("list_keys final");
+    assert!(
+        !after_both
+            .iter()
+            .any(|k| k.label == "test-lifecycle-rsa2048" || k.label == "test-lifecycle-ecp384"),
+        "both destroyed keys must be gone from the listing"
+    );
+}

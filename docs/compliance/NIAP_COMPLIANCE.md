@@ -381,12 +381,21 @@ cargo test --package ostrich-crypto -- test_key
 - [crates/ostrich-crypto/src/provider.rs:10](../../crates/ostrich-crypto/src/provider.rs#L10) - `use zeroize::Zeroizing;`
 - [crates/ostrich-crypto/src/pkcs11/mod.rs:195](../../crates/ostrich-crypto/src/pkcs11/mod.rs#L195) - PIN zeroization
 - [crates/ostrich-crypto/src/provider.rs:102](../../crates/ostrich-crypto/src/provider.rs#L102) - Key import with `Zeroizing<Vec<u8>>`
+- `crates/ostrich-crypto/src/pkcs11/mod.rs` - `Pkcs11Provider::destroy_key` issues
+  `C_DestroyObject` for both the private and public key objects (the token
+  zeroizes HSM-resident key material); idempotent. `list_keys` enumerates the
+  token's resident private keys for lifecycle/inventory management. Validated
+  against SoftHSM in `tests/pkcs11_integration_test.rs`
+  (`test_key_lifecycle_list_and_destroy`): a destroyed key disappears from the
+  inventory.
 
 **Evidence:**
 
 - ✅ Zeroizing wrapper used for all sensitive data (PINs, keys)
 - ✅ Memory cleared on deallocation (Rust Drop trait)
 - ✅ Private key material protected
+- ✅ HSM key material destroyed via `C_DestroyObject` (FCS_CKM.4); EST
+  server-keygen now actually purges the server-held key after issuance
 
 **NIAP Annotation Required:** ✅ Phase 15 Task
 

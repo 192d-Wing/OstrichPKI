@@ -953,11 +953,52 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
         ))
     }
 
-    async fn destroy_key(&self, _key: &KeyHandle) -> Result<()> {
-        // TODO: Implement PKCS#11 key destruction
-        Err(Error::KeyGeneration(
-            "PKCS#11 key destruction not yet implemented".to_string(),
-        ))
+    /// Destroy both the private and public key objects in the HSM (FCS_CKM.4).
+    ///
+    /// The token zeroizes the key material on `C_DestroyObject`. Idempotent: if
+    /// no objects match (already destroyed), this still succeeds — the
+    /// destruction intent is satisfied — but logs a warning so an unexpected
+    /// double-destroy stays visible.
+    ///
+    /// # Compliance
+    /// - NIAP PP-CA: FCS_CKM.4 - Cryptographic key destruction
+    /// - NIST 800-53: SC-12 - Key lifecycle management
+    async fn destroy_key(&self, key: &KeyHandle) -> Result<()> {
+        use cryptoki::object::{Attribute, ObjectClass};
+
+        let session = self.open_session()?;
+
+        // The key pair shares one CKA_ID across its private and public objects;
+        // destroy both so no public half is left orphaned.
+        let mut destroyed = 0usize;
+        for class in [ObjectClass::PRIVATE_KEY, ObjectClass::PUBLIC_KEY] {
+            let template = vec![Attribute::Class(class), Attribute::Id(key.key_id.clone())];
+            let objects = session
+                .find_objects(&template)
+                .map_err(|e| Error::Pkcs11(format!("Failed to find key for destruction: {}", e)))?;
+            for obj in objects {
+                session
+                    .destroy_object(obj)
+                    .map_err(|e| Error::Pkcs11(format!("Failed to destroy key object: {}", e)))?;
+                destroyed += 1;
+            }
+        }
+        let _ = session.logout();
+
+        if destroyed == 0 {
+            tracing::warn!(
+                key_label = %key.label,
+                "destroy_key: no HSM objects matched (already destroyed?)"
+            );
+            return Ok(());
+        }
+        tracing::info!(
+            event = "key_destroyed",
+            key_label = %key.label,
+            objects = destroyed,
+            "HSM key material destroyed (FCS_CKM.4)"
+        );
+        Ok(())
     }
 
     /// Wrap (encrypt) a key using another key in the HSM
@@ -1213,8 +1254,110 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
         }
     }
 
+    /// Enumerate the private keys resident in the HSM token.
+    ///
+    /// Best-effort inventory for key management (SC-12): reads each private-key
+    /// object's CKA_ID, CKA_LABEL, and type, mapping it to a [`KeyHandle`]. A
+    /// key whose type/size cannot be represented (e.g. a future PQC type) is
+    /// skipped rather than failing the whole listing.
     async fn list_keys(&self) -> Result<Vec<KeyHandle>> {
-        // TODO: Implement PKCS#11 key listing
-        Ok(Vec::new())
+        use cryptoki::object::{Attribute, AttributeType, ObjectClass};
+
+        let session = self.open_session()?;
+        let objects = session
+            .find_objects(&[Attribute::Class(ObjectClass::PRIVATE_KEY)])
+            .map_err(|e| Error::Pkcs11(format!("Failed to enumerate HSM keys: {}", e)))?;
+
+        let mut handles = Vec::new();
+        for obj in objects {
+            let attrs = session
+                .get_attributes(
+                    obj,
+                    &[
+                        AttributeType::Id,
+                        AttributeType::Label,
+                        AttributeType::KeyType,
+                        AttributeType::Modulus,
+                        AttributeType::EcParams,
+                    ],
+                )
+                .map_err(|e| Error::Pkcs11(format!("Failed to read key attributes: {}", e)))?;
+
+            let mut id = Vec::new();
+            let mut label = String::new();
+            let mut p11_type = None;
+            let mut modulus_bits = None;
+            let mut ec_params = None;
+            for attr in attrs {
+                match attr {
+                    Attribute::Id(v) => id = v,
+                    Attribute::Label(v) => label = String::from_utf8_lossy(&v).into_owned(),
+                    Attribute::KeyType(t) => p11_type = Some(t),
+                    Attribute::Modulus(m) => modulus_bits = Some(m.len() * 8),
+                    Attribute::EcParams(p) => ec_params = Some(p),
+                    _ => {}
+                }
+            }
+
+            let Some(key_type) = map_p11_key_type(p11_type, modulus_bits, ec_params.as_deref())
+            else {
+                tracing::debug!(label = %label, "list_keys: skipping key with unmapped type/size");
+                continue;
+            };
+            handles.push(KeyHandle::new(
+                self.provider_id(),
+                id,
+                key_type,
+                default_algorithm_for(key_type),
+                label,
+            ));
+        }
+        let _ = session.logout();
+
+        tracing::debug!(count = handles.len(), "Enumerated HSM keys");
+        Ok(handles)
+    }
+}
+
+/// Map a PKCS#11 key type + size to the workspace [`KeyType`]. Returns `None`
+/// for types/sizes we do not represent (caller skips them).
+fn map_p11_key_type(
+    p11_type: Option<cryptoki::object::KeyType>,
+    modulus_bits: Option<usize>,
+    ec_params: Option<&[u8]>,
+) -> Option<KeyType> {
+    use cryptoki::object::KeyType as P11;
+    match p11_type {
+        Some(P11::RSA) => match modulus_bits {
+            Some(2048) => Some(KeyType::Rsa2048),
+            Some(3072) => Some(KeyType::Rsa3072),
+            Some(4096) => Some(KeyType::Rsa4096),
+            _ => None,
+        },
+        Some(P11::EC) => {
+            // CKA_EC_PARAMS is the DER-encoded named-curve OID (RFC 5480 §2.1.1).
+            const P256: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+            const P384: &[u8] = &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22];
+            const P521: &[u8] = &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23];
+            match ec_params {
+                Some(P256) => Some(KeyType::EcP256),
+                Some(P384) => Some(KeyType::EcP384),
+                Some(P521) => Some(KeyType::EcP521),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Default signature algorithm a freshly enumerated key is usable with —
+/// matches the choices `generate_key_pair` records.
+fn default_algorithm_for(key_type: KeyType) -> Algorithm {
+    match key_type {
+        KeyType::Rsa2048 | KeyType::Rsa3072 | KeyType::Rsa4096 => Algorithm::RsaPssSha256,
+        KeyType::EcP256 => Algorithm::EcdsaP256Sha256,
+        KeyType::EcP384 => Algorithm::EcdsaP384Sha384,
+        KeyType::EcP521 => Algorithm::EcdsaP521Sha512,
+        _ => Algorithm::EcdsaP256Sha256,
     }
 }
