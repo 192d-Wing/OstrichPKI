@@ -75,7 +75,7 @@ prost = "0.14"
 prost-types = "0.14"
 
 # Database
-sqlx = { version = "0.8", features = [
+sqlx = { version = "0.9", features = [
     "runtime-tokio",
     "postgres",
     "uuid",
