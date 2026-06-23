@@ -60,9 +60,12 @@ RUN npx tailwindcss -i ./input.css -o ./output.css --minify
 RUN trunk build --release
 
 # ==============================================================================
-# Stage 2: Server Builder
+# Stage 2a: Server Chef base — toolchain, FIPS build deps, and cargo-chef
 # ==============================================================================
-FROM rust:1.96-bookworm AS server-builder
+# cargo-chef caches dependency compilation (the expensive aws-lc-fips C/asm
+# build) separately from the workspace source, so a routine source edit no
+# longer rebuilds the whole crypto stack. Mirrors the root Dockerfile.
+FROM rust:1.96-bookworm AS server-chef
 
 # Install build dependencies. The server binary's dependency graph pulls in the
 # FIPS crypto module (aws-lc-fips-sys, via rustls / ostrich-crypto), which builds
@@ -81,11 +84,13 @@ RUN apt-get update && apt-get install -y \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
+RUN cargo install cargo-chef --locked
 WORKDIR /app
 
-# Copy workspace files. config/ holds JSON schemas embedded via include_str!
-# (ostrich-common) and proto/ holds gRPC definitions compiled by build.rs; both
-# are required to compile the server binary's dependency graph.
+# ==============================================================================
+# Stage 2b: Server Planner — capture the dependency recipe
+# ==============================================================================
+FROM server-chef AS server-planner
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 COPY services/ ./services/
@@ -95,6 +100,31 @@ COPY tests/ ./tests/
 COPY migrations/ ./migrations/
 COPY config/ ./config/
 COPY proto/ ./proto/
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ==============================================================================
+# Stage 2c: Server Builder — cook web-ui deps (cached), then build the binary
+# ==============================================================================
+FROM server-chef AS server-builder
+
+# Build scripts can run during `cook`: ostrich-protocol's build.rs compiles the
+# gRPC definitions in proto/, and ostrich-common include_str!s JSON schemas under
+# config/. Provide both before cooking so the dependency build never fails.
+COPY proto/ ./proto/
+COPY config/ ./config/
+
+# Cook only the web-ui binary's dependency graph (cached until a dep changes).
+COPY --from=server-planner /app/recipe.json recipe.json
+RUN cargo chef cook --release -p ostrich-web-ui --recipe-path recipe.json
+
+# Now the real source; only the workspace crates recompile.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ ./crates/
+COPY services/ ./services/
+COPY tools/ ./tools/
+COPY benches/ ./benches/
+COPY tests/ ./tests/
+COPY migrations/ ./migrations/
 
 # Build only the web-ui server binary
 RUN cargo build --release -p ostrich-web-ui

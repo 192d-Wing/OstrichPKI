@@ -10,9 +10,14 @@
 # to minimize the final image size and attack surface.
 
 # ==============================================================================
-# Stage 1: Build Environment
+# Stage 1a: Chef base — toolchain, FIPS build deps, and cargo-chef
 # ==============================================================================
-FROM rust:1.96-bookworm AS builder
+# cargo-chef splits dependency compilation (the expensive aws-lc-fips C/asm
+# build) from workspace-source compilation. The dependency layer is keyed on the
+# dependency set (recipe.json), so it stays cached across builds until a
+# dependency actually changes — a routine source edit no longer rebuilds the
+# whole crypto stack from scratch.
+FROM rust:1.96-bookworm AS chef
 
 # Install build dependencies for the FIPS crypto module (aws-lc-fips-sys):
 #   - clang + libclang-dev: bindgen
@@ -32,10 +37,13 @@ RUN apt-get update && apt-get install -y \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-# Create a new directory for the application
+RUN cargo install cargo-chef --locked
 WORKDIR /app
 
-# Copy the Cargo workspace files first for dependency caching
+# ==============================================================================
+# Stage 1b: Planner — capture the dependency recipe from the workspace
+# ==============================================================================
+FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 COPY services/ ./services/
@@ -43,15 +51,38 @@ COPY tools/ ./tools/
 COPY benches/ ./benches/
 COPY tests/ ./tests/
 COPY migrations/ ./migrations/
-# config/ holds JSON schemas embedded via include_str! (ostrich-common,
-# est-server); proto/ holds the gRPC definitions compiled by ostrich-protocol's
-# build.rs. Both are referenced from outside their crates, so they must be in
-# the build context.
 COPY config/ ./config/
 COPY proto/ ./proto/
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Build all workspace members in release mode
+# ==============================================================================
+# Stage 1c: Builder — cook dependencies (cached), then build the workspace
+# ==============================================================================
+FROM chef AS builder
+
+# Build scripts can run during `cook`: ostrich-protocol's build.rs compiles the
+# gRPC definitions in proto/, and several crates include_str! JSON schemas under
+# config/. Provide both before cooking so the dependency build never fails on a
+# missing path.
+COPY proto/ ./proto/
+COPY config/ ./config/
+
+# Cook ONLY the dependency graph. This layer is keyed on recipe.json (the
+# dependency set), so it is reused across builds until a dependency changes —
+# the expensive aws-lc-fips compile is paid once, not on every source edit.
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Now the real workspace source. With dependencies already compiled above, only
+# the workspace crates recompile.
 # NIST 800-53: SA-10 - Developer Configuration Management
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ ./crates/
+COPY services/ ./services/
+COPY tools/ ./tools/
+COPY benches/ ./benches/
+COPY tests/ ./tests/
+COPY migrations/ ./migrations/
 RUN cargo build --release --workspace
 
 # ==============================================================================
