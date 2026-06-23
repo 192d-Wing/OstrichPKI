@@ -74,24 +74,36 @@ jobs:
             extra_tags+=( "${GITHUB_REF_NAME#v}" )
           fi
 
+          # Registry-backed build cache (GHCR). The GitHub Actions cache
+          # (type=gha) caps at ~10 GB and evicts the multi-GB cargo-chef
+          # dependency layer between runs, so it never persists; a registry
+          # cache has no such limit and keeps the cooked-dependency layer warm
+          # across runs. All service targets share the same `builder` stage, so
+          # one cache ref covers them: cache-to is written once (the first build
+          # produces the builder layer), and every build reads cache-from.
+          cache_ref="ghcr.io/${owner}/build-cache-services"
+
+          i=0
           for svc in ca-service acme-service est-service ocsp-service scms-service kra-service cli; do
             tags=( --tag "ghcr.io/${owner}/${svc}:sha-${sha}" )
             for t in "${extra_tags[@]}"; do
               tags+=( --tag "ghcr.io/${owner}/${svc}:${t}" )
             done
 
+            cache_args=( --cache-from "type=registry,ref=${cache_ref}" )
+            if [ "${i}" -eq 0 ]; then
+              cache_args+=( --cache-to "type=registry,ref=${cache_ref},mode=max" )
+            fi
+
             echo "::group::build ${svc} (${tags[*]})"
-            # All service targets share the expensive `builder` stage; a single
-            # GHA cache scope lets it be built once and reused across services
-            # and across runs.
             docker buildx build \
               --target "${svc}" \
               "${tags[@]}" \
-              --cache-from "type=gha,scope=ostrich" \
-              --cache-to "type=gha,scope=ostrich,mode=max" \
+              "${cache_args[@]}" \
               --push \
               .
             echo "::endgroup::"
+            i=$((i + 1))
           done
 
           echo "Published service images: ca-service acme-service est-service ocsp-service scms-service kra-service cli"
@@ -140,13 +152,17 @@ jobs:
             webui_tags+=( --tag "ghcr.io/${owner}/web-ui:${t}" )
           done
 
+          # Registry-backed build cache (GHCR) — see the services job for why
+          # type=gha is unsuitable for the large cargo-chef dependency layer.
+          cache_ref="ghcr.io/${owner}/build-cache-web-ui"
+
           echo "::group::build web-ui (${webui_tags[*]})"
           docker buildx build \
             --file services/web-ui/Dockerfile \
             --target runtime \
             "${webui_tags[@]}" \
-            --cache-from "type=gha,scope=ostrich-web-ui" \
-            --cache-to "type=gha,scope=ostrich-web-ui,mode=max" \
+            --cache-from "type=registry,ref=${cache_ref}" \
+            --cache-to "type=registry,ref=${cache_ref},mode=max" \
             --push \
             .
           echo "::endgroup::"
