@@ -31,3 +31,7 @@ ostrich.kubeconfig
 
 # Cluster-specific test deploy (dev creds, node pinning)
 deploy/cluster/
+
+# Stray curl cookie jars from local verification (never commit; may hold session tokens)
+/cj*.txt
+/*.cookies
