@@ -142,22 +142,23 @@ async fn logout_all(
     State(provider): State<Arc<dyn AuthProvider>>,
     headers: axum::http::HeaderMap,
 ) -> StatusCode {
-    if let Some(token) = headers
+    let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "))
-    {
-        if let Ok(info) = provider.validate_session(token).await {
-            match provider
-                .terminate_all_sessions_for_user(&info.user.username)
-                .await
-            {
-                Ok(n) => {
-                    tracing::info!(username = %info.user.username, terminated = n, "Signed out everywhere")
-                }
-                Err(e) => {
-                    tracing::warn!(username = %info.user.username, error = %e, "logout-all failed")
-                }
+        .and_then(|h| h.strip_prefix("Bearer "));
+    let Some(token) = token else {
+        return StatusCode::NO_CONTENT;
+    };
+    if let Ok(info) = provider.validate_session(token).await {
+        match provider
+            .terminate_all_sessions_for_user(&info.user.username)
+            .await
+        {
+            Ok(n) => {
+                tracing::info!(username = %info.user.username, terminated = n, "Signed out everywhere")
+            }
+            Err(e) => {
+                tracing::warn!(username = %info.user.username, error = %e, "logout-all failed")
             }
         }
     }

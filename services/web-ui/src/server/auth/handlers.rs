@@ -361,24 +361,28 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoR
 pub async fn logout_all(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
     if let Some(session_cookie) = jar.get(&state.config.session.cookie_name) {
         let token = session_cookie.value().to_string();
-        if let Some(session) = state.session_manager.validate_session(&token).await {
-            if let Some(backend) = session.backend_token {
-                let url = format!(
-                    "{}/api/v1/auth/logout-all",
-                    state.config.backend.ca_url.trim_end_matches('/')
-                );
-                match reqwest::Client::new()
-                    .post(&url)
-                    .header("authorization", format!("Bearer {backend}"))
-                    .send()
-                    .await
-                {
-                    Ok(resp) if !resp.status().is_success() => {
-                        tracing::warn!(status = %resp.status(), "logout-all: CA returned non-success");
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!(error = %e, "logout-all: CA call failed"),
+        // The session's bound CA credential (internal-auth mode).
+        let backend = state
+            .session_manager
+            .validate_session(&token)
+            .await
+            .and_then(|s| s.backend_token);
+        if let Some(backend) = backend {
+            let url = format!(
+                "{}/api/v1/auth/logout-all",
+                state.config.backend.ca_url.trim_end_matches('/')
+            );
+            match reqwest::Client::new()
+                .post(&url)
+                .header("authorization", format!("Bearer {backend}"))
+                .send()
+                .await
+            {
+                Ok(resp) if !resp.status().is_success() => {
+                    tracing::warn!(status = %resp.status(), "logout-all: CA returned non-success");
                 }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "logout-all: CA call failed"),
             }
         }
         // Invalidate this BFF session as well.
