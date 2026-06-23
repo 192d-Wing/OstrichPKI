@@ -581,7 +581,7 @@ fn revoke_certificate_modal(props: &RevokeCertificateModalProps) -> Html {
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                    <label class="form-label">
                         { "Revocation Reason" }
                         <span class="text-red-500">{ " *" }</span>
                     </label>
@@ -601,7 +601,7 @@ fn revoke_certificate_modal(props: &RevokeCertificateModalProps) -> Html {
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                    <label class="form-label">
                         { "Notes (optional)" }
                     </label>
                     <textarea

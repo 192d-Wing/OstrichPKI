@@ -528,7 +528,7 @@ pub fn scms() -> Html {
                 <div class="card-body">
                     <div class="flex flex-wrap gap-4 items-end">
                         <div class="flex-1 min-w-[200px]">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                            <label class="form-label">
                                 {"Search"}
                             </label>
                             <input
@@ -540,7 +540,7 @@ pub fn scms() -> Html {
                             />
                         </div>
                         <div class="w-40">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                            <label class="form-label">
                                 {"Status"}
                             </label>
                             <select
@@ -556,7 +556,7 @@ pub fn scms() -> Html {
                             </select>
                         </div>
                         <div class="w-40">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                            <label class="form-label">
                                 {"Type"}
                             </label>
                             <select
@@ -743,7 +743,7 @@ pub fn scms() -> Html {
                                 </div>
                             </dl>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label class="form-label">
                                     {"Revocation Reason"}
                                     <span class="text-red-500 ml-1">{"*"}</span>
                                 </label>
@@ -790,7 +790,7 @@ pub fn scms() -> Html {
                     <form class="space-y-4">
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label class="form-label">
                                     {"Token Type"}
                                     <span class="text-red-500 ml-1">{"*"}</span>
                                 </label>
@@ -801,7 +801,7 @@ pub fn scms() -> Html {
                                 </select>
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label class="form-label">
                                     {"Serial Number"}
                                     <span class="text-red-500 ml-1">{"*"}</span>
                                 </label>
@@ -813,7 +813,7 @@ pub fn scms() -> Html {
                             </div>
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                            <label class="form-label">
                                 {"Token Label"}
                                 <span class="text-red-500 ml-1">{"*"}</span>
                             </label>
@@ -825,7 +825,7 @@ pub fn scms() -> Html {
                         </div>
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label class="form-label">
                                     {"Owner"}
                                     <span class="text-red-500 ml-1">{"*"}</span>
                                 </label>
@@ -836,7 +836,7 @@ pub fn scms() -> Html {
                                 />
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label class="form-label">
                                     {"Validity Period"}
                                 </label>
                                 <select class="form-select w-full">
