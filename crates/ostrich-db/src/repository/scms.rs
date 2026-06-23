@@ -181,7 +181,7 @@ impl ScmsRepository {
 
         query.push_str(&format!(" WHERE id = ${} RETURNING *", param_num));
 
-        let mut q = sqlx::query_as::<_, Token>(&query).bind(now);
+        let mut q = sqlx::query_as::<_, Token>(sqlx::AssertSqlSafe(query.as_str())).bind(now);
         if let Some(value) = initialized_at {
             q = q.bind(value);
         }
@@ -293,7 +293,7 @@ impl ScmsRepository {
             query.push_str(&format!(" OFFSET ${}", param_count));
         }
 
-        let mut q = sqlx::query_as::<_, Token>(&query);
+        let mut q = sqlx::query_as::<_, Token>(sqlx::AssertSqlSafe(query.as_str()));
 
         if let Some(s) = status {
             q = q.bind(s);
@@ -352,7 +352,7 @@ impl ScmsRepository {
 
         query.push_str(&format!(" WHERE id = ${} RETURNING *", param_num));
 
-        let mut q = sqlx::query_as::<_, Token>(&query).bind(now);
+        let mut q = sqlx::query_as::<_, Token>(sqlx::AssertSqlSafe(query.as_str())).bind(now);
 
         if let Some(s) = status {
             q = q.bind(s);

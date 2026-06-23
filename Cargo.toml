@@ -37,7 +37,8 @@ edition = "2024"
 authors = ["OstrichPKI Contributors"]
 license = "Apache-2.0"
 repository = "https://github.com/yourusername/ostrich-pki"
-rust-version = "1.92"
+# Raised to 1.94 by sqlx 0.9 (sqlx-core/macros/postgres require rustc 1.94).
+rust-version = "1.94"
 
 [workspace.dependencies]
 # Internal crates
@@ -75,7 +76,7 @@ prost = "0.14"
 prost-types = "0.14"
 
 # Database
-sqlx = { version = "0.8", features = [
+sqlx = { version = "0.9", features = [
     "runtime-tokio",
     "postgres",
     "uuid",

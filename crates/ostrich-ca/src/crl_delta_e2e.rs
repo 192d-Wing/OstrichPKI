@@ -140,7 +140,7 @@ async fn delta_crl_lifecycle_verified_by_openssl() {
         "ca_certificates",
         "ca_keys",
     ] {
-        sqlx::query(&format!("DELETE FROM {t}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {t}")))
             .execute(pool.pool())
             .await
             .unwrap();
@@ -279,7 +279,7 @@ async fn delta_crl_lifecycle_verified_by_openssl() {
         "ca_certificates",
         "ca_keys",
     ] {
-        let _ = sqlx::query(&format!("DELETE FROM {t}"))
+        let _ = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {t}")))
             .execute(pool.pool())
             .await;
     }

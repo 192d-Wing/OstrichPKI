@@ -192,7 +192,9 @@ impl SessionStore for DbSessionStore {
     }
 
     async fn get_by_token(&self, token: &str) -> Result<Option<Session>, SessionError> {
-        let row = sqlx::query(&format!("{SELECT_SESSION} WHERE s.token = $1"))
+        // SI-10: query text is a fixed SELECT plus a $1 placeholder; the token is
+        // bound, not interpolated. AssertSqlSafe (sqlx 0.9) marks it injection-safe.
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!("{SELECT_SESSION} WHERE s.token = $1")))
             .bind(token)
             .fetch_optional(self.pool.pool())
             .await
@@ -202,7 +204,7 @@ impl SessionStore for DbSessionStore {
     }
 
     async fn get_by_id(&self, id: &Uuid) -> Result<Option<Session>, SessionError> {
-        let row = sqlx::query(&format!("{SELECT_SESSION} WHERE s.id = $1"))
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!("{SELECT_SESSION} WHERE s.id = $1")))
             .bind(id)
             .fetch_optional(self.pool.pool())
             .await
@@ -249,9 +251,9 @@ impl SessionStore for DbSessionStore {
     }
 
     async fn list_active_for_user(&self, user_id: &str) -> Result<Vec<Session>, SessionError> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "{SELECT_SESSION} WHERE u.username = $1 AND s.status IN ('active', 'locked')"
-        ))
+        )))
         .bind(user_id)
         .fetch_all(self.pool.pool())
         .await

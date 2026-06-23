@@ -143,7 +143,10 @@ impl AcmeRepository {
 
         query.push_str(&format!(" WHERE account_id = ${} RETURNING *", param_num));
 
-        let mut q = sqlx::query_as::<_, AcmeAccount>(&query).bind(now);
+        // SI-10: SQL is assembled from fixed fragments with $N placeholders; all
+        // user data is bound, never interpolated. AssertSqlSafe (sqlx 0.9) marks
+        // this audited as injection-safe.
+        let mut q = sqlx::query_as::<_, AcmeAccount>(sqlx::AssertSqlSafe(query.as_str())).bind(now);
 
         if let Some(c) = contact {
             q = q.bind(c);
