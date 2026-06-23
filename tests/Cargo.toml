@@ -89,7 +89,7 @@ rsa = { version = "0.9", features = ["sha2"] }
 p256 = "0.13"
 ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
 sha2 = "0.10"
-signature = "2.2"
+signature = "3.0"
 # "builder" feature enables PKCS#10 CSR generation (acme_full_flow_test)
 x509-cert = { version = "0.2", features = ["builder"] }
 der = "0.7"
