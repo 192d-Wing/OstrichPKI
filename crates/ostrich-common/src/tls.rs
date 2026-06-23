@@ -41,8 +41,17 @@ pub struct TlsSettings {
     /// Server private key (PEM: PKCS#8, RFC 5915 SEC1, or PKCS#1)
     pub key_path: PathBuf,
     /// Optional client CA bundle (PEM). When set, clients MUST present a
-    /// certificate that chains to one of these CAs (mTLS, NIST AC-17).
+    /// certificate that chains to one of these CAs (mTLS, NIST AC-17) — unless
+    /// [`optional_client_auth`](Self::optional_client_auth) is set.
     pub client_ca_path: Option<PathBuf>,
+    /// When `true` (and a client CA is configured), the listener *requests* a
+    /// client certificate but does not *require* one: a client that presents a
+    /// cert has it verified against the CA, while a client that presents none
+    /// still completes the handshake. This enables a single EST port to serve
+    /// both certificate-less bootstrap and mTLS re-enrollment (RFC 7030 §3.3),
+    /// with the HTTP layer deciding what each route requires. Defaults to
+    /// `false` (mandatory mTLS) so inter-service channels stay strict.
+    pub optional_client_auth: bool,
 }
 
 impl TlsSettings {
@@ -63,6 +72,7 @@ impl TlsSettings {
                 cert_path: PathBuf::from(cert),
                 key_path: PathBuf::from(key),
                 client_ca_path: client_ca_path.map(PathBuf::from),
+                optional_client_auth: false,
             })),
             (None, None) => {
                 if client_ca_path.is_some() {
@@ -79,6 +89,16 @@ impl TlsSettings {
                 "TLS private key configured without certificate".to_string(),
             )),
         }
+    }
+
+    /// Request-but-do-not-require client certificates (optional mTLS).
+    ///
+    /// Only meaningful together with a client CA. Lets one listener accept both
+    /// certificate-less bootstrap and mTLS-authenticated requests; the HTTP
+    /// layer enforces what each route needs. See [`Self::optional_client_auth`].
+    pub fn with_optional_client_auth(mut self, optional: bool) -> Self {
+        self.optional_client_auth = optional;
+        self
     }
 
     /// Load certificates and build a TLS 1.3-only rustls server config.
@@ -118,10 +138,19 @@ impl TlsSettings {
                         .add(ca)
                         .map_err(|e| Error::Config(format!("Invalid client CA: {e}")))?;
                 }
-                let verifier =
-                    WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider)
-                        .build()
-                        .map_err(|e| Error::Config(format!("Client verifier build failed: {e}")))?;
+                let verifier_builder =
+                    WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider);
+                // Optional mTLS: a presented cert is still verified against the
+                // CA, but a client may also present none (bootstrap). Mandatory
+                // otherwise (the secure default for inter-service channels).
+                let verifier_builder = if self.optional_client_auth {
+                    verifier_builder.allow_unauthenticated()
+                } else {
+                    verifier_builder
+                };
+                let verifier = verifier_builder
+                    .build()
+                    .map_err(|e| Error::Config(format!("Client verifier build failed: {e}")))?;
                 builder.with_client_cert_verifier(verifier)
             }
             None => builder.with_no_client_auth(),
@@ -239,6 +268,7 @@ pub async fn serve(
                 %addr,
                 cert = %settings.cert_path.display(),
                 mtls = settings.client_ca_path.is_some(),
+                optional_mtls = settings.optional_client_auth,
                 "Serving HTTPS (TLS 1.3)"
             );
             // Custom acceptor surfaces the verified client certificate to
@@ -312,7 +342,22 @@ mod tests {
             cert_path: PathBuf::from("/nonexistent/cert.pem"),
             key_path: PathBuf::from("/nonexistent/key.pem"),
             client_ca_path: None,
+            optional_client_auth: false,
         };
         assert!(settings.load().is_err());
+    }
+
+    #[test]
+    fn optional_client_auth_defaults_off_and_is_settable() {
+        let settings =
+            TlsSettings::from_options(Some("cert.pem".into()), Some("key.pem".into()), None)
+                .unwrap()
+                .unwrap();
+        assert!(!settings.optional_client_auth);
+        assert!(
+            settings
+                .with_optional_client_auth(true)
+                .optional_client_auth
+        );
     }
 }

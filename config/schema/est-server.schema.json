@@ -74,6 +74,11 @@
       "description": "Permit bearer-token authentication when no TLS client CA is configured. Explicit, non-default opt-in to a weaker, non-RFC posture.",
       "default": false
     },
+    "mtlsTokenBootstrap": {
+      "type": "boolean",
+      "description": "Serve token bootstrap and mTLS re-enrollment on one port: request (but do not require) client certificates, authenticate /simplereenroll by the client certificate (RFC 7030 §3.3) and /simpleenroll by a single-use bearer enrollment token. Requires tlsCaCert.",
+      "default": false
+    },
     "logLevel": {
       "type": "string",
       "description": "Log level / filter (e.g. info, debug, ostrich_est=debug).",

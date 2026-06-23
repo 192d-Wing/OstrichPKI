@@ -74,7 +74,9 @@ pub mod user;
 pub use audit::{AuthAuditEvent, AuthAuditHook, AuthAuditKind};
 pub use basic::{BasicAuthLayer, MtlsOrBasicAuthLayer};
 pub use lockout::{AuthLockout, LockoutConfig, LockoutStatus};
-pub use middleware::{AuthLayer, AuthResponse, AuthUser, AuthzLayer, MtlsAuthLayer};
+pub use middleware::{
+    AuthLayer, AuthResponse, AuthUser, AuthzLayer, MtlsAuthLayer, MtlsOrBearerAuthLayer,
+};
 pub use mtls::{CertificateAuthConfig, CertificateAuthProvider, CertificateUserRepository};
 pub use password::{
     LockoutOutcome, LockoutPolicy, PasswordAuthProvider, PasswordHashConfig, UserRepository,
