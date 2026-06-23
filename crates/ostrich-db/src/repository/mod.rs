@@ -42,7 +42,7 @@ pub use acme::AcmeRepository;
 pub use approval::ApprovalRepository;
 pub use audit::AuditRepository;
 pub use ca::CaRepository;
-pub use certificate::CertificateRepository;
+pub use certificate::{CertificateRepository, CertificateStatusCounts};
 pub use crl::CrlRepository;
 pub use est::{EstEnrollmentTokenRow, EstRepository};
 pub use kra::KraRepository;

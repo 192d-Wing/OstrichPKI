@@ -166,6 +166,12 @@ pub fn create_router(
             "/api/v1/certificates",
             get(list_certificates).route_layer(authz(Permission::ViewCertificate)),
         )
+        // Inventory-wide status counts for the dashboard summary cards. Static
+        // segment, registered alongside `/{id}`; the router prefers the literal.
+        .route(
+            "/api/v1/certificates/stats",
+            get(certificate_stats).route_layer(authz(Permission::ViewCertificate)),
+        )
         .route(
             "/api/v1/certificates/{id}",
             get(get_certificate).route_layer(authz(Permission::ViewCertificate)),
@@ -427,6 +433,17 @@ struct CertificateListResponseDto {
     page_size: u32,
 }
 
+/// Inventory-wide certificate counts by status (dashboard summary cards).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CertificateStatsDto {
+    total: u64,
+    active: u64,
+    revoked: u64,
+    expired: u64,
+    pending: u64,
+}
+
 /// A Subject Alternative Name entry in the certificate detail view.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -577,6 +594,38 @@ async fn list_certificates(
         total,
         page,
         page_size,
+    }))
+}
+
+/// Inventory-wide certificate status counts (GET /api/v1/certificates/stats).
+///
+/// Backs the dashboard summary cards with true totals, independent of the list
+/// view's filter and pagination (a single SQL aggregate, not a row scan).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3 - Access enforcement (Permission::ViewCertificate)
+/// - NIST 800-53: AU-2 - Auditable read of TSF data
+/// - NIAP PP-CA: FMT_MTD.1 - Authorized read access to TSF data
+async fn certificate_stats(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+) -> Result<Json<CertificateStatsDto>> {
+    let repo = CertificateRepository::new(state.db_pool.clone());
+    let counts = repo.count_by_status().await?;
+
+    tracing::info!(
+        actor = %user.username,
+        resource = "certificates:stats",
+        total = counts.total,
+        "certificate inventory stats read"
+    );
+
+    Ok(Json(CertificateStatsDto {
+        total: counts.total.max(0) as u64,
+        active: counts.active.max(0) as u64,
+        revoked: counts.revoked.max(0) as u64,
+        expired: counts.expired.max(0) as u64,
+        pending: counts.pending.max(0) as u64,
     }))
 }
 
