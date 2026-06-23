@@ -66,6 +66,15 @@ struct Args {
     #[arg(long, env = "EST_ALLOW_BEARER_AUTH", num_args = 0..=1, default_missing_value = "true")]
     allow_bearer_auth: Option<bool>,
 
+    /// Serve token bootstrap and mTLS re-enrollment on one port. Requires
+    /// --tls-ca-cert: the listener requests (but does not require) a client
+    /// certificate, so /simplereenroll authenticates by the existing client
+    /// certificate (RFC 7030 §3.3) while /simpleenroll authenticates by a
+    /// single-use bearer enrollment token. Mutually exclusive with
+    /// --allow-basic-auth.
+    #[arg(long, env = "EST_MTLS_TOKEN_BOOTSTRAP", num_args = 0..=1, default_missing_value = "true")]
+    mtls_token_bootstrap: Option<bool>,
+
     /// Allow a plaintext (non-mTLS) gRPC channel to a non-loopback CA endpoint.
     /// DEVELOPMENT ONLY - the EST→CA channel carries issuance requests and must
     /// be mutually authenticated in production (NIST 800-53: SC-8, AC-17).
@@ -122,6 +131,7 @@ struct Settings {
     tls_ca_cert: Option<String>,
     allow_basic_auth: bool,
     allow_bearer_auth: bool,
+    mtls_token_bootstrap: bool,
     log_level: String,
     log_json: bool,
 }
@@ -165,6 +175,10 @@ impl Settings {
             allow_bearer_auth: args
                 .allow_bearer_auth
                 .or(file.allow_bearer_auth)
+                .unwrap_or(false),
+            mtls_token_bootstrap: args
+                .mtls_token_bootstrap
+                .or(file.mtls_token_bootstrap)
                 .unwrap_or(false),
             log_level: args
                 .log_level
@@ -249,10 +263,32 @@ async fn main() -> Result<()> {
         );
     }
 
-    let auth_mode = match (use_mtls_auth, settings.allow_basic_auth) {
-        (true, true) => EstAuthMode::MtlsWithBasicFallback,
-        (true, false) => EstAuthMode::Mtls,
-        (false, _) => EstAuthMode::BearerToken,
+    // Shared-port token-bootstrap + mTLS-reenroll requires a client CA (so the
+    // listener can verify re-enrollment certs) and is incompatible with the
+    // Basic fallback (one fallback per port). NIST 800-53: CM-6.
+    if settings.mtls_token_bootstrap {
+        if !use_mtls_auth {
+            anyhow::bail!(
+                "--mtls-token-bootstrap requires --tls-ca-cert (a client CA to verify \
+                 re-enrollment certificates)"
+            );
+        }
+        if settings.allow_basic_auth {
+            anyhow::bail!(
+                "--mtls-token-bootstrap and --allow-basic-auth are mutually exclusive \
+                 (choose one bootstrap fallback per port)"
+            );
+        }
+    }
+
+    let auth_mode = if settings.mtls_token_bootstrap {
+        EstAuthMode::MtlsWithTokenBootstrap
+    } else {
+        match (use_mtls_auth, settings.allow_basic_auth) {
+            (true, true) => EstAuthMode::MtlsWithBasicFallback,
+            (true, false) => EstAuthMode::Mtls,
+            (false, _) => EstAuthMode::BearerToken,
+        }
     };
 
     let user_repo = Arc::new(ostrich_db::repository::DbUserRepository::new(
@@ -278,14 +314,24 @@ async fn main() -> Result<()> {
         ostrich_audit::DatabaseAuditSink::new(db_pool.clone()),
     )));
     let auth_provider: Arc<dyn ostrich_common::auth::AuthProvider> = match auth_mode {
-        EstAuthMode::MtlsWithBasicFallback => {
-            tracing::info!(
-                "EST mTLS authentication with HTTP Basic fallback enabled \
-                 (RFC 7030 §3.3 + §3.2.3 bootstrap enrollment)"
-            );
-            // Composite: certificate identity preferred, password (Basic) fallback.
+        EstAuthMode::MtlsWithBasicFallback | EstAuthMode::MtlsWithTokenBootstrap => {
+            if auth_mode == EstAuthMode::MtlsWithTokenBootstrap {
+                tracing::info!(
+                    "EST shared-port mode: mTLS re-enrollment (RFC 7030 §3.3) with single-use \
+                     bearer enrollment-token bootstrap; client certs requested but not required"
+                );
+            } else {
+                tracing::info!(
+                    "EST mTLS authentication with HTTP Basic fallback enabled \
+                     (RFC 7030 §3.3 + §3.2.3 bootstrap enrollment)"
+                );
+            }
+            // Composite: certificate identity preferred, password fallback.
             // Both providers share the same user repository and session manager;
             // lockout state is shared via the database (the user repository).
+            // In token-bootstrap mode the certificate path serves re-enrollment
+            // and the enrollment-token wrapper (added in the router) serves
+            // bootstrap; the password provider also backs operator sessions.
             let cert_provider = ostrich_common::auth::CertificateAuthProvider::new(
                 ostrich_common::auth::CertificateAuthConfig::default(),
                 user_repo.clone(),
@@ -410,6 +456,7 @@ async fn main() -> Result<()> {
     state = match auth_mode {
         EstAuthMode::Mtls => state.with_mtls_auth(),
         EstAuthMode::MtlsWithBasicFallback => state.with_mtls_basic_fallback(),
+        EstAuthMode::MtlsWithTokenBootstrap => state.with_mtls_token_bootstrap(),
         EstAuthMode::BearerToken => state,
     };
 
@@ -447,6 +494,16 @@ async fn main() -> Result<()> {
         settings.tls_key,
         settings.tls_ca_cert,
     )?;
+    // Shared-port mode requests but does not require client certs, so a
+    // certificate-less bootstrap client still completes the handshake while a
+    // re-enrolling client's presented certificate is verified (RFC 7030 §3.3).
+    let tls = tls.map(|t| {
+        if auth_mode == EstAuthMode::MtlsWithTokenBootstrap {
+            t.with_optional_client_auth(true)
+        } else {
+            t
+        }
+    });
     ostrich_common::tls::serve(addr, app, tls.as_ref(), shutdown_signal()).await?;
 
     tracing::info!("EST Server shutdown complete");

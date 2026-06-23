@@ -159,6 +159,83 @@ impl MtlsAuthLayer {
     }
 }
 
+/// Composite layer: verified TLS client certificate, with a **bearer-token**
+/// fallback. The bootstrap counterpart to [`super::basic::MtlsOrBasicAuthLayer`]
+/// for deployments that bootstrap with a single-use bearer enrollment token
+/// rather than HTTP Basic.
+///
+/// If the handshake presented a client certificate it is used (RFC 7030 §3.3,
+/// e.g. re-enrollment by the existing cert); otherwise the request must carry
+/// `Authorization: Bearer <token>`, validated via the provider's session path
+/// (e.g. an enrollment token or operator session). This lets a single EST port
+/// serve certificate-less token bootstrap *and* mTLS re-enrollment, paired with
+/// an optional-client-auth TLS listener ([`crate::tls::TlsSettings::with_optional_client_auth`]).
+///
+/// # COMPLIANCE MAPPING
+/// - NIAP PP-CA: FIA_UAU.1 - certificate or bearer-token authentication
+/// - NIST 800-53: IA-2 / AC-17 - mTLS identity, bearer fallback
+/// - RFC 7030 §3.3 - TLS client authentication for EST
+#[allow(dead_code)]
+pub struct MtlsOrBearerAuthLayer {
+    provider: Arc<dyn AuthProvider>,
+}
+
+impl MtlsOrBearerAuthLayer {
+    /// Create a new mTLS-or-bearer authentication layer.
+    pub fn new(provider: Arc<dyn AuthProvider>) -> Self {
+        Self { provider }
+    }
+
+    /// Middleware: prefer the TLS client certificate, fall back to a bearer token.
+    pub async fn authenticate(
+        State(provider): State<Arc<dyn AuthProvider>>,
+        mut req: Request,
+        next: Next,
+    ) -> Result<Response, AuthResponse> {
+        let cert_der = req
+            .extensions()
+            .get::<PeerCertificate>()
+            .and_then(|p| p.0.clone());
+
+        if let Some(cert_der) = cert_der {
+            // Verified TLS client certificate (RFC 7030 §3.3) — map to an account.
+            let credentials = Credentials::Certificate {
+                cert_chain: vec![cert_der],
+                client_ip: None,
+            };
+            let user = provider.authenticate(&credentials).await.map_err(|e| {
+                warn!(error = %e, "mTLS client certificate authentication failed");
+                match e {
+                    AuthError::AccountLocked { .. } => AuthResponse::Forbidden,
+                    _ => AuthResponse::Unauthorized,
+                }
+            })?;
+            req.extensions_mut().insert(user);
+        } else {
+            // No client certificate: fall back to a bearer token (bootstrap).
+            let token = req
+                .headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|h| h.to_str().ok())
+                .and_then(|h| h.strip_prefix("Bearer "))
+                .ok_or_else(|| {
+                    debug!("No client certificate and no Bearer token presented");
+                    AuthResponse::Unauthorized
+                })?;
+            let session_info = provider.validate_session(token).await.map_err(|e| {
+                warn!(error = %e, "Bearer token validation failed");
+                match e {
+                    AuthError::SessionExpired => AuthResponse::SessionExpired,
+                    _ => AuthResponse::Unauthorized,
+                }
+            })?;
+            req.extensions_mut().insert(session_info.user);
+        }
+
+        Ok(next.run(req).await)
+    }
+}
+
 /// Authorization layer for Axum
 ///
 /// Checks if authenticated user has required permission.

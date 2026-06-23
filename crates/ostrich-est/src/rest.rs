@@ -78,6 +78,13 @@ pub enum EstAuthMode {
     /// when no client certificate is presented. Basic is intended for
     /// bootstrap enrollment and is only safe on a TLS listener.
     MtlsWithBasicFallback,
+    /// mTLS client certificate, falling back to a single-use bearer enrollment
+    /// token when no client certificate is presented. Enables one port to serve
+    /// both certificate-less token bootstrap (`/simpleenroll`) and mTLS
+    /// re-enrollment by the existing certificate (`/simplereenroll`). Requires
+    /// an optional-client-auth TLS listener (a client CA configured, client
+    /// certs requested but not required).
+    MtlsWithTokenBootstrap,
 }
 
 /// How the requested certificate identity is authorized against the
@@ -276,6 +283,19 @@ impl EstState {
         self
     }
 
+    /// Authenticate protected endpoints by the TLS client certificate (RFC 7030
+    /// §3.3), falling back to a single-use bearer enrollment token when no
+    /// client certificate is presented. Lets one port serve token bootstrap and
+    /// mTLS re-enrollment. `auth_provider` must support certificate credentials
+    /// (e.g. a `CompositeAuthProvider` with a certificate provider).
+    ///
+    /// Only safe on an optional-client-auth TLS listener (client CA configured,
+    /// client certs requested but not required).
+    pub fn with_mtls_token_bootstrap(mut self) -> Self {
+        self.auth_mode = EstAuthMode::MtlsWithTokenBootstrap;
+        self
+    }
+
     /// Select how the requested certificate identity is authorized against the
     /// authenticated principal (H1). Defaults to [`EstIdentityPolicy::MatchUsername`].
     pub fn with_identity_policy(mut self, policy: EstIdentityPolicy) -> Self {
@@ -382,6 +402,22 @@ pub fn create_router(state: EstState) -> Router {
                 AuthLayer::authenticate,
             ))
         }
+        // Shared-port mode: a verified client certificate authenticates
+        // re-enrollment (RFC 7030 §3.3); otherwise a single-use bearer
+        // enrollment token authenticates bootstrap. The same enrollment-token
+        // wrapper handles the bearer fallback, while its inner (composite)
+        // provider maps the client certificate.
+        EstAuthMode::MtlsWithTokenBootstrap => {
+            let enroll_provider: Arc<dyn AuthProvider> =
+                Arc::new(crate::enrollment_token::EnrollmentTokenAuthProvider::new(
+                    ostrich_db::repository::EstRepository::new(state.db_pool.clone()),
+                    auth_provider,
+                ));
+            protected_routes.layer(middleware::from_fn_with_state(
+                enroll_provider,
+                ostrich_common::auth::MtlsOrBearerAuthLayer::authenticate,
+            ))
+        }
     };
 
     // Admin/management API for the per-account identity allow-list
@@ -440,6 +476,13 @@ pub fn create_router(state: EstState) -> Router {
         EstAuthMode::BearerToken => admin_routes.layer(middleware::from_fn_with_state(
             admin_auth_provider,
             AuthLayer::authenticate,
+        )),
+        // Operator authenticates by client certificate or session bearer token.
+        // Uses the raw provider (NOT the enrollment-token wrapper), so a device
+        // enrollment token can never mint/list/revoke tokens (AC-6).
+        EstAuthMode::MtlsWithTokenBootstrap => admin_routes.layer(middleware::from_fn_with_state(
+            admin_auth_provider,
+            ostrich_common::auth::MtlsOrBearerAuthLayer::authenticate,
         )),
     };
 

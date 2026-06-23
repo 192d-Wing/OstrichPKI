@@ -47,6 +47,7 @@ pub struct FileConfig {
 
     pub allow_basic_auth: Option<bool>,
     pub allow_bearer_auth: Option<bool>,
+    pub mtls_token_bootstrap: Option<bool>,
 
     pub log_level: Option<String>,
     pub log_json: Option<bool>,
