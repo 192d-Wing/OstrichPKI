@@ -64,6 +64,9 @@ pub fn certificates() -> Html {
     let state = use_state(CertListState::default);
     let load_state = use_state(|| LoadState::<()>::Loading);
     let revoke_cert = use_state(|| None::<CertificateSummary>);
+    // Error from the last revoke attempt; keeps the modal open so the operator
+    // sees why it failed instead of the dialog silently closing.
+    let revoke_error = use_state(|| None::<String>);
 
     // Fetch certificates on mount and when filters change
     {
@@ -133,7 +136,9 @@ pub fn certificates() -> Html {
     // Revoke button handler
     let on_revoke_click = {
         let revoke_cert = revoke_cert.clone();
+        let revoke_error = revoke_error.clone();
         Callback::from(move |cert: CertificateSummary| {
+            revoke_error.set(None);
             revoke_cert.set(Some(cert));
         })
     };
@@ -141,41 +146,47 @@ pub fn certificates() -> Html {
     // Close revoke modal
     let on_revoke_close = {
         let revoke_cert = revoke_cert.clone();
+        let revoke_error = revoke_error.clone();
         Callback::from(move |_| {
+            revoke_error.set(None);
             revoke_cert.set(None);
         })
     };
 
-    // Confirm revocation
+    // Confirm revocation. Carries the reason + optional notes chosen in the
+    // modal (previously hard-coded to Unspecified and dropped).
     let on_revoke_confirm = {
         let revoke_cert = revoke_cert.clone();
+        let revoke_error = revoke_error.clone();
         let state = state.clone();
-        Callback::from(move |_| {
+        Callback::from(move |(reason, notes): (RevocationReason, Option<String>)| {
             if let Some(cert) = (*revoke_cert).clone() {
                 let revoke_cert = revoke_cert.clone();
+                let revoke_error = revoke_error.clone();
                 let state = state.clone();
                 wasm_bindgen_futures::spawn_local(async move {
-                    let request = RevocationRequest {
-                        reason: RevocationReason::Unspecified,
-                        notes: None,
-                    };
-                    if (api()
+                    let request = RevocationRequest { reason, notes };
+                    match api()
                         .post::<serde_json::Value, _>(
                             &format!("/ca/api/v1/certificates/{}/revoke", cert.id),
                             &request,
                         )
-                        .await)
-                        .is_ok()
+                        .await
                     {
-                        // Refresh list
-                        if let Ok(response) = fetch_certificates(&state).await {
-                            let mut new_state = (*state).clone();
-                            new_state.certificates = response.certificates;
-                            new_state.total = response.total;
-                            state.set(new_state);
+                        Ok(_) => {
+                            // Refresh list, clear any prior error, close the modal.
+                            if let Ok(response) = fetch_certificates(&state).await {
+                                let mut new_state = (*state).clone();
+                                new_state.certificates = response.certificates;
+                                new_state.total = response.total;
+                                state.set(new_state);
+                            }
+                            revoke_error.set(None);
+                            revoke_cert.set(None);
                         }
+                        // Keep the modal open and show why it failed.
+                        Err(e) => revoke_error.set(Some(e.message)),
                     }
-                    revoke_cert.set(None);
                 });
             }
         })
@@ -396,7 +407,9 @@ pub fn certificates() -> Html {
             // Revocation modal
             if let Some(cert) = (*revoke_cert).clone() {
                 <RevokeCertificateModal
-                    certificate={cert}
+                    subject={cert.subject.clone()}
+                    serial_number={cert.serial_number.clone()}
+                    error={(*revoke_error).clone()}
                     on_close={on_revoke_close}
                     on_confirm={on_revoke_confirm}
                 />
@@ -433,15 +446,33 @@ async fn fetch_certificates(state: &CertListState) -> Result<CertificateListResp
 
 #[derive(Properties, PartialEq)]
 struct RevokeCertificateModalProps {
-    certificate: CertificateSummary,
+    /// Subject shown in the dialog (DN or summary subject — caller's choice).
+    subject: String,
+    serial_number: String,
+    /// Error from the last failed confirm attempt, shown in the dialog.
+    #[prop_or_default]
+    error: Option<String>,
     on_close: Callback<()>,
-    on_confirm: Callback<()>,
+    on_confirm: Callback<(RevocationReason, Option<String>)>,
 }
 
 #[function_component(RevokeCertificateModal)]
 fn revoke_certificate_modal(props: &RevokeCertificateModalProps) -> Html {
     let reason = use_state(|| RevocationReason::Unspecified);
     let notes = use_state(String::new);
+
+    // Emit the operator's chosen reason and notes (empty notes -> None) to the
+    // parent, which performs the revoke request.
+    let on_confirm_click = {
+        let on_confirm = props.on_confirm.clone();
+        let reason = reason.clone();
+        let notes = notes.clone();
+        Callback::from(move |_| {
+            let trimmed = (*notes).trim().to_string();
+            let notes_opt = (!trimmed.is_empty()).then_some(trimmed);
+            on_confirm.emit(((*reason).clone(), notes_opt));
+        })
+    };
 
     let on_reason_change = {
         let reason = reason.clone();
@@ -481,11 +512,17 @@ fn revoke_certificate_modal(props: &RevokeCertificateModalProps) -> Html {
                     { "Warning: Certificate revocation is permanent and cannot be undone." }
                 </Alert>
 
+                if let Some(err) = props.error.clone() {
+                    <Alert alert_type={AlertType::Error} dismissible={false}>
+                        { format!("Revocation failed: {err}") }
+                    </Alert>
+                }
+
                 <div>
                     <p class="text-sm text-gray-600 mb-2">{ "Certificate to revoke:" }</p>
                     <div class="bg-gray-50 rounded-lg p-3">
-                        <p class="font-medium text-gray-900">{ &props.certificate.subject }</p>
-                        <p class="text-sm text-gray-500 font-mono">{ &props.certificate.serial_number }</p>
+                        <p class="font-medium text-gray-900">{ &props.subject }</p>
+                        <p class="text-sm text-gray-500 font-mono">{ &props.serial_number }</p>
                     </div>
                 </div>
 
@@ -530,7 +567,7 @@ fn revoke_certificate_modal(props: &RevokeCertificateModalProps) -> Html {
                         { "Cancel" }
                     </button>
                     <button
-                        onclick={props.on_confirm.reform(|_| ())}
+                        onclick={on_confirm_click}
                         class="btn-danger"
                     >
                         { "Revoke Certificate" }
@@ -579,6 +616,60 @@ pub fn certificate_detail(props: &CertificateDetailProps) -> Html {
         Callback::from(move |_| show_pem.set(!*show_pem))
     };
 
+    // Revoke modal state for the detail page.
+    let revoke_open = use_state(|| false);
+    let revoke_error = use_state(|| None::<String>);
+
+    let on_revoke_open = {
+        let revoke_open = revoke_open.clone();
+        let revoke_error = revoke_error.clone();
+        Callback::from(move |_: MouseEvent| {
+            revoke_error.set(None);
+            revoke_open.set(true);
+        })
+    };
+    let on_revoke_close = {
+        let revoke_open = revoke_open.clone();
+        let revoke_error = revoke_error.clone();
+        Callback::from(move |_| {
+            revoke_error.set(None);
+            revoke_open.set(false);
+        })
+    };
+    let on_revoke_confirm = {
+        let id = props.id.clone();
+        let cert_state = cert_state.clone();
+        let revoke_open = revoke_open.clone();
+        let revoke_error = revoke_error.clone();
+        Callback::from(move |(reason, notes): (RevocationReason, Option<String>)| {
+            let id = id.clone();
+            let cert_state = cert_state.clone();
+            let revoke_open = revoke_open.clone();
+            let revoke_error = revoke_error.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let request = RevocationRequest { reason, notes };
+                match api()
+                    .post::<serde_json::Value, _>(
+                        &format!("/ca/api/v1/certificates/{}/revoke", id),
+                        &request,
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        // Re-fetch so the status badge updates and the Revoke
+                        // button disappears.
+                        if let Ok(cert) = fetch_certificate_details(&id).await {
+                            cert_state.set(LoadState::Loaded(cert));
+                        }
+                        revoke_error.set(None);
+                        revoke_open.set(false);
+                    }
+                    Err(e) => revoke_error.set(Some(e.message)),
+                }
+            });
+        })
+    };
+
     html! {
         <Protected permission="view_certificates">
             // Back button
@@ -605,11 +696,23 @@ pub fn certificate_detail(props: &CertificateDetailProps) -> Html {
                         </Alert>
                     },
                     LoadState::Loaded(cert) => html! {
-                        <CertificateDetailContent
-                            certificate={cert}
-                            show_pem={*show_pem}
-                            on_toggle_pem={toggle_pem}
-                        />
+                        <>
+                            <CertificateDetailContent
+                                certificate={cert.clone()}
+                                show_pem={*show_pem}
+                                on_toggle_pem={toggle_pem}
+                                on_revoke={on_revoke_open}
+                            />
+                            if *revoke_open {
+                                <RevokeCertificateModal
+                                    subject={cert.subject_dn.clone()}
+                                    serial_number={cert.serial_number.clone()}
+                                    error={(*revoke_error).clone()}
+                                    on_close={on_revoke_close}
+                                    on_confirm={on_revoke_confirm}
+                                />
+                            }
+                        </>
                     },
                 }
             }
@@ -632,6 +735,7 @@ struct CertificateDetailContentProps {
     certificate: CertificateDetails,
     show_pem: bool,
     on_toggle_pem: Callback<MouseEvent>,
+    on_revoke: Callback<MouseEvent>,
 }
 
 /// Certificate detail content component
@@ -664,7 +768,7 @@ fn certificate_detail_content(props: &CertificateDetailContentProps) -> Html {
                         { if props.show_pem { "Hide PEM" } else { "Show PEM" } }
                     </button>
                     if cert.status == CertificateStatus::Active {
-                        <button class="btn-danger">
+                        <button class="btn-danger" onclick={props.on_revoke.clone()}>
                             { "Revoke" }
                         </button>
                     }

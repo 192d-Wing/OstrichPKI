@@ -176,8 +176,12 @@ pub struct CertificateDetails {
 }
 
 /// Revocation reason codes per RFC 5280 §5.3.1
+///
+/// Serialized form is PascalCase to match the CA's `RevocationReason` wire
+/// representation (e.g. `"KeyCompromise"`); the revoke endpoint rejects any
+/// other casing. This enum is only ever serialized into the revoke request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "PascalCase")]
 pub enum RevocationReason {
     Unspecified,
     KeyCompromise,

@@ -1228,10 +1228,17 @@ pub struct IssueCertificateResponse {
 }
 
 /// Certificate revocation request
+///
+/// `requestor` is server-derived from the authenticated identity (AC-3): the
+/// handler overrides any client-supplied value, so it is optional on the wire
+/// and a client need not send it. `justification` also accepts the legacy field
+/// name `notes` so older clients keep working.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RevokeCertificateRequest {
     pub reason: RevocationReason,
-    pub requestor: String,
+    #[serde(default)]
+    pub requestor: Option<String>,
+    #[serde(default, alias = "notes")]
     pub justification: Option<String>,
 }
 

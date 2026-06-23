@@ -216,6 +216,7 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
 
 - [crl.rs:15-100](../../crates/ostrich-x509/src/crl.rs#L15-L100) - CRL and RevokedCertificate structures
 - [crl.rs:45-66](../../crates/ostrich-x509/src/crl.rs#L45-L66) - RevocationReason enum with all 11 codes
+- [rest.rs](../../crates/ostrich-ca/src/rest.rs) - `POST /api/v1/certificates/{id}/revoke` accepts a §5.3.1 reason code (PascalCase variant name on the wire) plus optional justification; the requestor is server-derived from the authenticated identity (AC-3), never client-supplied
 - [builder/crl.rs:160-230](../../crates/ostrich-x509/src/builder/crl.rs#L160-L230) - CRL entry building with revocation reasons
 - [builder/crl.rs:392-451](../../crates/ostrich-x509/src/builder/crl.rs#L392-L451) - CRL extension building (CRL Number, AKI)
 
