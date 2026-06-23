@@ -1,7 +1,10 @@
 # OstrichPKI EST Service (RFC 7030)
 #
+# The pod terminates TLS (Traefik passes raw TLS through via IngressRouteTCP),
+# so this service carries HTTPS on 8443.
+#
 # COMPLIANCE MAPPING:
-# - NIST 800-53: SC-17 (PKI Certificates)
+# - NIST 800-53: SC-17 (PKI Certificates), SC-8 (TLS in transit)
 apiVersion: v1
 kind: Service
 metadata:
@@ -14,4 +17,4 @@ spec:
   selector:
     app: est-server
   ports:
-    - { name: http, port: 8443, targetPort: http }
+    - { name: https, port: 8443, targetPort: https }

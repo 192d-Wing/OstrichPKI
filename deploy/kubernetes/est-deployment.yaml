@@ -51,7 +51,7 @@ spec:
           image: ghcr.io/192d-wing/est-service:latest
           imagePullPolicy: Always
           ports:
-            - { name: http, containerPort: 8443 }
+            - { name: https, containerPort: 8443 }
           env:
             - { name: RUST_LOG, value: "info" }
             - name: DATABASE_URL
@@ -62,13 +62,33 @@ spec:
             - { name: EST_BIND_ADDRESS, value: "0.0.0.0:8443" }
             - { name: CA_GRPC_URL, value: "http://ca-service:50051" }
             - { name: CA_GRPC_INSECURE, value: "true" }
-            - { name: EST_ALLOW_BEARER_AUTH, value: "true" }
+            # The pod now terminates TLS itself (Traefik passes raw TLS through;
+            # see ostrich-ingress.yaml) so it can see the client certificate.
+            # RFC 7030 §3.3: /simplereenroll authenticates by the client cert,
+            # /simpleenroll by a single-use bearer enrollment token. Client certs
+            # are requested but NOT required (EST_MTLS_TOKEN_BOOTSTRAP), so
+            # certificate-less bootstrap still completes the handshake.
+            # NIST 800-53: SC-8 (TLS) / AC-17 (mTLS client auth).
+            - { name: TLS_CERT_FILE, value: "/etc/est/tls/tls.crt" }
+            - { name: TLS_KEY_FILE, value: "/etc/est/tls/tls.key" }
+            - { name: TLS_CA_CERT, value: "/etc/est/client-ca/ca.crt" }
+            - { name: EST_MTLS_TOKEN_BOOTSTRAP, value: "true" }
+          volumeMounts:
+            # Server certificate for est.oopl.dev.mil (the cert Traefik formerly
+            # presented for this host).
+            - { name: est-tls, mountPath: /etc/est/tls, readOnly: true }
+            # CA that issued the device bootstrap certificates; used to verify
+            # re-enrollment client certificates.
+            - { name: est-client-ca, mountPath: /etc/est/client-ca, readOnly: true }
           livenessProbe:
-            httpGet: { path: /health, port: http }
+            # The pod serves HTTPS now; /health is public and client auth is
+            # optional, so a no-cert probe still succeeds. kubelet does not
+            # verify the server certificate for an HTTPS probe.
+            httpGet: { path: /health, port: https, scheme: HTTPS }
             initialDelaySeconds: 10
             periodSeconds: 20
           readinessProbe:
-            httpGet: { path: /ready, port: http }
+            httpGet: { path: /ready, port: https, scheme: HTTPS }
             initialDelaySeconds: 5
             periodSeconds: 10
           securityContext:
@@ -77,3 +97,14 @@ spec:
           resources:
             requests: { cpu: "50m", memory: "64Mi" }
             limits: { cpu: "500m", memory: "256Mi" }
+      volumes:
+        # Server cert/key for est.oopl.dev.mil (standard kubernetes.io/tls keys
+        # tls.crt + tls.key); reuses the existing ingress certificate secret.
+        - name: est-tls
+          secret:
+            secretName: ostrich-ingress-tls
+        # Client CA bundle (key ca.crt) — the CA whose certificates devices
+        # present for re-enrollment. Provisioned out-of-band (see secrets.yaml).
+        - name: est-client-ca
+          secret:
+            secretName: est-client-ca
