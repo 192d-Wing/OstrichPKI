@@ -345,7 +345,9 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoR
 
     // Optionally redirect to Keycloak logout
     // For now, just redirect to login page
-    (jar.add(remove_session), Redirect::to("/auth/login"))
+    // Redirect to the SPA login page (/login). NOT /auth/login, which is the
+    // OIDC server endpoint and returns oidc_disabled in internal-auth mode.
+    (jar.add(remove_session), Redirect::to("/login"))
 }
 
 /// "Sign out everywhere" — terminate ALL of the user's sessions.
@@ -394,7 +396,9 @@ pub async fn logout_all(State(state): State<AppState>, jar: CookieJar) -> impl I
     let remove_session = Cookie::build((cookie_name, ""))
         .path("/")
         .max_age(cookie::time::Duration::ZERO);
-    (jar.add(remove_session), Redirect::to("/auth/login"))
+    // Redirect to the SPA login page (/login). NOT /auth/login, which is the
+    // OIDC server endpoint and returns oidc_disabled in internal-auth mode.
+    (jar.add(remove_session), Redirect::to("/login"))
 }
 
 /// User info handler
