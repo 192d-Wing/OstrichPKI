@@ -75,7 +75,7 @@ async fn issued_certificates_carry_aia_extension_verified_by_openssl() {
         .await
         .expect("connect to test DB");
     for table in ["audit_events", "certificates", "ca_certificates", "ca_keys"] {
-        sqlx::query(&format!("DELETE FROM {table}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(pool.pool())
             .await
             .unwrap_or_else(|e| panic!("clean {table}: {e}"));
@@ -321,7 +321,7 @@ async fn issued_certificates_carry_aia_extension_verified_by_openssl() {
     );
 
     for table in ["audit_events", "certificates", "ca_certificates", "ca_keys"] {
-        let _ = sqlx::query(&format!("DELETE FROM {table}"))
+        let _ = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(pool.pool())
             .await;
     }

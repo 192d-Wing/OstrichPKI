@@ -77,7 +77,7 @@ async fn ca_emits_signed_audit_records_verifiable_with_ca_public_key() {
 
     // Reset the tables this test touches (FK order: children first).
     for table in ["audit_events", "certificates", "ca_certificates", "ca_keys"] {
-        sqlx::query(&format!("DELETE FROM {table}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(pool.pool())
             .await
             .unwrap_or_else(|e| panic!("clean {table}: {e}"));
@@ -284,7 +284,7 @@ async fn ca_emits_signed_audit_records_verifiable_with_ca_public_key() {
 
     // Cleanup so the scratch DB carries no poisoned chain.
     for table in ["audit_events", "certificates", "ca_certificates", "ca_keys"] {
-        let _ = sqlx::query(&format!("DELETE FROM {table}"))
+        let _ = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(pool.pool())
             .await;
     }

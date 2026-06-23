@@ -249,9 +249,11 @@ impl CertificateRepository {
             )
         "#;
 
-        let rows = sqlx::query_as::<_, Certificate>(&format!(
+        // SI-10: PREDICATE is a fixed fragment with $N placeholders; status/search
+        // are bound, not interpolated. AssertSqlSafe (sqlx 0.9) marks it audited.
+        let rows = sqlx::query_as::<_, Certificate>(sqlx::AssertSqlSafe(format!(
             "SELECT * FROM certificates WHERE {PREDICATE} ORDER BY created_at DESC LIMIT $3 OFFSET $4"
-        ))
+        )))
         .bind(status)
         .bind(search)
         .bind(limit)
@@ -260,9 +262,9 @@ impl CertificateRepository {
         .await
         .map_err(|e| Error::Query(e.to_string()))?;
 
-        let total: i64 = sqlx::query_scalar(&format!(
+        let total: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM certificates WHERE {PREDICATE}"
-        ))
+        )))
         .bind(status)
         .bind(search)
         .fetch_one(self.pool.pool())

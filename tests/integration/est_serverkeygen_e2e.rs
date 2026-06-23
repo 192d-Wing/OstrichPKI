@@ -423,7 +423,7 @@ async fn est_serverkeygen_full_stack_over_http() {
 
 async fn sqlx_del(pool: &DatabasePool, table: &str) {
     // Best-effort cleanup; tables are FK-ordered by the caller.
-    let _ = sqlx::query(&format!("DELETE FROM {table}"))
+    let _ = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
         .execute(pool.pool())
         .await;
 }

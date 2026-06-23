@@ -498,9 +498,11 @@ impl AuditRepository {
             AND ($5::timestamptz IS NULL OR timestamp <= $5)
         "#;
 
-        let rows = sqlx::query_as::<_, AuditEvent>(&format!(
+        // SI-10: PREDICATE is a fixed fragment with $N placeholders; all filters
+        // are bound, not interpolated. AssertSqlSafe (sqlx 0.9) marks it audited.
+        let rows = sqlx::query_as::<_, AuditEvent>(sqlx::AssertSqlSafe(format!(
             "SELECT * FROM audit_events WHERE {PREDICATE} ORDER BY timestamp DESC LIMIT $6 OFFSET $7"
-        ))
+        )))
         .bind(actor)
         .bind(event_type)
         .bind(outcome)
@@ -512,9 +514,9 @@ impl AuditRepository {
         .await
         .map_err(|e| Error::Query(e.to_string()))?;
 
-        let total: i64 = sqlx::query_scalar(&format!(
+        let total: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM audit_events WHERE {PREDICATE}"
-        ))
+        )))
         .bind(actor)
         .bind(event_type)
         .bind(outcome)
