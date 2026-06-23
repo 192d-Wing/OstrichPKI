@@ -3641,6 +3641,7 @@ dependencies = [
  "ostrich-db",
  "ostrich-est",
  "ostrich-protocol",
+ "ostrich-tamp",
  "ostrich-x509",
  "p256",
  "pem-rfc7468 1.0.0",
@@ -3651,6 +3652,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "signature 3.0.0",
+ "spki",
  "sqlx",
  "tokio",
  "tonic",
@@ -3801,6 +3803,56 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ostrich-tamp"
+version = "0.15.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "cms",
+ "const-oid",
+ "der",
+ "hex",
+ "ostrich-audit",
+ "ostrich-common",
+ "ostrich-crypto",
+ "ostrich-db",
+ "ostrich-x509",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "spki",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "x509-cert",
+ "zeroize",
+]
+
+[[package]]
+name = "ostrich-tamp-server"
+version = "0.15.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "ostrich-audit",
+ "ostrich-common",
+ "ostrich-crypto",
+ "ostrich-db",
+ "ostrich-tamp",
+ "ostrich-x509",
+ "pem-rfc7468 1.0.0",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]

@@ -56,6 +56,10 @@ path = "integration/mlkem_openssl_interop.rs"
 name = "fips_signature_openssl_interop"
 path = "integration/fips_signature_openssl_interop.rs"
 
+[[test]]
+name = "tamp_store_e2e"
+path = "integration/tamp_store_e2e.rs"
+
 [dependencies]
 # OstrichPKI crates
 ostrich-common = { path = "../crates/ostrich-common" }
@@ -65,6 +69,7 @@ ostrich-protocol = { path = "../crates/ostrich-protocol" }
 ostrich-x509 = { path = "../crates/ostrich-x509" }
 ostrich-ca = { path = "../crates/ostrich-ca" }
 ostrich-est = { path = "../crates/ostrich-est" }
+ostrich-tamp = { path = "../crates/ostrich-tamp" }
 ostrich-audit = { path = "../crates/ostrich-audit" }
 axum = { workspace = true }
 async-trait = { workspace = true }
@@ -92,7 +97,10 @@ sha2 = "0.10"
 signature = "3.0"
 # "builder" feature enables PKCS#10 CSR generation (acme_full_flow_test)
 x509-cert = { version = "0.2", features = ["builder"] }
-der = "0.7"
+# Workspace der/spki carry the alloc+oid features the TAMP store test needs
+# (owned OctetString / Ia5String / SubjectPublicKeyInfoOwned).
+der = { workspace = true }
+spki = { workspace = true }
 base64 = "0.22"
 
 # Utilities

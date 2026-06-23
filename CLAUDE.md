@@ -271,6 +271,11 @@ All protocol implementations must strictly follow these RFCs:
 - **RFC 7030**: EST (Enrollment over Secure Transport)
 - **RFC 8295**: EST Extensions (CSR attributes)
 
+### Trust Anchor Management
+
+- **RFC 5934**: TAMP (Trust Anchor Management Protocol)
+- **RFC 5914**: Trust Anchor Format (TrustAnchorChoice / TrustAnchorInfo)
+
 ### Cryptographic Message Syntax
 
 - **RFC 5652**: CMS (Cryptographic Message Syntax)

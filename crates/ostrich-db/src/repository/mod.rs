@@ -36,6 +36,7 @@ pub mod est;
 pub mod kra;
 pub mod scms;
 pub mod session;
+pub mod tamp;
 pub mod users;
 
 pub use acme::AcmeRepository;
@@ -48,6 +49,7 @@ pub use est::{EstEnrollmentTokenRow, EstRepository};
 pub use kra::KraRepository;
 pub use scms::ScmsRepository;
 pub use session::DbSessionStore;
+pub use tamp::{TampRepository, TampTargetRow, TampTrustAnchorRow, TrustAnchorWrite};
 pub use users::DbUserRepository;
 
 use crate::Result;

@@ -15,6 +15,7 @@ members = [
     "crates/ostrich-scms",
     "crates/ostrich-acme",
     "crates/ostrich-est",
+    "crates/ostrich-tamp",
     # Service binaries
     "services/ca-server",
     "services/acme-server",
@@ -22,6 +23,7 @@ members = [
     "services/ocsp-server",
     "services/scms-server",
     "services/kra-server",
+    "services/tamp-server",
     "services/web-ui",
     # Tools
     "tools/ostrich-cli",
@@ -49,6 +51,7 @@ ostrich-db = { path = "crates/ostrich-db" }
 ostrich-audit = { path = "crates/ostrich-audit" }
 ostrich-protocol = { path = "crates/ostrich-protocol" }
 ostrich-api = { path = "crates/ostrich-api" }
+ostrich-tamp = { path = "crates/ostrich-tamp" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
