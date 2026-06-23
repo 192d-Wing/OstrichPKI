@@ -217,30 +217,33 @@ async fn validate_jws_new_account<T: serde::de::DeserializeOwned>(
     })
 }
 
-/// Validate JWS request for existing account endpoints
+/// A kid-authenticated JWS request validated down to (but excluding) its
+/// payload. Shared by payload-carrying requests and POST-as-GET (RFC 8555 §6.3).
+struct VerifiedJwsAccount {
+    header: ProtectedHeader,
+    jwk: Jwk,
+    jwk_thumbprint: String,
+    /// Account primary key (UUID) for ownership checks.
+    account_id: Uuid,
+    /// The JWS payload, still base64url-encoded (empty for POST-as-GET).
+    payload_b64: String,
+}
+
+/// Validate a kid-authenticated JWS request: envelope, URL, nonce (consumed for
+/// replay protection), account lookup by kid, and signature — everything except
+/// the payload. RFC 8555 §6.2 (requests from an existing account).
 ///
-/// RFC 8555 §6.2: For requests from an existing account, the JWS MUST be
-/// signed with the account's key pair, and the "kid" field MUST be present.
-///
-/// # NIAP PP-CA v2.1 Compliance
-///
-/// - **FIA_UAU.1**: Authenticates request via JWS signature verification.
-/// - **FIA_UID.1**: Identifies account via kid URL (account identifier).
-/// - **FDP_ACC.1**: Validates account owns the requested resource.
-/// - **FCS_COP.1**: Cryptographic signature verification using account's key.
-/// - **SC-23 (NIST)**: Nonce consumption prevents replay attacks.
-async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
+/// COMPLIANCE: NIAP FIA_UAU.1 (JWS signature auth), FIA_UID.1 (account via kid),
+/// FDP_ACC.1 (account owns the resource), FCS_COP.1 (signature verification);
+/// NIST SC-23 (nonce consumption prevents replay).
+async fn verify_jws_account(
     body: &[u8],
     expected_url: &str,
     state: &AcmeState,
-) -> Result<ValidatedJwsRequest<T>> {
-    // 1. Parse JWS envelope
+) -> Result<VerifiedJwsAccount> {
     let jws_envelope = jws::parse_jws(body)?;
-
-    // 2. Decode protected header
     let header = jws::decode_protected_header(&jws_envelope.protected)?;
 
-    // 3. Verify URL matches
     if header.url != expected_url {
         return Err(Error::Malformed(format!(
             "JWS URL mismatch: expected '{}', got '{}'",
@@ -248,8 +251,8 @@ async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
         )));
     }
 
-    // 4. Verify nonce and consume it (replay protection - RFC 8555 §6.5).
-    // A false result means the nonce was unknown/expired/already used (replay).
+    // Replay protection (RFC 8555 §6.5): a false result means the nonce was
+    // unknown/expired/already used.
     let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
     let nonce_ok = repo
         .consume_nonce(&header.nonce)
@@ -259,55 +262,63 @@ async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
         return Err(Error::BadNonce);
     }
 
-    // 5. Extract kid (required for existing account requests)
     let kid = header
         .kid
         .as_ref()
         .ok_or_else(|| Error::Malformed("kid required for this request".to_string()))?;
 
-    // 6. Lookup account by kid to get JWK
-    // Extract account_id from kid (format: "/acme/account/{id}")
+    // RFC 8555 §6.2: `kid` is the (absolute) account URL. Accept either the full
+    // URL (e.g. "https://host/acme/account/acct-<uuid>") or a relative path by
+    // taking the final path segment as the account id — account ids contain no
+    // '/'. (Required now that the server emits absolute URLs per §7.1.)
     let account_id_str = kid
-        .strip_prefix("/acme/account/")
-        .ok_or_else(|| Error::Malformed(format!("Invalid kid format: {}", kid)))?;
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Error::Malformed(format!("Invalid kid: {}", kid)))?;
 
     let account = repo
         .find_account_by_id(account_id_str)
         .await?
-        .ok_or_else(|| Error::AccountDoesNotExist)?;
+        .ok_or(Error::AccountDoesNotExist)?;
 
-    // Parse stored JWK
     let jwk: Jwk = serde_json::from_value(account.public_key_jwk.clone())
         .map_err(|e| Error::ServerInternal(format!("Failed to parse stored JWK: {}", e)))?;
 
-    // 7. Verify JWS signature using account's JWK
     let signature_valid =
         jws::verify_jws_with_jwk(&jws_envelope, &header, &jwk, &state.crypto_provider).await?;
-
     if !signature_valid {
         return Err(Error::Unauthorized("Invalid JWS signature".to_string()));
     }
 
-    // 8. Compute JWK thumbprint
     let jwk_thumbprint = jws::compute_jwk_thumbprint(&jwk)?;
 
-    // 9. Account primary key for ownership checks.
-    // The public account_id is "acct-<uuid>" (not a parseable UUID) and
-    // order rows reference the account's pk - an earlier version parsed the
-    // public id here and 500'd on every kid-authenticated request.
-    let account_id = account.id;
+    Ok(VerifiedJwsAccount {
+        header,
+        jwk,
+        jwk_thumbprint,
+        account_id: account.id,
+        payload_b64: jws_envelope.payload,
+    })
+}
 
-    // 10. Decode payload
-    let payload_bytes = decode_base64url(&jws_envelope.payload)?;
+async fn validate_jws_with_account<T: serde::de::DeserializeOwned>(
+    body: &[u8],
+    expected_url: &str,
+    state: &AcmeState,
+) -> Result<ValidatedJwsRequest<T>> {
+    let v = verify_jws_account(body, expected_url, state).await?;
+
+    let payload_bytes = decode_base64url(&v.payload_b64)?;
     let payload: T = serde_json::from_slice(&payload_bytes)
         .map_err(|e| Error::Malformed(format!("Invalid payload JSON: {}", e)))?;
 
     Ok(ValidatedJwsRequest {
         payload,
-        header,
-        jwk,
-        jwk_thumbprint,
-        account_id,
+        header: v.header,
+        jwk: v.jwk,
+        jwk_thumbprint: v.jwk_thumbprint,
+        account_id: v.account_id,
     })
 }
 
@@ -347,11 +358,20 @@ pub fn create_router(state: AcmeState) -> Router {
         .route("/acme/new-account", post(new_account))
         .route("/acme/new-order", post(new_order))
         .route("/acme/account/{id}", post(update_account))
-        .route("/acme/authz/{id}", get(get_authorization))
+        // RFC 8555 §6.3: orders, authorizations, and certificates are fetched
+        // via POST-as-GET (signed JWS, empty payload). GET is kept for
+        // convenience/debugging; strict clients (lego, certbot) use POST.
+        .route(
+            "/acme/authz/{id}",
+            get(get_authorization).post(post_as_get_authorization),
+        )
         .route("/acme/challenge/{id}", post(respond_to_challenge))
-        .route("/acme/order/{id}", get(get_order))
+        .route("/acme/order/{id}", get(get_order).post(post_as_get_order))
         .route("/acme/order/{id}/finalize", post(finalize_order))
-        .route("/acme/cert/{id}", get(get_certificate))
+        .route(
+            "/acme/cert/{id}",
+            get(get_certificate).post(post_as_get_certificate),
+        )
         .with_state(state)
 }
 
@@ -401,12 +421,20 @@ pub struct DirectoryMeta {
     pub external_account_required: bool,
 }
 
-/// New account request
+/// New account request (RFC 8555 §7.3).
+///
+/// Every member is optional: `contact` and `termsOfServiceAgreed` are OPTIONAL
+/// per §7.3, and a key-lookup request (`onlyReturnExisting`, §7.3.1) legitimately
+/// sends neither — e.g. lego's "resolve account by key" probe. Requiring them
+/// rejected real clients with a malformed-request error.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewAccountRequest {
+    #[serde(default)]
     pub contact: Vec<String>,
+    #[serde(default)]
     pub terms_of_service_agreed: bool,
+    #[serde(default)]
     pub only_return_existing: Option<bool>,
 }
 
@@ -504,26 +532,25 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
     let public_key_jwk = serde_json::to_value(&validated.jwk)
         .map_err(|e| Error::ServerInternal(format!("Failed to serialize JWK: {}", e)))?;
 
-    if !request.terms_of_service_agreed {
-        return Err(Error::UserActionRequired(
-            "Terms of service must be agreed to".to_string(),
-        ));
-    }
-
     let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
-    // Check if account already exists (onlyReturnExisting)
+    // RFC 8555 §7.3.1: a key-lookup (onlyReturnExisting) returns the existing
+    // account or `accountDoesNotExist`. It is NOT account creation, so it does
+    // not require terms agreement — handle it before the terms-of-service gate.
     if let Some(true) = request.only_return_existing {
         if let Some(existing) = repo.find_account_by_jwk(&jwk_thumbprint).await? {
             let account_id = existing.account_id.clone();
             let nonce = generate_nonce(&state).await;
 
-            let account = map_db_account_to_service(existing);
+            let account = map_db_account_to_service(existing, &state.base_url);
 
             return Ok((
                 StatusCode::OK,
                 [
-                    ("Location", format!("/acme/account/{}", account_id)),
+                    (
+                        "Location",
+                        format!("{}/acme/account/{}", state.base_url, account_id),
+                    ),
                     ("Replay-Nonce", nonce),
                 ],
                 Json(account),
@@ -532,6 +559,13 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
         } else {
             return Err(Error::AccountDoesNotExist);
         }
+    }
+
+    // RFC 8555 §7.3: creating a new account requires agreement to the terms.
+    if !request.terms_of_service_agreed {
+        return Err(Error::UserActionRequired(
+            "Terms of service must be agreed to".to_string(),
+        ));
     }
 
     // Create new account
@@ -551,12 +585,15 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
     // TODO: Add audit logging (Phase 11)
 
     let nonce = generate_nonce(&state).await;
-    let account = map_db_account_to_service(db_account);
+    let account = map_db_account_to_service(db_account, &state.base_url);
 
     Ok((
         StatusCode::CREATED,
         [
-            ("Location", format!("/acme/account/{}", account_id)),
+            (
+                "Location",
+                format!("{}/acme/account/{}", state.base_url, account_id),
+            ),
             ("Replay-Nonce", nonce),
         ],
         Json(account),
@@ -644,18 +681,21 @@ async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Respon
             .await?;
         }
 
-        authorization_urls.push(format!("/acme/authz/{}", authz_id));
+        authorization_urls.push(format!("{}/acme/authz/{}", state.base_url, authz_id));
     }
 
     // Map to service order
-    let order = map_db_order_to_service(db_order, authorization_urls);
+    let order = map_db_order_to_service(db_order, authorization_urls, &state.base_url);
 
     let nonce = generate_nonce(&state).await;
 
     Ok((
         StatusCode::CREATED,
         [
-            ("Location", format!("/acme/order/{}", order_id_str)),
+            (
+                "Location",
+                format!("{}/acme/order/{}", state.base_url, order_id_str),
+            ),
             ("Replay-Nonce", nonce),
         ],
         Json(order),
@@ -696,11 +736,46 @@ async fn update_account(
         .update_account(&id, request.contact, request.status.as_deref())
         .await?;
 
-    let account = map_db_account_to_service(db_account);
+    let account = map_db_account_to_service(db_account, &state.base_url);
 
     let nonce = generate_nonce(&state).await;
 
     Ok((StatusCode::OK, [("Replay-Nonce", nonce)], Json(account)).into_response())
+}
+
+// ---------------------------------------------------------------------------
+// POST-as-GET handlers (RFC 8555 §6.3): authenticate the signed JWS (empty
+// payload) via the account kid, then return the same body as the GET route.
+// ---------------------------------------------------------------------------
+
+async fn post_as_get_authorization(
+    State(state): State<AcmeState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Response> {
+    let url = format!("{}/acme/authz/{}", state.base_url, id);
+    verify_jws_account(&body, &url, &state).await?;
+    get_authorization(State(state), Path(id)).await
+}
+
+async fn post_as_get_order(
+    State(state): State<AcmeState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Response> {
+    let url = format!("{}/acme/order/{}", state.base_url, id);
+    verify_jws_account(&body, &url, &state).await?;
+    get_order(State(state), Path(id)).await
+}
+
+async fn post_as_get_certificate(
+    State(state): State<AcmeState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Response> {
+    let url = format!("{}/acme/cert/{}", state.base_url, id);
+    verify_jws_account(&body, &url, &state).await?;
+    get_certificate(State(state), Path(id)).await
 }
 
 /// Get authorization (RFC 8555 §7.1.4)
@@ -720,7 +795,7 @@ async fn get_authorization(
     let db_challenges = repo.list_challenges_by_authorization(db_authz.id).await?;
     let challenges: Vec<Challenge> = db_challenges
         .into_iter()
-        .map(map_db_challenge_to_service)
+        .map(|c| map_db_challenge_to_service(c, &state.base_url))
         .collect();
 
     let authorization = map_db_authorization_to_service(db_authz, challenges);
@@ -779,7 +854,7 @@ async fn respond_to_challenge(
     // NIAP PP-CA: FIA_UAU.1 - proof of identifier control before issuance.
     tokio::spawn(run_challenge_validation(state.clone(), db_challenge));
 
-    let challenge = map_db_challenge_to_service(updated_challenge);
+    let challenge = map_db_challenge_to_service(updated_challenge, &state.base_url);
 
     let nonce = generate_nonce(&state).await;
 
@@ -950,10 +1025,10 @@ async fn get_order(State(state): State<AcmeState>, Path(id): Path<String>) -> Re
     let db_authzs = repo.list_authorizations_by_order(db_order.id).await?;
     let authorization_urls: Vec<String> = db_authzs
         .iter()
-        .map(|authz| format!("/acme/authz/{}", authz.authorization_id))
+        .map(|authz| format!("{}/acme/authz/{}", state.base_url, authz.authorization_id))
         .collect();
 
-    let order = map_db_order_to_service(db_order, authorization_urls);
+    let order = map_db_order_to_service(db_order, authorization_urls, &state.base_url);
 
     let nonce = generate_nonce(&state).await;
 
@@ -1135,10 +1210,10 @@ async fn finalize_order(
 
     let authorization_urls: Vec<String> = db_authzs
         .iter()
-        .map(|authz| format!("/acme/authz/{}", authz.authorization_id))
+        .map(|authz| format!("{}/acme/authz/{}", state.base_url, authz.authorization_id))
         .collect();
 
-    let order = map_db_order_to_service(valid_order, authorization_urls);
+    let order = map_db_order_to_service(valid_order, authorization_urls, &state.base_url);
 
     let nonce = generate_nonce(&state).await;
 
@@ -1210,7 +1285,7 @@ async fn generate_nonce(state: &AcmeState) -> String {
 }
 
 /// Map database AcmeAccount to service Account
-fn map_db_account_to_service(db: ostrich_db::models::AcmeAccount) -> Account {
+fn map_db_account_to_service(db: ostrich_db::models::AcmeAccount, base_url: &str) -> Account {
     use crate::account::AccountKey;
 
     let key = serde_json::from_value::<AccountKey>(db.public_key_jwk.clone()).unwrap_or_default();
@@ -1226,7 +1301,7 @@ fn map_db_account_to_service(db: ostrich_db::models::AcmeAccount) -> Account {
         contact: db.contact,
         terms_of_service_agreed: Some(db.terms_of_service_agreed),
         external_account_binding: None,
-        orders: format!("/acme/account/{}/orders", db.account_id),
+        orders: format!("{}/acme/account/{}/orders", base_url, db.account_id),
         key,
         created_at: db.created_at,
         updated_at: db.updated_at,
@@ -1237,6 +1312,7 @@ fn map_db_account_to_service(db: ostrich_db::models::AcmeAccount) -> Account {
 fn map_db_order_to_service(
     db: ostrich_db::models::AcmeOrder,
     authorizations: Vec<String>,
+    base_url: &str,
 ) -> Order {
     // Parse identifiers from JSON
     let identifiers =
@@ -1255,14 +1331,14 @@ fn map_db_order_to_service(
         },
         identifiers,
         authorizations,
-        finalize: format!("/acme/order/{}/finalize", db.order_id),
+        finalize: format!("{}/acme/order/{}/finalize", base_url, db.order_id),
         // The /acme/cert/{id} handler resolves {id} as the ACME order id
         // (RFC 8555 §7.4.2 download), so the URL must carry the order id -
         // an earlier version emitted the internal certificate UUID here,
         // which 404'd.
         certificate: db
             .certificate_id
-            .map(|_| format!("/acme/cert/{}", db.order_id)),
+            .map(|_| format!("{}/acme/cert/{}", base_url, db.order_id)),
         not_before: db.not_before,
         not_after: db.not_after,
         error: None,
@@ -1302,7 +1378,7 @@ fn map_db_authorization_to_service(
 }
 
 /// Map database AcmeChallenge to service Challenge
-fn map_db_challenge_to_service(db: ostrich_db::models::AcmeChallenge) -> Challenge {
+fn map_db_challenge_to_service(db: ostrich_db::models::AcmeChallenge, base_url: &str) -> Challenge {
     Challenge {
         id: db.id,
         authorization_id: db.authorization_id,
@@ -1319,7 +1395,7 @@ fn map_db_challenge_to_service(db: ostrich_db::models::AcmeChallenge) -> Challen
             "invalid" => ChallengeStatus::Invalid,
             _ => ChallengeStatus::Pending,
         },
-        url: format!("/acme/challenge/{}", db.challenge_id),
+        url: format!("{}/acme/challenge/{}", base_url, db.challenge_id),
         token: db.token,
         error: db.error_detail,
         validated: db.validated_at,
