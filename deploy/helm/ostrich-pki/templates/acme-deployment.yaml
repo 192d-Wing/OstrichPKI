@@ -35,15 +35,14 @@ spec:
       serviceAccountName: {{ include "ostrich-pki.serviceAccountName" . }}
       securityContext:
         {{- include "ostrich-pki.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        {{- include "ostrich-pki.waitForCa" . | nindent 8 }}
       containers:
         - name: acme
           securityContext:
             {{- include "ostrich-pki.securityContext" . | nindent 12 }}
-          image: {{ include "ostrich-pki.image" (dict "repository" .Values.acme.image.repository "tag" .Values.acme.image.tag "Values" .Values "Chart" .Chart) }}
+          image: {{ include "ostrich-pki.image" (dict "service" "acme" "repository" .Values.acme.image.repository "tag" .Values.acme.image.tag "root" .) }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args:
-            - --target
-            - acme-service
           ports:
             - name: http
               containerPort: 8080
@@ -52,6 +51,14 @@ spec:
             {{- include "ostrich-pki.commonEnv" . | nindent 12 }}
             - name: ACME_BIND_ADDRESS
               value: "0.0.0.0:8080"
+            - name: CA_GRPC_URL
+              value: {{ include "ostrich-pki.caGrpcUrl" . | quote }}
+            - name: CA_GRPC_INSECURE
+              value: "true"
+            - name: ACME_ALLOW_PRIVATE_IP_DOMAINS
+              value: {{ .Values.acme.allowPrivateIpDomains | quote }}
+            - name: ACME_HTTP01_PORT
+              value: {{ .Values.acme.http01Port | quote }}
             {{- if .Values.acme.baseUrl }}
             - name: ACME_BASE_URL
               value: {{ .Values.acme.baseUrl | quote }}

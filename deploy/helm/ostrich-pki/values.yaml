@@ -7,7 +7,8 @@
 
 # Global settings
 global:
-  # Image registry override
+  # Registry override applied to every service image (takes precedence over
+  # image.registry below). Leave empty to use image.registry.
   imageRegistry: ""
   # Image pull secrets
   imagePullSecrets: []
@@ -15,10 +16,14 @@ global:
   storageClass: ""
 
 # Common image settings
+#
+# Each service is its own image, published as <registry>/<service>-service:<tag>
+# by .github/workflows/docker-publish.yml (e.g. ghcr.io/192d-wing/ca-service).
+# Per-service `image.repository`/`image.tag` (below) override these defaults.
 image:
-  repository: ostrich-pki
-  pullPolicy: IfNotPresent
-  tag: ""  # Defaults to appVersion
+  registry: ghcr.io/192d-wing
+  pullPolicy: Always
+  tag: latest  # Pin per environment (e.g. sha-<commit>); empty falls back to appVersion
 
 # Service account
 serviceAccount:
@@ -111,8 +116,15 @@ acme:
     type: ClusterIP
     port: 8080
 
-  # External base URL for ACME directory
+  # External base URL for ACME directory (e.g. https://acme.example.com)
   baseUrl: ""
+
+  # SSRF guard: when false, orders for private-IP / internal domains are
+  # rejected. Keep false in production; only an in-cluster E2E flips it.
+  allowPrivateIpDomains: false
+
+  # Port the http-01 challenge validator connects to on the client.
+  http01Port: 80
 
   # Ingress for external ACME access
   ingress:
@@ -153,6 +165,9 @@ est:
   service:
     type: ClusterIP
     port: 8443
+
+  # Accept bearer-token auth in addition to mTLS (RFC 7030 §3.2).
+  allowBearerAuth: true
 
   # mTLS configuration (required per RFC 7030)
   # NIST 800-53: SC-8 (Transmission Confidentiality)

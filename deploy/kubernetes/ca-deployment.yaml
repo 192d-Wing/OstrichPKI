@@ -1,29 +1,30 @@
 # OstrichPKI CA Service Deployment
 #
 # COMPLIANCE MAPPING:
-# - NIST 800-53: SC-17 (PKI Certificates)
-# - NIST 800-53: SC-12 (Cryptographic Key Establishment)
-# - NIST 800-53: AC-6 (Least Privilege)
-
+# - NIST 800-53: SC-17 (PKI Certificates) — this is the CA core
+# - NIST 800-53: SC-12 (Key management) — CA key in HSM/SoftHSM
+# - NIST 800-53: CM-2 (Baseline Configuration)
+#
+# Per-service image published by .github/workflows/docker-publish.yml
+# (ghcr.io/192d-wing/ca-service). Deployment/Service names match the running
+# cluster (ca-server / ca-service); environment-specific overlays (hostnames,
+# ingress, the .61 VIP) live outside this base.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ostrich-pki-ca
+  name: ca-server
   namespace: ostrich-pki
   labels:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: ca
+    app: ca-server
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: ostrich-pki
-      app.kubernetes.io/component: ca
+      app: ca-server
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: ostrich-pki
-        app.kubernetes.io/component: ca
+        app: ca-server
     spec:
       serviceAccountName: ostrich-pki
       securityContext:
@@ -34,78 +35,32 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: ca
-          image: ostrich-pki:latest
-          imagePullPolicy: IfNotPresent
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1000
-            capabilities:
-              drop:
-                - ALL
+        - name: ca-server
+          image: ghcr.io/192d-wing/ca-service:latest
+          imagePullPolicy: Always
           ports:
-            - name: http
-              containerPort: 8080
-              protocol: TCP
-            - name: grpc
-              containerPort: 50051
-              protocol: TCP
+            - { name: http, containerPort: 8080 }
+            - { name: grpc, containerPort: 50051 }
           env:
-            - name: RUST_LOG
-              valueFrom:
-                configMapKeyRef:
-                  name: ostrich-pki-config
-                  key: RUST_LOG
-            - name: LOG_JSON
-              valueFrom:
-                configMapKeyRef:
-                  name: ostrich-pki-config
-                  key: LOG_JSON
+            - { name: RUST_LOG, value: "info" }
             - name: DATABASE_URL
-              value: "postgresql://ostrich:$(DATABASE_PASSWORD)@ostrich-pki-postgresql:5432/ostrich_pki"
-            - name: DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: ostrich-pki-db
-                  key: password
-            - name: CA_REST_ADDRESS
-              value: "0.0.0.0:8080"
-            - name: CA_GRPC_ADDRESS
-              value: "0.0.0.0:50051"
+                  name: ostrich-secrets
+                  key: DATABASE_URL
+            - { name: CA_REST_ADDRESS, value: "0.0.0.0:8080" }
+            - { name: CA_GRPC_ADDRESS, value: "0.0.0.0:50051" }
           livenessProbe:
-            httpGet:
-              path: /health
-              port: http
+            httpGet: { path: /health, port: http }
             initialDelaySeconds: 10
             periodSeconds: 30
-            timeoutSeconds: 10
-            failureThreshold: 3
           readinessProbe:
-            httpGet:
-              path: /ready
-              port: http
+            httpGet: { path: /ready, port: http }
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
           resources:
-            limits:
-              cpu: 500m
-              memory: 512Mi
-            requests:
-              cpu: 100m
-              memory: 128Mi
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
-            - name: ca-certs
-              mountPath: /app/certs
-              readOnly: true
-      volumes:
-        - name: tmp
-          emptyDir: {}
-        - name: ca-certs
-          secret:
-            secretName: ostrich-pki-ca-certs
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }

@@ -1,29 +1,27 @@
-# OstrichPKI EST Service Deployment
+# OstrichPKI EST Service Deployment (RFC 7030)
 #
 # COMPLIANCE MAPPING:
-# - RFC 7030: EST Protocol
-# - NIST 800-53: SC-8 (Transmission Confidentiality - mTLS)
-# - NIST 800-53: SC-17 (PKI Certificates)
-
+# - NIST 800-53: SC-17 (PKI Certificates), IA-2 (enrollment auth)
+# - NIST 800-53: CM-2 (Baseline Configuration)
+#
+# Per-service image (ghcr.io/192d-wing/est-service). Finalizes enrollments via
+# the CA over gRPC; waits for the CA to be bootstrapped before starting.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ostrich-pki-est
+  name: est-server
   namespace: ostrich-pki
   labels:
-    app.kubernetes.io/name: ostrich-pki
-    app.kubernetes.io/component: est
+    app: est-server
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: ostrich-pki
-      app.kubernetes.io/component: est
+      app: est-server
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: ostrich-pki
-        app.kubernetes.io/component: est
+        app: est-server
     spec:
       serviceAccountName: ostrich-pki
       securityContext:
@@ -33,83 +31,49 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
-      containers:
-        - name: est
-          image: ostrich-pki:latest
-          imagePullPolicy: IfNotPresent
+      initContainers:
+        - name: wait-ca
+          image: postgres:16-alpine
+          command: ["sh", "-c"]
           args:
-            - --target
-            - est-service
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1000
-            capabilities:
-              drop:
-                - ALL
-          ports:
-            - name: https
-              containerPort: 8443
-              protocol: TCP
+            - |
+              until psql "$DATABASE_URL" -tAc "SELECT 1 FROM ca_certificates WHERE is_root = false LIMIT 1" 2>/dev/null | grep -q 1; do
+                echo "waiting for CA bootstrap..."; sleep 3;
+              done
           env:
-            - name: RUST_LOG
-              valueFrom:
-                configMapKeyRef:
-                  name: ostrich-pki-config
-                  key: RUST_LOG
-            - name: LOG_JSON
-              valueFrom:
-                configMapKeyRef:
-                  name: ostrich-pki-config
-                  key: LOG_JSON
             - name: DATABASE_URL
-              value: "postgresql://ostrich:$(DATABASE_PASSWORD)@ostrich-pki-postgresql:5432/ostrich_pki"
-            - name: DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: ostrich-pki-db
-                  key: password
-            - name: EST_BIND_ADDRESS
-              value: "0.0.0.0:8443"
-            - name: TLS_CERT_FILE
-              value: "/app/certs/tls.crt"
-            - name: TLS_KEY_FILE
-              value: "/app/certs/tls.key"
+                  name: ostrich-secrets
+                  key: DATABASE_URL
+      containers:
+        - name: est-server
+          image: ghcr.io/192d-wing/est-service:latest
+          imagePullPolicy: Always
+          ports:
+            - { name: http, containerPort: 8443 }
+          env:
+            - { name: RUST_LOG, value: "info" }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ostrich-secrets
+                  key: DATABASE_URL
+            - { name: EST_BIND_ADDRESS, value: "0.0.0.0:8443" }
+            - { name: CA_GRPC_URL, value: "http://ca-service:50051" }
+            - { name: CA_GRPC_INSECURE, value: "true" }
+            - { name: EST_ALLOW_BEARER_AUTH, value: "true" }
           livenessProbe:
-            httpGet:
-              path: /health
-              port: https
-              scheme: HTTP
+            httpGet: { path: /health, port: http }
             initialDelaySeconds: 10
-            periodSeconds: 30
-            timeoutSeconds: 10
-            failureThreshold: 3
+            periodSeconds: 20
           readinessProbe:
-            httpGet:
-              path: /ready
-              port: https
-              scheme: HTTP
+            httpGet: { path: /ready, port: http }
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
           resources:
-            limits:
-              cpu: 500m
-              memory: 256Mi
-            requests:
-              cpu: 100m
-              memory: 64Mi
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
-            - name: est-certs
-              mountPath: /app/certs
-              readOnly: true
-      volumes:
-        - name: tmp
-          emptyDir: {}
-        - name: est-certs
-          secret:
-            secretName: ostrich-pki-est-certs
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }

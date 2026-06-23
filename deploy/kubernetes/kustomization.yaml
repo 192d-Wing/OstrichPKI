@@ -1,16 +1,22 @@
-# OstrichPKI Kustomize Configuration
+# OstrichPKI Kustomize base
 #
 # COMPLIANCE MAPPING:
 # - NIST 800-53: CM-2 (Baseline Configuration)
 # - NIST 800-53: CM-3 (Configuration Change Control)
 #
+# Generic base matching the running cluster's per-service model
+# (ghcr.io/192d-wing/<svc>-service images; ca-server/ca-service naming;
+# DATABASE_URL from the ostrich-secrets secret). Environment-specific concerns
+# (hostnames, ingress, the .61 anycast VIP, real secret values) belong in
+# overlays, not in this base.
+#
 # Usage:
 #   kubectl apply -k deploy/kubernetes/
 #
-# For customization, create overlays:
-#   deploy/kubernetes/overlays/production/
-#   deploy/kubernetes/overlays/staging/
-
+# Pin images per environment via an overlay, e.g.:
+#   images:
+#     - name: ghcr.io/192d-wing/ca-service
+#       newTag: sha-<commit>
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -18,30 +24,19 @@ namespace: ostrich-pki
 
 resources:
   - namespace.yaml
-  - secrets.yaml
-  - configmap.yaml
   - serviceaccount.yaml
+  - secrets.yaml
   - ca-deployment.yaml
   - ca-service.yaml
   - acme-deployment.yaml
   - acme-service.yaml
-  - ocsp-deployment.yaml
-  - ocsp-service.yaml
   - est-deployment.yaml
   - est-service.yaml
+  - ocsp-deployment.yaml
+  - ocsp-service.yaml
 
-commonLabels:
-  app.kubernetes.io/part-of: ostrich-pki
-  app.kubernetes.io/managed-by: kustomize
-
-images:
-  - name: ostrich-pki
-    newName: ghcr.io/ostrich-pki/ostrich-pki
-    newTag: v0.13.0
-
-configMapGenerator:
-  - name: ostrich-pki-env
-    behavior: merge
-    literals:
-      - RUST_LOG=info
-      - LOG_JSON=true
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: ostrich-pki
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false

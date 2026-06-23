@@ -40,7 +40,7 @@ spec:
         - name: ca
           securityContext:
             {{- include "ostrich-pki.securityContext" . | nindent 12 }}
-          image: {{ include "ostrich-pki.image" (dict "repository" .Values.ca.image.repository "tag" .Values.ca.image.tag "Values" .Values "Chart" .Chart) }}
+          image: {{ include "ostrich-pki.image" (dict "service" "ca" "repository" .Values.ca.image.repository "tag" .Values.ca.image.tag "root" .) }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
