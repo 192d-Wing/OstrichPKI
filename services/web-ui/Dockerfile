@@ -16,9 +16,14 @@
 # ==============================================================================
 FROM rust:1.96-bookworm AS wasm-builder
 
-# Install wasm target and trunk
+# Install wasm target and trunk. Do NOT `cargo install wasm-bindgen-cli`: that
+# compiles the CLI from source (slow, and a freshly published version can fail
+# to build on the runner — wasm-bindgen-cli 0.2.125 broke the arm64 build).
+# Trunk downloads the prebuilt wasm-bindgen binary that exactly matches the
+# project's wasm-bindgen dependency, so the explicit install is both unnecessary
+# and a version-mismatch risk.
 RUN rustup target add wasm32-unknown-unknown \
-    && cargo install trunk wasm-bindgen-cli
+    && cargo install trunk
 
 # Install Node.js for Tailwind CSS. Pin Tailwind to v3 to match the project's
 # package.json (^3.4.19): the styles use v3 syntax (@tailwind directives, JS
