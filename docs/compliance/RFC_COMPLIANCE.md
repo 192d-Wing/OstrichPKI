@@ -851,6 +851,19 @@ identity, and the token is consumed on first successful issuance (single-use).
 Only the token's SHA-256 is stored. See `crates/ostrich-est/src/enrollment_token.rs`
 and `migrations/00013_est_enrollment_tokens.sql`.
 
+**Certificate-profile selection (§4.2):** when minting a token the operator may
+pin the issuance profile the enrolled certificate is cut under, chosen from an
+allowlist (`OFFERABLE_EST_PROFILES` = `tls_client`, `tls_server`,
+`tls_server_client`) validated at mint time (SI-10) and persisted on the token
+row (`profile` column). At enrollment `resolve_enroll_profile`
+(crates/ostrich-est/src/rest.rs) reads the pinned profile, re-validates it
+against the allowlist (fail-secure to the configured default if the allowlist
+changed under a live token), and drives both `/simpleenroll` and `/serverkeygen`
+issuance with it; session/mTLS enrollments keep the server default. The
+`tls_server_client` profile carries both `serverAuth` and `clientAuth` EKU for
+devices that act as both TLS client and server (registered in
+`services/ca-server/src/main.rs` `default_profiles`).
+
 Re-enrollment subject binding (RFC 7030 §4.2.2): `simplereenroll` now requires
 the CSR subject to structurally match a certificate previously issued to the
 same client (resolved from this client's prior issued enrollments, since the
