@@ -71,7 +71,7 @@ spec:
             # NIST 800-53: SC-8 (TLS) / AC-17 (mTLS client auth).
             - { name: TLS_CERT_FILE, value: "/etc/est/tls/tls.crt" }
             - { name: TLS_KEY_FILE, value: "/etc/est/tls/tls.key" }
-            - { name: TLS_CA_CERT, value: "/etc/est/client-ca/ca.crt" }
+            - { name: TLS_CA_CERT_FILE, value: "/etc/est/client-ca/ca.crt" }
             - { name: EST_MTLS_TOKEN_BOOTSTRAP, value: "true" }
           volumeMounts:
             # Server certificate for est.oopl.dev.mil (the cert Traefik formerly
