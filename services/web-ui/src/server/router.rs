@@ -96,7 +96,11 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
         .route("/auth/login", get(auth::handlers::login))
         .route("/auth/callback", get(auth::handlers::callback))
         .route("/auth/internal-login", post(auth::handlers::internal_login))
-        .route("/auth/logout", post(auth::handlers::logout))
+        // GET so the browser can navigate to it directly (the client triggers
+        // logout by setting window.location); the handler clears the session and
+        // redirects to /auth/login.
+        .route("/auth/logout", get(auth::handlers::logout))
+        .route("/auth/logout-all", get(auth::handlers::logout_all))
         .route("/auth/userinfo", get(auth::handlers::userinfo))
         .with_state(state.clone());
 

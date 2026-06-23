@@ -292,6 +292,18 @@ pub trait AuthProvider: Send + Sync {
     /// - NIAP PP-CA: FIA_AFL.1.2 - Administrator unlock
     async fn unlock_account(&self, username: &str) -> AuthResult<()>;
 
+    /// Terminate ALL active sessions for a user ("sign out everywhere").
+    ///
+    /// Returns the number of sessions terminated. Default: a no-op returning 0,
+    /// for providers without a session store (mTLS, disabled). Session-backed
+    /// providers override this.
+    ///
+    /// # COMPLIANCE MAPPING
+    /// - NIAP PP-CA: FTA_SSL.4 - user-initiated termination of all own sessions
+    async fn terminate_all_sessions_for_user(&self, _user_id: &str) -> AuthResult<u32> {
+        Ok(0)
+    }
+
     /// Get the name/identifier of this authentication provider
     fn provider_name(&self) -> &str;
 
@@ -399,6 +411,19 @@ impl AuthProvider for CompositeAuthProvider {
             let _ = provider.unlock_account(username).await;
         }
         Ok(())
+    }
+
+    async fn terminate_all_sessions_for_user(&self, user_id: &str) -> AuthResult<u32> {
+        // Fan out so a session-backed inner provider actually terminates its
+        // sessions (the trait default is a no-op). Sum the counts.
+        let mut total = 0;
+        for provider in &self.providers {
+            total += provider
+                .terminate_all_sessions_for_user(user_id)
+                .await
+                .unwrap_or(0);
+        }
+        Ok(total)
     }
 
     fn provider_name(&self) -> &str {

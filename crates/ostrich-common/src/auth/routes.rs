@@ -52,6 +52,7 @@ pub fn auth_routes(provider: Arc<dyn AuthProvider>) -> Router {
     Router::new()
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/logout-all", post(logout_all))
         .with_state(provider)
 }
 
@@ -125,6 +126,40 @@ async fn logout(
         .and_then(|h| h.strip_prefix("Bearer "))
     {
         let _ = provider.invalidate_session(token).await;
+    }
+    StatusCode::NO_CONTENT
+}
+
+/// POST /api/v1/auth/logout-all
+///
+/// Terminate ALL of the caller's sessions ("sign out everywhere"). The caller is
+/// identified from the presented bearer session; every active session for that
+/// user (including this one) is terminated.
+///
+/// NIAP PP-CA: FTA_SSL.4 - user-initiated session termination.
+/// Always returns 204 (does not leak session validity).
+async fn logout_all(
+    State(provider): State<Arc<dyn AuthProvider>>,
+    headers: axum::http::HeaderMap,
+) -> StatusCode {
+    if let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+    {
+        if let Ok(info) = provider.validate_session(token).await {
+            match provider
+                .terminate_all_sessions_for_user(&info.user.username)
+                .await
+            {
+                Ok(n) => {
+                    tracing::info!(username = %info.user.username, terminated = n, "Signed out everywhere")
+                }
+                Err(e) => {
+                    tracing::warn!(username = %info.user.username, error = %e, "logout-all failed")
+                }
+            }
+        }
     }
     StatusCode::NO_CONTENT
 }

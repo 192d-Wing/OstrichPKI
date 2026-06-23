@@ -348,6 +348,51 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoR
     (jar.add(remove_session), Redirect::to("/auth/login"))
 }
 
+/// "Sign out everywhere" — terminate ALL of the user's sessions.
+///
+/// Terminates every CA-side session for this user (which frees the
+/// concurrent-session limit and revokes the user's other devices, whose bound
+/// tokens become invalid) by calling the CA's `logout-all` with this session's
+/// bound backend credential, then clears this BFF session and cookie.
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FTA_SSL.4 - user-initiated session termination
+/// - NIST 800-53: AC-12 (session termination)
+pub async fn logout_all(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
+    if let Some(session_cookie) = jar.get(&state.config.session.cookie_name) {
+        let token = session_cookie.value().to_string();
+        if let Some(session) = state.session_manager.validate_session(&token).await {
+            if let Some(backend) = session.backend_token {
+                let url = format!(
+                    "{}/api/v1/auth/logout-all",
+                    state.config.backend.ca_url.trim_end_matches('/')
+                );
+                match reqwest::Client::new()
+                    .post(&url)
+                    .header("authorization", format!("Bearer {backend}"))
+                    .send()
+                    .await
+                {
+                    Ok(resp) if !resp.status().is_success() => {
+                        tracing::warn!(status = %resp.status(), "logout-all: CA returned non-success");
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "logout-all: CA call failed"),
+                }
+            }
+        }
+        // Invalidate this BFF session as well.
+        state.session_manager.invalidate_session(&token).await;
+        tracing::info!("User signed out everywhere");
+    }
+
+    let cookie_name = state.config.session.cookie_name.clone();
+    let remove_session = Cookie::build((cookie_name, ""))
+        .path("/")
+        .max_age(cookie::time::Duration::ZERO);
+    (jar.add(remove_session), Redirect::to("/auth/login"))
+}
+
 /// User info handler
 ///
 /// Returns information about the currently authenticated user.

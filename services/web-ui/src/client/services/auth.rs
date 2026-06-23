@@ -147,6 +147,13 @@ impl AuthContext {
         }
     }
 
+    /// Log the user out of ALL sessions ("sign out everywhere").
+    pub fn logout_everywhere(&self) {
+        if let Some(window) = web_sys::window() {
+            let _ = window.location().set_href("/auth/logout-all");
+        }
+    }
+
     /// Set the authentication state (called after login)
     pub fn set_authenticated(&self, user: UserInfo) {
         self.state.set(AuthState {

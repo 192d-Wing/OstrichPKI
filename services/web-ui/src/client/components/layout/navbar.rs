@@ -24,6 +24,13 @@ pub fn navbar() -> Html {
         })
     };
 
+    let logout_all = {
+        let auth = auth.clone();
+        Callback::from(move |_: MouseEvent| {
+            auth.logout_everywhere();
+        })
+    };
+
     html! {
         <header class="navbar flex items-center justify-between">
             // Left side - Page title / breadcrumbs
@@ -94,6 +101,14 @@ pub fn navbar() -> Html {
                                 class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
                             >
                                 { "Sign out" }
+                            </button>
+                            <button
+                                type="button"
+                                onclick={logout_all}
+                                class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
+                                title="End all of your sessions on every device"
+                            >
+                                { "Sign out everywhere" }
                             </button>
                         </div>
                     }

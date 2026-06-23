@@ -475,6 +475,14 @@ impl AuthProvider for PasswordAuthProvider {
             .map_err(|e| AuthError::Internal(format!("Session termination failed: {}", e)))
     }
 
+    async fn terminate_all_sessions_for_user(&self, user_id: &str) -> AuthResult<u32> {
+        // `None` admin_id => user-initiated "sign out everywhere" (FTA_SSL.4).
+        self.session_manager
+            .terminate_user_sessions(user_id, None)
+            .await
+            .map_err(|e| AuthError::Internal(format!("Terminate-all-sessions failed: {}", e)))
+    }
+
     async fn record_failed_attempt(&self, username: &str, reason: &str) -> AuthResult<()> {
         debug!(username = %username, reason = %reason, "Recording failed attempt");
         let _ = self
