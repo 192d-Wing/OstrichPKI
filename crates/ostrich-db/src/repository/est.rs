@@ -332,6 +332,20 @@ impl EstRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// The certificate profile an enrollment token was minted for, by token id
+    /// (the id carried on the authenticated principal). `None` means the token
+    /// pinned no profile and the EST server's default should be used.
+    pub async fn enrollment_token_profile(&self, id: Uuid) -> Result<Option<String>> {
+        let profile: Option<String> =
+            sqlx::query_scalar("SELECT profile FROM est_enrollment_tokens WHERE id = $1")
+                .bind(id)
+                .fetch_optional(self.pool.pool())
+                .await?
+                .flatten();
+
+        Ok(profile)
+    }
+
     /// List recently minted enrollment tokens (most recent first), for operator
     /// review. Never returns the token itself (only its hash is stored); callers
     /// derive a status from `used_at`/`used_by_cert`/`expires_at`.

@@ -522,7 +522,7 @@ async fn bootstrap_ca(
 /// - RFC 5280 §4.2.1.3/§4.2.1.12 - key usage / extended key usage per profile
 /// - CA/Browser Forum BR §6.3.2 - 398-day max for TLS server certificates
 fn default_profiles() -> Vec<ostrich_x509::CertificateProfile> {
-    use ostrich_x509::CertificateProfile;
+    use ostrich_x509::{CertificateProfile, ExtendedKeyUsage};
 
     // RFC 6125 / CABF: server certs need SANs, ≤398 days
     let mut tls_server = CertificateProfile::tls_server(397);
@@ -532,6 +532,14 @@ fn default_profiles() -> Vec<ostrich_x509::CertificateProfile> {
     let mut tls_client = CertificateProfile::tls_client(365);
     tls_client.name = "tls_client".to_string();
     tls_client.description = Some("TLS client authentication (clientAuth)".to_string());
+
+    // Combined server + client auth (mutual-TLS endpoints, EST-enrolled devices
+    // that act as both client and server). serverAuth + clientAuth EKU.
+    let mut tls_server_client =
+        CertificateProfile::tls_server(397).with_extended_key_usage(ExtendedKeyUsage::ClientAuth);
+    tls_server_client.name = "tls_server_client".to_string();
+    tls_server_client.description =
+        Some("TLS server + client authentication (serverAuth + clientAuth)".to_string());
 
     // ACME-issued certificates: short-lived, server auth, SAN required
     // (RFC 8555 identifiers become SANs)
@@ -547,7 +555,13 @@ fn default_profiles() -> Vec<ostrich_x509::CertificateProfile> {
     intermediate_ca.description =
         Some("Subordinate CA certificates (RFC 5280 §4.2.1.9)".to_string());
 
-    vec![tls_server, tls_client, acme_default, intermediate_ca]
+    vec![
+        tls_server,
+        tls_client,
+        tls_server_client,
+        acme_default,
+        intermediate_ca,
+    ]
 }
 
 /// Parse an ostrich-crypto enum (KeyType/Algorithm) from its serde string form.

@@ -185,6 +185,8 @@ fn est_status() -> Html {
 struct MintTokenRequest {
     identity: String,
     ttl_seconds: i64,
+    /// Certificate profile the enrolled cert is issued under (EST allowlist).
+    profile: String,
 }
 
 /// One-time response carrying the plaintext token. (The EST API also returns
@@ -220,6 +222,7 @@ struct TokenListResponse {
 fn enrollment_token_panel() -> Html {
     let identity = use_state(String::new);
     let ttl = use_state(|| 3600i64); // default 1 hour
+    let profile = use_state(|| "tls_client".to_string()); // EST default
     let result = use_state(|| None::<MintTokenResponse>);
     let error = use_state(|| None::<String>);
     let busy = use_state(|| false);
@@ -271,6 +274,13 @@ fn enrollment_token_panel() -> Html {
             ttl.set(sel.value().parse().unwrap_or(3600));
         })
     };
+    let on_profile = {
+        let profile = profile.clone();
+        Callback::from(move |e: Event| {
+            let sel: web_sys::HtmlSelectElement = e.target_unchecked_into();
+            profile.set(sel.value());
+        })
+    };
     // Select the token text on click so the operator can copy it easily.
     let select_all = Callback::from(|e: MouseEvent| {
         let input: web_sys::HtmlInputElement = e.target_unchecked_into();
@@ -280,6 +290,7 @@ fn enrollment_token_panel() -> Html {
     let on_submit = {
         let identity = identity.clone();
         let ttl = ttl.clone();
+        let profile = profile.clone();
         let result = result.clone();
         let error = error.clone();
         let busy = busy.clone();
@@ -294,6 +305,7 @@ fn enrollment_token_panel() -> Html {
                 return;
             }
             let ttl_val = *ttl;
+            let profile_val = (*profile).clone();
             let result = result.clone();
             let error = error.clone();
             let busy = busy.clone();
@@ -305,6 +317,7 @@ fn enrollment_token_panel() -> Html {
                 let req = MintTokenRequest {
                     identity: id_val,
                     ttl_seconds: ttl_val,
+                    profile: profile_val,
                 };
                 match api()
                     .post::<MintTokenResponse, _>("/est/api/v1/est/enrollment-tokens", &req)
@@ -347,6 +360,17 @@ fn enrollment_token_panel() -> Html {
                                 <option value="28800">{ "8 hours" }</option>
                                 <option value="86400">{ "24 hours" }</option>
                             </select>
+                        </div>
+                        <div>
+                            <label class="form-label">{ "Certificate profile" }</label>
+                            <select class="form-select" onchange={on_profile}>
+                                <option value="tls_client" selected=true>{ "TLS client (clientAuth)" }</option>
+                                <option value="tls_server">{ "TLS server (serverAuth)" }</option>
+                                <option value="tls_server_client">{ "TLS server + client (serverAuth + clientAuth)" }</option>
+                            </select>
+                            <p class="text-xs text-gray-500 mt-1">
+                                { "Extended Key Usage of the issued certificate." }
+                            </p>
                         </div>
                     </div>
                     <button type="submit" class="btn-primary" disabled={*busy}>

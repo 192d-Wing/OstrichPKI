@@ -693,13 +693,10 @@ async fn simple_enroll(
     // EstCaClient::enroll issues the certificate, records the certificate id on
     // the est_enrollments row, and transitions the enrollment to "issued".
     // RFC 7030 §4.2.1 - CSR forwarded to CA after proof-of-possession check.
+    // The profile honors any operator-pinned choice on the enrollment token.
+    let enroll_profile = resolve_enroll_profile(&state, &user).await;
     let certificate_id = match ca_client
-        .enroll(
-            enrollment.id,
-            &csr_der,
-            client_identifier,
-            &state.enroll_profile,
-        )
+        .enroll(enrollment.id, &csr_der, client_identifier, &enroll_profile)
         .await
     {
         Ok(id) => id,
@@ -991,6 +988,59 @@ async fn consume_enrollment_token_if_present(
     let _ = state.audit_sink.record(&mut event).await;
 }
 
+/// Resolve the certificate profile to issue an enrollment under.
+///
+/// For EST-enrollment-token principals (`Role::EstEnrollee`), the operator may
+/// have pinned a profile when minting the token (e.g. `tls_server_client` for a
+/// mutual-TLS device); honor it so the device receives exactly the EKUs the
+/// operator chose. Falls back to the EST server's configured default for
+/// session/mTLS enrollments, when the token pinned no profile, or if the lookup
+/// fails (fail to the secure default rather than erroring the enrollment).
+///
+/// The stored profile is re-checked against `OFFERABLE_EST_PROFILES` here, not
+/// just at mint time: a token lives up to 7 days, so the allowlist could change
+/// under it. Re-validating at issuance makes the AC-3 guarantee hold for the
+/// token's whole life and fails secure (default profile) rather than handing an
+/// unexpected profile to the CA.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: CM-6 (configurable issuance profile, secure default),
+///   AC-3 (the operator's profile choice is enforced at issuance),
+///   SI-10 (stored profile re-validated against the allowlist before use)
+/// - RFC 7030 §4.2 - certificate profile selection for (re-)enrollment
+async fn resolve_enroll_profile(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+) -> String {
+    if !user.has_role(ostrich_common::auth::Role::EstEnrollee) {
+        return state.enroll_profile.clone();
+    }
+    let token_id = *user.id.as_uuid();
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    match repo.enrollment_token_profile(token_id).await {
+        Ok(Some(profile)) if OFFERABLE_EST_PROFILES.contains(&profile.as_str()) => profile,
+        Ok(Some(profile)) => {
+            // Stored profile is no longer offerable (allowlist changed since the
+            // token was minted). Fail secure to the configured default.
+            tracing::warn!(
+                token_id = %token_id,
+                profile = %profile,
+                "enrollment-token profile is no longer offerable; using default"
+            );
+            state.enroll_profile.clone()
+        }
+        Ok(None) => state.enroll_profile.clone(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                token_id = %token_id,
+                "failed to read enrollment-token profile; using default"
+            );
+            state.enroll_profile.clone()
+        }
+    }
+}
+
 /// Simple re-enrollment (RFC 7030 S4.2.2)
 ///
 /// Authenticated client re-enrolls for certificate renewal.
@@ -1164,13 +1214,9 @@ async fn simple_reenroll(
         ));
     };
 
+    let enroll_profile = resolve_enroll_profile(&state, &user).await;
     let certificate_id = match ca_client
-        .enroll(
-            enrollment.id,
-            &csr_der,
-            client_identifier,
-            &state.enroll_profile,
-        )
+        .enroll(enrollment.id, &csr_der, client_identifier, &enroll_profile)
         .await
     {
         Ok(id) => id,
@@ -1378,12 +1424,16 @@ async fn server_key_gen(
         ));
     };
 
+    // Resolve once: the same profile drives both the server-built CSR and the
+    // CA issuance call, honoring any operator-pinned profile on the token.
+    let enroll_profile = resolve_enroll_profile(&state, &user).await;
+
     // Generate the key pair + a CSR signed by it (proof-of-possession).
     let request = ServerKeyGenRequest {
         subject,
         key_type: KeyType::EcP256, // server-chosen; modern default
         dns_sans,
-        profile_name: state.enroll_profile.clone(),
+        profile_name: enroll_profile.clone(),
     };
     let material = generate_key_pair_for_client(
         &request,
@@ -1411,7 +1461,7 @@ async fn server_key_gen(
             enrollment.id,
             &material.csr_der,
             client_identifier,
-            &state.enroll_profile,
+            &enroll_profile,
         )
         .await;
 
@@ -1533,7 +1583,19 @@ struct MintEnrollmentTokenRequest {
     identity: String,
     /// Token lifetime in seconds; clamped to [60, 604800], default 3600.
     ttl_seconds: Option<i64>,
+    /// Certificate profile the enrolled cert is issued under. One of
+    /// `OFFERABLE_EST_PROFILES`; `None`/empty uses the EST server's default.
+    profile: Option<String>,
 }
+
+/// Certificate profiles an operator may pin to an EST enrollment token. Kept in
+/// lockstep with the CA's registered issuance profiles (`default_profiles` in
+/// ca-server): `tls_client` (clientAuth), `tls_server` (serverAuth), and
+/// `tls_server_client` (serverAuth + clientAuth, for mutual-TLS devices).
+///
+/// SI-10: reject anything else so a token can never reference an unissuable or
+/// over-privileged profile.
+const OFFERABLE_EST_PROFILES: [&str; 3] = ["tls_client", "tls_server", "tls_server_client"];
 
 /// One-time response carrying the plaintext token. The token is never persisted
 /// in plaintext and cannot be retrieved again — treat it like an API key.
@@ -1583,6 +1645,25 @@ async fn create_enrollment_token(
     // SI-10: validate + canonicalize the bound identity (trim/lowercase/bounds).
     let identity = validate_identity(&req.identity)?;
 
+    // SI-10: validate the optional profile against the offerable allowlist so a
+    // token can only ever reference a registered, intended issuance profile.
+    let profile = match req.profile.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(p) if OFFERABLE_EST_PROFILES.contains(&p) => Some(p.to_string()),
+        Some(p) => {
+            emit_failure_audit(
+                &state,
+                &user.username,
+                "est:enrollment-tokens",
+                "generate_est_token_invalid_profile",
+            )
+            .await;
+            return Err(Error::BadRequest(format!(
+                "unknown certificate profile '{p}'"
+            )));
+        }
+    };
+
     // Clamp the lifetime: at least 1 minute, at most 7 days.
     const MIN_TTL: i64 = 60;
     const MAX_TTL: i64 = 7 * 24 * 3600;
@@ -1606,7 +1687,7 @@ async fn create_enrollment_token(
             token_id,
             &token_hash,
             &identity,
-            None,
+            profile.as_deref(),
             &user.username,
             expires_at,
         )
@@ -1630,6 +1711,7 @@ async fn create_enrollment_token(
         "identity": identity,
         "ttl_seconds": ttl,
         "token_id": token_id.to_string(),
+        "profile": profile,
     }))
     .build();
     let _ = state.audit_sink.record(&mut event).await;

@@ -31,5 +31,5 @@ pub mod validation;
 pub use builder::{CertificateBuilder, CrlBuilder};
 pub use error::{Error, Result};
 pub use parser::{parse_certificate, parse_crl, parse_csr};
-pub use profile::{CertificateProfile, ProfileType};
+pub use profile::{CertificateProfile, ExtendedKeyUsage, ProfileType};
 pub use secure_defaults::{SecureDefaults, SecurityAttribute};
