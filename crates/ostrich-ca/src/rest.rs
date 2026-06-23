@@ -37,7 +37,9 @@ use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPoli
 use ostrich_common::types::DistinguishedName;
 use ostrich_db::DatabasePool;
 use ostrich_db::models::Certificate;
-use ostrich_db::repository::{ApprovalRepository, CertificateRepository, CrlRepository};
+use ostrich_db::repository::{
+    ApprovalRepository, AuditRepository, CertificateRepository, CrlRepository,
+};
 use ostrich_x509::{extensions::SubjectAltName, parser::RevocationReason};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -185,6 +187,16 @@ pub fn create_router(
         .route(
             "/api/v1/crl/delta",
             post(generate_delta_crl).route_layer(authz(Permission::GenerateCrl)),
+        )
+        // Audit review + tamper-evidence (FAU_SAR.1 / AU-6, AU-9/AU-10).
+        // `/audit/verify` is a static segment registered before any param route.
+        .route(
+            "/api/v1/audit/verify",
+            get(verify_audit_chain).route_layer(authz(Permission::ReadAuditLog)),
+        )
+        .route(
+            "/api/v1/audit",
+            get(list_audit_events).route_layer(authz(Permission::ReadAuditLog)),
         )
         // Configuration metadata
         // Permission::ViewConfig - profile catalog is configuration data (NIAP FMT_SMF.1)
@@ -442,6 +454,57 @@ struct CertificateStatsDto {
     pending: u64,
 }
 
+/// Query parameters for the audit-log listing (all optional filters).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListAuditQuery {
+    page: Option<u32>,
+    page_size: Option<u32>,
+    actor: Option<String>,
+    event_type: Option<String>,
+    outcome: Option<String>,
+    /// RFC 3339 timestamps bounding the window (inclusive).
+    start: Option<String>,
+    end: Option<String>,
+}
+
+/// One audit record in the review listing (FAU_SAR.1).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditEventDto {
+    id: String,
+    timestamp: String,
+    event_type: String,
+    actor: String,
+    target: String,
+    action: String,
+    outcome: String,
+    /// Whether this record carries an AU-10 signature (vs. hash-chain only).
+    signed: bool,
+    ip_address: Option<String>,
+}
+
+/// Paginated audit-log listing.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditListResponseDto {
+    events: Vec<AuditEventDto>,
+    total: u64,
+    page: u32,
+    page_size: u32,
+}
+
+/// Result of an audit-trail integrity verification (AU-9/AU-10).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditVerifyResponseDto {
+    /// True iff the hash chain recomputes AND every signed record verifies.
+    intact: bool,
+    total_records: u64,
+    signed_records: u64,
+    verified_at: String,
+}
+
 /// A Subject Alternative Name entry in the certificate detail view.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -594,6 +657,109 @@ async fn certificate_stats(
         revoked: counts.revoked.max(0) as u64,
         expired: counts.expired.max(0) as u64,
         pending: counts.pending.max(0) as u64,
+    }))
+}
+
+/// List audit records, paginated and filterable (GET /api/v1/audit).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AU-6 (Audit Review), AC-3 (Permission::ReadAuditLog)
+/// - NIAP PP-CA: FAU_SAR.1 (Audit Review)
+async fn list_audit_events(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Query(q): Query<ListAuditQuery>,
+) -> Result<Json<AuditListResponseDto>> {
+    let page = q.page.unwrap_or(1).max(1);
+    let page_size = q.page_size.unwrap_or(50).clamp(1, 1000);
+    let offset = i64::from(page - 1) * i64::from(page_size);
+
+    let parse_ts = |s: &str| -> Result<chrono::DateTime<chrono::Utc>> {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .map(|d| d.with_timezone(&chrono::Utc))
+            .map_err(|_| Error::InvalidRequest(format!("invalid RFC3339 timestamp: {s}")))
+    };
+    let norm = |o: Option<String>| o.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let start = match norm(q.start) {
+        Some(s) => Some(parse_ts(&s)?),
+        None => None,
+    };
+    let end = match norm(q.end) {
+        Some(s) => Some(parse_ts(&s)?),
+        None => None,
+    };
+    let actor = norm(q.actor);
+    let event_type = norm(q.event_type);
+    let outcome = norm(q.outcome);
+
+    let repo = AuditRepository::new(state.db_pool.clone());
+    let (rows, total) = repo
+        .list_filtered(
+            actor.as_deref(),
+            event_type.as_deref(),
+            outcome.as_deref(),
+            start,
+            end,
+            i64::from(page_size),
+            offset,
+        )
+        .await?;
+
+    let events = rows
+        .into_iter()
+        .map(|e| AuditEventDto {
+            id: e.id.to_string(),
+            timestamp: e.timestamp.to_rfc3339(),
+            event_type: e.event_type,
+            actor: e.actor,
+            target: e.target,
+            action: e.action,
+            outcome: e.outcome,
+            signed: e.signature.is_some(),
+            ip_address: e.ip_address,
+        })
+        .collect();
+
+    tracing::info!(actor = %user.username, resource = "audit", page, total, "audit log listed");
+    Ok(Json(AuditListResponseDto {
+        events,
+        total: total.max(0) as u64,
+        page,
+        page_size,
+    }))
+}
+
+/// Verify the integrity of the audit trail (GET /api/v1/audit/verify).
+///
+/// Recomputes the hash chain and checks each signed record against the CA
+/// public key; `intact: false` means tampering, reordering, or deletion was
+/// detected. The on-demand check auditors run for continuous monitoring.
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AU-9 (Protection of audit info), AU-9(3), AU-10 (non-repudiation)
+/// - NIAP PP-CA: FAU_STG.1.2, FAU_STG.4
+async fn verify_audit_chain(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+) -> Result<Json<AuditVerifyResponseDto>> {
+    let intact = state.ca.verify_audit_chain().await?;
+
+    let repo = AuditRepository::new(state.db_pool.clone());
+    let (total, signed) = repo.signed_counts().await?;
+
+    tracing::info!(
+        actor = %user.username,
+        resource = "audit:verify",
+        intact,
+        total,
+        signed,
+        "audit trail integrity verified"
+    );
+    Ok(Json(AuditVerifyResponseDto {
+        intact,
+        total_records: total.max(0) as u64,
+        signed_records: signed.max(0) as u64,
+        verified_at: chrono::Utc::now().to_rfc3339(),
     }))
 }
 

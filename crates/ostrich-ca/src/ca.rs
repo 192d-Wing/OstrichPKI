@@ -47,6 +47,14 @@ pub struct CertificateAuthority {
 
     /// Revocation manager
     revocation_manager: RevocationManager,
+
+    // --- Audit-trail integrity verification (AU-9/AU-10, FAU_STG.1.2) ---
+    // The CA key signs audit records (see the signed sinks above); these let
+    // `verify_audit_chain` recompute the chain and check each signature against
+    // the CA public key without re-plumbing the key through the API layer.
+    audit_crypto: std::sync::Arc<dyn CryptoProvider>,
+    audit_key: KeyHandle,
+    audit_db_pool: DatabasePool,
 }
 
 impl CertificateAuthority {
@@ -82,6 +90,12 @@ impl CertificateAuthority {
         // Wrap crypto provider in Arc for sharing between components
         let crypto_provider_arc: std::sync::Arc<dyn CryptoProvider> =
             std::sync::Arc::from(crypto_provider);
+
+        // Keep handles for audit-chain verification before ca_key is moved into
+        // the issuer/revocation manager below.
+        let audit_crypto = crypto_provider_arc.clone();
+        let audit_key = ca_key.clone();
+        let audit_db_pool = db_pool.clone();
 
         // AU-10 (Non-repudiation): sign every audit record's event_hash with the
         // CA key. The hash chain alone is not tamper-evident against an attacker
@@ -134,7 +148,36 @@ impl CertificateAuthority {
             ca_dn,
             issuer,
             revocation_manager,
+            audit_crypto,
+            audit_key,
+            audit_db_pool,
         })
+    }
+
+    /// Verify the integrity of the audit trail.
+    ///
+    /// Recomputes the SHA-256 hash chain over every record and verifies each
+    /// signed record's signature against the CA certificate's public key. Any
+    /// in-place modification, reordering, deletion, or signature forgery returns
+    /// `false`. This is the operator/auditor-facing tamper check.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AU-9 (Protection of audit information), AU-9(3)
+    ///   (cryptographic protection), AU-10 (non-repudiation)
+    /// - NIAP PP-CA: FAU_STG.1.2 (undetected modification prevented),
+    ///   FAU_STG.4 (audit-loss detection via the chain)
+    pub async fn verify_audit_chain(&self) -> ostrich_audit::Result<bool> {
+        let spki = self
+            .audit_crypto
+            .export_public_key(&self.audit_key)
+            .await
+            .map_err(|e| {
+                ostrich_audit::Error::Signing(format!("export CA public key for audit verify: {e}"))
+            })?;
+        let verifier = ostrich_audit::sink::DatabaseAuditSink::new(self.audit_db_pool.clone());
+        verifier
+            .verify_signed_chain(&spki, self.audit_key.algorithm)
+            .await
     }
 
     /// Add a certificate profile

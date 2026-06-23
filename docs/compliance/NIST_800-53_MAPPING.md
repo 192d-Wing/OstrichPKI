@@ -98,7 +98,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
     ViewCertificate (GET `/api/v1/certificates` list + GET `/api/v1/certificates/{id}`
     detail + GET `/api/v1/certificates/stats` inventory-wide status counts — read
     access to the issued-certificate inventory, distinct from the IssueCertificate
-    POST on the same path)
+    POST on the same path),
+    ReadAuditLog (GET `/api/v1/audit` paginated/filtered audit review — AU-6 /
+    FAU_SAR.1; GET `/api/v1/audit/verify` recomputes the hash chain and verifies
+    each signed record against the CA public key — AU-9/AU-9(3)/AU-10, FAU_STG.1.2)
   - `crates/ostrich-est/src/rest.rs` — SubmitRequest, RenewCertificate,
     GenerateEstToken (mint/list/revoke device enrollment tokens — POST/GET
     `/api/v1/est/enrollment-tokens`, DELETE `…/{id}`; single-use, time-limited;

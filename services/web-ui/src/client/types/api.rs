@@ -240,7 +240,7 @@ pub struct RevocationRequest {
 
 /// Audit event for display
 /// COMPLIANCE: NIST 800-53 AU-3 - Content of Audit Records
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditEvent {
     pub id: String,
@@ -250,8 +250,29 @@ pub struct AuditEvent {
     pub target: String,
     pub action: String,
     pub outcome: String,
-    pub client_ip: Option<String>,
-    pub details: Option<serde_json::Value>,
+    /// Whether this record carries an AU-10 signature (vs. hash-chain only).
+    pub signed: bool,
+    pub ip_address: Option<String>,
+}
+
+/// Paginated audit-log listing (`GET /ca/api/v1/audit`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditListResponse {
+    pub events: Vec<AuditEvent>,
+    pub total: u64,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+/// Audit-trail integrity result (`GET /ca/api/v1/audit/verify`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditVerifyResponse {
+    pub intact: bool,
+    pub total_records: u64,
+    pub signed_records: u64,
+    pub verified_at: String,
 }
 
 // =============================================================================
