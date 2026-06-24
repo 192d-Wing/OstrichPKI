@@ -14,9 +14,9 @@
 use anyhow::Result;
 use axum::{
     Router,
-    extract::State,
+    extract::{Path, State},
     middleware,
-    response::{IntoResponse, Json, Response},
+    response::{IntoResponse, Json, Redirect, Response},
     routing::{get, post},
 };
 use serde_json::json;
@@ -125,16 +125,20 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
         ServeDir::new(&config.static_files.directory),
     );
 
-    // React (preview) SPA — temporary `/next` mount for the Yew→React migration.
-    // Served with the same CSP-nonce middleware as everything else; the live Yew
-    // app at `/` is unaffected. `/next` and any deep link under it serve the
-    // React index (the client router handles the rest of the path).
-    let next_routes = Router::new()
-        .route("/next", get(template::serve_next_index))
-        .route("/next/{*rest}", get(template::serve_next_index))
-        .with_state(state.clone());
+    // Legacy `/next` alias. The React console moved from `/next` to `/` when the
+    // Yew SPA was retired; permanently redirect old links (preserving the
+    // sub-path) so bookmarks and external references keep working.
+    let next_redirect = Router::new()
+        .route("/next", get(|| async { Redirect::permanent("/") }))
+        .route(
+            "/next/{*rest}",
+            get(|Path(rest): Path<String>| async move {
+                Redirect::permanent(&format!("/{rest}"))
+            }),
+        );
 
-    // SPA fallback - serve index.html for all unmatched routes
+    // SPA fallback — serve the React console index for `/` and all unmatched
+    // routes (the client router resolves the path).
     let spa_routes = Router::new()
         .fallback(get(template::serve_index))
         .with_state(state.clone());
@@ -149,8 +153,8 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
         .nest("/api", api_routes)
         // Static files
         .merge(static_routes)
-        // React preview SPA (specific /next routes, before the catch-all)
-        .merge(next_routes)
+        // Legacy /next → / redirect (specific routes, before the catch-all)
+        .merge(next_redirect)
         // SPA fallback (must be last)
         .merge(spa_routes)
         // Apply audit middleware to all routes

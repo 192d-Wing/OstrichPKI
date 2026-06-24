@@ -1,15 +1,14 @@
 // Runtime config injected by the Rust server into index.html as
-// `window.__OSTRICH_CONFIG__` — the SAME global the existing server template
-// (server/template.rs) already emits for the Yew app, so no server change is
-// needed to feed this app. See docs/WEBUI_SHADCN_MIGRATION.md §4.2.
+// `window.__OSTRICH_CONFIG__` (server/template.rs serve_index). See
+// docs/WEBUI_SHADCN_MIGRATION.md §4.2.
 export interface ClientConfig {
   apiBaseUrl: string;
   oidcClientId: string;
   oidcAuthUrl: string;
   appName: string;
   version: string;
-  // Router basename. The server injects "/next" for the temporary preview
-  // mount and "/" once the React app is served at the root (cutover).
+  // Router basename. The server injects "/" — the React console is served at the
+  // root (the Yew SPA was retired). Legacy /next links 301-redirect to /.
   basename: string;
 }
 
