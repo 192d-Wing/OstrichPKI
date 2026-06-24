@@ -55,10 +55,24 @@ React console is the primary console, not a preview.
 - **Mock pages**: [not started] Users, Tokens (SCMS), Approvals are placeholders (no CA
   endpoint) — wire to real endpoints when the backend exposes them.
 
-### 4. `/` → `/next` cutover  — separate effort  [not started]
-Once the React console is trusted, decide whether to make it the default (serve React at
-`/`, retire the Yew SPA). Touches BFF routing + the Dockerfile (drop the Yew/trunk/Tailwind
-build stage). Bigger change; sequence after items 1–2.
+### 4. `/` → `/next` cutover  — full cutover, Yew retired  [done — source cleanup pending]
+React is now the primary app served at `/`; the Yew SPA is retired.
+- `server/template.rs`: single `serve_index` serves the React `index.html` with `basename:
+  "/"` + per-request CSP nonce. Removed the embedded Yew template, `ClientConfig`, and
+  `get_index_template`.
+- `server/router.rs`: `/` (fallback) → React; legacy `/next` and `/next/{*rest}` →
+  `301` redirect to `/` (sub-path preserved) so old bookmarks keep working.
+- `Dockerfile`: replaced the Rust+trunk+Tailwind `wasm-builder` stage with a small
+  Node-only `web-builder` (Vite only); runtime now copies the whole React `dist/` to
+  `/app/static/` (index.html + hashed assets). No more Yew/WASM/Tailwind in the image.
+- `web/src/lib/config.ts`: basename comment updated to reflect root mount.
+- Verified: `cargo check -p ostrich-web-ui` clean; React typecheck/lint/build green.
+
+**Follow-up cleanup (separate PR):** delete the now-dead Yew source tree
+(`services/web-ui/src/client/`, `Trunk.toml`, `input.css`, `tailwind.config.js`, the Yew
+`index.html`), prune its wasm/yew deps from `Cargo.toml`, and drop the `web-ui-wasm` CI job
+(`.github/workflows/ci.yml`). The Yew client is `#[cfg(target_arch = "wasm32")]`-gated, so
+it doesn't affect the native server build or the shipped image — it's just dead weight.
 
 ## Resume / verify cheatsheet
 

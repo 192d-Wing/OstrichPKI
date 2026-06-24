@@ -7,66 +7,22 @@
 # - NIST 800-53: SC-18 (Mobile Code) - CSP nonces prevent unauthorized scripts
 #
 # Build stages:
-# 1. wasm-builder: Builds the Yew WASM client with Trunk
+# 1. web-builder: Builds the React (AWS Cloudscape) console with pnpm
 # 2. server-builder: Builds the Axum server
 # 3. runtime: Final minimal image with both components
 
 # ==============================================================================
-# Stage 1: WASM Builder (Yew client)
+# Stage 1: Web Builder (React + AWS Cloudscape console)
 # ==============================================================================
-FROM rust:1.96-bookworm AS wasm-builder
-
-# Install wasm target and trunk. Do NOT `cargo install wasm-bindgen-cli`: that
-# compiles the CLI from source (slow, and a freshly published version can fail
-# to build on the runner — wasm-bindgen-cli 0.2.125 broke the arm64 build).
-# Trunk downloads the prebuilt wasm-bindgen binary that exactly matches the
-# project's wasm-bindgen dependency, so the explicit install is both unnecessary
-# and a version-mismatch risk.
-RUN rustup target add wasm32-unknown-unknown \
-    && cargo install trunk
-
-# Install Node.js for Tailwind CSS. Pin Tailwind to v3 to match the project's
-# package.json (^3.4.19): the styles use v3 syntax (@tailwind directives, JS
-# tailwind.config.js, @apply). Tailwind v4 moved the CLI to @tailwindcss/cli, so
-# an unpinned `npm install -g tailwindcss` installs v4 and `npx tailwindcss`
-# fails with "could not determine executable to run".
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && npm install -g tailwindcss@^3.4.19
-
-WORKDIR /app
-
-# Copy the full workspace. Even though the wasm32 client only compiles its own
-# (yew/wasm-bindgen) dependency set, Cargo must be able to LOAD every workspace
-# member's manifest to resolve the workspace at all, so all member directories
-# must be present. config/ + proto/ mirror the server build context.
-COPY Cargo.toml Cargo.lock ./
-COPY crates/ ./crates/
-COPY services/ ./services/
-COPY tools/ ./tools/
-COPY benches/ ./benches/
-COPY tests/ ./tests/
-COPY migrations/ ./migrations/
-COPY config/ ./config/
-COPY proto/ ./proto/
-
-# Build the WASM client
-WORKDIR /app/services/web-ui
-
-# Generate Tailwind CSS
-RUN npx tailwindcss -i ./input.css -o ./output.css --minify
-
-# Build WASM with trunk
-RUN trunk build --release
-
-# Build the React console (AWS Cloudscape) with pnpm. corepack ships with Node 20
-# and pins the version from web/package.json's "packageManager". Served at /next;
-# the Yew bundle above remains the app at /.
-WORKDIR /app/services/web-ui/web
+# The React console is the primary app (served at /). The Vite build only needs
+# services/web-ui/web — no Rust workspace — so this is a small Node-only stage.
+# corepack pins pnpm from web/package.json's "packageManager".
+FROM node:20-bookworm-slim AS web-builder
+WORKDIR /app/web
+COPY services/web-ui/web/ ./
 RUN corepack enable \
     && pnpm install --frozen-lockfile \
     && pnpm build
-WORKDIR /app/services/web-ui
 
 # ==============================================================================
 # Stage 2a: Server Chef base — toolchain, FIPS build deps, and cargo-chef
@@ -168,17 +124,11 @@ LABEL org.opencontainers.image.vendor="OstrichPKI"
 # Copy server binary
 COPY --from=server-builder /app/target/release/ostrich-web-ui /usr/local/bin/
 
-# Copy WASM build artifacts (static files)
-COPY --from=wasm-builder /app/services/web-ui/dist/ /app/static/
-
-# Copy index.html template for server-side nonce injection
-COPY --from=wasm-builder /app/services/web-ui/index.html /app/templates/index.html
-
-# React console: hashed assets join the static tree (served at
-# /static/assets/* under the CSP 'self' source); its index.html is read by the
-# server at /next for nonce + config injection (see server/template.rs).
-COPY --from=wasm-builder /app/services/web-ui/web/dist/assets/ /app/static/assets/
-COPY --from=wasm-builder /app/services/web-ui/web/dist/index.html /app/static/next-index.html
+# React console: the Vite build (index.html + hashed /static/assets/* + any
+# public assets) is the entire static tree. index.html is read by the server for
+# per-request nonce + runtime-config injection (see server/template.rs); the
+# hashed assets are served under the CSP 'self' source at /static/assets/*.
+COPY --from=web-builder /app/web/dist/ /app/static/
 
 # Health check
 # NIST 800-53: SI-17 - Fail-Safe Procedures
