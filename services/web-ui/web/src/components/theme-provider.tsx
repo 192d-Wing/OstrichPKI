@@ -5,6 +5,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { applyMode, Mode } from "@cloudscape-design/global-styles";
 
 export type Theme = "dark" | "light" | "system";
 
@@ -26,6 +27,8 @@ function applyTheme(theme: Theme) {
         : "light"
       : theme;
   root.classList.add(resolved);
+  // Drive Cloudscape's visual mode alongside the (legacy) Tailwind class.
+  applyMode(resolved === "dark" ? Mode.Dark : Mode.Light);
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {

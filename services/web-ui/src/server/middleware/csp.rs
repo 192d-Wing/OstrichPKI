@@ -97,12 +97,18 @@ pub async fn csp_middleware(mut request: Request, next: Next) -> Response {
 /// - Allows WASM execution (required for Yew)
 /// - Restricts other resource loading to same-origin
 fn build_csp_header(nonce: &str) -> String {
+    // style-src allows 'unsafe-inline': the React/Cloudscape UI (and Radix
+    // before it) sets inline style="" attributes for dynamic layout, which a
+    // nonce cannot cover — and a nonce in style-src would itself *disable*
+    // 'unsafe-inline' per CSP. The XSS-critical script-src stays nonce-strict,
+    // so this only relaxes style injection (a much lower-risk vector).
+    // NIST 800-53: SC-18 - script execution remains nonce-gated.
     format!(
         "default-src 'self'; \
          script-src 'self' 'nonce-{nonce}' 'wasm-unsafe-eval'; \
-         style-src 'self' 'nonce-{nonce}'; \
+         style-src 'self' 'unsafe-inline'; \
          img-src 'self' data:; \
-         font-src 'self'; \
+         font-src 'self' data:; \
          connect-src 'self'; \
          frame-ancestors 'none'; \
          base-uri 'self'; \
