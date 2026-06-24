@@ -67,6 +67,33 @@ impl CertificateRepository {
         Ok(cert)
     }
 
+    /// Find a stored certificate by its exact DER encoding.
+    ///
+    /// This is an encoding-independent provenance check: a presented client
+    /// certificate matches a certificate this CA issued if and only if it is
+    /// byte-identical to a stored `der_encoded`. Used to authenticate a device
+    /// that re-enrolls with its existing certificate (RFC 7030 §3.3), where a
+    /// serial- or subject-string lookup would be fragile (the serial's leading
+    /// zero octet is stripped by ASN.1, and `subject_dn` is stored in RFC 4514
+    /// rendering rather than the X.509 parser's rendering).
+    ///
+    /// NIST 800-53: IA-2 / AC-17 - certificate-based identification.
+    pub async fn find_by_der(&self, der: &[u8]) -> Result<Option<Certificate>> {
+        let cert = sqlx::query_as::<_, Certificate>(
+            r#"
+            SELECT *
+            FROM certificates
+            WHERE der_encoded = $1
+            "#,
+        )
+        .bind(der)
+        .fetch_optional(self.pool.pool())
+        .await
+        .map_err(|e| Error::Query(e.to_string()))?;
+
+        Ok(cert)
+    }
+
     /// Find certificates by subject DN
     pub async fn find_by_subject(&self, subject_dn: &str) -> Result<Vec<Certificate>> {
         let certs = sqlx::query_as::<_, Certificate>(

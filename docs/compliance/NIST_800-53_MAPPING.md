@@ -861,6 +861,15 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   prefers the TLS client certificate and falls back to Basic for bootstrap
   enrollment; the est-server only enables it alongside `--tls-ca-cert` (SC-8:
   Basic never offered without TLS)
+- `crates/ostrich-est/src/device_cert.rs` - `EstDeviceCertAuthProvider`
+  (RFC 7030 §3.3 re-enrollment, AC-17 / AC-6): a device re-enrolling over mTLS
+  is identified by the certificate it presents. The certificate is matched by
+  exact DER against the certificate store, rejected if revoked/expired, and
+  resolved to the `client_identifier` of its issuing enrollment; the device is
+  then authenticated as a least-privilege `EstDevice` principal whose only
+  permission is `RenewCertificate`. No user-table account is required, so a
+  token-bootstrapped device can renew its own certificate and nothing else
+  (fail-secure on any unrecognised/invalid certificate)
 - Initial Administrator provisioned via
   `ostrich-init --admin-username/--admin-password` (CM-6: the previous
   hardcoded seed user was removed from migration 00003)

@@ -102,6 +102,37 @@ impl EstRepository {
         Ok(enrollments)
     }
 
+    /// Resolve the client identifier that owns an issued certificate, by the
+    /// `certificate_id` recorded on its enrollment row.
+    ///
+    /// Used to authenticate a device that re-enrolls with its existing
+    /// EST-issued certificate (RFC 7030 §3.3): the presented certificate maps
+    /// back to the `client_identifier` of the enrollment that produced it, which
+    /// is the same key `list_enrollments_by_client` uses to bind the new CSR's
+    /// identity. Returns the most recent match if a certificate id somehow
+    /// appears on more than one enrollment row.
+    ///
+    /// NIST 800-53: AC-3 / IA-2 - access enforcement / identification.
+    pub async fn find_client_by_certificate_id(
+        &self,
+        certificate_id: Uuid,
+    ) -> Result<Option<String>> {
+        let client: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT client_identifier
+            FROM est_enrollments
+            WHERE certificate_id = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(certificate_id)
+        .fetch_optional(self.pool.pool())
+        .await?;
+
+        Ok(client)
+    }
+
     /// Update enrollment status
     pub async fn update_enrollment_status(&self, id: Uuid, status: &str) -> Result<EstEnrollment> {
         let now = Utc::now();

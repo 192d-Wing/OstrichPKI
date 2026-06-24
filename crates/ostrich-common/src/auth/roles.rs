@@ -95,6 +95,20 @@ pub enum Role {
     ///
     /// NIAP PP-CA: FDP_CER_EXT.1 - certificate enrollment; AC-6 - least privilege
     EstEnrollee,
+
+    /// EST Device (machine identity, not human-assignable)
+    ///
+    /// Synthetic role carried by a device that authenticates to EST with the
+    /// (still-valid, CA-issued) client certificate from a prior enrollment, in
+    /// order to renew it (RFC 7030 §3.3 re-enrollment). Grants only
+    /// `RenewCertificate` so the certificate holder can re-enroll its own
+    /// identity and nothing else; the re-enroll handler additionally binds the
+    /// CSR subject/SAN to a certificate previously issued to the same client.
+    /// Never stored on a user account and intentionally excluded from
+    /// [`Role::all`] (not selectable in role UIs).
+    ///
+    /// NIAP PP-CA: FDP_CER_EXT.1 - certificate enrollment; AC-6 - least privilege
+    EstDevice,
 }
 
 impl Role {
@@ -120,6 +134,8 @@ impl Role {
             Role::Aor => &[],
             // Machine-only enrollment principal; never combined with human roles.
             Role::EstEnrollee => &[],
+            // Machine-only re-enrollment principal; never combined with human roles.
+            Role::EstDevice => &[],
         }
     }
 
@@ -139,6 +155,7 @@ impl Role {
             Role::RaStaff => "Certificate request approval (Registration Authority)",
             Role::Aor => "Certificate request approval (Authorized Organization Representative)",
             Role::EstEnrollee => "EST enrollment token principal (single-use, machine identity)",
+            Role::EstDevice => "EST device principal (re-enrollment by existing certificate)",
         }
     }
 
@@ -151,6 +168,7 @@ impl Role {
             Role::RaStaff => "ra_staff",
             Role::Aor => "aor",
             Role::EstEnrollee => "est_enrollee",
+            Role::EstDevice => "est_device",
         }
     }
 
@@ -163,6 +181,7 @@ impl Role {
             "ra_staff" | "ra" | "registration_authority" => Some(Role::RaStaff),
             "aor" | "authorized_org_rep" => Some(Role::Aor),
             "est_enrollee" => Some(Role::EstEnrollee),
+            "est_device" => Some(Role::EstDevice),
             _ => None,
         }
     }
@@ -196,6 +215,7 @@ impl std::str::FromStr for Role {
             "ra_staff" | "RaStaff" => Ok(Role::RaStaff),
             "aor" | "Aor" | "AOR" => Ok(Role::Aor),
             "est_enrollee" | "EstEnrollee" => Ok(Role::EstEnrollee),
+            "est_device" | "EstDevice" => Ok(Role::EstDevice),
             _ => Err(format!("Unknown role: {}", s)),
         }
     }

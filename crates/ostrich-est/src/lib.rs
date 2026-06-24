@@ -52,6 +52,7 @@
 //! - **RFC 2986**: PKCS #10 Certification Request Syntax
 
 pub mod ca_integration;
+pub mod device_cert;
 pub mod enrollment;
 pub mod enrollment_token;
 pub mod error;
@@ -60,6 +61,7 @@ pub mod rest;
 pub mod serverkeygen;
 
 pub use ca_integration::EstCaClient;
+pub use device_cert::EstDeviceCertAuthProvider;
 pub use enrollment::{
     CsrAttributes, Enrollment, EnrollmentRequest, EnrollmentResponse, EnrollmentStatus,
 };
