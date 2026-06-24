@@ -1,18 +1,19 @@
 import * as React from "react";
-import { type ColumnDef, type ColumnFiltersState } from "@tanstack/react-table";
 import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
-import { ShieldCheck, ShieldX } from "lucide-react";
-
-import { DataTable, type DataTableFilter } from "@/components/data-table";
-import { PageHeader } from "@/components/page-header";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Box,
+  Button,
+  ContentLayout,
+  Header,
+  Pagination,
+  Select,
+  type SelectProps,
+  SpaceBetween,
+  StatusIndicator,
+  Table,
+  TextFilter,
+} from "@cloudscape-design/components";
+
 import {
   AUDIT_EVENT_TYPES,
   fetchAuditLogs,
@@ -22,171 +23,165 @@ import {
 
 const PAGE_SIZE = 25;
 
-function outcomeBadge(outcome: string) {
-  const ok = outcome.toLowerCase() === "success";
-  return (
-    <Badge variant={ok ? "success" : "destructive"}>{outcome || "—"}</Badge>
-  );
-}
-
-const columns: ColumnDef<AuditEvent>[] = [
-  {
-    accessorKey: "timestamp",
-    header: "Timestamp",
-    cell: ({ row }) => (
-      <span className="font-mono text-xs text-muted-foreground">
-        {row.original.timestamp}
-      </span>
-    ),
-  },
-  {
-    accessorKey: "eventType",
-    header: "Event",
-    cell: ({ row }) => (
-      <span className="font-mono text-xs">{row.original.eventType}</span>
-    ),
-  },
-  { accessorKey: "actor", header: "Actor" },
-  {
-    accessorKey: "target",
-    header: "Target",
-    cell: ({ row }) => (
-      <span className="text-muted-foreground">{row.original.target}</span>
-    ),
-  },
-  { accessorKey: "action", header: "Action" },
-  {
-    accessorKey: "outcome",
-    header: "Outcome",
-    cell: ({ row }) => outcomeBadge(row.original.outcome),
-  },
-  {
-    id: "signed",
-    header: "Signed",
-    cell: ({ row }) =>
-      row.original.signed ? (
-        <Badge variant="secondary">signed</Badge>
-      ) : (
-        <span className="text-xs text-muted-foreground">—</span>
-      ),
-  },
+const EVENT_OPTIONS: SelectProps.Option[] = [
+  { label: "All events", value: "" },
+  ...AUDIT_EVENT_TYPES,
+];
+const OUTCOME_OPTIONS: SelectProps.Option[] = [
+  { label: "Any outcome", value: "" },
+  { label: "Success", value: "success" },
+  { label: "Failure", value: "failure" },
 ];
 
-const filters: DataTableFilter[] = [
-  {
-    columnId: "eventType",
-    placeholder: "All events",
-    kind: "select",
-    options: AUDIT_EVENT_TYPES,
-  },
-  { columnId: "actor", placeholder: "Filter actor…" },
-  {
-    columnId: "outcome",
-    placeholder: "Any outcome",
-    kind: "select",
-    options: [
-      { value: "success", label: "Success" },
-      { value: "failure", label: "Failure" },
-    ],
-  },
-];
-
-function IntegrityCheck() {
+function IntegrityButton() {
   const verify = useMutation({ mutationFn: verifyAudit });
   const r = verify.data;
   return (
-    <div className="flex items-center gap-3">
+    <SpaceBetween direction="horizontal" size="s" alignItems="center">
       {r &&
         (r.intact ? (
-          <span className="flex items-center gap-1 text-sm text-green-600 dark:text-green-400">
-            <ShieldCheck className="size-4" /> Intact — {r.signedRecords}/
-            {r.totalRecords} signed
-          </span>
+          <StatusIndicator type="success">
+            Intact — {r.signedRecords}/{r.totalRecords} signed
+          </StatusIndicator>
         ) : (
-          <span className="flex items-center gap-1 text-sm text-destructive">
-            <ShieldX className="size-4" /> Integrity check failed
-          </span>
+          <StatusIndicator type="error">Integrity check failed</StatusIndicator>
         ))}
       {verify.isError && (
-        <span className="text-sm text-destructive">Verification failed</span>
+        <StatusIndicator type="error">Verification failed</StatusIndicator>
       )}
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => verify.mutate()}
-        disabled={verify.isPending}
-      >
-        {verify.isPending ? "Verifying…" : "Verify integrity"}
+      <Button loading={verify.isPending} onClick={() => verify.mutate()}>
+        Verify integrity
       </Button>
-    </div>
+    </SpaceBetween>
   );
 }
 
 export function AuditPage() {
   const [pageIndex, setPageIndex] = React.useState(0);
-  const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
-    [],
+  const [actor, setActor] = React.useState("");
+  const [eventOpt, setEventOpt] = React.useState<SelectProps.Option>(
+    EVENT_OPTIONS[0],
   );
-
-  const val = (id: string) =>
-    (columnFilters.find((f) => f.id === id)?.value as string | undefined)?.trim();
-  const eventType = val("eventType");
-  const actor = val("actor");
-  const outcome = val("outcome");
+  const [outcomeOpt, setOutcomeOpt] = React.useState<SelectProps.Option>(
+    OUTCOME_OPTIONS[0],
+  );
+  const eventType = eventOpt.value ?? "";
+  const outcome = outcomeOpt.value ?? "";
 
   const query = new URLSearchParams();
   query.set("page", String(pageIndex + 1));
   query.set("pageSize", String(PAGE_SIZE));
   if (eventType) query.set("eventType", eventType);
-  if (actor) query.set("actor", actor);
+  if (actor.trim()) query.set("actor", actor.trim());
   if (outcome) query.set("outcome", outcome);
 
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["audit", pageIndex, eventType ?? "", actor ?? "", outcome ?? ""],
+  const { data, isFetching, isError } = useQuery({
+    queryKey: ["audit", pageIndex, eventType, actor.trim(), outcome],
     queryFn: () => fetchAuditLogs(query.toString()),
     placeholderData: keepPreviousData,
   });
 
   const total = data?.total ?? 0;
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pagesCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const reset = () => setPageIndex(0);
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <PageHeader
-        title="Audit Logs"
-        description="Security-relevant events (append-only, hash-chained)."
-        actions={<IntegrityCheck />}
-      />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Events</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <DataTable
-            columns={columns}
-            data={data?.events ?? []}
-            filters={filters}
-            isLoading={isLoading}
-            isError={isError}
-            emptyMessage="No audit events recorded yet."
-            noMatchMessage="No events match the current filters."
-            errorMessage="Failed to load the audit log. Retry or check your session."
-            manual={{
-              pageCount,
-              pageIndex,
-              pageSize: PAGE_SIZE,
-              total,
-              onPageChange: setPageIndex,
-              columnFilters,
-              onColumnFiltersChange: (next) => {
-                setColumnFilters(next);
-                setPageIndex(0);
-              },
-            }}
+    <ContentLayout
+      header={
+        <Header
+          variant="h1"
+          description="Security-relevant events (append-only, hash-chained)."
+          actions={<IntegrityButton />}
+        >
+          Audit Logs
+        </Header>
+      }
+    >
+      <Table<AuditEvent>
+        variant="container"
+        loading={isFetching}
+        loadingText="Loading audit log"
+        items={data?.events ?? []}
+        trackBy="id"
+        empty={
+          <Box textAlign="center" color="inherit">
+            {isError ? "Failed to load the audit log." : "No audit events."}
+          </Box>
+        }
+        columnDefinitions={[
+          {
+            id: "timestamp",
+            header: "Timestamp",
+            cell: (e) => <Box fontSize="body-s">{e.timestamp}</Box>,
+          },
+          {
+            id: "eventType",
+            header: "Event",
+            cell: (e) => <Box fontSize="body-s">{e.eventType}</Box>,
+          },
+          { id: "actor", header: "Actor", cell: (e) => e.actor },
+          { id: "target", header: "Target", cell: (e) => e.target },
+          { id: "action", header: "Action", cell: (e) => e.action },
+          {
+            id: "outcome",
+            header: "Outcome",
+            cell: (e) =>
+              e.outcome.toLowerCase() === "success" ? (
+                <StatusIndicator type="success">{e.outcome}</StatusIndicator>
+              ) : (
+                <StatusIndicator type="error">
+                  {e.outcome || "—"}
+                </StatusIndicator>
+              ),
+          },
+          {
+            id: "signed",
+            header: "Signed",
+            cell: (e) =>
+              e.signed ? (
+                <StatusIndicator type="success">signed</StatusIndicator>
+              ) : (
+                "—"
+              ),
+          },
+        ]}
+        filter={
+          <SpaceBetween direction="horizontal" size="xs">
+            <Select
+              selectedOption={eventOpt}
+              options={EVENT_OPTIONS}
+              onChange={({ detail }) => {
+                setEventOpt(detail.selectedOption);
+                reset();
+              }}
+            />
+            <TextFilter
+              filteringText={actor}
+              filteringPlaceholder="Filter actor"
+              onChange={({ detail }) => {
+                setActor(detail.filteringText);
+                reset();
+              }}
+            />
+            <Select
+              selectedOption={outcomeOpt}
+              options={OUTCOME_OPTIONS}
+              onChange={({ detail }) => {
+                setOutcomeOpt(detail.selectedOption);
+                reset();
+              }}
+            />
+          </SpaceBetween>
+        }
+        pagination={
+          <Pagination
+            currentPageIndex={pageIndex + 1}
+            pagesCount={pagesCount}
+            onChange={({ detail }) => setPageIndex(detail.currentPageIndex - 1)}
           />
-        </CardContent>
-      </Card>
-    </div>
+        }
+        header={<Header counter={`(${total})`}>Events</Header>}
+      />
+    </ContentLayout>
   );
 }

@@ -1,26 +1,22 @@
 import * as React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
-
-import { CopyButton } from "@/components/copy-button";
-import { PageHeader } from "@/components/page-header";
-import { Button } from "@/components/ui/button";
+import { useNavigate } from "react-router-dom";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import {
+  Alert,
+  Box,
+  Button,
+  Container,
+  ContentLayout,
+  CopyToClipboard,
+  Form,
+  FormField,
+  Header,
   Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
+  type SelectProps,
+  SpaceBetween,
+  Textarea,
+} from "@cloudscape-design/components";
+
 import { ApiError } from "@/lib/api";
 import {
   fetchProfiles,
@@ -30,33 +26,37 @@ import {
 } from "@/lib/ca";
 
 export function CertificateIssuePage() {
+  const navigate = useNavigate();
   const { data: profilesData } = useQuery({
     queryKey: ["profiles"],
     queryFn: fetchProfiles,
   });
-  const profiles = React.useMemo(
-    () => profilesData?.profiles ?? [],
+  const profileOptions: SelectProps.Option[] = React.useMemo(
+    () =>
+      (profilesData?.profiles ?? []).map((p) => ({
+        label: p.name,
+        value: p.profile_type,
+      })),
     [profilesData],
   );
 
-  const [profile, setProfile] = React.useState("");
+  const [profile, setProfile] = React.useState<SelectProps.Option | null>(null);
   const [csr, setCsr] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
 
   // Default to the first profile once loaded.
   React.useEffect(() => {
-    if (!profile && profiles.length > 0) setProfile(profiles[0].profile_type);
-  }, [profiles, profile]);
+    if (!profile && profileOptions.length > 0) setProfile(profileOptions[0]);
+  }, [profileOptions, profile]);
 
   const issue = useMutation({
     mutationFn: (): Promise<IssueResponse> =>
-      issueCertificate(profile, pemToCsrB64(csr)),
+      issueCertificate(profile?.value ?? "", pemToCsrB64(csr)),
     onError: (e) =>
       setError(e instanceof ApiError ? e.message : "Issuance failed"),
   });
 
-  function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  function onSubmit() {
     setError(null);
     if (!pemToCsrB64(csr)) {
       setError("Paste a PEM-encoded certificate request (CSR).");
@@ -69,83 +69,98 @@ export function CertificateIssuePage() {
   const r = issue.data;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-6">
-      <PageHeader
-        title="Issue Certificate"
-        description="Paste a PKCS#10 CSR and choose a profile; the CA derives the subject, key, and SANs from the request."
-        actions={
-          <Button asChild variant="outline" size="sm">
-            <Link to="/certificates">Back to list</Link>
-          </Button>
-        }
-      />
+    <ContentLayout
+      header={
+        <Header
+          variant="h1"
+          description="Paste a PKCS#10 CSR and choose a profile; the CA derives the subject, key, and SANs from the request."
+          actions={
+            <Button onClick={() => navigate("/certificates")}>
+              Back to list
+            </Button>
+          }
+        >
+          Issue Certificate
+        </Header>
+      }
+    >
+      <SpaceBetween size="l">
+        <Container
+          header={
+            <Header variant="h2" description="RFC 7030 / RFC 2986 PKCS#10.">
+              Request
+            </Header>
+          }
+        >
+          <Form
+            actions={
+              <Button
+                variant="primary"
+                loading={issue.isPending}
+                disabled={!profile}
+                onClick={onSubmit}
+              >
+                Issue certificate
+              </Button>
+            }
+          >
+            <SpaceBetween size="l">
+              <FormField label="Profile">
+                <Select
+                  selectedOption={profile}
+                  options={profileOptions}
+                  placeholder="Select a profile"
+                  onChange={({ detail }) => setProfile(detail.selectedOption)}
+                />
+              </FormField>
+              <FormField label="Certificate request (PEM)">
+                <Textarea
+                  value={csr}
+                  onChange={({ detail }) => setCsr(detail.value)}
+                  rows={9}
+                  placeholder={
+                    "-----BEGIN CERTIFICATE REQUEST-----\n…\n-----END CERTIFICATE REQUEST-----"
+                  }
+                />
+              </FormField>
+              {error && <Alert type="error">{error}</Alert>}
+            </SpaceBetween>
+          </Form>
+        </Container>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Request</CardTitle>
-          <CardDescription>RFC 7030 / RFC 2986 PKCS#10.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={onSubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <Label>Profile</Label>
-              <Select value={profile} onValueChange={setProfile}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a profile" />
-                </SelectTrigger>
-                <SelectContent>
-                  {profiles.map((p) => (
-                    <SelectItem key={p.name} value={p.profile_type}>
-                      {p.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="csr">Certificate request (PEM)</Label>
-              <Textarea
-                id="csr"
-                value={csr}
-                onChange={(e) => setCsr(e.target.value)}
-                placeholder="-----BEGIN CERTIFICATE REQUEST-----&#10;…&#10;-----END CERTIFICATE REQUEST-----"
-                className="min-h-[180px] font-mono text-xs"
+        {r && (
+          <Container
+            header={
+              <Header
+                variant="h2"
+                description={`Serial ${r.serial_number} · valid ${r.not_before} → ${r.not_after}`}
+                actions={
+                  <Button onClick={() => navigate(`/certificates/${r.certificate_id}`)}>
+                    View details
+                  </Button>
+                }
+              >
+                Issued
+              </Header>
+            }
+          >
+            <SpaceBetween size="s">
+              <CopyToClipboard
+                variant="button"
+                textToCopy={r.pem_encoded}
+                copyButtonText="Copy PEM"
+                copySuccessText="Copied"
+                copyErrorText="Copy failed"
               />
-            </div>
-            {error && (
-              <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {error}
-              </div>
-            )}
-            <Button type="submit" disabled={issue.isPending || !profile}>
-              {issue.isPending ? "Issuing…" : "Issue certificate"}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-
-      {r && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Issued</CardTitle>
-            <CardDescription>
-              Serial {r.serial_number} · valid {r.not_before} → {r.not_after}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label>Certificate (PEM)</Label>
-              <CopyButton value={r.pem_encoded} />
-            </div>
-            <pre className="max-h-72 overflow-auto rounded-md bg-muted p-3 text-xs">
-              {r.pem_encoded}
-            </pre>
-            <Button asChild variant="outline" size="sm">
-              <Link to={`/certificates/${r.certificate_id}`}>View details</Link>
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-    </div>
+              <Box variant="code">
+                <pre style={{ margin: 0, maxHeight: 288, overflow: "auto" }}>
+                  {r.pem_encoded}
+                </pre>
+              </Box>
+            </SpaceBetween>
+          </Container>
+        )}
+      </SpaceBetween>
+    </ContentLayout>
   );
 }
