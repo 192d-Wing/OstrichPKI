@@ -1,25 +1,51 @@
-import { type ReactNode } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Navigate, Route, Routes } from "react-router-dom";
+import Spinner from "@cloudscape-design/components/spinner";
 
 import { CloudscapeLayout } from "@/components/layout/cloudscape-layout";
 import { RequireAuth, RequirePermission } from "@/components/protected";
 import { AuthProvider } from "@/lib/auth-context";
-import { AuditPage } from "@/pages/audit";
-import { CertificateDetailPage } from "@/pages/certificate-detail";
-import { CertificateIssuePage } from "@/pages/certificate-issue";
-import { CertificatesPage } from "@/pages/certificates";
-import { CrlPage } from "@/pages/crl";
-import { DashboardPage } from "@/pages/dashboard";
-import { ProfilesPage } from "@/pages/profiles";
-import { SettingsPage } from "@/pages/settings";
-import { EstPage } from "@/pages/est";
-import { LoginPage } from "@/pages/login";
 import { Placeholder } from "@/pages/placeholder";
+
+// Route-level code-splitting: each page is its own async chunk so the initial
+// load only pulls the shell + the landing route. Named page exports are adapted
+// to the default export React.lazy expects.
+const AuditPage = lazy(() => import("@/pages/audit").then((m) => ({ default: m.AuditPage })));
+const CertificateDetailPage = lazy(() =>
+  import("@/pages/certificate-detail").then((m) => ({ default: m.CertificateDetailPage })),
+);
+const CertificateIssuePage = lazy(() =>
+  import("@/pages/certificate-issue").then((m) => ({ default: m.CertificateIssuePage })),
+);
+const CertificatesPage = lazy(() =>
+  import("@/pages/certificates").then((m) => ({ default: m.CertificatesPage })),
+);
+const CrlPage = lazy(() => import("@/pages/crl").then((m) => ({ default: m.CrlPage })));
+const DashboardPage = lazy(() =>
+  import("@/pages/dashboard").then((m) => ({ default: m.DashboardPage })),
+);
+const ProfilesPage = lazy(() =>
+  import("@/pages/profiles").then((m) => ({ default: m.ProfilesPage })),
+);
+const SettingsPage = lazy(() =>
+  import("@/pages/settings").then((m) => ({ default: m.SettingsPage })),
+);
+const EstPage = lazy(() => import("@/pages/est").then((m) => ({ default: m.EstPage })));
+const LoginPage = lazy(() => import("@/pages/login").then((m) => ({ default: m.LoginPage })));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, staleTime: 10_000 } },
 });
+
+/** Centered spinner shown while a lazy route chunk loads. */
+function RouteFallback() {
+  return (
+    <div style={{ display: "flex", justifyContent: "center", padding: "2rem" }}>
+      <Spinner size="large" />
+    </div>
+  );
+}
 
 /** Wrap a page in its RBAC permission gate. */
 function gated(permission: string, node: ReactNode) {
@@ -30,11 +56,12 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <Routes>
+        <Suspense fallback={<RouteFallback />}>
+          <Routes>
           <Route path="/login" element={<LoginPage />} />
 
-          {/* Authenticated app shell. Only EST is ported so far; the rest are
-              placeholders (P3) but route + gate exactly like the real pages. */}
+          {/* Authenticated app shell. Approvals, Tokens (SCMS), and Users are
+              placeholders (no CA endpoint yet) but route + gate like real pages. */}
           <Route element={<RequireAuth />}>
             <Route element={<CloudscapeLayout />}>
               <Route index element={<Navigate to="/dashboard" replace />} />
@@ -63,7 +90,8 @@ export default function App() {
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Route>
           </Route>
-        </Routes>
+          </Routes>
+        </Suspense>
       </AuthProvider>
     </QueryClientProvider>
   );

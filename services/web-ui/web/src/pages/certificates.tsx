@@ -10,6 +10,8 @@ import {
   Alert,
   Box,
   Button,
+  CollectionPreferences,
+  type CollectionPreferencesProps,
   ContentLayout,
   FormField,
   Header,
@@ -36,7 +38,21 @@ import {
 } from "@/lib/ca";
 import { useAuth } from "@/lib/auth-context";
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE_OPTIONS = [10, 20, 50].map((v) => ({ value: v, label: `${v}` }));
+
+// Page size flows into the server query, so changing it re-fetches that many
+// rows; column visibility is purely client-side over the current page.
+const DEFAULT_PREFERENCES: CollectionPreferencesProps.Preferences = {
+  pageSize: 20,
+  contentDisplay: [
+    { id: "serial", visible: true },
+    { id: "subject", visible: true },
+    { id: "issuer", visible: true },
+    { id: "expires", visible: true },
+    { id: "status", visible: true },
+    { id: "actions", visible: true },
+  ],
+};
 
 function statusIndicator(status: CertificateStatus) {
   switch (status) {
@@ -69,22 +85,25 @@ export function CertificatesPage() {
   const [statusOpt, setStatusOpt] = React.useState<SelectProps.Option>(
     STATUS_OPTIONS[0],
   );
+  const [preferences, setPreferences] =
+    React.useState<CollectionPreferencesProps.Preferences>(DEFAULT_PREFERENCES);
   const status = statusOpt.value ?? "";
+  const pageSize = preferences.pageSize ?? 20;
 
   const query = new URLSearchParams();
   query.set("page", String(pageIndex + 1));
-  query.set("pageSize", String(PAGE_SIZE));
+  query.set("pageSize", String(pageSize));
   if (status) query.set("status", status);
   if (search.trim()) query.set("search", search.trim());
 
   const { data, isFetching, isError } = useQuery({
-    queryKey: ["certificates", pageIndex, status, search.trim()],
+    queryKey: ["certificates", pageIndex, pageSize, status, search.trim()],
     queryFn: () => fetchCertificates(query.toString()),
     placeholderData: keepPreviousData,
   });
 
   const total = data?.total ?? 0;
-  const pagesCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pagesCount = Math.max(1, Math.ceil(total / pageSize));
 
   // Revoke modal.
   const [target, setTarget] = React.useState<CertificateSummary | null>(null);
@@ -138,6 +157,9 @@ export function CertificatesPage() {
         loadingText="Loading certificates"
         items={data?.certificates ?? []}
         trackBy="id"
+        resizableColumns
+        stickyHeader
+        columnDisplay={preferences.contentDisplay}
         empty={
           <Box textAlign="center" color="inherit">
             {isError ? "Failed to load certificates." : "No certificates."}
@@ -202,6 +224,30 @@ export function CertificatesPage() {
             currentPageIndex={pageIndex + 1}
             pagesCount={pagesCount}
             onChange={({ detail }) => setPageIndex(detail.currentPageIndex - 1)}
+          />
+        }
+        preferences={
+          <CollectionPreferences
+            title="Preferences"
+            confirmLabel="Confirm"
+            cancelLabel="Cancel"
+            preferences={preferences}
+            pageSizePreference={{ title: "Page size", options: PAGE_SIZE_OPTIONS }}
+            contentDisplayPreference={{
+              title: "Column visibility",
+              options: [
+                { id: "serial", label: "Serial" },
+                { id: "subject", label: "Subject" },
+                { id: "issuer", label: "Issuer" },
+                { id: "expires", label: "Expires" },
+                { id: "status", label: "Status" },
+                { id: "actions", label: "Actions", alwaysVisible: true },
+              ],
+            }}
+            onConfirm={({ detail }) => {
+              setPreferences(detail);
+              setPageIndex(0);
+            }}
           />
         }
         header={<Header counter={`(${total})`}>All certificates</Header>}

@@ -18,6 +18,18 @@ export default defineConfig({
     // Stable, hashed asset names; the server injects the CSP nonce at serve time
     // into the emitted index.html (see docs/WEBUI_SHADCN_MIGRATION.md §4.1).
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // Split the heavy Cloudscape vendor code from app code so it caches
+        // independently of route chunks and our own source changes.
+        manualChunks: {
+          cloudscape: [
+            "@cloudscape-design/components",
+            "@cloudscape-design/global-styles",
+          ],
+        },
+      },
+    },
   },
   server: {
     port: 5173,

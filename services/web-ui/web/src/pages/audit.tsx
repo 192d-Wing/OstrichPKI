@@ -3,6 +3,8 @@ import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
 import {
   Box,
   Button,
+  CollectionPreferences,
+  type CollectionPreferencesProps,
   ContentLayout,
   Header,
   Pagination,
@@ -21,7 +23,21 @@ import {
   type AuditEvent,
 } from "@/lib/audit";
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE_OPTIONS = [25, 50, 100].map((v) => ({ value: v, label: `${v}` }));
+
+// Page size flows into the server query; column visibility is client-side.
+const DEFAULT_PREFERENCES: CollectionPreferencesProps.Preferences = {
+  pageSize: 25,
+  contentDisplay: [
+    { id: "timestamp", visible: true },
+    { id: "eventType", visible: true },
+    { id: "actor", visible: true },
+    { id: "target", visible: true },
+    { id: "action", visible: true },
+    { id: "outcome", visible: true },
+    { id: "signed", visible: true },
+  ],
+};
 
 const EVENT_OPTIONS: SelectProps.Option[] = [
   { label: "All events", value: "" },
@@ -65,24 +81,27 @@ export function AuditPage() {
   const [outcomeOpt, setOutcomeOpt] = React.useState<SelectProps.Option>(
     OUTCOME_OPTIONS[0],
   );
+  const [preferences, setPreferences] =
+    React.useState<CollectionPreferencesProps.Preferences>(DEFAULT_PREFERENCES);
   const eventType = eventOpt.value ?? "";
   const outcome = outcomeOpt.value ?? "";
+  const pageSize = preferences.pageSize ?? 25;
 
   const query = new URLSearchParams();
   query.set("page", String(pageIndex + 1));
-  query.set("pageSize", String(PAGE_SIZE));
+  query.set("pageSize", String(pageSize));
   if (eventType) query.set("eventType", eventType);
   if (actor.trim()) query.set("actor", actor.trim());
   if (outcome) query.set("outcome", outcome);
 
   const { data, isFetching, isError } = useQuery({
-    queryKey: ["audit", pageIndex, eventType, actor.trim(), outcome],
+    queryKey: ["audit", pageIndex, pageSize, eventType, actor.trim(), outcome],
     queryFn: () => fetchAuditLogs(query.toString()),
     placeholderData: keepPreviousData,
   });
 
   const total = data?.total ?? 0;
-  const pagesCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pagesCount = Math.max(1, Math.ceil(total / pageSize));
   const reset = () => setPageIndex(0);
 
   return (
@@ -103,6 +122,9 @@ export function AuditPage() {
         loadingText="Loading audit log"
         items={data?.events ?? []}
         trackBy="id"
+        resizableColumns
+        stickyHeader
+        columnDisplay={preferences.contentDisplay}
         empty={
           <Box textAlign="center" color="inherit">
             {isError ? "Failed to load the audit log." : "No audit events."}
@@ -178,6 +200,31 @@ export function AuditPage() {
             currentPageIndex={pageIndex + 1}
             pagesCount={pagesCount}
             onChange={({ detail }) => setPageIndex(detail.currentPageIndex - 1)}
+          />
+        }
+        preferences={
+          <CollectionPreferences
+            title="Preferences"
+            confirmLabel="Confirm"
+            cancelLabel="Cancel"
+            preferences={preferences}
+            pageSizePreference={{ title: "Page size", options: PAGE_SIZE_OPTIONS }}
+            contentDisplayPreference={{
+              title: "Column visibility",
+              options: [
+                { id: "timestamp", label: "Timestamp", alwaysVisible: true },
+                { id: "eventType", label: "Event" },
+                { id: "actor", label: "Actor" },
+                { id: "target", label: "Target" },
+                { id: "action", label: "Action" },
+                { id: "outcome", label: "Outcome" },
+                { id: "signed", label: "Signed" },
+              ],
+            }}
+            onConfirm={({ detail }) => {
+              setPreferences(detail);
+              setPageIndex(0);
+            }}
           />
         }
         header={<Header counter={`(${total})`}>Events</Header>}
