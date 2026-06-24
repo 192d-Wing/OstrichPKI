@@ -1,9 +1,15 @@
 import * as React from "react";
 import { type ColumnDef, type ColumnFiltersState } from "@tanstack/react-table";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import { DataTable, type DataTableFilter } from "@/components/data-table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -11,9 +17,30 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { ApiError } from "@/lib/api";
+import {
   fetchCertificates,
+  REVOCATION_REASONS,
+  revokeCertificate,
   type CertificateStatus,
   type CertificateSummary,
+  type RevocationReason,
 } from "@/lib/ca";
 
 const PAGE_SIZE = 20;
@@ -31,38 +58,6 @@ function certStatusBadge(status: CertificateStatus) {
   }
 }
 
-const columns: ColumnDef<CertificateSummary>[] = [
-  {
-    accessorKey: "serialNumber",
-    header: "Serial",
-    cell: ({ row }) => (
-      <span className="font-mono text-xs">{row.original.serialNumber}</span>
-    ),
-  },
-  { accessorKey: "subject", header: "Subject" },
-  {
-    accessorKey: "issuer",
-    header: "Issuer",
-    cell: ({ row }) => (
-      <span className="text-muted-foreground">{row.original.issuer}</span>
-    ),
-  },
-  {
-    accessorKey: "validTo",
-    header: "Expires",
-    cell: ({ row }) => (
-      <span className="font-mono text-xs text-muted-foreground">
-        {row.original.validTo}
-      </span>
-    ),
-  },
-  {
-    accessorKey: "status",
-    header: "Status",
-    cell: ({ row }) => certStatusBadge(row.original.status),
-  },
-];
-
 const filters: DataTableFilter[] = [
   { columnId: "subject", placeholder: "Search subject…" },
   {
@@ -79,10 +74,39 @@ const filters: DataTableFilter[] = [
 ];
 
 export function CertificatesPage() {
+  const qc = useQueryClient();
   const [pageIndex, setPageIndex] = React.useState(0);
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
     [],
   );
+
+  // Revoke dialog state.
+  const [target, setTarget] = React.useState<CertificateSummary | null>(null);
+  const [reason, setReason] = React.useState<RevocationReason>("Unspecified");
+  const [notes, setNotes] = React.useState("");
+  const [revokeError, setRevokeError] = React.useState<string | null>(null);
+
+  const closeDialog = () => {
+    setTarget(null);
+    setRevokeError(null);
+  };
+
+  const revoke = useMutation({
+    mutationFn: () => revokeCertificate(target!.id, reason, notes),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["certificates"] });
+      closeDialog();
+    },
+    onError: (e) =>
+      setRevokeError(e instanceof ApiError ? e.message : "Failed to revoke"),
+  });
+
+  function openRevoke(cert: CertificateSummary) {
+    setTarget(cert);
+    setReason("Unspecified");
+    setNotes("");
+    setRevokeError(null);
+  }
 
   const status = columnFilters.find((f) => f.id === "status")?.value as
     | string
@@ -91,7 +115,6 @@ export function CertificatesPage() {
     columnFilters.find((f) => f.id === "subject")?.value as string | undefined
   )?.trim();
 
-  // Server-side query (CA paginates + filters). page is 1-based server-side.
   const query = new URLSearchParams();
   query.set("page", String(pageIndex + 1));
   query.set("pageSize", String(PAGE_SIZE));
@@ -106,6 +129,55 @@ export function CertificatesPage() {
 
   const total = data?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const columns: ColumnDef<CertificateSummary>[] = [
+    {
+      accessorKey: "serialNumber",
+      header: "Serial",
+      cell: ({ row }) => (
+        <span className="font-mono text-xs">{row.original.serialNumber}</span>
+      ),
+    },
+    { accessorKey: "subject", header: "Subject" },
+    {
+      accessorKey: "issuer",
+      header: "Issuer",
+      cell: ({ row }) => (
+        <span className="text-muted-foreground">{row.original.issuer}</span>
+      ),
+    },
+    {
+      accessorKey: "validTo",
+      header: "Expires",
+      cell: ({ row }) => (
+        <span className="font-mono text-xs text-muted-foreground">
+          {row.original.validTo}
+        </span>
+      ),
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }) => certStatusBadge(row.original.status),
+    },
+    {
+      id: "actions",
+      header: "",
+      cell: ({ row }) =>
+        row.original.status === "active" ? (
+          <div className="text-right">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-auto p-1 text-destructive hover:text-destructive"
+              onClick={() => openRevoke(row.original)}
+            >
+              Revoke
+            </Button>
+          </div>
+        ) : null,
+    },
+  ];
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
@@ -139,12 +211,78 @@ export function CertificatesPage() {
               columnFilters,
               onColumnFiltersChange: (next) => {
                 setColumnFilters(next);
-                setPageIndex(0); // filter change resets to the first page
+                setPageIndex(0);
               },
             }}
           />
         </CardContent>
       </Card>
+
+      <Dialog open={!!target} onOpenChange={(o) => !o && closeDialog()}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Revoke certificate</DialogTitle>
+            <DialogDescription>
+              {target ? (
+                <>
+                  This permanently revokes{" "}
+                  <span className="font-medium">{target.subject}</span> (serial{" "}
+                  <span className="font-mono">{target.serialNumber}</span>). It
+                  will appear on the next CRL/OCSP response.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>Reason</Label>
+              <Select
+                value={reason}
+                onValueChange={(v) => setReason(v as RevocationReason)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {REVOCATION_REASONS.map((r) => (
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="notes">Notes (optional)</Label>
+              <Textarea
+                id="notes"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Context for the audit record…"
+              />
+            </div>
+            {revokeError && (
+              <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {revokeError}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={closeDialog} disabled={revoke.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => revoke.mutate()}
+              disabled={revoke.isPending}
+            >
+              {revoke.isPending ? "Revoking…" : "Revoke certificate"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
