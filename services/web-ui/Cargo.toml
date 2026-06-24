@@ -80,7 +80,7 @@ yew = { version = "0.23", features = ["csr"] }
 yew-router = "0.20"
 
 # Browser APIs
-gloo = "0.11"
+gloo = "0.12"
 gloo-net = "0.6"
 gloo-storage = "0.3"
 gloo-timers = "0.4"
