@@ -4,6 +4,7 @@ import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
 import { ShieldCheck, ShieldX } from "lucide-react";
 
 import { DataTable, type DataTableFilter } from "@/components/data-table";
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -151,15 +152,11 @@ export function AuditPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Audit Logs</h1>
-          <p className="text-sm text-muted-foreground">
-            Security-relevant events (append-only, hash-chained).
-          </p>
-        </div>
-        <IntegrityCheck />
-      </div>
+      <PageHeader
+        title="Audit Logs"
+        description="Security-relevant events (append-only, hash-chained)."
+        actions={<IntegrityCheck />}
+      />
 
       <Card>
         <CardHeader>

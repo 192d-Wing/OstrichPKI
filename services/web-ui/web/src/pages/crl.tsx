@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { PageHeader } from "@/components/page-header";
 import { ApiError } from "@/lib/api";
 import { generateCrl } from "@/lib/ca";
 import { useAuth } from "@/lib/auth-context";
@@ -84,12 +85,10 @@ export function CrlPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
-      <div>
-        <h1 className="text-2xl font-bold">Revocation Lists</h1>
-        <p className="text-sm text-muted-foreground">
-          Generate and download Certificate Revocation Lists (RFC 5280).
-        </p>
-      </div>
+      <PageHeader
+        title="Revocation Lists"
+        description="Generate and download Certificate Revocation Lists (RFC 5280)."
+      />
 
       {!canGenerate && (
         <div className="rounded-md border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">

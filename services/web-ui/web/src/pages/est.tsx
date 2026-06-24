@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-query";
 
 import { DataTable, type DataTableFilter } from "@/components/data-table";
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -336,15 +337,11 @@ function OutstandingTokens() {
 export function EstPage() {
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">EST Enrollment</h1>
-          <p className="text-sm text-muted-foreground">
-            Enrollment over Secure Transport (RFC 7030).
-          </p>
-        </div>
-        <EstHealthBadge />
-      </div>
+      <PageHeader
+        title="EST Enrollment"
+        description="Enrollment over Secure Transport (RFC 7030)."
+        actions={<EstHealthBadge />}
+      />
       <MintTokenForm />
       <OutstandingTokens />
     </div>
