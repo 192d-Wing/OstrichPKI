@@ -8,6 +8,9 @@ export interface ClientConfig {
   oidcAuthUrl: string;
   appName: string;
   version: string;
+  // Router basename. The server injects "/next" for the temporary preview
+  // mount and "/" once the React app is served at the root (cutover).
+  basename: string;
 }
 
 declare global {
@@ -22,6 +25,7 @@ const defaults: ClientConfig = {
   oidcAuthUrl: "",
   appName: "OstrichPKI",
   version: "dev",
+  basename: "/",
 };
 
 export const config: ClientConfig = {
