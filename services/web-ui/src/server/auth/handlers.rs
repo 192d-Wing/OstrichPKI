@@ -61,6 +61,10 @@ fn oidc_disabled() -> Response {
 pub struct InternalLoginRequest {
     pub username: String,
     pub password: String,
+    /// "Sign out my other sessions" — forwarded to the CA to evict the user's
+    /// existing sessions before creating a new one (recover from the cap).
+    #[serde(default)]
+    pub evict_existing: bool,
 }
 
 /// Shape of the CA's `POST /api/v1/auth/login` success response.
@@ -107,7 +111,11 @@ pub async fn internal_login(
     );
     let resp = reqwest::Client::new()
         .post(&url)
-        .json(&serde_json::json!({ "username": req.username, "password": req.password }))
+        .json(&serde_json::json!({
+            "username": req.username,
+            "password": req.password,
+            "evict_existing": req.evict_existing
+        }))
         .send()
         .await;
 
@@ -125,6 +133,21 @@ pub async fn internal_login(
                 .into_response();
         }
     };
+
+    // Credentials are valid but the user is at the concurrent-session cap: the CA
+    // returns 409. Surface it distinctly (not as "invalid credentials") so the
+    // client can offer "sign out my other sessions" and retry with evict.
+    if resp.status() == reqwest::StatusCode::CONFLICT {
+        tracing::warn!(user = %req.username, "internal login blocked: session limit reached");
+        return (
+            StatusCode::CONFLICT,
+            Json(AuthError {
+                error: "session_limit".to_string(),
+                message: "You have too many active sessions.".to_string(),
+            }),
+        )
+            .into_response();
+    }
 
     if !resp.status().is_success() {
         // NIAP PP-CA: FIA_AFL.1 - failed authentication (lockout enforced CA-side)

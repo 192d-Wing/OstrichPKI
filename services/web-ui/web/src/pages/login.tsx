@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { internalLogin, oidcLoginUrl } from "@/lib/auth";
+import { internalLogin, oidcLoginUrl, SessionLimitError } from "@/lib/auth";
 import { useAuth } from "@/lib/auth-context";
 
 export function LoginPage() {
@@ -23,26 +23,39 @@ export function LoginPage() {
   const [password, setPassword] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
+  const [limitReached, setLimitReached] = React.useState(false);
 
   // If a session already exists, don't show the form.
   React.useEffect(() => {
     if (isAuthenticated) navigate("/", { replace: true });
   }, [isAuthenticated, navigate]);
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  // `evict` resubmits the same (already-typed) credentials asking the server to
+  // sign out the user's other sessions first — recovers from the session cap.
+  async function attempt(evict: boolean) {
     setSubmitting(true);
     setError(null);
     try {
-      await internalLogin(username.trim(), password);
+      await internalLogin(username.trim(), password, evict);
       // Re-probe the session BEFORE navigating so the route guard sees the new
       // identity and doesn't bounce back here.
       await qc.refetchQueries({ queryKey: ["userinfo"] });
       navigate("/", { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      if (err instanceof SessionLimitError) {
+        setLimitReached(true);
+      } else {
+        setError(err instanceof Error ? err.message : "Login failed");
+        setLimitReached(false);
+      }
       setSubmitting(false);
     }
+  }
+
+  function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLimitReached(false);
+    void attempt(false);
   }
 
   return (
@@ -79,9 +92,29 @@ export function LoginPage() {
                 {error}
               </div>
             )}
-            <Button type="submit" className="w-full" disabled={submitting}>
-              {submitting ? "Signing in…" : "Sign in"}
-            </Button>
+            {limitReached ? (
+              <div className="space-y-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-300">
+                <p>
+                  Your account has reached its active-session limit. Sign out
+                  your other sessions to continue.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={submitting}
+                  onClick={() => void attempt(true)}
+                >
+                  {submitting
+                    ? "Signing out other sessions…"
+                    : "Sign out other sessions & sign in"}
+                </Button>
+              </div>
+            ) : (
+              <Button type="submit" className="w-full" disabled={submitting}>
+                {submitting ? "Signing in…" : "Sign in"}
+              </Button>
+            )}
           </form>
 
           {/* Shown for deployments running OIDC SSO; harmless otherwise. */}

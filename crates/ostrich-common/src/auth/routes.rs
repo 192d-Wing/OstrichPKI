@@ -32,6 +32,11 @@ use std::sync::Arc;
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    /// When true, terminate the user's existing sessions before creating a new
+    /// one ("sign out my other sessions") — used to recover from the
+    /// concurrent-session limit. Honored only after the password is verified.
+    #[serde(default)]
+    pub evict_existing: bool,
 }
 
 /// Successful login response
@@ -86,8 +91,39 @@ async fn login(
         }
     };
 
+    // Password is verified. If asked, evict the user's existing sessions before
+    // creating a new one so a user at the concurrent-session cap can recover
+    // self-service ("sign out my other sessions"). NIAP PP-CA: FTA_SSL.4.
+    if request.evict_existing {
+        match provider
+            .terminate_all_sessions_for_user(&user.username)
+            .await
+        {
+            Ok(n) => {
+                tracing::info!(username = %user.username, terminated = n, "Evicted existing sessions on login")
+            }
+            Err(e) => {
+                tracing::warn!(username = %user.username, error = %e, "Failed to evict existing sessions")
+            }
+        }
+    }
+
     let session = match provider.create_session(&user).await {
         Ok(session) => session,
+        // Credentials are valid but the per-user session cap is reached. Signal
+        // it distinctly (409) so the client can offer eviction, rather than the
+        // generic 500 that the UI would mislabel as bad credentials.
+        Err(AuthError::SessionLimitReached) => {
+            tracing::warn!(username = %user.username, "Login blocked: concurrent session limit reached");
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "session_limit",
+                    "message": "Active session limit reached"
+                })),
+            )
+                .into_response();
+        }
         Err(e) => {
             tracing::error!(username = %user.username, error = %e, "Session creation failed");
             return (
