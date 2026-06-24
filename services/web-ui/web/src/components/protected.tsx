@@ -1,16 +1,8 @@
 import { type ReactNode } from "react";
-import { Loader2 } from "lucide-react";
 import { Navigate, Outlet } from "react-router-dom";
+import { Box, Spinner } from "@cloudscape-design/components";
 
 import { useAuth } from "@/lib/auth-context";
-
-function FullScreen({ children }: { children: ReactNode }) {
-  return (
-    <div className="flex min-h-screen items-center justify-center text-muted-foreground">
-      {children}
-    </div>
-  );
-}
 
 /**
  * Layout route guard: shows a spinner while the initial session probe runs,
@@ -21,9 +13,18 @@ export function RequireAuth() {
   const { isAuthenticated, isChecking } = useAuth();
   if (isChecking) {
     return (
-      <FullScreen>
-        <Loader2 className="mr-2 size-5 animate-spin" /> Checking session…
-      </FullScreen>
+      <div
+        style={{
+          display: "flex",
+          minHeight: "100vh",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Box color="text-status-inactive">
+          <Spinner /> Checking session…
+        </Box>
+      </div>
     );
   }
   if (!isAuthenticated) return <Navigate to="/login" replace />;
@@ -34,18 +35,18 @@ export function RequireAuth() {
 export function RequirePermission({
   permission,
   children,
-}: {
+}: Readonly<{
   permission: string;
   children: ReactNode;
-}) {
+}>) {
   const { can } = useAuth();
   if (!can(permission)) {
     return (
-      <div className="p-6">
-        <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-700 dark:text-yellow-300">
+      <Box padding="l">
+        <Box color="text-status-warning">
           You don't have permission to view this page.
-        </div>
-      </div>
+        </Box>
+      </Box>
     );
   }
   return <>{children}</>;

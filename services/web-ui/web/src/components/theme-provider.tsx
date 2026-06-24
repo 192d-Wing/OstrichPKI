@@ -17,18 +17,15 @@ interface ThemeProviderState {
 const STORAGE_KEY = "ostrich-ui-theme";
 const ThemeContext = createContext<ThemeProviderState | null>(null);
 
+function resolveTheme(theme: Theme): "dark" | "light" {
+  if (theme !== "system") return theme;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+}
+
 function applyTheme(theme: Theme) {
-  const root = document.documentElement;
-  root.classList.remove("light", "dark");
-  const resolved =
-    theme === "system"
-      ? window.matchMedia("(prefers-color-scheme: dark)").matches
-        ? "dark"
-        : "light"
-      : theme;
-  root.classList.add(resolved);
-  // Drive Cloudscape's visual mode alongside the (legacy) Tailwind class.
-  applyMode(resolved === "dark" ? Mode.Dark : Mode.Light);
+  applyMode(resolveTheme(theme) === "dark" ? Mode.Dark : Mode.Light);
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
