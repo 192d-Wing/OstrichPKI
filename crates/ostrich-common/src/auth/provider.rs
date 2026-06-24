@@ -152,6 +152,12 @@ pub enum AuthError {
     #[error("Authentication method not supported")]
     UnsupportedAuthMethod,
 
+    /// The per-user concurrent-session limit is reached. Credentials are valid;
+    /// the caller may retry with eviction ("sign out my other sessions").
+    /// NIAP PP-CA: FTA_MCS.1 - concurrent session limiting.
+    #[error("Active session limit reached")]
+    SessionLimitReached,
+
     /// Internal error during authentication
     #[error("Internal authentication error: {0}")]
     Internal(String),

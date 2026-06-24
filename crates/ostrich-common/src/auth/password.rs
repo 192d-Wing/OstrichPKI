@@ -32,7 +32,7 @@ use super::{
     audit::{AuthAuditEvent, AuthAuditHook, AuthAuditKind},
     lockout::LockoutConfig,
     provider::{AuthError, AuthProvider, AuthResult, Credentials, SessionInfo},
-    session::SessionManager,
+    session::{SessionError, SessionManager},
     user::{AccountStatus, AuthMethod, AuthenticatedUser, UserAccount, UserId},
 };
 
@@ -451,7 +451,12 @@ impl AuthProvider for PasswordAuthProvider {
             .session_manager
             .create_session(&user.username, None, None) // ip_address, user_agent
             .await
-            .map_err(|e| AuthError::Internal(format!("Session creation failed: {}", e)))?;
+            .map_err(|e| match e {
+                // Distinguish the cap from a generic failure so callers can offer
+                // "sign out my other sessions" (FTA_MCS.1).
+                SessionError::MaxConcurrentSessionsExceeded => AuthError::SessionLimitReached,
+                other => AuthError::Internal(format!("Session creation failed: {other}")),
+            })?;
 
         Ok(SessionInfo {
             token: session.token.clone(),

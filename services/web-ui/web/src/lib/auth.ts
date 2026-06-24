@@ -76,17 +76,31 @@ export async function fetchUserInfo(): Promise<UserInfo | null> {
   return (await res.json()) as UserInfo;
 }
 
-/** Internal-auth login. Resolves on success (the server sets the session cookie). */
+/** Thrown when credentials are valid but the concurrent-session cap is reached. */
+export class SessionLimitError extends Error {
+  constructor() {
+    super("You have too many active sessions.");
+    this.name = "SessionLimitError";
+  }
+}
+
+/**
+ * Internal-auth login. Resolves on success (the server sets the session cookie).
+ * `evictExisting` asks the server to sign out the user's other sessions first
+ * (used to recover from the session limit). Throws `SessionLimitError` on 409.
+ */
 export async function internalLogin(
   username: string,
   password: string,
+  evictExisting = false,
 ): Promise<void> {
   const res = await fetch("/auth/internal-login", {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, evict_existing: evictExisting }),
   });
+  if (res.status === 409) throw new SessionLimitError();
   if (res.status === 401) throw new Error("Invalid username or password");
   if (!res.ok) throw new Error(`Login failed (HTTP ${res.status})`);
 }
