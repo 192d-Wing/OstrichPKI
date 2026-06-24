@@ -1060,6 +1060,27 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - ✅ Unit tests: `crates/ostrich-common/src/tls.rs` (partial-config rejection,
   missing-file rejection)
 
+**Web console transport-integrity hardening (SC-8 / SC-18 / SI-10):**
+
+- ✅ Per-request Content-Security-Policy with a fresh cryptographic nonce
+  (`services/web-ui/src/server/middleware/csp.rs`): `script-src` is nonce-strict
+  (+ `'wasm-unsafe-eval'` for the Yew WASM client); `default-src`, `connect-src`,
+  `base-uri`, and `form-action` are `'self'`; `frame-ancestors 'none'` and
+  `upgrade-insecure-requests` are set. Defends transmitted-page integrity against
+  injected/mobile code (SC-18) and XSS (SI-10).
+- ✅ Hardening headers on every response: `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+  strict-origin-when-cross-origin`, `Permissions-Policy` (sensors/camera/geo/mic
+  denied).
+- ✅ React `/next` route-splitting (PR #109, `web-ui:sha-4f64ef4`) keeps all JS
+  chunks same-origin under `/static/assets/`, so lazy loading adds **no CSP
+  exceptions**; deployed-header capture and same-origin chunk verification are in
+  `ATO_EVIDENCE.md` (Appendix B → "Web console CSP deployment capture").
+- ⚠️ `style-src 'unsafe-inline'` is retained for Cloudscape dynamic inline
+  styles; scoped to styles only — `script-src` stays nonce-strict.
+- ✅ Unit tests (3): `services/web-ui/src/server/middleware/csp.rs` (nonce
+  uniqueness/length, header contents).
+
 **Remaining Gaps:**
 
 - gRPC (tonic) listener TLS configuration on ca-server (REST is covered;
