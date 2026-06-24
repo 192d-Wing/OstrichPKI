@@ -120,3 +120,76 @@ export async function serviceUp(svc: string): Promise<boolean> {
     return false;
   }
 }
+
+// ---- Certificate detail (camelCase, like the list) -------------------------
+export interface CertificateExtension {
+  oid: string;
+  name: string;
+  critical: boolean;
+  value: string;
+}
+export interface SubjectAltName {
+  nameType: string;
+  value: string;
+}
+export interface CertificateDetails {
+  id: string;
+  serialNumber: string;
+  version: number;
+  status: CertificateStatus;
+  subjectDn: string;
+  issuerDn: string;
+  validFrom: string;
+  validTo: string;
+  daysRemaining?: number | null;
+  keyAlgorithm: string;
+  keySize: number;
+  signatureAlgorithm: string;
+  fingerprintSha256: string;
+  fingerprintSha1: string;
+  extensions: CertificateExtension[];
+  subjectAltNames: SubjectAltName[];
+  keyUsage: string[];
+  extendedKeyUsage: string[];
+  authorityKeyId?: string | null;
+  subjectKeyId?: string | null;
+  crlDistributionPoints: string[];
+  ocspResponderUrls: string[];
+  revocationTime?: string | null;
+  revocationReason?: string | null;
+  pem: string;
+}
+
+export function fetchCertificateDetail(id: string): Promise<CertificateDetails> {
+  return api.get<CertificateDetails>(`/ca/api/v1/certificates/${id}`);
+}
+
+// ---- Issuance (snake_case request/response) --------------------------------
+export interface IssueResponse {
+  certificate_id: string;
+  serial_number: string;
+  pem_encoded: string;
+  not_before: string;
+  not_after: string;
+}
+
+/** Strip PEM armor from a CSR, leaving the base64 DER body the CA expects. */
+export function pemToCsrB64(pem: string): string {
+  return pem
+    .split("\n")
+    .filter((l) => !l.includes("-----"))
+    .flatMap((l) => l.split(/\s+/))
+    .filter(Boolean)
+    .join("");
+}
+
+/** Issue an end-entity certificate from a CSR (POST /ca/api/v1/certificates). */
+export function issueCertificate(
+  profileName: string,
+  csrDer: string,
+): Promise<IssueResponse> {
+  return api.post<IssueResponse>("/ca/api/v1/certificates", {
+    profile_name: profileName,
+    csr_der: csrDer,
+  });
+}

@@ -6,6 +6,9 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
+
+import { useAuth } from "@/lib/auth-context";
 
 import { DataTable, type DataTableFilter } from "@/components/data-table";
 import { Badge } from "@/components/ui/badge";
@@ -75,6 +78,7 @@ const filters: DataTableFilter[] = [
 
 export function CertificatesPage() {
   const qc = useQueryClient();
+  const { can } = useAuth();
   const [pageIndex, setPageIndex] = React.useState(0);
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
     [],
@@ -163,9 +167,12 @@ export function CertificatesPage() {
     {
       id: "actions",
       header: "",
-      cell: ({ row }) =>
-        row.original.status === "active" ? (
-          <div className="text-right">
+      cell: ({ row }) => (
+        <div className="flex justify-end gap-1">
+          <Button asChild variant="ghost" size="sm" className="h-auto p-1">
+            <Link to={`/certificates/${row.original.id}`}>View</Link>
+          </Button>
+          {row.original.status === "active" && (
             <Button
               variant="ghost"
               size="sm"
@@ -174,18 +181,26 @@ export function CertificatesPage() {
             >
               Revoke
             </Button>
-          </div>
-        ) : null,
+          )}
+        </div>
+      ),
     },
   ];
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <div>
-        <h1 className="text-2xl font-bold">Certificates</h1>
-        <p className="text-sm text-muted-foreground">
-          Issued certificate inventory.
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Certificates</h1>
+          <p className="text-sm text-muted-foreground">
+            Issued certificate inventory.
+          </p>
+        </div>
+        {can("issue_certificates") && (
+          <Button asChild>
+            <Link to="/certificates/issue">Issue certificate</Link>
+          </Button>
+        )}
       </div>
 
       <Card>
