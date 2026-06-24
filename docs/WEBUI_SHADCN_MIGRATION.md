@@ -108,7 +108,8 @@ Plan: **(A)**. Add a Vite post-build/transform (or a tiny `index.html` template 
 - React `lib/api.ts`: `fetch(`/api${path}`, { credentials: "same-origin" })`; surface non-2xx as typed errors (mirror `ApiError`).
 - Login page: OIDC → `window.location = "/auth/login"`; dev/internal → `POST /api/v1/auth/login`.
 - `lib/auth.ts`: `GET /auth/userinfo` → user + permissions; a `<Protected permission="…">` wrapper and route guards mirror the Yew `Protected` component and the sidebar permission gates (e.g. `generate_est_token`).
-- **CSRF checklist:** today protection leans on `SameSite=Lax` + the server-injected token. Confirm whether any `/api` mutation expects a CSRF header; if so, thread it through `lib/api.ts`. (Verify before cutover — parity item, not a redesign.)
+- **CSRF (verified):** there is **no app-level CSRF token on `/api` today**. `proxy.rs` and `middleware/session.rs` enforce **no** CSRF token, Origin, or Referer check on mutations; `require_session` only validates the session cookie token against the server-side store. The session cookie is `HttpOnly` + `Secure` + **`SameSite=Lax`**, and the client sends no CSRF header. So protection rests entirely on `SameSite=Lax` (which does block cross-site POST/DELETE). **The React app inherits this unchanged** — `lib/api.ts` needs no CSRF header; same-origin `fetch` with `credentials:"same-origin"` is exact parity. The `oauth_state` cookie is OIDC-flow CSRF only, not `/api`.
+  - **Defense-in-depth opportunity (optional, server-side):** `SameSite=Lax`-only is the common baseline but has no second layer. The migration is a natural moment to add an **Origin/Referer allowlist check** (or a double-submit token) in the Axum proxy. This is a **Rust-server enhancement, independent of the frontend** — recommend tracking it separately, not blocking the migration.
 
 ---
 
@@ -206,9 +207,9 @@ Indicative total: **~4–6 focused weeks** for full parity, front-loaded by P1/P
 
 ---
 
-## 12. Open questions for sign-off
-1. CSP: confirm **§4.1-A (nonce injection preserved)** vs strict-dynamic.
-2. ATO owner: ack the npm supply-chain expansion (§8) and SBOM/audit additions.
-3. Any `/api` mutation that requires a CSRF token today? (parity check)
-4. Keep dev **internal-login** path in the React login page, or OIDC-only?
-5. Package manager: **pnpm** (corepack present) vs npm (used here for the lockfile examples).
+## 12. Sign-off decisions
+1. CSP: **§4.1-A nonce-injection preserved.** ✅ decided.
+2. ATO owner: ack the npm supply-chain expansion (§8) + the build-time controls (locked installs, `audit` gate, npm SBOM, Dependabot). ⏳ pending ack — see §8 checklist.
+3. CSRF on `/api`: **verified — none today (`SameSite=Lax` only); React inherits unchanged.** ✅ resolved (§4.3). Optional server-side defense-in-depth tracked separately.
+4. Login: **keep the dev internal-login path** alongside OIDC in the React login. ✅ decided.
+5. Package manager: **pnpm vs npm** — ⏳ pending pick (recommend pnpm: strict dep isolation + corepack already present).
