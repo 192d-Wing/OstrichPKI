@@ -42,27 +42,10 @@ jobs:
       - name: Test
         run: cargo test --workspace --lib --bins --locked
 
-  # ---- Blocking gate: the web-ui frontend must compile for wasm32 ----
-  # The Yew client is `#[cfg(target_arch = "wasm32")]`-gated, so the host
-  # build above never compiles it. This job is the only thing that catches
-  # frontend regressions. Its wasm32 dependency set is just yew + wasm-bindgen
-  # (the heavy server/crypto deps are cfg(not(wasm32))), so no extra apt deps.
-  web-ui-wasm:
-    name: Web UI (wasm32)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - name: Build web-ui for wasm32
-        run: cargo build -p ostrich-web-ui --target wasm32-unknown-unknown --locked
-
-  # ---- React/shadcn frontend (P1 of the Yew→React migration) ----
-  # Builds the new services/web-ui/web SPA and enforces the npm supply-chain
-  # controls agreed for the migration. The Yew client (web-ui-wasm, above) stays
-  # the DEPLOYED bundle until cutover; both build in CI during the migration.
+  # ---- React frontend (the web-ui console) ----
+  # Builds the services/web-ui/web SPA and enforces the npm supply-chain
+  # controls. This is the deployed console (the former Yew/WASM client was
+  # retired in the /next → / cutover).
   #
   # COMPLIANCE MAPPING:
   # - NIST 800-53: CM-2  (Baseline Configuration) — frozen-lockfile install
