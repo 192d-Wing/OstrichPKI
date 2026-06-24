@@ -16,7 +16,7 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::components::auth::Protected;
-use crate::components::common::{Alert, AlertType, Badge, BadgeVariant, CopyButton};
+use crate::components::common::{Alert, AlertType, Badge, BadgeVariant, CopyButton, Pagination};
 use crate::services::api::api;
 
 #[function_component(Est)]
@@ -230,6 +230,13 @@ fn enrollment_token_panel() -> Html {
     // Bumped after a mint or revoke to reload the outstanding-token list.
     let refresh = use_state(|| 0u32);
 
+    // Outstanding-tokens table: per-column filters + client-side pagination.
+    let f_identity = use_state(String::new);
+    let f_created_by = use_state(String::new);
+    let f_status = use_state(String::new); // "" = all statuses
+    let page = use_state(|| 1usize);
+    let page_size = use_state(|| 10usize);
+
     // Load the outstanding-token list on mount and whenever `refresh` changes.
     {
         let tokens = tokens.clone();
@@ -284,8 +291,49 @@ fn enrollment_token_panel() -> Html {
     // Select the token text on click so the operator can copy it easily.
     let select_all = Callback::from(|e: MouseEvent| {
         let input: web_sys::HtmlInputElement = e.target_unchecked_into();
-        let _ = input.select();
+        input.select();
     });
+
+    // Per-column filter handlers (each resets to page 1 so results stay visible).
+    let on_filter_identity = {
+        let f = f_identity.clone();
+        let page = page.clone();
+        Callback::from(move |e: InputEvent| {
+            let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+            f.set(input.value());
+            page.set(1);
+        })
+    };
+    let on_filter_created_by = {
+        let f = f_created_by.clone();
+        let page = page.clone();
+        Callback::from(move |e: InputEvent| {
+            let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+            f.set(input.value());
+            page.set(1);
+        })
+    };
+    let on_filter_status = {
+        let f = f_status.clone();
+        let page = page.clone();
+        Callback::from(move |e: Event| {
+            let sel: web_sys::HtmlSelectElement = e.target_unchecked_into();
+            f.set(sel.value());
+            page.set(1);
+        })
+    };
+    let on_page_change = {
+        let page = page.clone();
+        Callback::from(move |p: usize| page.set(p))
+    };
+    let on_page_size_change = {
+        let page_size = page_size.clone();
+        let page = page.clone();
+        Callback::from(move |s: usize| {
+            page_size.set(s);
+            page.set(1);
+        })
+    };
 
     let on_submit = {
         let identity = identity.clone();
@@ -333,6 +381,30 @@ fn enrollment_token_panel() -> Html {
             });
         })
     };
+
+    // Apply the per-column filters, then slice to the current page (client-side;
+    // the outstanding-token list is small and already fully loaded).
+    let fi = f_identity.to_lowercase();
+    let fc = f_created_by.to_lowercase();
+    let fs = (*f_status).clone();
+    let filtered: Vec<TokenSummary> = tokens
+        .iter()
+        .filter(|t| {
+            (fi.is_empty() || t.identity.to_lowercase().contains(&fi))
+                && (fc.is_empty() || t.created_by.to_lowercase().contains(&fc))
+                && (fs.is_empty() || t.status == fs)
+        })
+        .cloned()
+        .collect();
+    let total = filtered.len();
+    let psize = (*page_size).max(1);
+    let total_pages = total.div_ceil(psize).max(1);
+    let cur = (*page).clamp(1, total_pages);
+    let page_rows: Vec<TokenSummary> = filtered
+        .into_iter()
+        .skip((cur - 1) * psize)
+        .take(psize)
+        .collect();
 
     html! {
         <>
@@ -426,6 +498,7 @@ fn enrollment_token_panel() -> Html {
                     html! { <p class="text-sm text-gray-500">{ "No enrollment tokens minted yet." }</p> }
                   } else {
                     html! {
+                        <>
                         <table class="table">
                             <thead class="table-header">
                                 <tr>
@@ -435,9 +508,42 @@ fn enrollment_token_panel() -> Html {
                                     <th class="table-header-cell">{ "Status" }</th>
                                     <th class="table-header-cell">{ "" }</th>
                                 </tr>
+                                // Per-column filter row.
+                                <tr>
+                                    <th class="px-3 pb-2">
+                                        <input type="text" class="form-input text-xs py-1 font-normal"
+                                               placeholder="Filter identity…"
+                                               value={(*f_identity).clone()} oninput={on_filter_identity} />
+                                    </th>
+                                    <th class="px-3 pb-2">
+                                        <input type="text" class="form-input text-xs py-1 font-normal"
+                                               placeholder="Filter creator…"
+                                               value={(*f_created_by).clone()} oninput={on_filter_created_by} />
+                                    </th>
+                                    <th class="px-3 pb-2"></th>
+                                    <th class="px-3 pb-2">
+                                        <select class="form-select text-xs py-1 font-normal" onchange={on_filter_status}>
+                                            <option value="" selected={f_status.is_empty()}>{ "All" }</option>
+                                            <option value="live" selected={f_status.as_str() == "live"}>{ "live" }</option>
+                                            <option value="used" selected={f_status.as_str() == "used"}>{ "used" }</option>
+                                            <option value="revoked" selected={f_status.as_str() == "revoked"}>{ "revoked" }</option>
+                                            <option value="expired" selected={f_status.as_str() == "expired"}>{ "expired" }</option>
+                                        </select>
+                                    </th>
+                                    <th class="px-3 pb-2"></th>
+                                </tr>
                             </thead>
                             <tbody class="table-body">
-                                { for tokens.iter().map(|t| {
+                                { if page_rows.is_empty() {
+                                    html! {
+                                        <tr>
+                                            <td colspan="5" class="table-cell text-center text-gray-500">
+                                                { "No tokens match the current filters." }
+                                            </td>
+                                        </tr>
+                                    }
+                                  } else {
+                                    html! { { for page_rows.iter().map(|t| {
                                     let badge = match t.status.as_str() {
                                         "live" => html! { <Badge variant={BadgeVariant::Success} dot={true}>{ "live" }</Badge> },
                                         "used" => html! { <Badge variant={BadgeVariant::Gray}>{ "used" }</Badge> },
@@ -451,7 +557,7 @@ fn enrollment_token_panel() -> Html {
                                         html! { <button class="text-sm font-medium text-red-600 hover:text-red-700" {onclick}>{ "Revoke" }</button> }
                                     } else { html! {} };
                                     html! {
-                                        <tr>
+                                        <tr key={t.id.clone()}>
                                             <td class="table-cell font-mono">{ &t.identity }</td>
                                             <td class="table-cell text-gray-500">{ &t.created_by }</td>
                                             <td class="table-cell text-gray-500 text-xs font-mono">{ &t.expires_at }</td>
@@ -459,9 +565,20 @@ fn enrollment_token_panel() -> Html {
                                             <td class="table-cell text-right">{ revoke }</td>
                                         </tr>
                                     }
-                                }) }
+                                }) } } } }
                             </tbody>
                         </table>
+                        { if total > 0 {
+                            html! {
+                                <div class="mt-3">
+                                    <Pagination current_page={cur} total_pages={total_pages}
+                                                total_items={total} page_size={psize}
+                                                on_page_change={on_page_change}
+                                                on_page_size_change={Some(on_page_size_change)} />
+                                </div>
+                            }
+                          } else { html! {} } }
+                        </>
                     }
                   } }
             </div>
