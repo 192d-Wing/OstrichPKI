@@ -7,7 +7,10 @@ import { RequireAuth, RequirePermission } from "@/components/protected";
 import { AuthProvider } from "@/lib/auth-context";
 import { AuditPage } from "@/pages/audit";
 import { CertificatesPage } from "@/pages/certificates";
+import { CrlPage } from "@/pages/crl";
 import { DashboardPage } from "@/pages/dashboard";
+import { ProfilesPage } from "@/pages/profiles";
+import { SettingsPage } from "@/pages/settings";
 import { EstPage } from "@/pages/est";
 import { LoginPage } from "@/pages/login";
 import { Placeholder } from "@/pages/placeholder";
@@ -39,13 +42,13 @@ export default function App() {
                 path="certificates"
                 element={gated("view_certificates", <CertificatesPage />)}
               />
-              <Route path="crl" element={gated("view_crl", <Placeholder title="Revocation Lists" />)} />
-              <Route path="profiles" element={gated("view_config", <Placeholder title="Profiles" />)} />
+              <Route path="crl" element={gated("view_crl", <CrlPage />)} />
+              <Route path="profiles" element={gated("view_config", <ProfilesPage />)} />
               <Route path="approvals" element={gated("view_approvals", <Placeholder title="Approvals" />)} />
               <Route path="audit" element={gated("read_audit_log", <AuditPage />)} />
               <Route path="scms" element={gated("view_tokens", <Placeholder title="Tokens" />)} />
               <Route path="users" element={gated("manage_users", <Placeholder title="Users" />)} />
-              <Route path="settings" element={gated("view_config", <Placeholder title="Settings" />)} />
+              <Route path="settings" element={gated("admin", <SettingsPage />)} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Route>
           </Route>
