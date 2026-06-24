@@ -1,19 +1,12 @@
 import * as React from "react";
-import {
-  type ColumnDef,
-  type ColumnFiltersState,
-  flexRender,
-  getCoreRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  useReactTable,
-} from "@tanstack/react-table";
+import { type ColumnDef } from "@tanstack/react-table";
 import {
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
 
+import { DataTable, type DataTableFilter } from "@/components/data-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,14 +26,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { api, ApiError } from "@/lib/api";
 
 const TOKENS_URL = "/est/api/v1/est/enrollment-tokens";
@@ -235,23 +220,6 @@ function MintTokenForm() {
   );
 }
 
-const columns: ColumnDef<TokenSummary>[] = [
-  { accessorKey: "identity", header: "Identity" },
-  { accessorKey: "createdBy", header: "Created by" },
-  { accessorKey: "expiresAt", header: "Expires" },
-  {
-    accessorKey: "status",
-    header: "Status",
-    cell: ({ row }) => tokenStatusBadge(row.original.status),
-    // Exact-match filter; an undefined value (set when "All" is chosen) clears
-    // the filter natively so this fn is never invoked for the all-statuses case.
-    filterFn: (row, id, value) => row.getValue(id) === value,
-  },
-];
-
-// Data columns + a trailing actions column rendered in the row map below.
-const COL_COUNT = columns.length + 1;
-
 function OutstandingTokens() {
   const qc = useQueryClient();
   const { data, isLoading, isError } = useQuery({
@@ -273,23 +241,71 @@ function OutstandingTokens() {
       ),
   });
 
-  const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
-    [],
-  );
+  const columns: ColumnDef<TokenSummary>[] = [
+    {
+      accessorKey: "identity",
+      header: "Identity",
+      cell: ({ row }) => (
+        <span className="font-mono">{row.original.identity}</span>
+      ),
+    },
+    {
+      accessorKey: "createdBy",
+      header: "Created by",
+      cell: ({ row }) => (
+        <span className="text-muted-foreground">{row.original.createdBy}</span>
+      ),
+    },
+    {
+      accessorKey: "expiresAt",
+      header: "Expires",
+      cell: ({ row }) => (
+        <span className="font-mono text-xs text-muted-foreground">
+          {row.original.expiresAt}
+        </span>
+      ),
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }) => tokenStatusBadge(row.original.status),
+      filterFn: (row, id, value) => row.getValue(id) === value,
+    },
+    {
+      id: "actions",
+      header: "",
+      cell: ({ row }) =>
+        row.original.status === "live" ? (
+          <div className="text-right">
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-destructive"
+              disabled={revoke.isPending && revoke.variables === row.original.id}
+              onClick={() => revoke.mutate(row.original.id)}
+            >
+              Revoke
+            </Button>
+          </div>
+        ) : null,
+    },
+  ];
 
-  const table = useReactTable({
-    data: tokens,
-    columns,
-    state: { columnFilters },
-    onColumnFiltersChange: setColumnFilters,
-    getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-    initialState: { pagination: { pageSize: 10 } },
-  });
-
-  const filterValue = (id: string) =>
-    (table.getColumn(id)?.getFilterValue() as string) ?? "";
+  const filters: DataTableFilter[] = [
+    { columnId: "identity", placeholder: "Filter identity…" },
+    { columnId: "createdBy", placeholder: "Filter creator…" },
+    {
+      columnId: "status",
+      placeholder: "All statuses",
+      kind: "select",
+      options: [
+        { value: "live", label: "live" },
+        { value: "used", label: "used" },
+        { value: "revoked", label: "revoked" },
+        { value: "expired", label: "expired" },
+      ],
+    },
+  ];
 
   return (
     <Card>
@@ -297,155 +313,21 @@ function OutstandingTokens() {
         <CardTitle className="text-lg">Outstanding tokens</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {/* Per-column filters */}
-        <div className="grid gap-2 sm:grid-cols-3">
-          <Input
-            placeholder="Filter identity…"
-            value={filterValue("identity")}
-            onChange={(e) =>
-              table.getColumn("identity")?.setFilterValue(e.target.value)
-            }
-          />
-          <Input
-            placeholder="Filter creator…"
-            value={filterValue("createdBy")}
-            onChange={(e) =>
-              table.getColumn("createdBy")?.setFilterValue(e.target.value)
-            }
-          />
-          <Select
-            value={filterValue("status") || "all"}
-            onValueChange={(v) =>
-              table
-                .getColumn("status")
-                ?.setFilterValue(v === "all" ? undefined : v)
-            }
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="All statuses" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              <SelectItem value="live">live</SelectItem>
-              <SelectItem value="used">used</SelectItem>
-              <SelectItem value="revoked">revoked</SelectItem>
-              <SelectItem value="expired">expired</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
         {revokeError && (
           <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {revokeError}
           </div>
         )}
-
-        <div className="rounded-md border">
-          <Table>
-            <TableHeader>
-              {table.getHeaderGroups().map((hg) => (
-                <TableRow key={hg.id}>
-                  {hg.headers.map((h) => (
-                    <TableHead key={h.id}>
-                      {h.isPlaceholder
-                        ? null
-                        : flexRender(
-                            h.column.columnDef.header,
-                            h.getContext(),
-                          )}
-                    </TableHead>
-                  ))}
-                  <TableHead className="text-right">{""}</TableHead>
-                </TableRow>
-              ))}
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={COL_COUNT} className="text-center text-muted-foreground">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              ) : isError ? (
-                <TableRow>
-                  <TableCell colSpan={COL_COUNT} className="text-center text-destructive">
-                    Failed to load tokens. Retry or check your session.
-                  </TableCell>
-                </TableRow>
-              ) : table.getRowModel().rows.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={COL_COUNT} className="text-center text-muted-foreground">
-                    {tokens.length === 0
-                      ? "No enrollment tokens minted yet."
-                      : "No tokens match the current filters."}
-                  </TableCell>
-                </TableRow>
-              ) : (
-                table.getRowModel().rows.map((row) => (
-                  <TableRow key={row.id}>
-                    <TableCell className="font-mono">
-                      {row.original.identity}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {row.original.createdBy}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">
-                      {row.original.expiresAt}
-                    </TableCell>
-                    <TableCell>
-                      {tokenStatusBadge(row.original.status)}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {row.original.status === "live" && (
-                        <Button
-                          variant="link"
-                          size="sm"
-                          className="h-auto p-0 text-destructive"
-                          disabled={
-                            revoke.isPending &&
-                            revoke.variables === row.original.id
-                          }
-                          onClick={() => revoke.mutate(row.original.id)}
-                        >
-                          Revoke
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-
-        {/* Pagination */}
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            {table.getFilteredRowModel().rows.length} result(s)
-          </p>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => table.previousPage()}
-              disabled={!table.getCanPreviousPage()}
-            >
-              Previous
-            </Button>
-            <span className="text-sm text-muted-foreground">
-              Page {table.getState().pagination.pageIndex + 1} of{" "}
-              {Math.max(1, table.getPageCount())}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => table.nextPage()}
-              disabled={!table.getCanNextPage()}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
+        <DataTable
+          columns={columns}
+          data={tokens}
+          filters={filters}
+          isLoading={isLoading}
+          isError={isError}
+          emptyMessage="No enrollment tokens minted yet."
+          noMatchMessage="No tokens match the current filters."
+          errorMessage="Failed to load tokens. Retry or check your session."
+        />
       </CardContent>
     </Card>
   );
