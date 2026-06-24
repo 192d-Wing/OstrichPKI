@@ -417,6 +417,11 @@ struct ListCertificatesQuery {
     page_size: Option<u32>,
     status: Option<String>,
     search: Option<String>,
+    /// Column key to sort by (`serial` | `subject` | `issuer` | `expires`);
+    /// unrecognized/absent falls back to newest-first (`created_at DESC`).
+    sort: Option<String>,
+    /// Sort direction for `sort`: `asc` or `desc` (default `desc`).
+    order: Option<String>,
 }
 
 /// One row in the certificate inventory listing.
@@ -466,6 +471,11 @@ struct ListAuditQuery {
     /// RFC 3339 timestamps bounding the window (inclusive).
     start: Option<String>,
     end: Option<String>,
+    /// Column key to sort by (`timestamp` | `eventType` | `actor` | `target` |
+    /// `action` | `outcome`); unrecognized/absent falls back to `timestamp DESC`.
+    sort: Option<String>,
+    /// Sort direction for `sort`: `asc` or `desc` (default `desc`).
+    order: Option<String>,
 }
 
 /// One audit record in the review listing (FAU_SAR.1).
@@ -603,8 +613,21 @@ async fn list_certificates(
 
     // Filter + search + paginate + count entirely in SQL — no in-memory scan,
     // no row cap, and `total` always describes the full matching population.
+    // Direction defaults to descending (preserves the historic newest-first
+    // default); only an explicit `order=asc` flips it.
+    let descending = !query
+        .order
+        .as_deref()
+        .is_some_and(|o| o.eq_ignore_ascii_case("asc"));
     let (rows, total) = repo
-        .list_filtered(&status, search.as_deref(), i64::from(page_size), offset)
+        .list_filtered(
+            &status,
+            search.as_deref(),
+            query.sort.as_deref(),
+            descending,
+            i64::from(page_size),
+            offset,
+        )
         .await?;
     let certificates: Vec<CertificateSummaryDto> = rows.into_iter().map(to_summary).collect();
     let total = total as u64;
@@ -692,6 +715,10 @@ async fn list_audit_events(
     let event_type = norm(q.event_type);
     let outcome = norm(q.outcome);
 
+    let descending = !q
+        .order
+        .as_deref()
+        .is_some_and(|o| o.eq_ignore_ascii_case("asc"));
     let repo = AuditRepository::new(state.db_pool.clone());
     let (rows, total) = repo
         .list_filtered(
@@ -700,6 +727,8 @@ async fn list_audit_events(
             outcome.as_deref(),
             start,
             end,
+            q.sort.as_deref(),
+            descending,
             i64::from(page_size),
             offset,
         )

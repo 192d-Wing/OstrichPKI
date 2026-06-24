@@ -13,6 +13,7 @@ import {
   SpaceBetween,
   StatusIndicator,
   Table,
+  type TableProps,
   TextFilter,
 } from "@cloudscape-design/components";
 
@@ -83,9 +84,13 @@ export function AuditPage() {
   );
   const [preferences, setPreferences] =
     React.useState<CollectionPreferencesProps.Preferences>(DEFAULT_PREFERENCES);
+  const [sortingColumn, setSortingColumn] =
+    React.useState<TableProps.SortingColumn<AuditEvent>>();
+  const [sortingDescending, setSortingDescending] = React.useState(true);
   const eventType = eventOpt.value ?? "";
   const outcome = outcomeOpt.value ?? "";
   const pageSize = preferences.pageSize ?? 25;
+  const sortField = sortingColumn?.sortingField;
 
   const query = new URLSearchParams();
   query.set("page", String(pageIndex + 1));
@@ -93,9 +98,22 @@ export function AuditPage() {
   if (eventType) query.set("eventType", eventType);
   if (actor.trim()) query.set("actor", actor.trim());
   if (outcome) query.set("outcome", outcome);
+  if (sortField) {
+    query.set("sort", sortField);
+    query.set("order", sortingDescending ? "desc" : "asc");
+  }
 
   const { data, isFetching, isError } = useQuery({
-    queryKey: ["audit", pageIndex, pageSize, eventType, actor.trim(), outcome],
+    queryKey: [
+      "audit",
+      pageIndex,
+      pageSize,
+      eventType,
+      actor.trim(),
+      outcome,
+      sortField ?? "",
+      sortingDescending,
+    ],
     queryFn: () => fetchAuditLogs(query.toString()),
     placeholderData: keepPreviousData,
   });
@@ -125,6 +143,13 @@ export function AuditPage() {
         resizableColumns
         stickyHeader
         columnDisplay={preferences.contentDisplay}
+        sortingColumn={sortingColumn}
+        sortingDescending={sortingDescending}
+        onSortingChange={({ detail }) => {
+          setSortingColumn(detail.sortingColumn);
+          setSortingDescending(detail.isDescending ?? true);
+          setPageIndex(0);
+        }}
         empty={
           <Box textAlign="center" color="inherit">
             {isError ? "Failed to load the audit log." : "No audit events."}
@@ -134,19 +159,22 @@ export function AuditPage() {
           {
             id: "timestamp",
             header: "Timestamp",
+            sortingField: "timestamp",
             cell: (e) => <Box fontSize="body-s">{e.timestamp}</Box>,
           },
           {
             id: "eventType",
             header: "Event",
+            sortingField: "eventType",
             cell: (e) => <Box fontSize="body-s">{e.eventType}</Box>,
           },
-          { id: "actor", header: "Actor", cell: (e) => e.actor },
-          { id: "target", header: "Target", cell: (e) => e.target },
-          { id: "action", header: "Action", cell: (e) => e.action },
+          { id: "actor", header: "Actor", sortingField: "actor", cell: (e) => e.actor },
+          { id: "target", header: "Target", sortingField: "target", cell: (e) => e.target },
+          { id: "action", header: "Action", sortingField: "action", cell: (e) => e.action },
           {
             id: "outcome",
             header: "Outcome",
+            sortingField: "outcome",
             cell: (e) =>
               e.outcome.toLowerCase() === "success" ? (
                 <StatusIndicator type="success">{e.outcome}</StatusIndicator>

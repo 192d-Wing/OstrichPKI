@@ -23,6 +23,7 @@ import {
   SpaceBetween,
   StatusIndicator,
   Table,
+  type TableProps,
   Textarea,
   TextFilter,
 } from "@cloudscape-design/components";
@@ -87,17 +88,33 @@ export function CertificatesPage() {
   );
   const [preferences, setPreferences] =
     React.useState<CollectionPreferencesProps.Preferences>(DEFAULT_PREFERENCES);
+  const [sortingColumn, setSortingColumn] =
+    React.useState<TableProps.SortingColumn<CertificateSummary>>();
+  const [sortingDescending, setSortingDescending] = React.useState(true);
   const status = statusOpt.value ?? "";
   const pageSize = preferences.pageSize ?? 20;
+  const sortField = sortingColumn?.sortingField;
 
   const query = new URLSearchParams();
   query.set("page", String(pageIndex + 1));
   query.set("pageSize", String(pageSize));
   if (status) query.set("status", status);
   if (search.trim()) query.set("search", search.trim());
+  if (sortField) {
+    query.set("sort", sortField);
+    query.set("order", sortingDescending ? "desc" : "asc");
+  }
 
   const { data, isFetching, isError } = useQuery({
-    queryKey: ["certificates", pageIndex, pageSize, status, search.trim()],
+    queryKey: [
+      "certificates",
+      pageIndex,
+      pageSize,
+      status,
+      search.trim(),
+      sortField ?? "",
+      sortingDescending,
+    ],
     queryFn: () => fetchCertificates(query.toString()),
     placeholderData: keepPreviousData,
   });
@@ -160,6 +177,13 @@ export function CertificatesPage() {
         resizableColumns
         stickyHeader
         columnDisplay={preferences.contentDisplay}
+        sortingColumn={sortingColumn}
+        sortingDescending={sortingDescending}
+        onSortingChange={({ detail }) => {
+          setSortingColumn(detail.sortingColumn);
+          setSortingDescending(detail.isDescending ?? true);
+          setPageIndex(0);
+        }}
         empty={
           <Box textAlign="center" color="inherit">
             {isError ? "Failed to load certificates." : "No certificates."}
@@ -169,11 +193,12 @@ export function CertificatesPage() {
           {
             id: "serial",
             header: "Serial",
+            sortingField: "serial",
             cell: (c) => <Box fontSize="body-s">{c.serialNumber}</Box>,
           },
-          { id: "subject", header: "Subject", cell: (c) => c.subject },
-          { id: "issuer", header: "Issuer", cell: (c) => c.issuer },
-          { id: "expires", header: "Expires", cell: (c) => c.validTo },
+          { id: "subject", header: "Subject", sortingField: "subject", cell: (c) => c.subject },
+          { id: "issuer", header: "Issuer", sortingField: "issuer", cell: (c) => c.issuer },
+          { id: "expires", header: "Expires", sortingField: "expires", cell: (c) => c.validTo },
           {
             id: "status",
             header: "Status",

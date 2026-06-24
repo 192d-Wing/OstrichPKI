@@ -479,6 +479,11 @@ impl AuditRepository {
     /// Backs the audit-review UI (FAU_SAR.1 / AU-6). `actor` is a
     /// case-insensitive literal substring; the rest are exact matches. All
     /// values are bound — no user input is interpolated.
+    ///
+    /// - `sort`: API column key (`eventType` | `actor` | `target` | `action` |
+    ///   `outcome` | `timestamp`). Anything else (incl. `None`) falls back to the
+    ///   default `timestamp DESC`.
+    /// - `descending`: direction for a recognized `sort` (ignored by the default).
     #[allow(clippy::too_many_arguments)]
     pub async fn list_filtered(
         &self,
@@ -487,6 +492,8 @@ impl AuditRepository {
         outcome: Option<&str>,
         start: Option<DateTime<Utc>>,
         end: Option<DateTime<Utc>>,
+        sort: Option<&str>,
+        descending: bool,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<AuditEvent>, i64)> {
@@ -498,10 +505,24 @@ impl AuditRepository {
             AND ($5::timestamptz IS NULL OR timestamp <= $5)
         "#;
 
+        // SI-10: the ORDER BY is built only from a closed whitelist (column from a
+        // fixed match, direction from a bool) — never from raw user input. A
+        // unique `id` tiebreaker keeps pagination deterministic across equal keys.
+        let dir = if descending { "DESC" } else { "ASC" };
+        let order_by = match sort {
+            Some("eventType") => format!("event_type {dir}"),
+            Some("actor") => format!("actor {dir}"),
+            Some("target") => format!("target {dir}"),
+            Some("action") => format!("action {dir}"),
+            Some("outcome") => format!("outcome {dir}"),
+            Some("timestamp") => format!("timestamp {dir}"),
+            _ => "timestamp DESC".to_string(),
+        };
+
         // SI-10: PREDICATE is a fixed fragment with $N placeholders; all filters
         // are bound, not interpolated. AssertSqlSafe (sqlx 0.9) marks it audited.
         let rows = sqlx::query_as::<_, AuditEvent>(sqlx::AssertSqlSafe(format!(
-            "SELECT * FROM audit_events WHERE {PREDICATE} ORDER BY timestamp DESC LIMIT $6 OFFSET $7"
+            "SELECT * FROM audit_events WHERE {PREDICATE} ORDER BY {order_by}, id LIMIT $6 OFFSET $7"
         )))
         .bind(actor)
         .bind(event_type)
