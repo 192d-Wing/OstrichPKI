@@ -16,7 +16,7 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::components::auth::Protected;
-use crate::components::common::{Alert, AlertType, Badge, BadgeVariant};
+use crate::components::common::{Alert, AlertType, Badge, BadgeVariant, CopyButton};
 use crate::services::api::api;
 
 #[function_component(Est)]
@@ -396,12 +396,22 @@ fn enrollment_token_panel() -> Html {
                                 <label class="form-label">
                                     { format!("Token for {} (expires {})", r.identity, r.expires_at) }
                                 </label>
-                                <input type="text" readonly=true class="form-input font-mono text-xs"
-                                       value={r.token.clone()} onclick={select_all.clone()} />
+                                <div class="relative">
+                                    <input type="text" readonly=true class="form-input font-mono text-xs pr-20"
+                                           value={r.token.clone()} onclick={select_all.clone()} />
+                                    <div class="absolute inset-y-0 right-1.5 flex items-center">
+                                        <CopyButton text={r.token.clone()} />
+                                    </div>
+                                </div>
                             </div>
                             <div>
                                 <label class="form-label">{ "Enroll the device with:" }</label>
-                                <pre class="bg-gray-100 rounded p-3 text-xs overflow-x-auto whitespace-pre">{ curl }</pre>
+                                <div class="relative">
+                                    <pre class="bg-gray-100 rounded p-3 pr-20 text-xs overflow-x-auto whitespace-pre">{ curl.clone() }</pre>
+                                    <div class="absolute top-2 right-2">
+                                        <CopyButton text={curl.clone()} />
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     }
