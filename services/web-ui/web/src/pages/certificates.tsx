@@ -11,6 +11,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "@/lib/auth-context";
 
 import { DataTable, type DataTableFilter } from "@/components/data-table";
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -189,19 +190,17 @@ export function CertificatesPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Certificates</h1>
-          <p className="text-sm text-muted-foreground">
-            Issued certificate inventory.
-          </p>
-        </div>
-        {can("issue_certificates") && (
-          <Button asChild>
-            <Link to="/certificates/issue">Issue certificate</Link>
-          </Button>
-        )}
-      </div>
+      <PageHeader
+        title="Certificates"
+        description="Issued certificate inventory."
+        actions={
+          can("issue_certificates") ? (
+            <Button asChild>
+              <Link to="/certificates/issue">Issue certificate</Link>
+            </Button>
+          ) : undefined
+        }
+      />
 
       <Card>
         <CardHeader>

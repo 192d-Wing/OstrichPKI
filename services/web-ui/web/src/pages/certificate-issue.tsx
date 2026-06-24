@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import { CopyButton } from "@/components/copy-button";
+import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -69,18 +70,15 @@ export function CertificateIssuePage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Issue Certificate</h1>
-          <p className="text-sm text-muted-foreground">
-            Paste a PKCS#10 CSR and choose a profile; the CA derives the
-            subject, key, and SANs from the request.
-          </p>
-        </div>
-        <Button asChild variant="outline" size="sm">
-          <Link to="/certificates">Back to list</Link>
-        </Button>
-      </div>
+      <PageHeader
+        title="Issue Certificate"
+        description="Paste a PKCS#10 CSR and choose a profile; the CA derives the subject, key, and SANs from the request."
+        actions={
+          <Button asChild variant="outline" size="sm">
+            <Link to="/certificates">Back to list</Link>
+          </Button>
+        }
+      />
 
       <Card>
         <CardHeader>

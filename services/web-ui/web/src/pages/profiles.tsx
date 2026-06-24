@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -66,12 +67,10 @@ export function ProfilesPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <div>
-        <h1 className="text-2xl font-bold">Certificate Profiles</h1>
-        <p className="text-sm text-muted-foreground">
-          The CA's code-defined issuance profiles (read-only).
-        </p>
-      </div>
+      <PageHeader
+        title="Certificate Profiles"
+        description="The CA's code-defined issuance profiles (read-only)."
+      />
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>

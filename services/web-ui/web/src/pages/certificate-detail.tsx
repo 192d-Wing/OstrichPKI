@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 
 import { CopyButton } from "@/components/copy-button";
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -163,12 +164,14 @@ export function CertificateDetailPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Certificate</h1>
-        <Button asChild variant="outline" size="sm">
-          <Link to="/certificates">Back to list</Link>
-        </Button>
-      </div>
+      <PageHeader
+        title="Certificate"
+        actions={
+          <Button asChild variant="outline" size="sm">
+            <Link to="/certificates">Back to list</Link>
+          </Button>
+        }
+      />
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>

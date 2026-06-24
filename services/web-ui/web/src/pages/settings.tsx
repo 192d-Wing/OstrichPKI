@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -47,12 +48,10 @@ export function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
-      <div>
-        <h1 className="text-2xl font-bold">System</h1>
-        <p className="text-sm text-muted-foreground">
-          Certificate authority identity and live service status.
-        </p>
-      </div>
+      <PageHeader
+        title="System"
+        description="Certificate authority identity and live service status."
+      />
 
       <Card>
         <CardHeader>

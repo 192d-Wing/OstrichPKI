@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
+import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { fetchCertificates, type CertificateStatus } from "@/lib/ca";
 import { cn } from "@/lib/utils";
@@ -30,15 +31,22 @@ function StatCard({
   tint: string;
 }) {
   return (
-    <Card>
-      <CardContent className="flex items-center justify-between p-5">
-        <div>
-          <p className="text-sm text-muted-foreground">{title}</p>
-          <p className="mt-1 text-2xl font-bold">{value}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{sub}</p>
-        </div>
-        <div className={cn("rounded-md p-2", tint)}>
+    <Card className="transition-shadow hover:shadow-md">
+      <CardContent className="flex items-center gap-4 p-6">
+        <div
+          className={cn(
+            "flex size-12 shrink-0 items-center justify-center rounded-full",
+            tint,
+          )}
+        >
           <Icon className="size-6" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {title}
+          </p>
+          <p className="text-3xl font-bold tracking-tight">{value}</p>
+          <p className="text-xs text-muted-foreground">{sub}</p>
         </div>
       </CardContent>
     </Card>
@@ -68,12 +76,10 @@ export function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 p-6">
-      <div>
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">
-          Overview of the certificate inventory.
-        </p>
-      </div>
+      <PageHeader
+        title="Dashboard"
+        description="Overview of the certificate inventory."
+      />
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
         <StatCard
