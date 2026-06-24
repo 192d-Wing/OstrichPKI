@@ -182,7 +182,7 @@ function MintTokenForm() {
 
         {result && (
           <div className="space-y-3">
-            <div className="rounded-md border border-yellow-300 bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
+            <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-300">
               Copy this token now — it is shown only once and cannot be
               retrieved again.
             </div>

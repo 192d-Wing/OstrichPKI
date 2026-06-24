@@ -42,7 +42,7 @@ export function RequirePermission({
   if (!can(permission)) {
     return (
       <div className="p-6">
-        <div className="rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
+        <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-700 dark:text-yellow-300">
           You don't have permission to view this page.
         </div>
       </div>

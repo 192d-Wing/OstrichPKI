@@ -81,28 +81,28 @@ export function DashboardPage() {
           value={fmt(count("active"))}
           sub="Currently valid"
           icon={ShieldCheck}
-          tint="bg-blue-100 text-blue-700"
+          tint="bg-blue-500/10 text-blue-600 dark:text-blue-400"
         />
         <StatCard
           title="Pending Approvals"
           value={fmt(0)}
           sub="No backing endpoint yet"
           icon={ClipboardCheck}
-          tint="bg-yellow-100 text-yellow-700"
+          tint="bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
         />
         <StatCard
           title="Expiring Soon"
           value={fmt(0)}
           sub="Within 30 days"
           icon={Clock}
-          tint="bg-orange-100 text-orange-700"
+          tint="bg-orange-500/10 text-orange-600 dark:text-orange-400"
         />
         <StatCard
           title="Revoked Certificates"
           value={fmt(count("revoked"))}
           sub="Total revoked"
           icon={ShieldX}
-          tint="bg-red-100 text-red-700"
+          tint="bg-red-500/10 text-red-600 dark:text-red-400"
         />
       </div>
 
