@@ -60,7 +60,7 @@ interface MintTokenResponse {
   expiresAt: string;
 }
 
-function StatusBadge() {
+function EstHealthBadge() {
   const { data, isLoading } = useQuery({
     queryKey: ["est-health"],
     queryFn: async () => {
@@ -77,7 +77,7 @@ function StatusBadge() {
   );
 }
 
-function statusBadge(status: string) {
+function tokenStatusBadge(status: string) {
   switch (status) {
     case "live":
       return <Badge variant="success">live</Badge>;
@@ -242,23 +242,35 @@ const columns: ColumnDef<TokenSummary>[] = [
   {
     accessorKey: "status",
     header: "Status",
-    cell: ({ row }) => statusBadge(row.original.status),
-    filterFn: (row, id, value) =>
-      value === "" || row.getValue(id) === value,
+    cell: ({ row }) => tokenStatusBadge(row.original.status),
+    // Exact-match filter; an undefined value (set when "All" is chosen) clears
+    // the filter natively so this fn is never invoked for the all-statuses case.
+    filterFn: (row, id, value) => row.getValue(id) === value,
   },
 ];
 
+// Data columns + a trailing actions column rendered in the row map below.
+const COL_COUNT = columns.length + 1;
+
 function OutstandingTokens() {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["est-tokens"],
     queryFn: () => api.get<{ tokens: TokenSummary[] }>(TOKENS_URL),
   });
-  const tokens = React.useMemo(() => data?.tokens ?? [], [data]);
+  const tokens = data?.tokens ?? [];
 
+  const [revokeError, setRevokeError] = React.useState<string | null>(null);
   const revoke = useMutation({
     mutationFn: (id: string) => api.del(`${TOKENS_URL}/${id}`),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["est-tokens"] }),
+    onSuccess: () => {
+      setRevokeError(null);
+      void qc.invalidateQueries({ queryKey: ["est-tokens"] });
+    },
+    onError: (e) =>
+      setRevokeError(
+        e instanceof ApiError ? e.message : "Failed to revoke token",
+      ),
   });
 
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
@@ -304,7 +316,9 @@ function OutstandingTokens() {
           <Select
             value={filterValue("status") || "all"}
             onValueChange={(v) =>
-              table.getColumn("status")?.setFilterValue(v === "all" ? "" : v)
+              table
+                .getColumn("status")
+                ?.setFilterValue(v === "all" ? undefined : v)
             }
           >
             <SelectTrigger>
@@ -319,6 +333,12 @@ function OutstandingTokens() {
             </SelectContent>
           </Select>
         </div>
+
+        {revokeError && (
+          <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {revokeError}
+          </div>
+        )}
 
         <div className="rounded-md border">
           <Table>
@@ -342,13 +362,19 @@ function OutstandingTokens() {
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground">
+                  <TableCell colSpan={COL_COUNT} className="text-center text-muted-foreground">
                     Loading…
+                  </TableCell>
+                </TableRow>
+              ) : isError ? (
+                <TableRow>
+                  <TableCell colSpan={COL_COUNT} className="text-center text-destructive">
+                    Failed to load tokens. Retry or check your session.
                   </TableCell>
                 </TableRow>
               ) : table.getRowModel().rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground">
+                  <TableCell colSpan={COL_COUNT} className="text-center text-muted-foreground">
                     {tokens.length === 0
                       ? "No enrollment tokens minted yet."
                       : "No tokens match the current filters."}
@@ -366,14 +392,19 @@ function OutstandingTokens() {
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {row.original.expiresAt}
                     </TableCell>
-                    <TableCell>{statusBadge(row.original.status)}</TableCell>
+                    <TableCell>
+                      {tokenStatusBadge(row.original.status)}
+                    </TableCell>
                     <TableCell className="text-right">
                       {row.original.status === "live" && (
                         <Button
                           variant="link"
                           size="sm"
                           className="h-auto p-0 text-destructive"
-                          disabled={revoke.isPending}
+                          disabled={
+                            revoke.isPending &&
+                            revoke.variables === row.original.id
+                          }
                           onClick={() => revoke.mutate(row.original.id)}
                         >
                           Revoke
@@ -430,7 +461,7 @@ export function EstPage() {
             Enrollment over Secure Transport (RFC 7030).
           </p>
         </div>
-        <StatusBadge />
+        <EstHealthBadge />
       </div>
       <MintTokenForm />
       <OutstandingTokens />

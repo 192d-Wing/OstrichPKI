@@ -1,6 +1,7 @@
 // Runtime config injected by the Rust server into index.html as
-// `window.__CONFIG__` (mirrors the existing ClientConfig the Yew app reads).
-// See docs/WEBUI_SHADCN_MIGRATION.md §4.2.
+// `window.__OSTRICH_CONFIG__` — the SAME global the existing server template
+// (server/template.rs) already emits for the Yew app, so no server change is
+// needed to feed this app. See docs/WEBUI_SHADCN_MIGRATION.md §4.2.
 export interface ClientConfig {
   apiBaseUrl: string;
   oidcClientId: string;
@@ -11,7 +12,7 @@ export interface ClientConfig {
 
 declare global {
   interface Window {
-    __CONFIG__?: Partial<ClientConfig>;
+    __OSTRICH_CONFIG__?: Partial<ClientConfig>;
   }
 }
 
@@ -25,5 +26,5 @@ const defaults: ClientConfig = {
 
 export const config: ClientConfig = {
   ...defaults,
-  ...(typeof window !== "undefined" ? window.__CONFIG__ : undefined),
+  ...(window.__OSTRICH_CONFIG__ ?? {}),
 };

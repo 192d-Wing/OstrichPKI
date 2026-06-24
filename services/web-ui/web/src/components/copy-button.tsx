@@ -13,15 +13,21 @@ export function CopyButton({
   className?: string;
 }) {
   const [copied, setCopied] = React.useState(false);
+  const timer = React.useRef<number | undefined>(undefined);
+
+  // Clear any pending reset so we never setState after unmount.
+  React.useEffect(() => () => window.clearTimeout(timer.current), []);
 
   async function onCopy() {
     try {
       await navigator.clipboard.writeText(value);
     } catch {
-      /* secure-context only; ignore */
+      // Non-secure context or permission denied: don't claim a copy happened.
+      return;
     }
     setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setCopied(false), 1500);
   }
 
   return (

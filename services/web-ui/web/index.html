@@ -5,9 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OstrichPKI</title>
     <!--
-      The Rust Axum server serves this file and injects, at request time:
+      At cutover the Rust Axum server serves this built file and injects, at
+      request time:
         - a CSP nonce onto every <script>/<style> tag (SC-18), and
-        - window.__CONFIG__ = { apiBaseUrl, oidcClientId, oidcAuthUrl, ... }
+        - window.__OSTRICH_CONFIG__ = { apiBaseUrl, oidcClientId, oidcAuthUrl, ... }
+          (the same global the existing server template already emits).
       See docs/WEBUI_SHADCN_MIGRATION.md §4.1–4.2.
     -->
   </head>

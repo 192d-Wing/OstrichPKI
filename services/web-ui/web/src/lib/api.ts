@@ -32,8 +32,11 @@ async function request<T>(
     let code: string | undefined;
     try {
       const data = await res.json();
-      message = data.message ?? data.error ?? message;
-      code = data.error ?? data.code;
+      // Only adopt string fields — a structured error object must not leak as
+      // "[object Object]" into the message, nor a human sentence into `code`.
+      if (typeof data?.message === "string") message = data.message;
+      else if (typeof data?.error === "string") message = data.error;
+      if (typeof data?.code === "string") code = data.code;
     } catch {
       /* non-JSON error body */
     }
@@ -42,7 +45,14 @@ async function request<T>(
 
   if (res.status === 204) return undefined as T;
   const text = await res.text();
-  return (text ? JSON.parse(text) : undefined) as T;
+  if (!text) return undefined as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    // A successful (2xx) response with a non-JSON body is not an error — the
+    // operation succeeded; there's just nothing to deserialize.
+    return undefined as T;
+  }
 }
 
 export const api = {
