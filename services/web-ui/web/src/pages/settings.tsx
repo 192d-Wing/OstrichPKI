@@ -1,13 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
-
-import { PageHeader } from "@/components/page-header";
-import { Badge } from "@/components/ui/badge";
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Box,
+  ColumnLayout,
+  Container,
+  ContentLayout,
+  Header,
+  KeyValuePairs,
+  SpaceBetween,
+  StatusIndicator,
+} from "@cloudscape-design/components";
+
 import { fetchCaInfo, serviceUp } from "@/lib/ca";
 import { config } from "@/lib/config";
 
@@ -20,23 +22,23 @@ const SERVICES: { name: string; svc: string }[] = [
   { name: "Key Recovery (KRA)", svc: "kra" },
 ];
 
-function ServiceHealth({ name, svc }: { name: string; svc: string }) {
+function ServiceHealth({ name, svc }: Readonly<{ name: string; svc: string }>) {
   const { data, isLoading } = useQuery({
     queryKey: ["service-health", svc],
     queryFn: () => serviceUp(svc),
     retry: false,
   });
   return (
-    <div className="flex items-center justify-between rounded-md border px-3 py-2">
-      <span className="text-sm">{name}</span>
+    <Box>
+      <Box variant="awsui-key-label">{name}</Box>
       {isLoading ? (
-        <Badge variant="secondary">…</Badge>
+        <StatusIndicator type="loading">Checking</StatusIndicator>
       ) : data ? (
-        <Badge variant="success">Up</Badge>
+        <StatusIndicator type="success">Up</StatusIndicator>
       ) : (
-        <Badge variant="destructive">Down</Badge>
+        <StatusIndicator type="error">Down</StatusIndicator>
       )}
-    </div>
+    </Box>
   );
 }
 
@@ -47,54 +49,54 @@ export function SettingsPage() {
   });
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-6">
-      <PageHeader
-        title="System"
-        description="Certificate authority identity and live service status."
-      />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Certificate Authority</CardTitle>
-        </CardHeader>
-        <CardContent>
+    <ContentLayout
+      header={
+        <Header
+          variant="h1"
+          description="Certificate authority identity and live service status."
+        >
+          System
+        </Header>
+      }
+    >
+      <SpaceBetween size="l">
+        <Container header={<Header variant="h2">Certificate Authority</Header>}>
           {isLoading ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <StatusIndicator type="loading">Loading</StatusIndicator>
           ) : isError || !ca ? (
-            <p className="text-sm text-destructive">Failed to load CA info.</p>
+            <StatusIndicator type="error">Failed to load CA info.</StatusIndicator>
           ) : (
-            <dl className="grid grid-cols-[8rem_1fr] gap-x-4 gap-y-2 text-sm">
-              <dt className="text-muted-foreground">CA ID</dt>
-              <dd className="font-mono text-xs">{ca.ca_id}</dd>
-              <dt className="text-muted-foreground">Distinguished name</dt>
-              <dd className="font-mono text-xs">{ca.ca_dn}</dd>
-            </dl>
+            <KeyValuePairs
+              columns={1}
+              items={[
+                { label: "CA ID", value: <Box fontSize="body-s">{ca.ca_id}</Box> },
+                {
+                  label: "Distinguished name",
+                  value: <Box fontSize="body-s">{ca.ca_dn}</Box>,
+                },
+              ]}
+            />
           )}
-        </CardContent>
-      </Card>
+        </Container>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Services</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+        <Container header={<Header variant="h2">Services</Header>}>
+          <ColumnLayout columns={3} borders="vertical">
             {SERVICES.map((s) => (
               <ServiceHealth key={s.svc} name={s.name} svc={s.svc} />
             ))}
-          </div>
-        </CardContent>
-      </Card>
+          </ColumnLayout>
+        </Container>
 
-      <div className="rounded-md border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
-        Policy and configuration (password policy, MFA, CRL cadence, CA
-        parameters) are managed via service configuration and are read-only
-        here.
-      </div>
+        <Box color="text-body-secondary" fontSize="body-s">
+          Policy and configuration (password policy, MFA, CRL cadence, CA
+          parameters) are managed via service configuration and are read-only
+          here.
+        </Box>
 
-      <p className="text-center text-xs text-muted-foreground">
-        OstrichPKI Web UI v{config.version}
-      </p>
-    </div>
+        <Box textAlign="center" color="text-status-inactive" fontSize="body-s">
+          OstrichPKI Web UI v{config.version}
+        </Box>
+      </SpaceBetween>
+    </ContentLayout>
   );
 }
