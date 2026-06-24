@@ -37,6 +37,21 @@ export interface DataTableFilter {
   options?: { value: string; label: string }[];
 }
 
+/**
+ * Server-driven mode: the parent owns pagination + filtering (e.g. a paged API).
+ * When provided, the table does NOT filter/paginate the `data` it's given — it
+ * renders that page as-is and reports control changes back via the callbacks.
+ */
+export interface ManualTableState {
+  pageCount: number;
+  pageIndex: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (pageIndex: number) => void;
+  columnFilters: ColumnFiltersState;
+  onColumnFiltersChange: (next: ColumnFiltersState) => void;
+}
+
 export interface DataTableProps<T> {
   columns: ColumnDef<T, unknown>[];
   data: T[];
@@ -47,6 +62,8 @@ export interface DataTableProps<T> {
   errorMessage?: string;
   emptyMessage?: string;
   noMatchMessage?: string;
+  /** Provide for server-side pagination/filtering; omit for client-side. */
+  manual?: ManualTableState;
 }
 
 /**
@@ -65,23 +82,52 @@ export function DataTable<T>({
   errorMessage = "Failed to load data.",
   emptyMessage = "No records.",
   noMatchMessage = "No records match the current filters.",
+  manual,
 }: DataTableProps<T>) {
-  const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
-    [],
-  );
+  const isManual = !!manual;
+  const [internalFilters, setInternalFilters] =
+    React.useState<ColumnFiltersState>([]);
+  const columnFilters = isManual ? manual.columnFilters : internalFilters;
 
   const table = useReactTable({
     data,
     columns,
-    state: { columnFilters },
-    onColumnFiltersChange: setColumnFilters,
+    manualPagination: isManual,
+    manualFiltering: isManual,
+    pageCount: isManual ? manual.pageCount : undefined,
+    state: {
+      columnFilters,
+      ...(isManual
+        ? { pagination: { pageIndex: manual.pageIndex, pageSize: manual.pageSize } }
+        : {}),
+    },
+    onColumnFiltersChange: (updater) => {
+      const next =
+        typeof updater === "function" ? updater(columnFilters) : updater;
+      if (isManual) manual.onColumnFiltersChange(next);
+      else setInternalFilters(next);
+    },
+    onPaginationChange: isManual
+      ? (updater) => {
+          const cur = { pageIndex: manual.pageIndex, pageSize: manual.pageSize };
+          const next = typeof updater === "function" ? updater(cur) : updater;
+          manual.onPageChange(next.pageIndex);
+        }
+      : undefined,
     getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-    initialState: { pagination: { pageSize } },
+    ...(isManual
+      ? {}
+      : {
+          getFilteredRowModel: getFilteredRowModel(),
+          getPaginationRowModel: getPaginationRowModel(),
+          initialState: { pagination: { pageSize } },
+        }),
   });
 
   const colCount = table.getAllColumns().length;
+  const resultCount = isManual
+    ? manual.total
+    : table.getFilteredRowModel().rows.length;
   const filterValue = (id: string) =>
     (table.getColumn(id)?.getFilterValue() as string) ?? "";
 
@@ -181,9 +227,7 @@ export function DataTable<T>({
       </div>
 
       <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          {table.getFilteredRowModel().rows.length} result(s)
-        </p>
+        <p className="text-sm text-muted-foreground">{resultCount} result(s)</p>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
