@@ -5,6 +5,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout } from "@/components/layout/app-layout";
 import { RequireAuth, RequirePermission } from "@/components/protected";
 import { AuthProvider } from "@/lib/auth-context";
+import { AuditPage } from "@/pages/audit";
 import { CertificatesPage } from "@/pages/certificates";
 import { DashboardPage } from "@/pages/dashboard";
 import { EstPage } from "@/pages/est";
@@ -41,7 +42,7 @@ export default function App() {
               <Route path="crl" element={gated("view_crl", <Placeholder title="Revocation Lists" />)} />
               <Route path="profiles" element={gated("view_config", <Placeholder title="Profiles" />)} />
               <Route path="approvals" element={gated("view_approvals", <Placeholder title="Approvals" />)} />
-              <Route path="audit" element={gated("read_audit_log", <Placeholder title="Audit Logs" />)} />
+              <Route path="audit" element={gated("read_audit_log", <AuditPage />)} />
               <Route path="scms" element={gated("view_tokens", <Placeholder title="Tokens" />)} />
               <Route path="users" element={gated("manage_users", <Placeholder title="Users" />)} />
               <Route path="settings" element={gated("view_config", <Placeholder title="Settings" />)} />
