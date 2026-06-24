@@ -59,9 +59,9 @@ RUN npx tailwindcss -i ./input.css -o ./output.css --minify
 # Build WASM with trunk
 RUN trunk build --release
 
-# Build the React (preview) SPA with pnpm. corepack ships with Node 20 and pins
-# the version from web/package.json's "packageManager". Served at /next during
-# the Yew→React migration (P1); the Yew bundle above remains the app at /.
+# Build the React console (AWS Cloudscape) with pnpm. corepack ships with Node 20
+# and pins the version from web/package.json's "packageManager". Served at /next;
+# the Yew bundle above remains the app at /.
 WORKDIR /app/services/web-ui/web
 RUN corepack enable \
     && pnpm install --frozen-lockfile \
@@ -174,7 +174,7 @@ COPY --from=wasm-builder /app/services/web-ui/dist/ /app/static/
 # Copy index.html template for server-side nonce injection
 COPY --from=wasm-builder /app/services/web-ui/index.html /app/templates/index.html
 
-# React (preview) SPA: hashed assets join the static tree (served at
+# React console: hashed assets join the static tree (served at
 # /static/assets/* under the CSP 'self' source); its index.html is read by the
 # server at /next for nonce + config injection (see server/template.rs).
 COPY --from=wasm-builder /app/services/web-ui/web/dist/assets/ /app/static/assets/

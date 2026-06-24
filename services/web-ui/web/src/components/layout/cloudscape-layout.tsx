@@ -2,6 +2,7 @@ import * as React from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import AppLayout from "@cloudscape-design/components/app-layout";
 import BreadcrumbGroup from "@cloudscape-design/components/breadcrumb-group";
+import Spinner from "@cloudscape-design/components/spinner";
 import SideNavigation, {
   type SideNavigationProps,
 } from "@cloudscape-design/components/side-navigation";
@@ -135,7 +136,17 @@ export function CloudscapeLayout() {
           />
         }
         breadcrumbs={<BreadcrumbGroup items={crumbs} onFollow={follow} />}
-        content={<Outlet />}
+        content={
+          <React.Suspense
+            fallback={
+              <div style={{ display: "flex", justifyContent: "center", padding: "2rem" }}>
+                <Spinner size="large" />
+              </div>
+            }
+          >
+            <Outlet />
+          </React.Suspense>
+        }
       />
     </>
   );
