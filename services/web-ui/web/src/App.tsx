@@ -2,7 +2,7 @@ import { type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Navigate, Route, Routes } from "react-router-dom";
 
-import { AppLayout } from "@/components/layout/app-layout";
+import { CloudscapeLayout } from "@/components/layout/cloudscape-layout";
 import { RequireAuth, RequirePermission } from "@/components/protected";
 import { AuthProvider } from "@/lib/auth-context";
 import { AuditPage } from "@/pages/audit";
@@ -36,7 +36,7 @@ export default function App() {
           {/* Authenticated app shell. Only EST is ported so far; the rest are
               placeholders (P3) but route + gate exactly like the real pages. */}
           <Route element={<RequireAuth />}>
-            <Route element={<AppLayout />}>
+            <Route element={<CloudscapeLayout />}>
               <Route index element={<Navigate to="/dashboard" replace />} />
               <Route path="dashboard" element={<DashboardPage />} />
               <Route path="est" element={gated("generate_est_token", <EstPage />)} />
