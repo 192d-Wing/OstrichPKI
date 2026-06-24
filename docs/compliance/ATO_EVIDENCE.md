@@ -1564,6 +1564,8 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | FMT_SMR.2 | `evidence/sar/test_results/rbac_tests.log` | Test results |
 | SC-8 | `crates/ostrich-common/src/tls.rs` | Code implementation (TLS 1.3 serving, all services) |
 | SC-8 | `services/*/src/main.rs` (TLS_CERT_FILE/TLS_KEY_FILE wiring) | Configuration |
+| SC-8 / SC-18 / SI-10 | `services/web-ui/src/server/middleware/csp.rs` | Code implementation (per-request nonce CSP + hardening headers on the web console). `script-src` is nonce-strict + `'wasm-unsafe-eval'`; `default-src`/`connect-src`/`base-uri`/`form-action` are `'self'`; `frame-ancestors 'none'`; `upgrade-insecure-requests`. Unit tests (3) cover nonce generation and header contents. |
+| SC-8 / SC-18 | `services/web-ui/src/server/middleware/csp.rs` deployment header capture (`/next`, image `web-ui:sha-4f64ef4`, 2026-06-24) | Deployment evidence — see CSP capture below |
 | SC-12 / FCS_COP.1 | `crates/ostrich-kra/src/wrap.rs` | Code implementation (AES-256-GCM KEK wrapping) |
 | SC-12 / FCS_CKM.4 | `crates/ostrich-kra/src/wrap.rs` unit tests (6) | Test results (wrap/unwrap, tamper, AAD, zeroization-by-construction) |
 | SC-17 / FCS_STG_EXT.1 | `services/ca-server/src/main.rs::bootstrap_ca` | Code implementation (HSM-validated CA bootstrap) |
@@ -1573,6 +1575,33 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | SC-13 / FCS_COP.1 | `crates/ostrich-x509/src/signing.rs` unit tests (9), `crates/ostrich-ocsp/src/responder.rs` tests | Test results (algorithm mapping, AlgorithmIdentifier params, ECDSA fixed->DER round-trip + high-bit padding) |
 | SC-17 (RFC 5280 §5, §5.2.3, §4.2.1.13) | `crates/ostrich-db/src/repository/crl.rs`, `crates/ostrich-ca/src/revocation.rs`, `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-ca/src/issuance.rs`, `services/ca-server/src/main.rs` | Code implementation (CRL operationalization): `CrlRepository` persists every signed CRL; CRL number is DB-derived (`MAX(crl_number)+1`, monotonic/restart-stable, UNIQUE-enforced); latest CRL served at public `GET /api/v1/crl` (`application/pkix-crl`, 404 when none); issued certs carry CRL Distribution Points pointing at that endpoint when `CA_CRL_URL` is set. CRL signing/encoding unchanged. |
 | AC-17 | `crates/ostrich-common/src/tls.rs` (WebPkiClientVerifier) | Code implementation (optional mTLS client verification) |
+
+### SC-8 / SC-18 — Web console CSP deployment capture
+
+The React `/next` console was route-split into lazy-loaded chunks (PR #109,
+image `web-ui:sha-4f64ef4`). Because every JavaScript chunk — the entry, the
+Cloudscape vendor chunk, and each per-route chunk — is emitted under
+`/static/assets/` and served same-origin, the existing `script-src 'self'`
+policy covers them with **no new CSP exceptions** (no `'unsafe-eval'`, no remote
+origins, no per-chunk hashes). Lazy loading does not weaken the policy.
+
+Response headers observed from the deployed pod on 2026-06-24
+(`curl -skI https://ca-ui.oopl.dev.mil/next`, resolved to the cluster VIP):
+
+```http
+Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-<per-request>' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests
+X-Frame-Options: DENY
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Permissions-Policy: accelerometer=(), camera=(), geolocation=(), microphone=()
+```
+
+Lazy chunk serving verified same-origin under `script-src 'self'`
+(`GET /static/assets/{dashboard,certificates,audit}-*.js` → HTTP 200). The
+`style-src 'unsafe-inline'` relaxation is pre-existing and scoped to styles
+only (Cloudscape inline `style=""` attributes); the XSS-critical `script-src`
+remains nonce-strict. See `services/web-ui/src/server/middleware/csp.rs` for the
+generating code.
 
 ---
 
