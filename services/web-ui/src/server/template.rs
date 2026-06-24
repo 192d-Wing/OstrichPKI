@@ -33,7 +33,10 @@ pub async fn serve_index(
         Ok(t) => t,
         Err(e) => {
             tracing::error!(error = %e, path = %path.display(), "Console index.html not found");
-            return (StatusCode::NOT_FOUND, "Web console not built for this image")
+            return (
+                StatusCode::NOT_FOUND,
+                "Web console not built for this image",
+            )
                 .into_response();
         }
     };

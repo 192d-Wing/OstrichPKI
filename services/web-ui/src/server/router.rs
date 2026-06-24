@@ -132,9 +132,7 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
         .route("/next", get(|| async { Redirect::permanent("/") }))
         .route(
             "/next/{*rest}",
-            get(|Path(rest): Path<String>| async move {
-                Redirect::permanent(&format!("/{rest}"))
-            }),
+            get(|Path(rest): Path<String>| async move { Redirect::permanent(&format!("/{rest}")) }),
         );
 
     // SPA fallback — serve the React console index for `/` and all unmatched
