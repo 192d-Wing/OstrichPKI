@@ -8,16 +8,20 @@
 //! [`ostrich_common::auth::CertificateAuthProvider`] (which maps a certificate
 //! subject DN to a provisioned account) cannot authenticate it.
 //!
-//! [`EstDeviceCertAuthProvider`] fills that gap: it recognises a presented
-//! client certificate as one this CA issued by an exact DER match against the
-//! certificate store, confirms it is neither revoked nor expired, and resolves
-//! it back to the `client_identifier` of the enrollment that produced it. On
-//! success it yields a least-privilege [`Role::EstDevice`] principal whose only
-//! capability is `RenewCertificate`; the re-enroll handler then binds the new
-//! CSR's subject/SAN to a certificate previously issued to that same client
-//! (RFC 7030 §4.2.2). Any certificate the store does not recognise falls
-//! through to the wrapped (inner) provider, so operator certificates mapped to
-//! real accounts keep working unchanged.
+//! [`EstDeviceCertAuthProvider`] fills that gap: it identifies a presented
+//! client certificate as a device certificate by an exact DER match against the
+//! certificate store *and* a mapping back to the EST enrollment that produced
+//! it (whose `client_identifier` is the device identity). For such a
+//! certificate it confirms it is neither revoked nor expired and yields a
+//! least-privilege [`Role::EstDevice`] principal whose only capability is
+//! `RenewCertificate`; the re-enroll handler then binds the new CSR's
+//! subject/SAN to a certificate previously issued to that same client
+//! (RFC 7030 §4.2.2). Any certificate that is not a device certificate — not in
+//! the store, or in the store but issued through another path (operator, ACME,
+//! server) with no owning EST enrollment — falls through to the wrapped (inner)
+//! provider, so operator certificates mapped to real accounts keep working
+//! unchanged. Only a positively-identified device certificate that is revoked
+//! or expired fails closed.
 //!
 //! COMPLIANCE MAPPING:
 //! - RFC 7030 §3.3 - certificate-based client authentication for re-enrollment
@@ -54,19 +58,20 @@ impl EstDeviceCertAuthProvider {
         }
     }
 
-    /// Try to authenticate the presented leaf certificate as a known device
-    /// certificate. Returns `Ok(None)` when the certificate is not one this CA
-    /// issued (so the caller should defer to the inner provider), and an error
-    /// when it is ours but unusable (revoked, expired, or with no owning
-    /// enrollment) — a recognised-but-invalid certificate must fail closed
-    /// rather than fall through to another auth path.
+    /// Try to authenticate the presented leaf certificate as an EST device
+    /// certificate. Returns `Ok(None)` when the certificate is not a device
+    /// re-enrollment subject (not one this CA stored, or stored but not produced
+    /// by an EST enrollment — e.g. an operator/ACME/server certificate), so the
+    /// caller defers to the inner provider. Returns an error only once the
+    /// certificate is positively identified as a device certificate but is
+    /// unusable (revoked or expired) — a device must not renew a dead cert.
     async fn authenticate_device_cert(
         &self,
         leaf_der: &[u8],
     ) -> AuthResult<Option<AuthenticatedUser>> {
         // Provenance: a presented certificate is one of ours iff it is
         // byte-identical to a stored DER encoding (encoding-independent, unlike
-        // a serial- or subject-string lookup).
+        // a serial- or subject-string lookup). Not ours → not a device cert.
         let cert = match self.certs.find_by_der(leaf_der).await.map_err(|e| {
             AuthError::CertificateValidationFailed {
                 reason: format!("certificate store lookup failed: {e}"),
@@ -76,26 +81,33 @@ impl EstDeviceCertAuthProvider {
             None => return Ok(None),
         };
 
-        // Fail secure: a revoked or expired certificate cannot renew itself.
+        // Classify: a certificate is a device re-enrollment subject only if it
+        // maps back to the EST enrollment that produced it (its
+        // `client_identifier` is the identity the re-enroll handler binds the
+        // new CSR against). Every certificate this CA issues is in the store, so
+        // store-membership alone is too broad — a cert with no owning EST
+        // enrollment is an operator/ACME/server certificate and must fall
+        // through to the account-mapping inner provider, NOT be denied here.
+        let client_identifier = match self
+            .enrollments
+            .find_client_by_certificate_id(cert.id)
+            .await
+            .map_err(|e| AuthError::CertificateValidationFailed {
+                reason: format!("enrollment lookup failed: {e}"),
+            })? {
+            Some(client_identifier) => client_identifier,
+            None => return Ok(None),
+        };
+
+        // It is a device certificate. Fail secure from here: a revoked or
+        // expired device certificate cannot renew itself, and must not fall
+        // through to any weaker auth path.
         if cert.revoked {
             return Err(AuthError::CertificateRevoked);
         }
         if cert.not_after <= chrono::Utc::now() {
             return Err(AuthError::CertificateExpired);
         }
-
-        // Resolve the certificate back to the client that enrolled it; this is
-        // the identity the re-enroll handler matches the new CSR against. A
-        // certificate with no owning EST enrollment (e.g. issued through another
-        // path) is not a device re-enrollment subject — deny.
-        let client_identifier = self
-            .enrollments
-            .find_client_by_certificate_id(cert.id)
-            .await
-            .map_err(|e| AuthError::CertificateValidationFailed {
-                reason: format!("enrollment lookup failed: {e}"),
-            })?
-            .ok_or(AuthError::CertificateNotAuthorized)?;
 
         let user = AuthenticatedUser::new(
             UserId::from_uuid(cert.id),
