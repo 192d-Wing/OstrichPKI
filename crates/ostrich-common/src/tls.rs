@@ -12,7 +12,7 @@
 //!
 //! # COMPLIANCE MAPPING
 //! - NIST 800-53: SC-8 (Transmission Confidentiality and Integrity) - TLS 1.3
-//! - NIST 800-53: SC-13 (Cryptographic Protection) - ring CryptoProvider
+//! - NIST 800-53: SC-13 (Cryptographic Protection) - aws-lc-rs FIPS CryptoProvider
 //! - NIST 800-53: SC-23 (Session Authenticity) - TLS 1.3 handshake
 //! - NIST 800-53: AC-17 (Remote Access) - optional mTLS client verification
 //! - NIST 800-53: CM-6 (Configuration Settings) - fail-fast on partial config
@@ -117,10 +117,12 @@ impl TlsSettings {
         let key = PrivateKeyDer::from_pem_file(&self.key_path)
             .map_err(|e| tls_err("read private key", &self.key_path, e))?;
 
-        // Explicitly select the ring provider so the TLS stack uses the same
-        // crypto library as the rest of the project regardless of which
-        // rustls provider features other dependencies enable (SC-13).
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        // Explicitly select the aws-lc-rs (FIPS) provider so the TLS stack uses
+        // the same FIPS-validated crypto module as the rest of the project,
+        // regardless of which rustls provider features other dependencies enable
+        // (SC-13). ring is deliberately NOT used here: it is not FIPS-validated,
+        // and a NIAP/FIPS deployment must terminate mTLS on the validated module.
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 
         // TLS 1.3 only per project policy (NIST 800-53: SC-8, RFC 8446)
         let builder = ServerConfig::builder_with_provider(provider.clone())

@@ -175,10 +175,12 @@ hickory-resolver = "0.26"
 hickory-proto = "0.26"
 
 # TLS (for ACME TLS-ALPN-01 challenge, mTLS, and HTTPS service binaries)
-# The "ring" feature makes the ring CryptoProvider available; ostrich-common::tls
-# selects it explicitly to keep the TLS stack on the same FIPS-track crypto
-# library the rest of the project uses (NIST 800-53: SC-13).
-rustls = { version = "0.23", features = ["ring"] }
+# The "aws_lc_rs" + "fips" features route the rustls TLS stack through the same
+# aws-lc-rs FIPS module the rest of the project uses (see `aws-lc-rs` above), so
+# the management/EST TLS endpoints run on FIPS-validated crypto rather than ring,
+# which is not FIPS-validated (NIST 800-53: SC-13; NIAP FCS_*). ostrich-common::tls
+# selects this provider explicitly via `rustls::crypto::aws_lc_rs::default_provider`.
+rustls = { version = "0.23", features = ["aws_lc_rs", "fips"] }
 tokio-rustls = "0.26"
 rustls-pki-types = "1.13"
 # HTTPS serving for axum routers (used by ostrich-common::tls::serve)
