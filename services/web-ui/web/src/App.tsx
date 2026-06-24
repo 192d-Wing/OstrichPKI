@@ -5,6 +5,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout } from "@/components/layout/app-layout";
 import { RequireAuth, RequirePermission } from "@/components/protected";
 import { AuthProvider } from "@/lib/auth-context";
+import { DashboardPage } from "@/pages/dashboard";
 import { EstPage } from "@/pages/est";
 import { LoginPage } from "@/pages/login";
 import { Placeholder } from "@/pages/placeholder";
@@ -30,7 +31,7 @@ export default function App() {
           <Route element={<RequireAuth />}>
             <Route element={<AppLayout />}>
               <Route index element={<Navigate to="/dashboard" replace />} />
-              <Route path="dashboard" element={<Placeholder title="Dashboard" />} />
+              <Route path="dashboard" element={<DashboardPage />} />
               <Route path="est" element={gated("generate_est_token", <EstPage />)} />
               <Route
                 path="certificates"
