@@ -279,4 +279,20 @@ impl SessionStore for DbSessionStore {
         .map_err(backend)?;
         Ok(result.rows_affected())
     }
+
+    async fn lock_idle(&self, idle_before: DateTime<Utc>) -> Result<u64, SessionError> {
+        // Lazy locking only fires when a session is validated; an abandoned
+        // `active` session never freed the per-user cap until absolute expiry.
+        // Lock those idle past the inactivity window so the cap reflects truly
+        // active sessions. NIAP PP-CA: FTA_MCS.1 / FTA_SSL.1.
+        let result = sqlx::query(
+            "UPDATE sessions SET status = 'locked' \
+             WHERE status = 'active' AND last_activity < $1",
+        )
+        .bind(idle_before)
+        .execute(self.pool.pool())
+        .await
+        .map_err(backend)?;
+        Ok(result.rows_affected())
+    }
 }

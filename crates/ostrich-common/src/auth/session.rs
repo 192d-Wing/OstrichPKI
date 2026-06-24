@@ -297,6 +297,16 @@ pub trait SessionStore: Send + Sync {
 
     /// Remove sessions whose absolute expiry has passed; returns the count removed.
     async fn delete_expired(&self) -> Result<u64, SessionError>;
+
+    /// Transition still-`active` sessions whose last activity predates
+    /// `idle_before` to `locked`; returns the count transitioned.
+    ///
+    /// Locking is otherwise *lazy* — applied only when a session is next
+    /// validated — so an abandoned session that is never accessed again stays
+    /// `active` and keeps consuming the per-user concurrent-active cap until its
+    /// absolute expiry (hours away). The reaper calls this so idle sessions free
+    /// the cap promptly. NIAP PP-CA: FTA_SSL.1 / FTA_MCS.1.
+    async fn lock_idle(&self, idle_before: DateTime<Utc>) -> Result<u64, SessionError>;
 }
 
 /// In-memory `SessionStore` (process-local, non-durable).
@@ -407,6 +417,21 @@ impl SessionStore for InMemorySessionStore {
                 )
         });
         Ok((before - sessions.len()) as u64)
+    }
+
+    async fn lock_idle(&self, idle_before: DateTime<Utc>) -> Result<u64, SessionError> {
+        let mut sessions = self
+            .sessions
+            .write()
+            .map_err(|_| SessionError::LockPoisoned)?;
+        let mut locked = 0u64;
+        for s in sessions.values_mut() {
+            if s.status == SessionStatus::Active && s.last_activity < idle_before {
+                s.status = SessionStatus::Locked;
+                locked += 1;
+            }
+        }
+        Ok(locked)
     }
 }
 
@@ -771,6 +796,22 @@ impl SessionManager {
     /// expiry. With a database-backed store this bounds table growth; expired
     /// sessions are already rejected at validation time regardless.
     pub async fn cleanup_expired(&self) -> Result<u64, SessionError> {
+        // First, proactively lock sessions idle past the inactivity timeout.
+        // Locking is otherwise lazy (only on access), so an abandoned but still
+        // `active` session would consume the per-user concurrent-active cap until
+        // its absolute expiry — wedging further logins (e.g. a user who opened a
+        // few tabs and closed them). Locked sessions don't count toward the cap.
+        if self.config.lock_on_inactivity {
+            let idle_before = Utc::now() - Duration::seconds(self.config.inactivity_timeout_secs);
+            match self.store.lock_idle(idle_before).await {
+                Ok(n) if n > 0 => {
+                    tracing::debug!(locked = n, "Locked idle sessions (freed concurrent cap)")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "failed to lock idle sessions"),
+            }
+        }
+
         let count = self.store.delete_expired().await?;
         if count > 0 {
             tracing::debug!(expired_count = count, "Cleaned up expired sessions");
@@ -886,6 +927,36 @@ mod tests {
 
         let result = manager.validate_session(&session.token).await;
         assert!(matches!(result, Err(SessionError::SessionLocked)));
+    }
+
+    /// FTA_MCS.1 - The reaper locks idle `active` sessions so they free the
+    /// per-user concurrent-active cap. Lazy locking only fires on access, so an
+    /// abandoned session would otherwise wedge further logins until its absolute
+    /// expiry (the production `ops` lockout this fixes).
+    #[tokio::test]
+    async fn test_reaper_locks_idle_sessions_freeing_cap() {
+        let mut cfg = SessionConfig::new().with_inactivity_timeout(1);
+        cfg.max_concurrent_sessions = 1;
+        let manager = SessionManager::new(cfg);
+
+        // One active session fills the cap; a second login is refused.
+        let s1 = manager.create_session("user1", None, None).await.unwrap();
+        assert!(matches!(
+            manager.create_session("user1", None, None).await,
+            Err(SessionError::MaxConcurrentSessionsExceeded)
+        ));
+
+        // Abandon it: go idle past the inactivity timeout, then run the reaper.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        manager.cleanup_expired().await.unwrap();
+
+        // The idle session is now locked (not active), so a fresh login succeeds.
+        let s2 = manager.create_session("user1", None, None).await.unwrap();
+        assert_ne!(s1.id, s2.id);
+        assert!(matches!(
+            manager.validate_session(&s1.token).await,
+            Err(SessionError::SessionLocked)
+        ));
     }
 
     /// FTA_SSL.4 - Test user-initiated termination
