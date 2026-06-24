@@ -6,6 +6,8 @@ import { AppLayout } from "@/components/layout/app-layout";
 import { RequireAuth, RequirePermission } from "@/components/protected";
 import { AuthProvider } from "@/lib/auth-context";
 import { AuditPage } from "@/pages/audit";
+import { CertificateDetailPage } from "@/pages/certificate-detail";
+import { CertificateIssuePage } from "@/pages/certificate-issue";
 import { CertificatesPage } from "@/pages/certificates";
 import { CrlPage } from "@/pages/crl";
 import { DashboardPage } from "@/pages/dashboard";
@@ -41,6 +43,15 @@ export default function App() {
               <Route
                 path="certificates"
                 element={gated("view_certificates", <CertificatesPage />)}
+              />
+              {/* static `issue` outranks the dynamic `:id` in react-router. */}
+              <Route
+                path="certificates/issue"
+                element={gated("issue_certificates", <CertificateIssuePage />)}
+              />
+              <Route
+                path="certificates/:id"
+                element={gated("view_certificates", <CertificateDetailPage />)}
               />
               <Route path="crl" element={gated("view_crl", <CrlPage />)} />
               <Route path="profiles" element={gated("view_config", <ProfilesPage />)} />
