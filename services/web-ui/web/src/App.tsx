@@ -5,6 +5,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout } from "@/components/layout/app-layout";
 import { RequireAuth, RequirePermission } from "@/components/protected";
 import { AuthProvider } from "@/lib/auth-context";
+import { CertificatesPage } from "@/pages/certificates";
 import { DashboardPage } from "@/pages/dashboard";
 import { EstPage } from "@/pages/est";
 import { LoginPage } from "@/pages/login";
@@ -35,7 +36,7 @@ export default function App() {
               <Route path="est" element={gated("generate_est_token", <EstPage />)} />
               <Route
                 path="certificates"
-                element={gated("view_certificates", <Placeholder title="Certificates" />)}
+                element={gated("view_certificates", <CertificatesPage />)}
               />
               <Route path="crl" element={gated("view_crl", <Placeholder title="Revocation Lists" />)} />
               <Route path="profiles" element={gated("view_config", <Placeholder title="Profiles" />)} />
