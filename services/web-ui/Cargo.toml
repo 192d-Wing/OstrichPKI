@@ -81,7 +81,7 @@ yew-router = "0.20"
 
 # Browser APIs
 gloo = "0.11"
-gloo-net = "0.6"
+gloo-net = "0.7"
 gloo-storage = "0.3"
 gloo-timers = "0.4"
 
