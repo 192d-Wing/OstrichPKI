@@ -59,6 +59,53 @@ jobs:
       - name: Build web-ui for wasm32
         run: cargo build -p ostrich-web-ui --target wasm32-unknown-unknown --locked
 
+  # ---- React/shadcn frontend (P1 of the Yew→React migration) ----
+  # Builds the new services/web-ui/web SPA and enforces the npm supply-chain
+  # controls agreed for the migration. The Yew client (web-ui-wasm, above) stays
+  # the DEPLOYED bundle until cutover; both build in CI during the migration.
+  #
+  # COMPLIANCE MAPPING:
+  # - NIST 800-53: CM-2  (Baseline Configuration) — frozen-lockfile install
+  # - NIST 800-53: RA-5  (Vulnerability Monitoring) — pnpm audit gate
+  # - NIST 800-53: SI-7 / SA-12 (Integrity / Supply Chain) — CycloneDX SBOM
+  web-ui-react:
+    name: Web UI (React build + supply-chain)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/web-ui/web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Enable pnpm (corepack; version pinned by packageManager)
+        run: corepack enable
+      - name: Install (frozen lockfile — CM-2)
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Build
+        run: pnpm build
+      - name: Audit production dependencies (RA-5)
+        run: pnpm audit --prod --audit-level=high
+      # SBOM via cdxgen (pnpm-aware). Best-effort during P1 (the tool is heavy);
+      # hardens to a required step at cutover. The audit step above is the
+      # blocking supply-chain gate.
+      - name: Generate CycloneDX SBOM (SI-7 / SA-12)
+        continue-on-error: true
+        run: pnpm dlx @cyclonedx/cdxgen@^11 -t pnpm --no-recurse -o sbom.web-ui.json .
+      - name: Upload SBOM artifact
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-ui-sbom
+          path: services/web-ui/web/sbom.web-ui.json
+          if-no-files-found: ignore
+
   # ---- Advisory checks (non-blocking for now) ----
   # These surface drift without failing PRs while pre-existing debt is paid down:
   #   * rustfmt: the tree is not yet fully `cargo fmt`-normalized (~231 files).

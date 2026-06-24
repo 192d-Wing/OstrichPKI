@@ -19,6 +19,24 @@ updates:
       - dependencies
       - rust
 
+  # ---- npm / pnpm (React web-ui) ----
+  # The shadcn frontend's JS dependency tree. Dependabot reads pnpm-lock.yaml
+  # under the npm ecosystem. Keeps the npm supply chain patched (SI-2) alongside
+  # the CI audit gate + SBOM. Batch minor/patch to cut noise; majors individual.
+  - package-ecosystem: npm
+    directory: "/services/web-ui/web"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+      - javascript
+
   # ---- GitHub Actions ----
   - package-ecosystem: github-actions
     directory: "/"

@@ -125,6 +125,15 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
         ServeDir::new(&config.static_files.directory),
     );
 
+    // React (preview) SPA — temporary `/next` mount for the Yew→React migration.
+    // Served with the same CSP-nonce middleware as everything else; the live Yew
+    // app at `/` is unaffected. `/next` and any deep link under it serve the
+    // React index (the client router handles the rest of the path).
+    let next_routes = Router::new()
+        .route("/next", get(template::serve_next_index))
+        .route("/next/{*rest}", get(template::serve_next_index))
+        .with_state(state.clone());
+
     // SPA fallback - serve index.html for all unmatched routes
     let spa_routes = Router::new()
         .fallback(get(template::serve_index))
@@ -140,6 +149,8 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
         .nest("/api", api_routes)
         // Static files
         .merge(static_routes)
+        // React preview SPA (specific /next routes, before the catch-all)
+        .merge(next_routes)
         // SPA fallback (must be last)
         .merge(spa_routes)
         // Apply audit middleware to all routes
