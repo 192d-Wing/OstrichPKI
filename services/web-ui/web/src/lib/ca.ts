@@ -66,3 +66,57 @@ export function revokeCertificate(
     notes: notes && notes.trim() ? notes.trim() : null,
   });
 }
+
+// NOTE: the /profiles, /crl, and /ca/info endpoints return snake_case JSON
+// (unlike /certificates and /audit), so these types mirror that exactly.
+
+/** A code-defined certificate profile (read-only catalog). */
+export interface CertProfile {
+  name: string;
+  profile_type: string;
+  description?: string;
+  validity_days: number;
+  key_type: string;
+  algorithm: string;
+  basic_constraints_ca: boolean;
+  basic_constraints_path_len?: number | null;
+  subject_alt_name_required: boolean;
+  key_usages?: string[];
+  extended_key_usages?: string[];
+}
+
+export function fetchProfiles(): Promise<{ profiles: CertProfile[] }> {
+  return api.get<{ profiles: CertProfile[] }>("/ca/api/v1/profiles");
+}
+
+export interface CaInfo {
+  ca_id: string;
+  ca_dn: string;
+}
+
+export function fetchCaInfo(): Promise<CaInfo> {
+  return api.get<CaInfo>("/ca/api/v1/ca/info");
+}
+
+/** Result of generating a CRL (POST /ca/api/v1/crl[/delta]). */
+export interface CrlResult {
+  crl_number: number;
+  this_update: string;
+  next_update: string;
+  revoked_count: number;
+  pem_encoded: string;
+}
+
+export function generateCrl(endpoint: string): Promise<CrlResult> {
+  return api.post<CrlResult>(endpoint);
+}
+
+/** Liveness probe for a backend service via the proxy (GET /{svc}/health). */
+export async function serviceUp(svc: string): Promise<boolean> {
+  try {
+    await api.get(`/${svc}/health`);
+    return true;
+  } catch {
+    return false;
+  }
+}
