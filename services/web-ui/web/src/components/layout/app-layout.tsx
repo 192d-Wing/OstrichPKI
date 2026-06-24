@@ -1,11 +1,14 @@
+import * as React from "react";
 import {
   Ban,
+  ChevronRight,
   ClipboardCheck,
   CreditCard,
   FileCheck,
   FileText,
   LayoutTemplate,
   LogOut,
+  PanelLeft,
   Server,
   Settings as SettingsIcon,
   Shield,
@@ -37,18 +40,46 @@ interface NavItem {
   permission: string | null;
 }
 
-const NAV: NavItem[] = [
-  { to: "/dashboard", label: "Dashboard", icon: SquareStack, permission: null },
-  { to: "/certificates", label: "Certificates", icon: FileCheck, permission: "view_certificates" },
-  { to: "/crl", label: "Revocation Lists", icon: Ban, permission: "view_crl" },
-  { to: "/profiles", label: "Profiles", icon: LayoutTemplate, permission: "view_config" },
-  { to: "/est", label: "EST", icon: Server, permission: "generate_est_token" },
-  { to: "/approvals", label: "Approvals", icon: ClipboardCheck, permission: "view_approvals" },
-  { to: "/audit", label: "Audit Logs", icon: FileText, permission: "read_audit_log" },
-  { to: "/scms", label: "Tokens", icon: CreditCard, permission: "view_tokens" },
-  { to: "/users", label: "Users", icon: Users, permission: "manage_users" },
-  { to: "/settings", label: "Settings", icon: SettingsIcon, permission: "view_config" },
+// Grouped navigation. Same labels/routes/perms as before, organized into
+// sections for a clearer information architecture.
+const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
+  {
+    label: "Overview",
+    items: [
+      { to: "/dashboard", label: "Dashboard", icon: SquareStack, permission: null },
+    ],
+  },
+  {
+    label: "Certificates",
+    items: [
+      { to: "/certificates", label: "Certificates", icon: FileCheck, permission: "view_certificates" },
+      { to: "/profiles", label: "Profiles", icon: LayoutTemplate, permission: "view_config" },
+      { to: "/crl", label: "Revocation Lists", icon: Ban, permission: "view_crl" },
+    ],
+  },
+  {
+    label: "Enrollment",
+    items: [
+      { to: "/est", label: "EST", icon: Server, permission: "generate_est_token" },
+      { to: "/approvals", label: "Approvals", icon: ClipboardCheck, permission: "view_approvals" },
+      { to: "/scms", label: "Tokens", icon: CreditCard, permission: "view_tokens" },
+    ],
+  },
+  {
+    label: "Administration",
+    items: [
+      { to: "/audit", label: "Audit Logs", icon: FileText, permission: "read_audit_log" },
+      { to: "/users", label: "Users", icon: Users, permission: "manage_users" },
+      { to: "/settings", label: "System", icon: SettingsIcon, permission: "admin" },
+    ],
+  },
 ];
+
+const ALL_ITEMS = NAV_GROUPS.flatMap((g) =>
+  g.items.map((i) => ({ ...i, group: g.label })),
+);
+
+const COLLAPSE_KEY = "ostrich-sidebar-collapsed";
 
 function initials(name: string): string {
   const parts = name.split(/[.\s@_-]+/).filter(Boolean);
@@ -58,51 +89,102 @@ function initials(name: string): string {
 export function AppLayout() {
   const { user, can } = useAuth();
   const location = useLocation();
-  const items = NAV.filter((n) => !n.permission || can(n.permission));
   const name = displayName(user);
 
-  // Page title from the active nav item (longest path-prefix match).
-  const active = [...NAV]
+  const [collapsed, setCollapsed] = React.useState(
+    () => localStorage.getItem(COLLAPSE_KEY) === "1",
+  );
+  const toggle = () => {
+    setCollapsed((c) => {
+      localStorage.setItem(COLLAPSE_KEY, c ? "0" : "1");
+      return !c;
+    });
+  };
+
+  // Breadcrumb: the active nav item (longest path-prefix match) + its group.
+  const active = [...ALL_ITEMS]
     .sort((a, b) => b.to.length - a.to.length)
     .find((n) => location.pathname.startsWith(n.to));
-  const title = active?.label ?? "OstrichPKI";
 
   return (
     <div className="flex min-h-screen bg-background text-foreground">
-      <aside className="flex w-64 shrink-0 flex-col border-r bg-card">
-        <div className="flex h-16 items-center gap-2 border-b px-5">
-          <div className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
+      <aside
+        className={cn(
+          "flex shrink-0 flex-col border-r bg-card transition-[width] duration-200",
+          collapsed ? "w-16" : "w-64",
+        )}
+      >
+        <div className="flex h-16 items-center gap-2 border-b px-4">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
             <Shield className="size-5" />
           </div>
-          <span className="text-lg font-semibold tracking-tight">OstrichPKI</span>
+          {!collapsed && (
+            <span className="truncate text-lg font-semibold tracking-tight">
+              OstrichPKI
+            </span>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="ml-auto size-8"
+            onClick={toggle}
+            aria-label="Toggle sidebar"
+          >
+            <PanelLeft className="size-4" />
+          </Button>
         </div>
-        <nav className="flex-1 space-y-1 overflow-auto p-3">
-          {items.map((n) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              className={({ isActive }) =>
-                cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                  isActive
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )
-              }
-            >
-              <n.icon className="size-4 shrink-0" />
-              {n.label}
-            </NavLink>
-          ))}
+
+        <nav className="flex-1 space-y-4 overflow-y-auto p-2">
+          {NAV_GROUPS.map((group) => {
+            const items = group.items.filter(
+              (n) => !n.permission || can(n.permission),
+            );
+            if (items.length === 0) return null;
+            return (
+              <div key={group.label} className="space-y-1">
+                {!collapsed && (
+                  <p className="px-3 pb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground/70">
+                    {group.label}
+                  </p>
+                )}
+                {items.map((n) => (
+                  <NavLink
+                    key={n.to}
+                    to={n.to}
+                    title={collapsed ? n.label : undefined}
+                    className={({ isActive }) =>
+                      cn(
+                        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                        collapsed && "justify-center px-0",
+                        isActive
+                          ? "bg-primary/10 text-primary"
+                          : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                      )
+                    }
+                  >
+                    <n.icon className="size-4 shrink-0" />
+                    {!collapsed && n.label}
+                  </NavLink>
+                ))}
+              </div>
+            );
+          })}
         </nav>
-        <div className="border-t px-5 py-3 text-xs text-muted-foreground">
-          v{config.version}
-        </div>
+
+        {!collapsed && (
+          <div className="border-t px-4 py-3 text-xs text-muted-foreground">
+            v{config.version}
+          </div>
+        )}
       </aside>
 
       <div className="flex flex-1 flex-col">
         <header className="sticky top-0 z-10 flex h-16 shrink-0 items-center justify-between border-b bg-card/80 px-6 backdrop-blur">
-          <h1 className="text-lg font-semibold">{title}</h1>
+          <nav className="flex items-center gap-1.5 text-sm">
+            <span className="text-muted-foreground">{active?.group ?? "OstrichPKI"}</span>
+            <ChevronRight className="size-4 text-muted-foreground/50" />
+            <span className="font-semibold">{active?.label ?? "OstrichPKI"}</span>
+          </nav>
           <div className="flex items-center gap-2">
             <ThemeToggle />
             <DropdownMenu>
@@ -111,9 +193,7 @@ export function AppLayout() {
                   <span className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
                     {initials(name)}
                   </span>
-                  <span className="hidden text-sm font-medium sm:inline">
-                    {name}
-                  </span>
+                  <span className="hidden text-sm font-medium sm:inline">{name}</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
