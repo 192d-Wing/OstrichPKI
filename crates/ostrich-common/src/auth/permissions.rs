@@ -344,6 +344,13 @@ pub fn permissions_for_role(role: Role) -> &'static [Permission] {
         // enrollment whose identity is already pinned by the token (H1).
         // NIST 800-53: AC-6 (least privilege).
         Role::EstEnrollee => &[Permission::SubmitRequest],
+
+        // Machine-only EST re-enrollment principal: exactly one capability, so a
+        // device authenticating with its existing certificate can renew that
+        // certificate (RFC 7030 §3.3) and do nothing else. The re-enroll handler
+        // further binds the CSR identity to a certificate previously issued to
+        // the same client. NIST 800-53: AC-6 (least privilege).
+        Role::EstDevice => &[Permission::RenewCertificate],
     }
 }
 
@@ -464,6 +471,31 @@ mod tests {
         assert!(!role_has_permission(
             Role::RaStaff,
             Permission::IssueCertificate
+        ));
+    }
+
+    #[test]
+    fn test_est_device_permissions() {
+        // A device authenticated by its existing certificate may renew it
+        // (RFC 7030 §3.3) — this is exactly what unblocks /simplereenroll.
+        assert!(role_has_permission(
+            Role::EstDevice,
+            Permission::RenewCertificate
+        ));
+        // Least privilege (AC-6): nothing else. In particular it may not submit
+        // a fresh enrollment, issue, or revoke.
+        assert_eq!(permissions_for_role(Role::EstDevice).len(), 1);
+        assert!(!role_has_permission(
+            Role::EstDevice,
+            Permission::SubmitRequest
+        ));
+        assert!(!role_has_permission(
+            Role::EstDevice,
+            Permission::IssueCertificate
+        ));
+        assert!(!role_has_permission(
+            Role::EstDevice,
+            Permission::RevokeCertificate
         ));
     }
 

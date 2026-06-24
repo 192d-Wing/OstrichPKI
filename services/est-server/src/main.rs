@@ -348,6 +348,16 @@ async fn main() -> Result<()> {
                 user_repo.clone(),
                 sessions.clone(),
             );
+            // A token-bootstrapped device has no user-table account, so it
+            // cannot re-enroll via the account-mapping certificate provider.
+            // Wrap that provider so a presented certificate this CA issued
+            // authenticates as a least-privilege EstDevice principal (RFC 7030
+            // §3.3); anything it does not recognise still falls through to the
+            // account-mapping path for operator certificates.
+            let device_cert_provider = ostrich_est::EstDeviceCertAuthProvider::new(
+                db_pool.clone(),
+                Arc::new(cert_provider),
+            );
             let password_provider = ostrich_common::auth::PasswordAuthProvider::new(
                 user_repo.clone(),
                 ostrich_common::auth::LockoutConfig::default(),
@@ -356,16 +366,24 @@ async fn main() -> Result<()> {
             .with_audit_hook(auth_audit.clone());
             Arc::new(
                 ostrich_common::auth::CompositeAuthProvider::new()
-                    .add_provider(Box::new(cert_provider))
+                    .add_provider(Box::new(device_cert_provider))
                     .add_provider(Box::new(password_provider)),
             )
         }
         EstAuthMode::Mtls => {
             tracing::info!("EST mTLS client-certificate authentication enabled (RFC 7030 §3.3)");
-            Arc::new(ostrich_common::auth::CertificateAuthProvider::new(
+            // Devices re-enroll with their existing CA-issued certificate, which
+            // has no user-table account: recognise it as an EstDevice principal
+            // (RFC 7030 §3.3), deferring unknown certificates to the
+            // account-mapping provider for operator certificates.
+            let cert_provider = ostrich_common::auth::CertificateAuthProvider::new(
                 ostrich_common::auth::CertificateAuthConfig::default(),
                 user_repo.clone(),
                 sessions,
+            );
+            Arc::new(ostrich_est::EstDeviceCertAuthProvider::new(
+                db_pool.clone(),
+                Arc::new(cert_provider),
             ))
         }
         EstAuthMode::BearerToken => {

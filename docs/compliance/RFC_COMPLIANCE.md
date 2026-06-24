@@ -935,6 +935,20 @@ protected enrollment endpoints (`EstAuthMode`):
   Basic transmits a reusable password and is only safe on a TLS listener). This
   is intended for **bootstrap enrollment** — a client without a certificate
   authenticates its first enrollment with a username/password, then uses mTLS.
+- **mTLS + bearer enrollment-token bootstrap (§3.3):** the verified client
+  certificate is preferred (`MtlsOrBearerAuthLayer`); when none is presented, a
+  single-use bearer enrollment token bootstraps the first enrollment. Enabled
+  with `--mtls-token-bootstrap`. This is the shared-port re-enrollment posture:
+  a device bootstraps with a token, then **re-enrolls over mTLS with the
+  certificate it was issued**. Because such a device has no provisioned
+  user-table account, `EstDeviceCertAuthProvider` recognises its presented
+  certificate by an exact DER match against the certificate store, confirms it
+  is neither revoked nor expired, resolves it back to the `client_identifier` of
+  the enrollment that produced it, and authenticates it as a least-privilege
+  `EstDevice` principal (sole permission `RenewCertificate`). Unrecognised
+  certificates fall through to account mapping, so operator certificates keep
+  working. This is what makes `/simplereenroll` return `200` for a freshly
+  bootstrapped device (RFC 7030 §3.3).
 - **Bearer session token:** non-RFC backward-compatibility fallback when no TLS
   client CA is configured.
 
@@ -947,12 +961,15 @@ success the resolved identity flows through the same RBAC permission checks
 **Implementation:**
 
 - [crates/ostrich-common/src/auth/basic.rs](../../crates/ostrich-common/src/auth/basic.rs) - `BasicAuthLayer`, `MtlsOrBasicAuthLayer`
+- [crates/ostrich-common/src/auth/middleware.rs](../../crates/ostrich-common/src/auth/middleware.rs) - `MtlsOrBearerAuthLayer` (cert-preferred, bearer-token bootstrap fallback)
+- [crates/ostrich-est/src/device_cert.rs](../../crates/ostrich-est/src/device_cert.rs) - `EstDeviceCertAuthProvider` (re-enrollment by existing CA-issued certificate)
 - [crates/ostrich-est/src/rest.rs](../../crates/ostrich-est/src/rest.rs) - `EstAuthMode` + protected-route layer selection
-- [services/est-server/src/main.rs](../../services/est-server/src/main.rs) - `--allow-basic-auth`, composite provider, TLS-only guard
+- [services/est-server/src/main.rs](../../services/est-server/src/main.rs) - `--allow-basic-auth`, `--mtls-token-bootstrap`, composite provider, TLS-only guard
 
 **Evidence:**
 
 - Unit tests: [crates/ostrich-common/src/auth/basic.rs](../../crates/ostrich-common/src/auth/basic.rs) `mod tests` - valid/invalid credentials, missing header → challenge, malformed base64, missing colon, locked account → 403, RFC 7617 first-colon split
+- Unit test: [crates/ostrich-common/src/auth/permissions.rs](../../crates/ostrich-common/src/auth/permissions.rs) `test_est_device_permissions` - `EstDevice` grants exactly `RenewCertificate` (AC-6 least privilege), unblocking `/simplereenroll`
 
 ---
 
