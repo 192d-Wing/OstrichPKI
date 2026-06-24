@@ -1,17 +1,18 @@
 import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-
-import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+  Alert,
+  Box,
+  Button,
+  Container,
+  Form,
+  FormField,
+  Header,
+  Input,
+  SpaceBetween,
+} from "@cloudscape-design/components";
+
 import { internalLogin, oidcLoginUrl, SessionLimitError } from "@/lib/auth";
 import { useAuth } from "@/lib/auth-context";
 
@@ -52,81 +53,93 @@ export function LoginPage() {
     }
   }
 
-  function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  function onSubmit() {
     setLimitReached(false);
     void attempt(false);
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-muted/40 p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle className="text-xl">OstrichPKI</CardTitle>
-          <CardDescription>Sign in to the administration console.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <form onSubmit={onSubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="username">Username</Label>
-              <Input
-                id="username"
-                autoComplete="username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoFocus
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
-            {error && (
-              <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {error}
-              </div>
-            )}
-            {limitReached ? (
-              <div className="space-y-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-300">
-                <p>
-                  Your account has reached its active-session limit. Sign out
-                  your other sessions to continue.
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full"
-                  disabled={submitting}
-                  onClick={() => void attempt(true)}
-                >
-                  {submitting
-                    ? "Signing out other sessions…"
-                    : "Sign out other sessions & sign in"}
-                </Button>
-              </div>
-            ) : (
-              <Button type="submit" className="w-full" disabled={submitting}>
-                {submitting ? "Signing in…" : "Sign in"}
-              </Button>
-            )}
-          </form>
+    <div
+      style={{
+        display: "flex",
+        minHeight: "100vh",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "1rem",
+        background: "var(--color-background-layout-main, #f4f4f4)",
+      }}
+    >
+      <div style={{ width: "100%", maxWidth: 380 }}>
+        <Container
+          header={
+            <Header
+              variant="h1"
+              description="Sign in to the administration console."
+            >
+              OstrichPKI
+            </Header>
+          }
+        >
+          <SpaceBetween size="l">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                onSubmit();
+              }}
+            >
+              <Form
+                actions={
+                  limitReached ? (
+                    <Button
+                      formAction="none"
+                      loading={submitting}
+                      onClick={() => void attempt(true)}
+                    >
+                      Sign out other sessions &amp; sign in
+                    </Button>
+                  ) : (
+                    <Button variant="primary" loading={submitting}>
+                      Sign in
+                    </Button>
+                  )
+                }
+              >
+                <SpaceBetween size="m">
+                  <FormField label="Username">
+                    <Input
+                      type="text"
+                      autoComplete="username"
+                      value={username}
+                      onChange={({ detail }) => setUsername(detail.value)}
+                      autoFocus
+                    />
+                  </FormField>
+                  <FormField label="Password">
+                    <Input
+                      type="password"
+                      autoComplete="current-password"
+                      value={password}
+                      onChange={({ detail }) => setPassword(detail.value)}
+                    />
+                  </FormField>
+                  {error && <Alert type="error">{error}</Alert>}
+                  {limitReached && (
+                    <Alert type="warning">
+                      Your account has reached its active-session limit. Sign out
+                      your other sessions to continue.
+                    </Alert>
+                  )}
+                </SpaceBetween>
+              </Form>
+            </form>
 
-          {/* Shown for deployments running OIDC SSO; harmless otherwise. */}
-          <div className="relative py-1 text-center text-xs text-muted-foreground">
-            <span className="bg-card px-2">or</span>
-            <div className="absolute inset-x-0 top-1/2 -z-10 border-t" />
-          </div>
-          <Button asChild variant="outline" className="w-full">
-            <a href={oidcLoginUrl()}>Sign in with SSO</a>
-          </Button>
-        </CardContent>
-      </Card>
+            <Box textAlign="center" color="text-status-inactive" fontSize="body-s">
+              or
+            </Box>
+            <Button href={oidcLoginUrl()}>Sign in with SSO</Button>
+          </SpaceBetween>
+        </Container>
+      </div>
     </div>
   );
 }
