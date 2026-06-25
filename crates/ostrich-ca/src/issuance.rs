@@ -667,6 +667,19 @@ impl CertificateIssuer {
 
         // Store certificate in database
         let cert_id = Uuid::new_v4();
+        // Derive the issuing service from the requestor prefix, the convention
+        // each enrollment path stamps (`est::`/`acme::`/`scms::`; bare = direct
+        // CA API). AU-3 issuance attribution; also drives per-FQDN "EST Tokens".
+        let issuer_service = if request.requestor.starts_with("est::") {
+            "EST"
+        } else if request.requestor.starts_with("acme::") {
+            "ACME"
+        } else if request.requestor.starts_with("scms::") {
+            "SCMS"
+        } else {
+            "CA"
+        };
+
         let certificate = Certificate {
             id: cert_id,
             ca_id: self.ca_certificate.id,
@@ -680,7 +693,7 @@ impl CertificateIssuer {
             revoked: false,
             revocation_time: None,
             revocation_reason: None,
-            issuer_service: Some("CA".to_string()),
+            issuer_service: Some(issuer_service.to_string()),
             requestor: Some(request.requestor.clone()),
             profile_name: Some(request.profile_name.clone()),
             metadata: request.metadata.clone(),

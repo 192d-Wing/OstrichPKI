@@ -877,9 +877,15 @@ async fn get_fqdn_record(
         .collect();
 
     let notification = repo.get_notification(&fqdn).await?;
-    let uses_est = certs
-        .iter()
-        .any(|c| c.issuer_service.as_deref() == Some("EST"));
+    // Detect EST via issuer_service OR the requestor prefix. The prefix is the
+    // authoritative signal and is correct on certs issued before issuer_service
+    // was populated per-service, so the tab works on historical data too.
+    let uses_est = certs.iter().any(|c| {
+        c.issuer_service.as_deref() == Some("EST")
+            || c.requestor
+                .as_deref()
+                .is_some_and(|r| r.starts_with("est::"))
+    });
 
     tracing::info!(
         actor = %user.username,
