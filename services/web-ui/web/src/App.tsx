@@ -32,6 +32,10 @@ const SettingsPage = lazy(() =>
   import("@/pages/settings").then((m) => ({ default: m.SettingsPage })),
 );
 const EstPage = lazy(() => import("@/pages/est").then((m) => ({ default: m.EstPage })));
+const FqdnsPage = lazy(() => import("@/pages/fqdns").then((m) => ({ default: m.FqdnsPage })));
+const FqdnDetailPage = lazy(() =>
+  import("@/pages/fqdn-detail").then((m) => ({ default: m.FqdnDetailPage })),
+);
 const LoginPage = lazy(() => import("@/pages/login").then((m) => ({ default: m.LoginPage })));
 
 const queryClient = new QueryClient({
@@ -79,6 +83,11 @@ export default function App() {
               <Route
                 path="certificates/:id"
                 element={gated("view_certificates", <CertificateDetailPage />)}
+              />
+              <Route path="fqdns" element={gated("view_certificates", <FqdnsPage />)} />
+              <Route
+                path="fqdns/:fqdn"
+                element={gated("view_certificates", <FqdnDetailPage />)}
               />
               <Route path="crl" element={gated("view_crl", <CrlPage />)} />
               <Route path="profiles" element={gated("view_config", <ProfilesPage />)} />

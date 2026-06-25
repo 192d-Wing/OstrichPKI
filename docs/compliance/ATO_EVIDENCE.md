@@ -1605,4 +1605,23 @@ generating code.
 
 ---
 
+### FQDN record / history — control evidence
+
+Per-DNS-name certificate history (UI: Certificates → FQDNs). Backend in the CA,
+surfaced through the web-ui proxy.
+
+| Control / SFR | Evidence | Notes |
+|---|---|---|
+| CM-3 (Config Change Control) | `migrations/00016_certificate_sans_and_fqdn_notification.sql` | Versioned schema: `certificate_sans` (queryable SAN/CN index) + `fqdn_notification` (renewal contact). |
+| SC-17 / RFC 5280 §4.2.1.6 | `crates/ostrich-db/src/repository/certificate.rs` (`extract_cert_names`, transactional SAN insert in `create()`, `backfill_sans()`) | SubjectAltName dnsNames + hostname CN extracted from the issued DER and indexed; backfilled at CA startup (`services/ca-server/src/main.rs`). |
+| AC-3 / FMT_SMF.1 / FMT_MTD.1 | `crates/ostrich-ca/src/rest.rs` (`list_fqdns`, `get_fqdn_record`, `get_fqdn_notification`, `set_fqdn_notification`) | Reads gated by `ViewCertificate`; renewal-contact write gated by `ModifyConfig` (TSF-data management). |
+| SI-10 (Input Validation) | `rest.rs` `set_fqdn_notification` (email shape/length check); `crates/ostrich-db/src/repository/fqdn.rs` (all values bound, never interpolated) | FQDN match uses bound parameters; ORDER BY is fixed. |
+| AU-2 (Auditable Events) | `rest.rs` `set_fqdn_notification` structured log (`actor`, `resource=fqdn:notification`, `outcome`) | POA&M: upgrade to a hash-chained AU-10 AuditEvent once a REST-accessible audit emitter exists (noted in code). |
+
+Note: the renewal-notification contact is **storage + display only** — no mail is
+sent (no mailer exists yet); see the FQDNs section of
+`services/web-ui/web/ROADMAP.md` for the deferred notification-delivery work.
+
+---
+
 **End of ATO Evidence Collection Guide**

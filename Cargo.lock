@@ -3533,6 +3533,7 @@ dependencies = [
  "chrono",
  "hex",
  "ostrich-common",
+ "ostrich-x509",
  "serde",
  "serde_json",
  "sha2 0.10.9",

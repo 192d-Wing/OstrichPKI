@@ -10,6 +10,8 @@ rust-version.workspace = true
 [dependencies]
 # Internal
 ostrich-common = { workspace = true }
+# Certificate parsing for the FQDN SAN index (extract DNS SANs + CN at store time).
+ostrich-x509 = { workspace = true }
 
 # Database
 sqlx = { workspace = true }
