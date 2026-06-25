@@ -19,6 +19,7 @@ import {
   Table,
   Tabs,
   Textarea,
+  Toggle,
 } from "@cloudscape-design/components";
 
 import { ApiError } from "@/lib/api";
@@ -84,6 +85,15 @@ export function FqdnDetailPage() {
     queryFn: () => fetchFqdnEstTokens(fqdn),
     enabled: estEnabled,
   });
+
+  // EST nodes accumulate many revoked certs on re-enrollment; hide them by
+  // default so the live cert is front-and-center (toggle to see full history).
+  const [hideRevoked, setHideRevoked] = React.useState(true);
+  const allCerts = data?.certificates ?? [];
+  const revokedCount = allCerts.filter((c) => c.status === "revoked").length;
+  const visibleCerts = hideRevoked
+    ? allCerts.filter((c) => c.status !== "revoked")
+    : allCerts;
 
   // Renewal-contact edit modal.
   const [editing, setEditing] = React.useState(false);
@@ -162,7 +172,7 @@ export function FqdnDetailPage() {
   const certsTab = (
     <Table<CertificateSummary>
       variant="borderless"
-      items={data?.certificates ?? []}
+      items={visibleCerts}
       trackBy="id"
       wrapLines
       empty={
@@ -171,6 +181,21 @@ export function FqdnDetailPage() {
         </Box>
       }
       columnDefinitions={certColumns}
+      filter={
+        revokedCount > 0 ? (
+          <Toggle
+            checked={hideRevoked}
+            onChange={({ detail }) => setHideRevoked(detail.checked)}
+          >
+            Hide revoked ({revokedCount})
+          </Toggle>
+        ) : undefined
+      }
+      header={
+        <Header counter={`(${visibleCerts.length} of ${allCerts.length})`} variant="h3">
+          Certificates
+        </Header>
+      }
     />
   );
 
