@@ -68,11 +68,12 @@ React is now the primary app served at `/`; the Yew SPA is retired.
 - `web/src/lib/config.ts`: basename comment updated to reflect root mount.
 - Verified: `cargo check -p ostrich-web-ui` clean; React typecheck/lint/build green.
 
-**Follow-up cleanup (separate PR):** delete the now-dead Yew source tree
-(`services/web-ui/src/client/`, `Trunk.toml`, `input.css`, `tailwind.config.js`, the Yew
-`index.html`), prune its wasm/yew deps from `Cargo.toml`, and drop the `web-ui-wasm` CI job
-(`.github/workflows/ci.yml`). The Yew client is `#[cfg(target_arch = "wasm32")]`-gated, so
-it doesn't affect the native server build or the shipped image — it's just dead weight.
+**Follow-up cleanup: [done]** deleted the dead Yew source tree
+(`services/web-ui/src/client/`, `Trunk.toml`, `index.html`, `input.css`,
+`tailwind.config.js`, root `package.json`/`package-lock.json`), removed the `[lib]` +
+wasm/yew dependency block from `Cargo.toml` (web-ui is now a server-only crate), dropped the
+wasm cfg-gates from `src/main.rs`, pruned the wasm dep tree from `Cargo.lock`, and removed
+the `web-ui-wasm` CI job. Verified `cargo check --locked -p ostrich-web-ui` clean.
 
 ## Resume / verify cheatsheet
 
