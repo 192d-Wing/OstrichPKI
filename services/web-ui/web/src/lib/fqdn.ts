@@ -28,7 +28,20 @@ export interface FqdnRecord {
   lastRequestedBy: string | null;
   certificateCount: number;
   notificationEmail: string | null;
+  /** True if any cert for this FQDN was EST-issued — drives the EST Tokens tab. */
+  usesEst: boolean;
   certificates: CertificateSummary[];
+}
+
+/** One EST enrollment token bound to an FQDN (metadata only; never the token). */
+export interface EstToken {
+  id: string;
+  identity: string;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string;
+  status: string;
+  usedByCert: string | null;
 }
 
 export interface FqdnNotification {
@@ -46,6 +59,13 @@ export function fetchFqdns(query: string): Promise<FqdnListResponse> {
 /** Fetch the aggregated history record for one FQDN. */
 export function fetchFqdnRecord(fqdn: string): Promise<FqdnRecord> {
   return api.get<FqdnRecord>(`/ca/api/v1/fqdns/${encodeURIComponent(fqdn)}`);
+}
+
+/** EST enrollment tokens bound to an FQDN (gated by generate_est_token). */
+export function fetchFqdnEstTokens(fqdn: string): Promise<{ tokens: EstToken[] }> {
+  return api.get<{ tokens: EstToken[] }>(
+    `/ca/api/v1/fqdns/${encodeURIComponent(fqdn)}/est-tokens`,
+  );
 }
 
 /** Set the renewal-notification contact for an FQDN (PUT). */

@@ -38,7 +38,8 @@ use ostrich_common::types::DistinguishedName;
 use ostrich_db::DatabasePool;
 use ostrich_db::models::Certificate;
 use ostrich_db::repository::{
-    ApprovalRepository, AuditRepository, CertificateRepository, CrlRepository, FqdnRepository,
+    ApprovalRepository, AuditRepository, CertificateRepository, CrlRepository, EstRepository,
+    FqdnRepository,
 };
 use ostrich_x509::{extensions::SubjectAltName, parser::RevocationReason};
 use serde::{Deserialize, Serialize};
@@ -191,6 +192,10 @@ pub fn create_router(
         .route(
             "/api/v1/fqdns/{fqdn}",
             get(get_fqdn_record).route_layer(authz(Permission::ViewCertificate)),
+        )
+        .route(
+            "/api/v1/fqdns/{fqdn}/est-tokens",
+            get(get_fqdn_est_tokens).route_layer(authz(Permission::GenerateEstToken)),
         )
         .route(
             "/api/v1/fqdns/{fqdn}/notification",
@@ -513,8 +518,33 @@ struct FqdnRecordDto {
     certificate_count: u64,
     /// Operator-set renewal-notification contact, if configured.
     notification_email: Option<String>,
+    /// True if any certificate for this FQDN was issued via EST — drives the
+    /// "EST Tokens" tab in the UI (tokens are fetched from the gated sub-resource).
+    uses_est: bool,
     /// Every certificate ever issued for this FQDN, newest first.
     certificates: Vec<CertificateSummaryDto>,
+}
+
+/// One EST enrollment token bound to an FQDN (operator review; never the token).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EstTokenDto {
+    id: String,
+    identity: String,
+    created_by: String,
+    created_at: String,
+    expires_at: String,
+    /// Derived: `live` | `used` | `revoked` | `expired`.
+    status: String,
+    /// Certificate issued when the token was consumed, if any.
+    used_by_cert: Option<String>,
+}
+
+/// EST tokens for a single FQDN (GET .../est-tokens).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FqdnEstTokensDto {
+    tokens: Vec<EstTokenDto>,
 }
 
 /// The renewal-notification contact for an FQDN (GET/PUT).
@@ -847,6 +877,9 @@ async fn get_fqdn_record(
         .collect();
 
     let notification = repo.get_notification(&fqdn).await?;
+    let uses_est = certs
+        .iter()
+        .any(|c| c.issuer_service.as_deref() == Some("EST"));
 
     tracing::info!(
         actor = %user.username,
@@ -862,9 +895,56 @@ async fn get_fqdn_record(
         last_requested_by: newest.and_then(|c| c.requestor.clone()),
         certificate_count: certs.len() as u64,
         notification_email: notification.map(|n| n.email),
+        uses_est,
         certificates,
         fqdn,
     }))
+}
+
+/// EST enrollment tokens bound to an FQDN (GET /api/v1/fqdns/{fqdn}/est-tokens).
+///
+/// Tokens are matched by their `identity` (the CN/FQDN a bearer may enroll as).
+/// Gated by `GenerateEstToken` — the same permission that mints/lists tokens —
+/// so EST-token visibility is not broadened to plain certificate viewers.
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3 - Access enforcement (Permission::GenerateEstToken)
+/// - NIAP PP-CA: FMT_SMF.1 - management of enrollment credentials
+async fn get_fqdn_est_tokens(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(fqdn): Path<String>,
+) -> Result<Json<FqdnEstTokensDto>> {
+    let fqdn = fqdn.trim().to_lowercase();
+    let repo = EstRepository::new(state.db_pool.clone());
+    let now = chrono::Utc::now();
+
+    let rows = repo.list_enrollment_tokens_for_identity(&fqdn, 200).await?;
+    let tokens = rows
+        .into_iter()
+        .map(|t| {
+            // Status precedence mirrors the EST service: used (consumed with a
+            // cert) → revoked (consumed without one) → expired → live.
+            let status = match (t.used_at, t.used_by_cert) {
+                (Some(_), Some(_)) => "used",
+                (Some(_), None) => "revoked",
+                (None, _) if t.expires_at <= now => "expired",
+                (None, _) => "live",
+            };
+            EstTokenDto {
+                id: t.id.to_string(),
+                identity: t.identity,
+                created_by: t.created_by,
+                created_at: t.created_at.to_rfc3339(),
+                expires_at: t.expires_at.to_rfc3339(),
+                status: status.to_string(),
+                used_by_cert: t.used_by_cert.map(|c| c.to_string()),
+            }
+        })
+        .collect();
+
+    tracing::info!(actor = %user.username, resource = "fqdn:est-tokens", fqdn = %fqdn, "fqdn EST tokens listed");
+    Ok(Json(FqdnEstTokensDto { tokens }))
 }
 
 /// Read an FQDN's renewal-notification contact (GET .../notification).
