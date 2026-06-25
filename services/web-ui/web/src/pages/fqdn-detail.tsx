@@ -164,7 +164,7 @@ export function FqdnDetailPage() {
       variant="borderless"
       items={data?.certificates ?? []}
       trackBy="id"
-      resizableColumns
+      wrapLines
       empty={
         <Box textAlign="center" color="inherit">
           No certificates for this FQDN.
@@ -181,7 +181,7 @@ export function FqdnDetailPage() {
       loadingText="Loading EST tokens"
       items={estTokens.data?.tokens ?? []}
       trackBy="id"
-      resizableColumns
+      wrapLines
       empty={
         <Box textAlign="center" color="inherit">
           {estTokens.isError
@@ -269,9 +269,7 @@ export function FqdnDetailPage() {
             />
           </Container>
 
-          <Container disableContentPaddings>
-            <Tabs tabs={tabs} />
-          </Container>
+          <Tabs variant="container" tabs={tabs} />
         </SpaceBetween>
       )}
 
