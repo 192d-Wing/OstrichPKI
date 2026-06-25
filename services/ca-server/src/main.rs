@@ -143,6 +143,18 @@ async fn main() -> Result<()> {
     tracing::info!("Running database migrations");
     db_pool.migrate().await?;
 
+    // Backfill the FQDN (SAN/CN) index for certificates issued before it existed.
+    // Idempotent and cheap once populated (a single anti-join returning no rows);
+    // new certificates are indexed transactionally at issuance. RFC 5280 §4.2.1.6.
+    match ostrich_db::repository::CertificateRepository::new(db_pool.clone())
+        .backfill_sans()
+        .await
+    {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(certificates = n, "backfilled FQDN (SAN/CN) index"),
+        Err(e) => tracing::warn!(error = %e, "FQDN SAN index backfill failed (non-fatal)"),
+    }
+
     // Bootstrap the Certificate Authority from the database.
     //
     // COMPLIANCE MAPPING:

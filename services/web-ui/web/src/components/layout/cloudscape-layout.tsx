@@ -24,6 +24,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     label: "Certificates",
     items: [
       { to: "/certificates", label: "Certificates", permission: "view_certificates" },
+      { to: "/fqdns", label: "FQDNs", permission: "view_certificates" },
       { to: "/profiles", label: "Profiles", permission: "view_config" },
       { to: "/crl", label: "Revocation Lists", permission: "view_crl" },
     ],

@@ -29,7 +29,7 @@ use axum::{
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use base64::{Engine, prelude::BASE64_STANDARD};
 use ostrich_common::auth::provider::AuthProvider;
@@ -38,7 +38,7 @@ use ostrich_common::types::DistinguishedName;
 use ostrich_db::DatabasePool;
 use ostrich_db::models::Certificate;
 use ostrich_db::repository::{
-    ApprovalRepository, AuditRepository, CertificateRepository, CrlRepository,
+    ApprovalRepository, AuditRepository, CertificateRepository, CrlRepository, FqdnRepository,
 };
 use ostrich_x509::{extensions::SubjectAltName, parser::RevocationReason};
 use serde::{Deserialize, Serialize};
@@ -179,6 +179,26 @@ pub fn create_router(
         .route(
             "/api/v1/certificates/{id}/revoke",
             post(revoke_certificate).route_layer(authz(Permission::RevokeCertificate)),
+        )
+        // Per-FQDN certificate history. Reads are gated like the inventory
+        // (ViewCertificate); the renewal-contact write is a TSF-data management
+        // action (ModifyConfig / FMT_MTD.1). The literal `/notification` segment
+        // sits a level below `/{fqdn}`, so there is no static-vs-param conflict.
+        .route(
+            "/api/v1/fqdns",
+            get(list_fqdns).route_layer(authz(Permission::ViewCertificate)),
+        )
+        .route(
+            "/api/v1/fqdns/{fqdn}",
+            get(get_fqdn_record).route_layer(authz(Permission::ViewCertificate)),
+        )
+        .route(
+            "/api/v1/fqdns/{fqdn}/notification",
+            get(get_fqdn_notification).route_layer(authz(Permission::ViewCertificate)),
+        )
+        .route(
+            "/api/v1/fqdns/{fqdn}/notification",
+            put(set_fqdn_notification).route_layer(authz(Permission::ModifyConfig)),
         )
         .route(
             "/api/v1/crl",
@@ -448,6 +468,72 @@ struct CertificateListResponseDto {
     page_size: u32,
 }
 
+/// Query parameters for the distinct-FQDN listing.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListFqdnsQuery {
+    page: Option<u32>,
+    page_size: Option<u32>,
+    search: Option<String>,
+}
+
+/// One row in the distinct-FQDN listing.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FqdnSummaryDto {
+    fqdn: String,
+    certificate_count: u64,
+    first_seen: String,
+    last_issued: String,
+}
+
+/// Paginated response for the distinct-FQDN listing.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FqdnListResponseDto {
+    fqdns: Vec<FqdnSummaryDto>,
+    total: u64,
+    page: u32,
+    page_size: u32,
+}
+
+/// The aggregated history record for a single FQDN.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FqdnRecordDto {
+    fqdn: String,
+    /// Earliest issuance for this FQDN (RFC 3339), if any certs exist.
+    first_seen: Option<String>,
+    /// Most recent issuance/renewal for this FQDN (RFC 3339).
+    last_issued: Option<String>,
+    /// Requestor of the earliest certificate.
+    first_requested_by: Option<String>,
+    /// Requestor of the most recent certificate.
+    last_requested_by: Option<String>,
+    certificate_count: u64,
+    /// Operator-set renewal-notification contact, if configured.
+    notification_email: Option<String>,
+    /// Every certificate ever issued for this FQDN, newest first.
+    certificates: Vec<CertificateSummaryDto>,
+}
+
+/// The renewal-notification contact for an FQDN (GET/PUT).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FqdnNotificationDto {
+    fqdn: String,
+    email: Option<String>,
+    updated_by: Option<String>,
+    updated_at: Option<String>,
+}
+
+/// Request body for setting an FQDN's renewal-notification contact.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetFqdnNotificationBody {
+    email: String,
+}
+
 /// Inventory-wide certificate counts by status (dashboard summary cards).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -680,6 +766,178 @@ async fn certificate_stats(
         revoked: counts.revoked.max(0) as u64,
         expired: counts.expired.max(0) as u64,
         pending: counts.pending.max(0) as u64,
+    }))
+}
+
+/// List distinct FQDNs with per-name issuance summary (GET /api/v1/fqdns).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3 - Access enforcement (Permission::ViewCertificate)
+/// - NIAP PP-CA: FMT_SMF.1 - Security management: per-FQDN inventory query
+async fn list_fqdns(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Query(query): Query<ListFqdnsQuery>,
+) -> Result<Json<FqdnListResponseDto>> {
+    let repo = FqdnRepository::new(state.db_pool.clone());
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(50).clamp(1, 1000);
+    let offset = i64::from(page - 1) * i64::from(page_size);
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase);
+
+    let (rows, total) = repo
+        .list_fqdns(search.as_deref(), i64::from(page_size), offset)
+        .await?;
+    let fqdns = rows
+        .into_iter()
+        .map(|r| FqdnSummaryDto {
+            fqdn: r.fqdn,
+            certificate_count: r.certificate_count.max(0) as u64,
+            first_seen: r.first_seen.to_rfc3339(),
+            last_issued: r.last_issued.to_rfc3339(),
+        })
+        .collect();
+
+    tracing::info!(actor = %user.username, resource = "fqdns", page, total, "fqdn inventory listed");
+    Ok(Json(FqdnListResponseDto {
+        fqdns,
+        total: total.max(0) as u64,
+        page,
+        page_size,
+    }))
+}
+
+/// Aggregated certificate history for one FQDN (GET /api/v1/fqdns/{fqdn}).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3 - Access enforcement (Permission::ViewCertificate)
+/// - NIAP PP-CA: FMT_SMF.1 - Security management: per-FQDN certificate history
+/// - RFC 5280 §4.2.1.6 - the SubjectAltName binding being aggregated
+async fn get_fqdn_record(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(fqdn): Path<String>,
+) -> Result<Json<FqdnRecordDto>> {
+    let fqdn = fqdn.trim().to_lowercase();
+    let repo = FqdnRepository::new(state.db_pool.clone());
+    let now = chrono::Utc::now();
+
+    // Certs are newest-first; the oldest (history start) is last in the vec.
+    let certs = repo.certs_for_fqdn(&fqdn).await?;
+    let newest = certs.first();
+    let oldest = certs.last();
+
+    let certificates: Vec<CertificateSummaryDto> = certs
+        .iter()
+        .map(|c| CertificateSummaryDto {
+            id: c.id.to_string(),
+            serial_number: hex::encode(&c.serial_number),
+            subject: c.subject_dn.clone(),
+            issuer: c.issuer_dn.clone(),
+            valid_from: c.not_before.to_rfc3339(),
+            valid_to: c.not_after.to_rfc3339(),
+            status: cert_status_str(c, now).to_string(),
+            key_algorithm: None,
+        })
+        .collect();
+
+    let notification = repo.get_notification(&fqdn).await?;
+
+    tracing::info!(
+        actor = %user.username,
+        resource = "fqdn",
+        fqdn = %fqdn,
+        count = certs.len(),
+        "fqdn record viewed"
+    );
+    Ok(Json(FqdnRecordDto {
+        first_seen: oldest.map(|c| c.created_at.to_rfc3339()),
+        last_issued: newest.map(|c| c.created_at.to_rfc3339()),
+        first_requested_by: oldest.and_then(|c| c.requestor.clone()),
+        last_requested_by: newest.and_then(|c| c.requestor.clone()),
+        certificate_count: certs.len() as u64,
+        notification_email: notification.map(|n| n.email),
+        certificates,
+        fqdn,
+    }))
+}
+
+/// Read an FQDN's renewal-notification contact (GET .../notification).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3 - Access enforcement (Permission::ViewCertificate)
+async fn get_fqdn_notification(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(_user): AuthUser,
+    Path(fqdn): Path<String>,
+) -> Result<Json<FqdnNotificationDto>> {
+    let fqdn = fqdn.trim().to_lowercase();
+    let repo = FqdnRepository::new(state.db_pool.clone());
+    let dto = match repo.get_notification(&fqdn).await? {
+        Some(n) => FqdnNotificationDto {
+            fqdn: n.fqdn,
+            email: Some(n.email),
+            updated_by: n.updated_by,
+            updated_at: Some(n.updated_at.to_rfc3339()),
+        },
+        None => FqdnNotificationDto {
+            fqdn,
+            email: None,
+            updated_by: None,
+            updated_at: None,
+        },
+    };
+    Ok(Json(dto))
+}
+
+/// Set an FQDN's renewal-notification contact (PUT .../notification).
+///
+/// Storage + display only; no mail is sent (no mailer exists yet).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3 - Access enforcement (Permission::ModifyConfig)
+/// - NIST 800-53: AU-2 - Auditable event (actor + outcome logged)
+/// - NIAP PP-CA: FMT_MTD.1 - Management of TSF data (renewal contact)
+// POAM: emit a formal hash-chained AuditEvent (AU-10) for this config change once
+// a REST-accessible audit emitter is exposed; today it is a structured AU-2 log.
+async fn set_fqdn_notification(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(fqdn): Path<String>,
+    Json(body): Json<SetFqdnNotificationBody>,
+) -> Result<Json<FqdnNotificationDto>> {
+    let fqdn = fqdn.trim().to_lowercase();
+    let email = body.email.trim().to_string();
+    // SI-10: minimal input validation; the address is stored verbatim, never
+    // interpolated into a query (bound parameter).
+    if email.is_empty() || !email.contains('@') || email.len() > 254 {
+        return Err(Error::InvalidRequest(
+            "a valid email address is required".to_string(),
+        ));
+    }
+
+    let repo = FqdnRepository::new(state.db_pool.clone());
+    let n = repo
+        .set_notification(&fqdn, &email, Some(&user.username))
+        .await?;
+
+    tracing::info!(
+        actor = %user.username,
+        resource = "fqdn:notification",
+        fqdn = %fqdn,
+        outcome = "success",
+        "renewal-notification contact updated"
+    );
+    Ok(Json(FqdnNotificationDto {
+        fqdn: n.fqdn,
+        email: Some(n.email),
+        updated_by: n.updated_by,
+        updated_at: Some(n.updated_at.to_rfc3339()),
     }))
 }
 

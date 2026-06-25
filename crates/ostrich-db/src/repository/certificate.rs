@@ -317,6 +317,91 @@ impl CertificateRepository {
 
         Ok((rows, total))
     }
+
+    /// Backfill the `certificate_sans` FQDN index for certificates issued before
+    /// the index existed (or any row whose SAN extraction was previously skipped).
+    ///
+    /// Idempotent: only certificates with no `certificate_sans` rows are parsed,
+    /// and inserts use `ON CONFLICT DO NOTHING`. Returns the number of
+    /// certificates that gained at least one indexed name. Intended to run once
+    /// at CA startup after migrations; the steady-state cost is a single
+    /// anti-join that returns no rows.
+    pub async fn backfill_sans(&self) -> Result<u64> {
+        let rows = sqlx::query(
+            r#"
+            SELECT c.id AS id, c.der_encoded AS der_encoded
+            FROM certificates c
+            LEFT JOIN certificate_sans s ON s.certificate_id = c.id
+            WHERE s.certificate_id IS NULL
+            "#,
+        )
+        .fetch_all(self.pool.pool())
+        .await
+        .map_err(|e| Error::Query(e.to_string()))?;
+
+        let mut indexed = 0u64;
+        for row in &rows {
+            let id: Uuid = row.get("id");
+            let der: Vec<u8> = row.get("der_encoded");
+            let names = extract_cert_names(&der);
+            if names.is_empty() {
+                continue;
+            }
+            for (name, name_type) in names {
+                sqlx::query(
+                    r#"
+                    INSERT INTO certificate_sans (certificate_id, name, name_type)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (certificate_id, name) DO NOTHING
+                    "#,
+                )
+                .bind(id)
+                .bind(&name)
+                .bind(name_type)
+                .execute(self.pool.pool())
+                .await
+                .map_err(|e| Error::Query(e.to_string()))?;
+            }
+            indexed += 1;
+        }
+        Ok(indexed)
+    }
+}
+
+/// Extract the lowercased DNS names to index for FQDN lookup: every SAN
+/// `dnsName`, plus the Subject CN when it looks like a hostname. Returns
+/// `(name, name_type)` pairs deduplicated by name (a name that is both CN and
+/// SAN collapses to one, keeping the dnsName provenance). Best-effort: a DER
+/// that fails to parse yields no names (the caller proceeds without an index
+/// entry; the cert can still be backfilled later).
+fn extract_cert_names(der: &[u8]) -> Vec<(String, &'static str)> {
+    let mut out: Vec<(String, &'static str)> = Vec::new();
+
+    if let Ok(desc) = ostrich_x509::parser::describe_certificate(der) {
+        for san in desc.subject_alt_names {
+            if let Some(dns) = san.strip_prefix("DNS:") {
+                let n = dns.trim().to_lowercase();
+                if !n.is_empty() {
+                    out.push((n, "dnsName"));
+                }
+            }
+        }
+    }
+
+    if let Ok(dn) = ostrich_x509::parser::parse_subject_dn(der)
+        && let Some(cn) = dn.common_name
+    {
+        let n = cn.trim().to_lowercase();
+        // Only index a CN that looks like a hostname (has a dot, no spaces), so
+        // human-readable CNs ("Acme Device CA") don't pollute the FQDN list.
+        if !n.is_empty() && n.contains('.') && !n.contains(' ') {
+            out.push((n, "commonName"));
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|(n, _)| seen.insert(n.clone()));
+    out
 }
 
 #[async_trait]
@@ -338,6 +423,16 @@ impl super::Repository<Certificate> for CertificateRepository {
     }
 
     async fn create(&self, cert: &Certificate) -> Result<Certificate> {
+        // Certificate row + its FQDN (SAN/CN) index rows are written in one
+        // transaction so certificate_sans can never drift from certificates
+        // (every issued cert is immediately queryable by FQDN).
+        let mut tx = self
+            .pool
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| Error::Query(e.to_string()))?;
+
         // NIST 800-53: AU-3(1) - issuer_service/requestor/profile_name/metadata
         // carry issuance attribution and MUST be persisted (an earlier version
         // of this INSERT silently dropped them, and its explicit RETURNING
@@ -375,7 +470,7 @@ impl super::Repository<Certificate> for CertificateRepository {
         .bind(cert.request_id)
         .bind(cert.created_at)
         .bind(cert.updated_at)
-        .fetch_one(self.pool.pool())
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
             if let sqlx::Error::Database(db_err) = &e
@@ -388,6 +483,25 @@ impl super::Repository<Certificate> for CertificateRepository {
             Error::Query(e.to_string())
         })?;
 
+        // RFC 5280 §4.2.1.6: index the cert's DNS names (SAN dnsNames + hostname
+        // CN) so it shows up in per-FQDN history.
+        for (name, name_type) in extract_cert_names(&created.der_encoded) {
+            sqlx::query(
+                r#"
+                INSERT INTO certificate_sans (certificate_id, name, name_type)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (certificate_id, name) DO NOTHING
+                "#,
+            )
+            .bind(created.id)
+            .bind(&name)
+            .bind(name_type)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Query(e.to_string()))?;
+        }
+
+        tx.commit().await.map_err(|e| Error::Query(e.to_string()))?;
         Ok(created)
     }
 
