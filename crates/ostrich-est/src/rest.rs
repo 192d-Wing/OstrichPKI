@@ -1183,6 +1183,11 @@ async fn simple_reenroll(
 
     let mut subject_matches_prior = false;
     let mut had_prior_certificate = false;
+    // RFC 7030 §4.2.2: re-enrollment renews the SAME identity, so the new cert must
+    // carry the SAME certificate profile (and therefore EKUs) as the prior one —
+    // e.g. a `tls_server_client` node identity must stay server+client-capable, not
+    // silently narrow to the default client-only profile on renewal.
+    let mut prior_profile: Option<String> = None;
     for enrollment in &prior_enrollments {
         let Some(cert_id) = enrollment.certificate_id else {
             continue;
@@ -1197,7 +1202,12 @@ async fn simple_reenroll(
             && normalize_san_set(&prior.subject_alt_names) == requested_sans
         {
             subject_matches_prior = true;
-            break;
+            // Preserve the BROADEST capability ever issued to this identity, so a
+            // renewal never narrows a server+client node to client-only — and so a
+            // node previously narrowed (e.g. by an earlier client-only default) is
+            // healed back to its server+client profile on its next renewal. Scan
+            // all prior enrollments rather than breaking on the first match.
+            prior_profile = broadest_est_profile(prior_profile.take(), &enrollment.profile_name);
         }
     }
 
@@ -1257,7 +1267,13 @@ async fn simple_reenroll(
         ));
     };
 
-    let enroll_profile = resolve_enroll_profile(&state, &user).await;
+    // Reissue under the prior certificate's profile (preserving its EKUs per RFC
+    // 7030 §4.2.2). Re-validate it against the allowlist (SI-10) and fail secure to
+    // the resolved/default profile if it is unknown or no longer offerable.
+    let enroll_profile = match prior_profile {
+        Some(p) if OFFERABLE_EST_PROFILES.contains(&p.as_str()) => p,
+        _ => resolve_enroll_profile(&state, &user).await,
+    };
     let certificate_id = match ca_client
         .enroll(enrollment.id, &csr_der, client_identifier, &enroll_profile)
         .await
@@ -1639,6 +1655,38 @@ struct MintEnrollmentTokenRequest {
 /// SI-10: reject anything else so a token can never reference an unissuable or
 /// over-privileged profile.
 const OFFERABLE_EST_PROFILES: [&str; 3] = ["tls_client", "tls_server", "tls_server_client"];
+
+/// Capability rank of an EST certificate profile, used so re-enrollment can
+/// preserve the broadest EKU set ever issued to an identity (RFC 7030 §4.2.2 — a
+/// renewal must not silently narrow a server+client node to client-only).
+/// `tls_server_client` (serverAuth + clientAuth) outranks the single-EKU profiles.
+fn profile_capability_rank(profile: &str) -> u8 {
+    match profile {
+        "tls_server_client" => 2,
+        "tls_server" | "tls_client" => 1,
+        _ => 0,
+    }
+}
+
+/// Fold the broadest offerable profile seen so far with another candidate. Keeps
+/// the higher-capability profile; ignores unknown/unofferable names (fail secure).
+fn broadest_est_profile(current: Option<String>, candidate: &Option<String>) -> Option<String> {
+    let candidate = candidate
+        .as_deref()
+        .filter(|p| OFFERABLE_EST_PROFILES.contains(p));
+    match (current, candidate) {
+        (Some(cur), Some(cand)) => {
+            if profile_capability_rank(cand) > profile_capability_rank(&cur) {
+                Some(cand.to_string())
+            } else {
+                Some(cur)
+            }
+        }
+        (Some(cur), None) => Some(cur),
+        (None, Some(cand)) => Some(cand.to_string()),
+        (None, None) => None,
+    }
+}
 
 /// One-time response carrying the plaintext token. The token is never persisted
 /// in plaintext and cannot be retrieved again — treat it like an API key.
@@ -2124,6 +2172,36 @@ async fn delete_account_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Re-enrollment must preserve the broadest EKU profile ever issued to an
+    /// identity (RFC 7030 §4.2.2): a server+client node must not be narrowed to
+    /// client-only on renewal, and one already narrowed (e.g. by an earlier
+    /// client-only default) must heal back to server+client.
+    #[test]
+    fn reenroll_preserves_broadest_profile() {
+        // Bootstrap = tls_server_client; a buggy renewal later recorded tls_client.
+        // Folding all prior profiles must recover server+client regardless of order.
+        let narrowed_then_broad = broadest_est_profile(
+            broadest_est_profile(None, &Some("tls_client".to_string())),
+            &Some("tls_server_client".to_string()),
+        );
+        assert_eq!(narrowed_then_broad.as_deref(), Some("tls_server_client"));
+        let broad_then_narrowed = broadest_est_profile(
+            broadest_est_profile(None, &Some("tls_server_client".to_string())),
+            &Some("tls_client".to_string()),
+        );
+        assert_eq!(broad_then_narrowed.as_deref(), Some("tls_server_client"));
+
+        // Unknown / unofferable profile names are ignored (fail secure).
+        assert_eq!(
+            broadest_est_profile(Some("tls_server_client".into()), &Some("bogus".into()))
+                .as_deref(),
+            Some("tls_server_client")
+        );
+        assert_eq!(broadest_est_profile(None, &Some("bogus".into())), None);
+        assert_eq!(broadest_est_profile(None, &None), None);
+        assert!(profile_capability_rank("tls_server_client") > profile_capability_rank("tls_client"));
+    }
 
     #[test]
     fn test_est_path_prefix() {
