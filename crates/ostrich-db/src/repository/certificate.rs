@@ -250,12 +250,17 @@ impl CertificateRepository {
     ///   active). Any other value matches nothing.
     /// - `search`: case-insensitive **literal** substring (no LIKE wildcards)
     ///   matched against the subject DN and the hex-encoded serial number.
+    /// - `sort`: API column key (`serial` | `subject` | `issuer` | `expires`).
+    ///   Anything else (incl. `None`) falls back to the default `created_at DESC`.
+    /// - `descending`: direction for a recognized `sort` (ignored by the default).
     ///
     /// Returns `(page rows, total matching count)`.
     pub async fn list_filtered(
         &self,
         status: &str,
         search: Option<&str>,
+        sort: Option<&str>,
+        descending: bool,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<Certificate>, i64)> {
@@ -276,10 +281,22 @@ impl CertificateRepository {
             )
         "#;
 
+        // SI-10: the ORDER BY is built only from a closed whitelist (column from a
+        // fixed match, direction from a bool) — never from raw user input. A
+        // unique `id` tiebreaker keeps pagination deterministic across equal keys.
+        let dir = if descending { "DESC" } else { "ASC" };
+        let order_by = match sort {
+            Some("serial") => format!("serial_number {dir}"),
+            Some("subject") => format!("subject_dn {dir}"),
+            Some("issuer") => format!("issuer_dn {dir}"),
+            Some("expires") => format!("not_after {dir}"),
+            _ => "created_at DESC".to_string(),
+        };
+
         // SI-10: PREDICATE is a fixed fragment with $N placeholders; status/search
         // are bound, not interpolated. AssertSqlSafe (sqlx 0.9) marks it audited.
         let rows = sqlx::query_as::<_, Certificate>(sqlx::AssertSqlSafe(format!(
-            "SELECT * FROM certificates WHERE {PREDICATE} ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+            "SELECT * FROM certificates WHERE {PREDICATE} ORDER BY {order_by}, id LIMIT $3 OFFSET $4"
         )))
         .bind(status)
         .bind(search)

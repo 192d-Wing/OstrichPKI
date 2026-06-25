@@ -45,15 +45,39 @@ React console is the primary console, not a preview.
   `CollectionPreferences` (page-size selection wired into the server query + column
   visibility with `alwaysVisible` on the actions/timestamp anchors), `resizableColumns`,
   and `stickyHeader`.
-- **Sortable columns**: [not done — needs backend] both tables are server-paginated, so
-  client-side `sortingColumn` would only sort the visible page (misleading). Real sorting
-  needs the CA to accept a `sort`/`order` query param on `GET /api/v1/certificates` and the
-  audit list endpoint; wire the column `sortingField` + `onSortingChange` into the query
-  once that lands.
+- **Sortable columns**: [done] server-side sort across both tables. The CA accepts
+  `sort`/`order` query params on `GET /api/v1/certificates` (keys: `serial`, `subject`,
+  `issuer`, `expires`) and the audit list (keys: `timestamp`, `eventType`, `actor`,
+  `target`, `action`, `outcome`); the repo `list_filtered` builds a whitelisted `ORDER BY`
+  (column from a closed match, direction from a bool, `, id` tiebreaker for stable
+  pagination — SI-10 safe). The web-ui proxy forwards the params; `certificates.tsx` /
+  `audit.tsx` wire `sortingColumn`/`sortingDescending`/`onSortingChange` and reset to page 1
+  on sort change. Status/`signed` columns are intentionally not sortable (derived values).
 - **Cloudscape density / visual-refresh tokens**: [not started] currently default theme;
   consider enabling density + visual-refresh via `@cloudscape-design/global-styles`.
-- **Mock pages**: [not started] Users, Tokens (SCMS), Approvals are placeholders (no CA
-  endpoint) — wire to real endpoints when the backend exposes them.
+
+#### Mock pages — won't wire; gap to close in the backend first
+
+Users, Tokens (SCMS), and Approvals are placeholder routes (`Placeholder` component) gated
+by `manage_users` / `view_tokens` / `view_approvals`. We are **not** wiring them to stub or
+mock data — they stay placeholders until the CA exposes real endpoints. To complete the gap
+each was meant to serve, the backend needs:
+
+- **Users** (`manage_users`): account-management REST on the CA — `GET /api/v1/users`
+  (paged list: id, username, roles, status, created/last-login), `POST` (create),
+  `PATCH /api/v1/users/{id}` (role/status changes), `DELETE`/disable. NIST AC-2 (account
+  management) + audit events (AU-2) on every mutation. Then build a Cloudscape table + create/
+  edit forms mirroring `certificates.tsx`.
+- **Tokens / SCMS** (`view_tokens`): SCMS enrollment-token endpoints — `GET /api/v1/scms/tokens`
+  (paged: id, device/subject, status, issued/expiry), issue + revoke actions. IA-5
+  (authenticator management). Then a table + issue/revoke modals.
+- **Approvals** (`view_approvals`): a dual-control request queue — `GET /api/v1/approvals`
+  (pending requests: id, type, requester, payload summary, state), `POST
+  /api/v1/approvals/{id}/approve|reject`. Maps to AC-3 / separation-of-duties; pairs with
+  whichever operations require maker-checker. Then a queue table + approve/reject flow.
+
+Until those endpoints exist, the nav entries remain permission-gated placeholders (no
+broken/mock data shown to operators).
 
 ### 4. `/` → `/next` cutover  — full cutover, Yew retired  [done — source cleanup pending]
 React is now the primary app served at `/`; the Yew SPA is retired.
