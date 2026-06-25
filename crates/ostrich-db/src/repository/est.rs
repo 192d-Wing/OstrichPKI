@@ -396,6 +396,32 @@ impl EstRepository {
         Ok(rows)
     }
 
+    /// List enrollment tokens minted for a specific identity (the CN/FQDN a
+    /// bearer may enroll as), most recent first. Backs the per-FQDN "EST Tokens"
+    /// view. Matched case-insensitively (DNS names are case-insensitive); never
+    /// returns the token itself.
+    pub async fn list_enrollment_tokens_for_identity(
+        &self,
+        identity: &str,
+        limit: i64,
+    ) -> Result<Vec<EstEnrollmentTokenRow>> {
+        let rows = sqlx::query_as::<_, EstEnrollmentTokenRow>(
+            r#"
+            SELECT id, identity, created_by, created_at, expires_at, used_at, used_by_cert
+            FROM est_enrollment_tokens
+            WHERE LOWER(identity) = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(identity)
+        .bind(limit)
+        .fetch_all(self.pool.pool())
+        .await?;
+
+        Ok(rows)
+    }
+
     /// Revoke a live enrollment token before it is used, by marking it consumed
     /// with no associated certificate (so it derives as "revoked", distinct from
     /// "used"). Returns `true` only if a live token was actually revoked.
