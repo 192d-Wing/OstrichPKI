@@ -1815,6 +1815,32 @@ adds a self-service enrollment portal authenticated by mTLS client certificate.
   `DatabaseAuditSink` (AU-9(3)/AU-10 hash chain + signing) once the portal is
   provisioned with the audit store.
 
+### Identity bridge (portal → CA/EST)
+
+The portal proxies an allow-listed set of CA/EST routes; the backends consume the
+forwarded identity so they enforce RBAC as the actual NPE operator.
+
+- **IA-2 / AC-17 / SC-8 (mTLS-gated trust):** the portal dials the backends over
+  mTLS, presenting its service client certificate
+  (`services/npe-portal/src/server/backend_client.rs`). The CA/EST trust the
+  forwarded `X-Npe-*` identity ONLY when the verified TLS peer-certificate subject
+  is in a configured allow-list —
+  `crates/ostrich-common/src/auth/middleware.rs` (`TrustedProxyAuthLayer`,
+  `TrustedProxyConfig`). A composite layer accepts the portal identity OR a bearer
+  token, so the admin console keeps working on the same listener.
+- **AC-3 / AC-6 (Access Enforcement / Least Privilege):** the proxied request is
+  authenticated as a synthetic `AuthenticatedUser` whose roles come from the
+  forwarded role names and whose id is a stable UUIDv5 of the subject DN
+  (`AuthenticatedUser::from_trusted_proxy`), so own-scope checks (e.g. "my
+  applications") resolve consistently across requests. The portal strips any
+  inbound `X-Npe-*` headers so the identity cannot be spoofed.
+- **CM-6 (Fail Secure):** `ca-server` refuses to start when
+  `CA_TRUSTED_PROXY_SUBJECTS` is set without a client CA, and the trusted-proxy
+  path is disabled entirely when the allow-list is empty.
+- POAM: the `est-server` binary wiring (a `--portal-client-ca` distinct from the
+  EST enrollment client CA) is pending; the `ostrich-est` crate already supports
+  the bridge (`EstState::with_trusted_proxy`).
+
 ---
 
 ## Document Change History

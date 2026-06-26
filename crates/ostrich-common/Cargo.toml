@@ -26,7 +26,8 @@ anyhow = { workspace = true }
 chrono = { workspace = true }
 
 # Utilities
-uuid = { workspace = true }
+# v5 (name-based UUID) derives a stable id from a trusted-proxy subject DN.
+uuid = { workspace = true, features = ["v5"] }
 base64 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }

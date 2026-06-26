@@ -110,6 +110,16 @@ struct Args {
     #[arg(long, env = "TLS_CLIENT_CA_FILE")]
     tls_client_ca: Option<String>,
 
+    /// Comma-separated RFC 4514 subject DNs of trusted reverse proxies (the NPE
+    /// portal's service certificate). When set, the CA accepts the proxy's
+    /// mTLS-forwarded X-Npe-* identity headers in addition to bearer tokens (the
+    /// identity bridge), and the client-cert verifier is set to optional so
+    /// bearer clients without a certificate still connect. Requires
+    /// --tls-client-ca to be the CA that issues the portal's certificate.
+    /// NIST 800-53: IA-2 / AC-3 / AC-17
+    #[arg(long, env = "CA_TRUSTED_PROXY_SUBJECTS", value_delimiter = ',')]
+    trusted_proxy_subjects: Vec<String>,
+
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     log_level: String,
@@ -219,6 +229,27 @@ async fn main() -> Result<()> {
         )))),
     );
 
+    // Identity bridge: if trusted-proxy subjects are configured, the CA accepts
+    // the NPE portal's mTLS-forwarded identity. Requires a client CA so the
+    // handshake can verify the portal certificate.
+    let trusted_proxy = if args.trusted_proxy_subjects.is_empty() {
+        None
+    } else {
+        if args.tls_client_ca.is_none() {
+            anyhow::bail!(
+                "CA_TRUSTED_PROXY_SUBJECTS is set but no --tls-client-ca is configured; \
+                 the portal certificate cannot be verified (NIST 800-53: IA-2)"
+            );
+        }
+        tracing::info!(
+            subjects = ?args.trusted_proxy_subjects,
+            "Identity bridge enabled: trusting NPE portal mTLS-forwarded identity"
+        );
+        Some(Arc::new(ostrich_common::auth::TrustedProxyConfig::new(
+            args.trusted_proxy_subjects.clone(),
+        )))
+    };
+
     let app = match &ca {
         Some(ca) => {
             let rbac_policy = Arc::new(ostrich_common::auth::RbacPolicy::new());
@@ -261,6 +292,7 @@ async fn main() -> Result<()> {
                 approval_engine,
                 approval_repo,
                 db_pool.clone(),
+                trusted_proxy.clone(),
             )
         }
         None => {
@@ -293,7 +325,11 @@ async fn main() -> Result<()> {
         args.tls_cert,
         args.tls_key,
         args.tls_client_ca,
-    )?;
+    )?
+    // With the identity bridge on, request (but don't require) a client cert:
+    // the portal presents one and takes the trusted-proxy path, while bearer
+    // clients (admin console) present none and still complete the handshake.
+    .map(|s| s.with_optional_client_auth(trusted_proxy.is_some()));
     ostrich_common::tls::serve(rest_addr, app, tls.as_ref(), shutdown_signal()).await?;
 
     tracing::info!("CA Server shutdown complete");

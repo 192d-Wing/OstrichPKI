@@ -107,11 +107,14 @@ async fn proxy_to_service(
     // and own-scope RBAC (NIST AC-3). These are trusted because the portal
     // stripped any inbound X-Npe-* above and the proxy is the only ingress.
     // The backend MUST only accept these on the portal's mTLS channel.
+    use ostrich_common::auth::{
+        HEADER_NPE_ROLES, HEADER_NPE_SESSION, HEADER_NPE_SUBJECT, HEADER_NPE_USER,
+    };
     proxy_request = proxy_request
-        .header("x-npe-user", &session.common_name)
-        .header("x-npe-subject", &session.subject_dn)
-        .header("x-npe-roles", session.roles.join(","))
-        .header("x-npe-session-id", &session.id);
+        .header(HEADER_NPE_USER, &session.common_name)
+        .header(HEADER_NPE_SUBJECT, &session.subject_dn)
+        .header(HEADER_NPE_ROLES, session.roles.join(","))
+        .header(HEADER_NPE_SESSION, &session.id);
 
     let proxy_request = match proxy_request.body(body) {
         Ok(req) => req,

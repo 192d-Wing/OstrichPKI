@@ -143,6 +143,38 @@ impl AuthenticatedUser {
         }
     }
 
+    /// Build a synthetic authenticated user from a trusted reverse proxy's
+    /// asserted identity (e.g. the NPE portal forwarding `X-Npe-*` headers over a
+    /// verified mTLS channel).
+    ///
+    /// The `id` is a deterministic UUIDv5 over the subject DN, so the same NPE
+    /// identity maps to the same `UserId` across requests without a database
+    /// lookup. This is what makes own-scope work: an application submitted by an
+    /// identity and that identity's later "my applications" query resolve to the
+    /// same requestor id.
+    ///
+    /// SECURITY: callers MUST only construct this after verifying the request
+    /// arrived over the trusted proxy's authenticated channel (see
+    /// [`super::middleware::TrustedProxyAuthLayer`]); the asserted identity is
+    /// otherwise unauthenticated and spoofable.
+    ///
+    /// # COMPLIANCE MAPPING
+    /// - NIST 800-53: IA-2 (identity asserted by the trusted proxy), AC-3
+    /// - NIAP PP-CA: FIA_UAU.1
+    pub fn from_trusted_proxy(subject_dn: &str, username: &str, roles: Vec<Role>) -> Self {
+        // Fixed namespace so v5 ids are stable and collision-resistant across
+        // deployments; the name is the RFC 4514 subject DN.
+        const NPE_PROXY_NAMESPACE: uuid::Uuid =
+            uuid::Uuid::from_u128(0x4f_53_54_52_49_43_48_4e_50_45_50_52_4f_58_59_30);
+        let id = UserId::from_uuid(uuid::Uuid::new_v5(
+            &NPE_PROXY_NAMESPACE,
+            subject_dn.as_bytes(),
+        ));
+        let mut user = Self::new(id, username.to_string(), roles, AuthMethod::Certificate);
+        user.certificate_subject = Some(subject_dn.to_string());
+        user
+    }
+
     /// Check if user has a specific role
     ///
     /// NIAP PP-CA: FMT_SMR.2 - Role verification

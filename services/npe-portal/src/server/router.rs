@@ -17,16 +17,13 @@ use axum::{
     routing::{get, post},
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use hyper_util::client::legacy::Client;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::TokioExecutor;
 use ostrich_common::tls::PeerCertificate;
 use serde_json::json;
 use std::sync::Arc;
 use tower_http::services::ServeDir;
 
 use super::{
-    audit,
+    audit, backend_client,
     config::NpePortalConfig,
     middleware::{csp_middleware, require_session},
     oid, proxy,
@@ -34,9 +31,9 @@ use super::{
     template,
 };
 
-/// Pooled HTTP client used by the backend proxy (connections are reused across
-/// requests rather than dialed per call).
-pub type HttpClient = Client<HttpConnector, axum::body::Body>;
+/// Pooled HTTP(S) client used by the backend proxy (mTLS-capable; see
+/// [`backend_client`]).
+pub use backend_client::HttpClient;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -71,7 +68,7 @@ pub async fn create_router(config: NpePortalConfig) -> Result<Router> {
         config.session.inactivity_timeout_secs,
         config.session.absolute_timeout_secs,
     ));
-    let http_client: HttpClient = Client::builder(TokioExecutor::new()).build_http();
+    let http_client = backend_client::build(&config.backend)?;
     let state = AppState {
         config: config.clone(),
         session_manager,
