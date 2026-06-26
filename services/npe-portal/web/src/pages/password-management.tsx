@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
   Alert,
@@ -16,7 +16,7 @@ import {
   SpaceBetween,
 } from "@cloudscape-design/components";
 
-import { portalApi, type MintTokenResponse } from "@/lib/portal-api";
+import { portalApi } from "@/lib/portal-api";
 
 const MAX_USES_CAP = 1000;
 
@@ -24,7 +24,17 @@ export function PasswordManagementPage({ multi }: Readonly<{ multi: boolean }>) 
   const [identity, setIdentity] = useState("");
   const [maxUses, setMaxUses] = useState("5");
   const [show, setShow] = useState(false);
+  const [pendingPrint, setPendingPrint] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Print is the credential handout, so it must contain the real token, not the
+  // masked dots. Reveal first (setShow), then print on the next render.
+  useEffect(() => {
+    if (pendingPrint && show) {
+      globalThis.print();
+      setPendingPrint(false);
+    }
+  }, [pendingPrint, show]);
 
   const mutation = useMutation({
     mutationFn: () => portalApi.mintToken(identity.trim(), multi ? Number(maxUses) : 1),
@@ -50,7 +60,7 @@ export function PasswordManagementPage({ multi }: Readonly<{ multi: boolean }>) 
     mutation.mutate();
   }
 
-  const result = mutation.data as MintTokenResponse | undefined;
+  const result = mutation.data;
   const title = multi ? "Generate Multi-Use Token" : "Generate Single-Use Token";
   const description = multi
     ? "Mint an EST enrollment password several devices may enroll with (8-hour expiry)."
@@ -99,7 +109,13 @@ export function PasswordManagementPage({ multi }: Readonly<{ multi: boolean }>) 
                   },
                 ]}
               />
-              <Button iconName="file" onClick={() => globalThis.print()}>
+              <Button
+                iconName="file"
+                onClick={() => {
+                  setShow(true);
+                  setPendingPrint(true);
+                }}
+              >
                 Print
               </Button>
             </SpaceBetween>
@@ -128,7 +144,7 @@ export function PasswordManagementPage({ multi }: Readonly<{ multi: boolean }>) 
                   <FormField
                     label="Number of devices"
                     description={`How many devices may enroll with this password (2–${MAX_USES_CAP}).`}
-                    errorText={!usesValid ? `Enter a number between 2 and ${MAX_USES_CAP}.` : undefined}
+                    errorText={usesValid ? undefined : `Enter a number between 2 and ${MAX_USES_CAP}.`}
                   >
                     <Input
                       value={maxUses}

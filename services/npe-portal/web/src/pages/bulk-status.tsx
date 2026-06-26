@@ -18,6 +18,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { portalApi, type ApplicationInfo } from "@/lib/portal-api";
 
 const MAX_IDS = 100;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function BulkStatusPage() {
   const [raw, setRaw] = useState("");
@@ -40,6 +41,13 @@ export function BulkStatusPage() {
     }
     if (ids.length > MAX_IDS) {
       setError(`Too many IDs (max ${MAX_IDS}).`);
+      return;
+    }
+    // Validate UUID shape client-side; the server rejects the WHOLE request on a
+    // single malformed id, so flag the offending entry here instead.
+    const bad = ids.find((id) => !UUID_RE.test(id));
+    if (bad) {
+      setError(`Not a valid Request ID: ${bad}`);
       return;
     }
     mutation.mutate(ids);
