@@ -236,6 +236,159 @@ impl MtlsOrBearerAuthLayer {
     }
 }
 
+/// Header carrying the proxied user's identity (Common Name / username).
+pub const HEADER_NPE_USER: &str = "x-npe-user";
+/// Header carrying the proxied user's full RFC 4514 subject DN.
+pub const HEADER_NPE_SUBJECT: &str = "x-npe-subject";
+/// Header carrying the proxied user's comma-separated role names.
+pub const HEADER_NPE_ROLES: &str = "x-npe-roles";
+/// Header carrying the originating portal session id (audit correlation).
+pub const HEADER_NPE_SESSION: &str = "x-npe-session-id";
+
+/// Configuration for the trusted-proxy authentication path.
+///
+/// `allowed_subjects` are the RFC 4514 subject DNs of the reverse proxy's client
+/// certificate(s) (e.g. the NPE portal's service certificate). The trusted-proxy
+/// path is taken ONLY when the verified TLS peer certificate's subject is in this
+/// set; an empty set disables the path entirely (fail closed).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3 (access enforcement), SC-8/AC-17 (mTLS-gated trust)
+/// - NIAP PP-CA: FIA_UAU.1 / FTP_ITC.1
+#[derive(Debug, Clone, Default)]
+pub struct TrustedProxyConfig {
+    /// RFC 4514 subject DNs of trusted proxy client certificates.
+    pub allowed_subjects: Vec<String>,
+}
+
+impl TrustedProxyConfig {
+    /// Build from a list of trusted subject DNs.
+    pub fn new(allowed_subjects: Vec<String>) -> Self {
+        Self { allowed_subjects }
+    }
+
+    /// Whether a verified peer-certificate subject DN is a trusted proxy.
+    pub fn is_trusted_subject(&self, subject_dn: &str) -> bool {
+        self.allowed_subjects.iter().any(|s| s == subject_dn)
+    }
+
+    /// Whether the trusted-proxy path is enabled at all.
+    pub fn is_enabled(&self) -> bool {
+        !self.allowed_subjects.is_empty()
+    }
+}
+
+/// Parse the RFC 4514 subject DN from a DER end-entity certificate, matching the
+/// rendering used by [`super::mtls`] so configured `allowed_subjects` compare
+/// verbatim.
+fn peer_cert_subject(cert_der: &[u8]) -> Option<String> {
+    use x509_cert::der::Decode;
+    x509_cert::Certificate::from_der(cert_der)
+        .ok()
+        .map(|c| c.tbs_certificate.subject.to_string())
+}
+
+/// Build a synthetic [`AuthenticatedUser`] from the trusted-proxy identity
+/// headers. Returns `None` if the mandatory user header is missing/empty.
+fn build_trusted_proxy_user(headers: &header::HeaderMap) -> Option<AuthenticatedUser> {
+    let get = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+
+    let username = get(HEADER_NPE_USER).map(str::trim).filter(|s| !s.is_empty())?;
+    // The subject DN defaults to the username when not supplied (own-scope id is
+    // derived from it, so a stable value is required).
+    let subject = get(HEADER_NPE_SUBJECT)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(username);
+    let roles: Vec<super::roles::Role> = get(HEADER_NPE_ROLES)
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(super::roles::Role::from_name)
+        .collect();
+
+    Some(AuthenticatedUser::from_trusted_proxy(subject, username, roles))
+}
+
+/// Composite layer: a verified, allow-listed reverse-proxy client certificate
+/// authenticates the request using the proxy's asserted `X-Npe-*` identity
+/// headers; otherwise the request falls back to bearer-token authentication.
+///
+/// This lets one CA/EST listener serve both the NPE portal (mTLS + forwarded
+/// identity) and the admin console / direct API (bearer token) without a second
+/// port. The trust gate is strict: the header identity is honoured ONLY when the
+/// TLS handshake presented a certificate whose subject is in
+/// [`TrustedProxyConfig::allowed_subjects`]. A trusted proxy that omits the
+/// identity headers is rejected (it must not silently fall through to bearer).
+///
+/// Pair with an optional-client-auth TLS listener
+/// ([`crate::tls::TlsSettings::with_optional_client_auth`]) so bearer clients
+/// that present no certificate still complete the handshake.
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: IA-2 / AC-3 / AC-17 - mTLS-gated proxied identity, bearer fallback
+/// - NIAP PP-CA: FIA_UAU.1 / FTP_ITC.1
+#[allow(dead_code)]
+pub struct TrustedProxyAuthLayer;
+
+impl TrustedProxyAuthLayer {
+    /// Middleware: trusted-proxy identity if the peer cert is an allow-listed
+    /// proxy, otherwise bearer-token authentication.
+    pub async fn authenticate(
+        State((provider, config)): State<(Arc<dyn AuthProvider>, Arc<TrustedProxyConfig>)>,
+        mut req: Request,
+        next: Next,
+    ) -> Result<Response, AuthResponse> {
+        // Trusted-proxy path: only when a verified peer certificate is present
+        // AND its subject is an allow-listed proxy.
+        if config.is_enabled()
+            && let Some(cert_der) = req
+                .extensions()
+                .get::<PeerCertificate>()
+                .and_then(|p| p.0.clone())
+            && let Some(subject) = peer_cert_subject(&cert_der)
+            && config.is_trusted_subject(&subject)
+        {
+            // The proxy is trusted; its asserted identity headers are required.
+            let user = build_trusted_proxy_user(req.headers()).ok_or_else(|| {
+                warn!(
+                    proxy_subject = %subject,
+                    "trusted proxy presented no {HEADER_NPE_USER} identity header"
+                );
+                AuthResponse::Unauthorized
+            })?;
+            debug!(
+                user = %user.username,
+                proxy_subject = %subject,
+                "authenticated via trusted-proxy identity bridge"
+            );
+            req.extensions_mut().insert(user);
+            return Ok(next.run(req).await);
+        }
+
+        // Bearer fallback (admin console / direct API).
+        let token = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|h| h.strip_prefix("Bearer "))
+            .ok_or_else(|| {
+                debug!("No trusted-proxy identity and no Bearer token presented");
+                AuthResponse::Unauthorized
+            })?;
+        let session_info = provider.validate_session(token).await.map_err(|e| {
+            warn!(error = %e, "Session validation failed");
+            match e {
+                AuthError::SessionExpired => AuthResponse::SessionExpired,
+                _ => AuthResponse::Unauthorized,
+            }
+        })?;
+        req.extensions_mut().insert(session_info.user);
+        Ok(next.run(req).await)
+    }
+}
+
 /// Authorization layer for Axum
 ///
 /// Checks if authenticated user has required permission.
@@ -425,6 +578,61 @@ mod tests {
 
         let resp = AuthResponse::SessionExpired.into_response();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_trusted_proxy_user_id_is_deterministic_per_subject() {
+        let a = AuthenticatedUser::from_trusted_proxy(
+            "CN=DOE.JOHN.A.123,O=U.S. Government,C=US",
+            "DOE.JOHN.A.123",
+            vec![Role::PkiSponsor],
+        );
+        let b = AuthenticatedUser::from_trusted_proxy(
+            "CN=DOE.JOHN.A.123,O=U.S. Government,C=US",
+            "DOE.JOHN.A.123",
+            vec![Role::PkiSponsor],
+        );
+        // Same subject -> same id (own-scope stability across requests).
+        assert_eq!(a.id, b.id);
+        assert_eq!(a.certificate_subject.as_deref(), Some("CN=DOE.JOHN.A.123,O=U.S. Government,C=US"));
+
+        // Different subject -> different id.
+        let c = AuthenticatedUser::from_trusted_proxy("CN=OTHER", "OTHER", vec![]);
+        assert_ne!(a.id, c.id);
+    }
+
+    #[test]
+    fn test_trusted_proxy_config_gate() {
+        let cfg = TrustedProxyConfig::new(vec!["CN=npe-portal,O=Ostrich".to_string()]);
+        assert!(cfg.is_enabled());
+        assert!(cfg.is_trusted_subject("CN=npe-portal,O=Ostrich"));
+        assert!(!cfg.is_trusted_subject("CN=attacker"));
+
+        // Empty config disables the path (fail closed).
+        let off = TrustedProxyConfig::default();
+        assert!(!off.is_enabled());
+        assert!(!off.is_trusted_subject("CN=npe-portal,O=Ostrich"));
+    }
+
+    #[test]
+    fn test_build_trusted_proxy_user_from_headers() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(HEADER_NPE_USER, "DOE.JOHN.A.123".parse().unwrap());
+        headers.insert(HEADER_NPE_SUBJECT, "CN=DOE.JOHN.A.123".parse().unwrap());
+        headers.insert(
+            HEADER_NPE_ROLES,
+            "pki_sponsor,bogus_role,registration_authority".parse().unwrap(),
+        );
+
+        let user = build_trusted_proxy_user(&headers).expect("user");
+        assert_eq!(user.username, "DOE.JOHN.A.123");
+        // Known roles parsed; unknown role names silently dropped.
+        assert!(user.has_role(Role::PkiSponsor));
+        assert!(user.has_role(Role::RegistrationAuthority));
+        assert_eq!(user.roles.len(), 2);
+
+        // Missing the mandatory user header -> None.
+        assert!(build_trusted_proxy_user(&header::HeaderMap::new()).is_none());
     }
 
     #[test]

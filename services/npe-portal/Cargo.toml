@@ -62,9 +62,12 @@ uuid = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 
-# TLS
+# TLS — mTLS HTTPS client to the CA/EST backends (identity bridge). hyper-rustls
+# wires the rustls client config (aws-lc-rs/FIPS provider) into the hyper client.
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1"] }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

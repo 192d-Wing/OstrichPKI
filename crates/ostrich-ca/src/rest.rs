@@ -33,7 +33,10 @@ use axum::{
 };
 use base64::{Engine, prelude::BASE64_STANDARD};
 use ostrich_common::auth::provider::AuthProvider;
-use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy};
+use ostrich_common::auth::{
+    AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy, TrustedProxyAuthLayer,
+    TrustedProxyConfig,
+};
 use ostrich_common::types::DistinguishedName;
 use ostrich_db::DatabasePool;
 use ostrich_db::models::Certificate;
@@ -93,6 +96,10 @@ pub fn create_router(
     approval_engine: Arc<ApprovalEngine>,
     approval_repo: Arc<ApprovalRepository>,
     db_pool: DatabasePool,
+    // When set (non-empty allow-list), protected routes accept the NPE portal's
+    // mTLS-forwarded identity in addition to bearer tokens (the identity bridge).
+    // `None` keeps bearer-only auth.
+    trusted_proxy: Option<Arc<TrustedProxyConfig>>,
 ) -> Router {
     let state = Arc::new(ApiState::new(
         ca,
@@ -255,11 +262,21 @@ pub fn create_router(
         .route(
             "/api/v1/approvals/{id}/reject",
             post(reject_request).route_layer(authz(Permission::ApproveRequest)),
-        )
-        .layer(middleware::from_fn_with_state(
+        );
+
+    // Authentication layer. With a trusted-proxy config, use the composite layer
+    // that accepts the NPE portal's mTLS-forwarded identity OR a bearer token;
+    // otherwise bearer-only. NIST 800-53: IA-2 / AC-3.
+    let protected_routes = match trusted_proxy {
+        Some(cfg) => protected_routes.layer(middleware::from_fn_with_state(
+            (auth_provider.clone(), cfg),
+            TrustedProxyAuthLayer::authenticate,
+        )),
+        None => protected_routes.layer(middleware::from_fn_with_state(
             auth_provider.clone(),
             AuthLayer::authenticate,
-        ));
+        )),
+    };
 
     // Merge public and protected routes
     Router::new()
