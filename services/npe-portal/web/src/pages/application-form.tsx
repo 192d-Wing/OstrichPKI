@@ -16,7 +16,7 @@ import {
   Textarea,
 } from "@cloudscape-design/components";
 
-import { portalApi, type SubmitApplicationResponse } from "@/lib/portal-api";
+import { portalApi } from "@/lib/portal-api";
 
 const PROFILES = [
   { label: "TLS Client", value: "tls_client" },
@@ -51,6 +51,13 @@ export function ApplicationForm({
   const csrValid = csr.trim().includes(CSR_MARKER);
   const canSubmit = csrValid && emailValid && !mutation.isPending;
 
+  // Editing any field after a submission clears the stale success/Request-ID
+  // banner so it can never appear to describe the current (edited) input.
+  function clearStale() {
+    if (mutation.data || mutation.isError) mutation.reset();
+    if (error) setError(null);
+  }
+
   function onSubmit() {
     if (!csrValid) {
       setError("Paste a valid PKCS #10 PEM certificate request.");
@@ -63,7 +70,7 @@ export function ApplicationForm({
     mutation.mutate();
   }
 
-  const result = mutation.data as SubmitApplicationResponse | undefined;
+  const result = mutation.data;
 
   return (
     <ContentLayout header={<Header variant="h1" description={description}>{title}</Header>}>
@@ -118,7 +125,10 @@ export function ApplicationForm({
               >
                 <Input
                   value={email}
-                  onChange={(e) => setEmail(e.detail.value)}
+                  onChange={(e) => {
+                    clearStale();
+                    setEmail(e.detail.value);
+                  }}
                   type="email"
                   placeholder="first.last@example.mil"
                 />
@@ -126,11 +136,12 @@ export function ApplicationForm({
               <FormField label="Certificate profile">
                 <Select
                   selectedOption={profile}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    clearStale();
                     setProfile(
                       PROFILES.find((p) => p.value === e.detail.selectedOption.value) ?? PROFILES[0],
-                    )
-                  }
+                    );
+                  }}
                   options={PROFILES}
                 />
               </FormField>
@@ -141,7 +152,10 @@ export function ApplicationForm({
               >
                 <Textarea
                   value={csr}
-                  onChange={(e) => setCsr(e.detail.value)}
+                  onChange={(e) => {
+                    clearStale();
+                    setCsr(e.detail.value);
+                  }}
                   rows={10}
                   placeholder={CSR_MARKER}
                 />

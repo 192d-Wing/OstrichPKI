@@ -999,7 +999,7 @@ async fn consume_enrollment_token_if_present(
         .await
     {
         Ok(true) => {
-            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token consumed (single-use)");
+            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token use consumed");
             ostrich_audit::EventOutcome::Success
         }
         Ok(false) => {
@@ -1917,11 +1917,18 @@ async fn list_enrollment_tokens(
     let tokens = rows
         .into_iter()
         .map(|r| {
-            let status = match (&r.used_at, &r.used_by_cert) {
-                (Some(_), Some(_)) => "used",
-                (Some(_), None) => "revoked",
-                (None, _) if r.expires_at <= now => "expired",
-                (None, _) => "live",
+            // Derive status from the unambiguous lifecycle fields. `used_at` and
+            // `used_by_cert` cannot distinguish revoked-after-partial-use from
+            // exhausted-by-use for a multi-use token, so we key on `revoked_at`
+            // and `uses_remaining` instead.
+            let status = if r.revoked_at.is_some() {
+                "revoked"
+            } else if r.uses_remaining <= 0 {
+                "used"
+            } else if r.expires_at <= now {
+                "expired"
+            } else {
+                "live"
             };
             EnrollmentTokenSummaryDto {
                 id: r.id.to_string(),

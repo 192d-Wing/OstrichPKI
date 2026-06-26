@@ -26,6 +26,8 @@ pub struct EstEnrollmentTokenRow {
     pub max_uses: i32,
     /// Remaining uses; the token is live while this is > 0.
     pub uses_remaining: i32,
+    /// When the token was administratively revoked (NULL = not revoked).
+    pub revoked_at: Option<DateTime<Utc>>,
 }
 
 /// EST Repository
@@ -406,7 +408,7 @@ impl EstRepository {
         let rows = sqlx::query_as::<_, EstEnrollmentTokenRow>(
             r#"
             SELECT id, identity, created_by, created_at, expires_at, used_at, used_by_cert,
-                   max_uses, uses_remaining
+                   max_uses, uses_remaining, revoked_at
             FROM est_enrollment_tokens
             ORDER BY created_at DESC
             LIMIT $1
@@ -431,7 +433,7 @@ impl EstRepository {
         let rows = sqlx::query_as::<_, EstEnrollmentTokenRow>(
             r#"
             SELECT id, identity, created_by, created_at, expires_at, used_at, used_by_cert,
-                   max_uses, uses_remaining
+                   max_uses, uses_remaining, revoked_at
             FROM est_enrollment_tokens
             WHERE LOWER(identity) = $1
             ORDER BY created_at DESC
@@ -454,7 +456,7 @@ impl EstRepository {
         let result = sqlx::query(
             r#"
             UPDATE est_enrollment_tokens
-            SET uses_remaining = 0, used_at = now()
+            SET uses_remaining = 0, revoked_at = now()
             WHERE id = $1 AND uses_remaining > 0 AND expires_at > now()
             "#,
         )
