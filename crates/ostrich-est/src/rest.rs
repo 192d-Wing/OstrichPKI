@@ -101,6 +101,53 @@ pub enum EstIdentityPolicy {
     AccountAllowList,
 }
 
+/// A named CA backend for label-routed enrollment (RFC 7030 §3.2.2). Multiple
+/// backends let one EST instance issue from, e.g., an EC CA and an RSA CA,
+/// selected by the label's key-algorithm token.
+#[derive(Clone)]
+pub struct CaBackend {
+    /// gRPC client to this CA backend.
+    pub client: Arc<crate::ca_integration::EstCaClient>,
+    /// This backend's CA certificate DER, served by `/{label}/cacerts`.
+    pub certificate_der: Option<Vec<u8>>,
+}
+
+/// Maps a parsed label to a named CA backend. Backend selection is by the
+/// label's key-algorithm token (`2048` -> RSA CA, `P384` -> EC CA, etc.).
+#[derive(Clone, Default)]
+pub struct LabelRoutingConfig {
+    /// Key-algorithm token (`2048`, `P384`) -> backend name.
+    pub algo_backends: std::collections::HashMap<String, String>,
+    /// Backend used when the label specifies no key algorithm.
+    pub default_backend: String,
+}
+
+/// A resolved enrollment target: which CA backend issues, under which profile,
+/// plus any label-derived constraints to forward as issuance metadata.
+struct ResolvedEnrollment<'a> {
+    client: &'a Arc<crate::ca_integration::EstCaClient>,
+    profile: String,
+    validity_days: Option<u32>,
+    ccsa: Option<String>,
+}
+
+impl ResolvedEnrollment<'_> {
+    /// Label-derived issuance metadata (CC/S/A, requested validity), forwarded to
+    /// the CA for audit/provenance. Empty for the unlabeled path. NOTE: the CA
+    /// honoring `requested_validity_days` is a follow-up; today it is advisory
+    /// metadata recorded with the issuance, not an enforced override.
+    fn label_metadata(&self) -> Vec<(String, String)> {
+        let mut m = Vec::new();
+        if let Some(cc) = &self.ccsa {
+            m.push(("ccsa".to_string(), cc.clone()));
+        }
+        if let Some(v) = self.validity_days {
+            m.push(("requested_validity_days".to_string(), v.to_string()));
+        }
+        m
+    }
+}
+
 /// EST service state
 #[derive(Clone)]
 pub struct EstState {
@@ -134,6 +181,11 @@ pub struct EstState {
     /// mTLS-forwarded X-Npe-* identity. `None` keeps the configured auth mode
     /// only. NIST 800-53: IA-2 / AC-3.
     pub trusted_proxy: Option<Arc<ostrich_common::auth::TrustedProxyConfig>>,
+    /// Named CA backends for label-routed enrollment (RFC 7030 §3.2.2). Empty
+    /// when only the unlabeled (single-CA) path is used.
+    pub ca_backends: std::collections::HashMap<String, CaBackend>,
+    /// Label -> backend routing. `None` disables labeled enrollment.
+    pub label_routing: Option<LabelRoutingConfig>,
 }
 
 impl EstState {
@@ -223,6 +275,8 @@ impl EstState {
             auth_mode: EstAuthMode::BearerToken,
             identity_policy: EstIdentityPolicy::MatchUsername,
             trusted_proxy: None,
+            ca_backends: std::collections::HashMap::new(),
+            label_routing: None,
         }
     }
 
@@ -246,6 +300,8 @@ impl EstState {
             auth_mode: EstAuthMode::BearerToken,
             identity_policy: EstIdentityPolicy::MatchUsername,
             trusted_proxy: None,
+            ca_backends: std::collections::HashMap::new(),
+            label_routing: None,
         }
     }
 
@@ -274,12 +330,111 @@ impl EstState {
         self
     }
 
+    /// Register a named CA backend for label-routed enrollment (RFC 7030 §3.2.2).
+    pub fn with_ca_backend(
+        mut self,
+        name: impl Into<String>,
+        client: Arc<crate::ca_integration::EstCaClient>,
+        certificate_der: Option<Vec<u8>>,
+    ) -> Self {
+        self.ca_backends.insert(
+            name.into(),
+            CaBackend {
+                client,
+                certificate_der,
+            },
+        );
+        self
+    }
+
+    /// Configure label -> CA-backend routing. Enables the `/{label}/...` paths.
+    pub fn with_label_routing(mut self, routing: LabelRoutingConfig) -> Self {
+        self.label_routing = Some(routing);
+        self
+    }
+
     /// Override the certificate profile used for enrollment.
     ///
     /// NIST 800-53: CM-6 - Configuration settings (secure default "tls_client").
     pub fn with_profile(mut self, profile_name: impl Into<String>) -> Self {
         self.enroll_profile = profile_name.into();
         self
+    }
+
+    /// Resolve a request to a CA backend + certificate profile.
+    ///
+    /// `label = None` is the unlabeled (single-CA) path: it uses the configured
+    /// default `ca_client` and the operator/token-resolved profile (unchanged
+    /// legacy behavior). `label = Some(raw)` parses the RFC 7030 §3.2.2 label and
+    /// selects the CA backend by key algorithm and the profile by profile type.
+    ///
+    /// NIST 800-53: AC-3 (the resolved profile/backend gates issuance), SI-10.
+    async fn resolve_enrollment(
+        &self,
+        label: Option<&str>,
+        user: &ostrich_common::auth::AuthenticatedUser,
+    ) -> Result<ResolvedEnrollment<'_>> {
+        match label {
+            None => {
+                let client = self.ca_client.as_ref().ok_or_else(|| {
+                    Error::Internal("EST CA integration not configured".to_string())
+                })?;
+                Ok(ResolvedEnrollment {
+                    client,
+                    profile: resolve_enroll_profile(self, user).await,
+                    validity_days: None,
+                    ccsa: None,
+                })
+            }
+            Some(raw) => {
+                let parsed = crate::label::parse_label(raw)
+                    .map_err(|e| Error::BadRequest(format!("invalid EST label: {e}")))?;
+                let profile = parsed
+                    .profile_name()
+                    .map_err(|e| Error::BadRequest(e.to_string()))?
+                    .to_string();
+                let backend = self.select_backend(&parsed)?;
+                Ok(ResolvedEnrollment {
+                    client: &backend.client,
+                    profile,
+                    validity_days: parsed.validity_days,
+                    ccsa: parsed.ccsa,
+                })
+            }
+        }
+    }
+
+    /// Select the CA backend for a parsed label by its key-algorithm token
+    /// (e.g. `P384` -> EC CA, `2048` -> RSA CA); falls back to the routing
+    /// default when the label carries no key algorithm.
+    fn select_backend(&self, parsed: &crate::label::ParsedLabel) -> Result<&CaBackend> {
+        let routing = self.label_routing.as_ref().ok_or_else(|| {
+            Error::BadRequest("labeled EST enrollment is not configured".to_string())
+        })?;
+        let backend_name = match parsed.key_algo {
+            Some(algo) => routing
+                .algo_backends
+                .get(algo.token())
+                .cloned()
+                .unwrap_or_else(|| routing.default_backend.clone()),
+            None => routing.default_backend.clone(),
+        };
+        self.ca_backends.get(&backend_name).ok_or_else(|| {
+            Error::Internal(format!("no CA backend configured for '{backend_name}'"))
+        })
+    }
+
+    /// Resolve the CA certificate to serve from `/cacerts` (label = None) or
+    /// `/{label}/cacerts`. No auth needed (it is public trust-anchor data).
+    fn resolve_ca_certificate(&self, label: Option<&str>) -> Result<Option<&[u8]>> {
+        match label {
+            None => Ok(self.ca_certificate_der.as_deref()),
+            Some(raw) => {
+                let parsed = crate::label::parse_label(raw)
+                    .map_err(|e| Error::BadRequest(format!("invalid EST label: {e}")))?;
+                Ok(self.select_backend(&parsed)?.certificate_der.as_deref())
+            }
+        }
     }
 
     /// Authenticate protected endpoints by the TLS client certificate (mTLS,
@@ -345,8 +500,11 @@ pub fn create_router(state: EstState) -> Router {
         .route("/ready", get(readiness_check))
         // RFC 7030 §4.1: CA certificates - no client auth required
         .route("/.well-known/est/cacerts", get(get_ca_certs))
+        // RFC 7030 §3.2.2: labeled variant selects the backend CA certificate.
+        .route("/.well-known/est/{label}/cacerts", get(get_ca_certs))
         // RFC 7030 §4.5: CSR attributes - optionally requires auth
-        .route("/.well-known/est/csrattrs", get(get_csr_attrs));
+        .route("/.well-known/est/csrattrs", get(get_csr_attrs))
+        .route("/.well-known/est/{label}/csrattrs", get(get_csr_attrs));
 
     // Per-permission authorization, applied to each MethodRouter individually.
     //
@@ -382,6 +540,20 @@ pub fn create_router(state: EstState) -> Router {
         // RFC 7030 §4.4: Server-side key generation - Permission::SubmitRequest
         .route(
             "/.well-known/est/serverkeygen",
+            post(server_key_gen).route_layer(authz(Permission::SubmitRequest, "est-serverkeygen")),
+        )
+        // RFC 7030 §3.2.2: labeled variants route to the resolved CA backend.
+        .route(
+            "/.well-known/est/{label}/simpleenroll",
+            post(simple_enroll).route_layer(authz(Permission::SubmitRequest, "est-enrollment")),
+        )
+        .route(
+            "/.well-known/est/{label}/simplereenroll",
+            post(simple_reenroll)
+                .route_layer(authz(Permission::RenewCertificate, "est-reenrollment")),
+        )
+        .route(
+            "/.well-known/est/{label}/serverkeygen",
             post(server_key_gen).route_layer(authz(Permission::SubmitRequest, "est-serverkeygen")),
         )
         // L1 - cap the request body. CSRs are a few KB; an explicit 64 KiB limit
@@ -560,12 +732,18 @@ async fn readiness_check(State(state): State<EstState>) -> impl IntoResponse {
 /// - NIAP PP-CA: FTP_ITC.1 - Trusted channel (TLS, but no client auth required)
 /// - NIST 800-53: SC-17 - PKI certificate distribution
 /// - RFC 7030 S4.1 - CA certificate retrieval
-async fn get_ca_certs(State(state): State<EstState>) -> Result<Response> {
+async fn get_ca_certs(
+    State(state): State<EstState>,
+    label: Option<axum::extract::Path<String>>,
+) -> Result<Response> {
     // RFC 7030 §4.1 - Return the CA certificate(s) as a degenerate PKCS#7.
+    // The label (if present) selects which backend CA certificate to return.
     // When no CA certificate is configured we fail safe by returning an empty
     // (but valid) PKCS#7 so clients receive a well-formed response.
-    let pkcs7_der = match state.ca_certificate_der.as_ref() {
-        Some(der) => encode_certs_only_pkcs7(std::slice::from_ref(der))?,
+    let label = label.map(|p| p.0);
+    let ca_cert = state.resolve_ca_certificate(label.as_deref())?;
+    let pkcs7_der = match ca_cert {
+        Some(der) => encode_certs_only_pkcs7(std::slice::from_ref(&der.to_vec()))?,
         None => {
             tracing::warn!("EST /cacerts: no CA certificate configured; returning empty PKCS#7");
             encode_certs_only_pkcs7(&[])?
@@ -665,8 +843,11 @@ pub(crate) fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
 async fn simple_enroll(
     State(state): State<EstState>,
     AuthUser(user): AuthUser,
+    label: Option<axum::extract::Path<String>>,
     body: Bytes,
 ) -> Result<Response> {
+    // RFC 7030 §3.2.2 label (present only on `/.well-known/est/{label}/...`).
+    let label = label.map(|p| p.0);
     // Use authenticated user identity as client identifier
     let client_identifier = &user.username;
 
@@ -753,27 +934,36 @@ async fn simple_enroll(
     // NIST 800-53: SI-17 - Fail secure: if CA integration is not configured we
     // never fabricate a certificate; we return an error and leave the
     // enrollment row "pending" so it can be retried once the CA is available.
-    let Some(ca_client) = state.ca_client.as_ref() else {
-        emit_enrollment_audit(
-            &state,
-            client_identifier,
-            enrollment.id,
-            "simpleenroll",
-            ostrich_audit::EventOutcome::Failure,
-        )
-        .await;
-        return Err(Error::Internal(
-            "EST CA integration not configured".to_string(),
-        ));
+    // Resolve the CA backend + profile. Unlabeled = the default single CA;
+    // labeled = RFC 7030 §3.2.2 routing (backend by key algorithm, profile by
+    // profile type). Fails closed if issuance isn't configured / label invalid.
+    let resolved = match state.resolve_enrollment(label.as_deref(), &user).await {
+        Ok(r) => r,
+        Err(e) => {
+            emit_enrollment_audit(
+                &state,
+                client_identifier,
+                enrollment.id,
+                "simpleenroll",
+                ostrich_audit::EventOutcome::Failure,
+            )
+            .await;
+            return Err(e);
+        }
     };
 
     // EstCaClient::enroll issues the certificate, records the certificate id on
     // the est_enrollments row, and transitions the enrollment to "issued".
     // RFC 7030 §4.2.1 - CSR forwarded to CA after proof-of-possession check.
-    // The profile honors any operator-pinned choice on the enrollment token.
-    let enroll_profile = resolve_enroll_profile(&state, &user).await;
-    let certificate_id = match ca_client
-        .enroll(enrollment.id, &csr_der, client_identifier, &enroll_profile)
+    let certificate_id = match resolved
+        .client
+        .enroll(
+            enrollment.id,
+            &csr_der,
+            client_identifier,
+            &resolved.profile,
+            &resolved.label_metadata(),
+        )
         .await
     {
         Ok(id) => id,
@@ -1136,8 +1326,10 @@ async fn resolve_enroll_profile(
 async fn simple_reenroll(
     State(state): State<EstState>,
     AuthUser(user): AuthUser,
+    label: Option<axum::extract::Path<String>>,
     body: Bytes,
 ) -> Result<Response> {
+    let label = label.map(|p| p.0);
     // Use authenticated user identity as client identifier
     let client_identifier = &user.username;
 
@@ -1287,29 +1479,38 @@ async fn simple_reenroll(
     // Submit the CSR to the CA service for re-issuance (RFC 7030 §4.2.2).
     // NIST 800-53: SI-17 - Fail secure: never fabricate a certificate when the
     // CA integration is unavailable.
-    let Some(ca_client) = state.ca_client.as_ref() else {
-        emit_enrollment_audit(
-            &state,
-            client_identifier,
-            enrollment.id,
-            "simplereenroll",
-            ostrich_audit::EventOutcome::Failure,
-        )
-        .await;
-        return Err(Error::Internal(
-            "EST CA integration not configured".to_string(),
-        ));
+    let resolved = match state.resolve_enrollment(label.as_deref(), &user).await {
+        Ok(r) => r,
+        Err(e) => {
+            emit_enrollment_audit(
+                &state,
+                client_identifier,
+                enrollment.id,
+                "simplereenroll",
+                ostrich_audit::EventOutcome::Failure,
+            )
+            .await;
+            return Err(e);
+        }
     };
 
     // Reissue under the prior certificate's profile (preserving its EKUs per RFC
     // 7030 §4.2.2). Re-validate it against the allowlist (SI-10) and fail secure to
-    // the resolved/default profile if it is unknown or no longer offerable.
+    // the label/default-resolved profile if it is unknown or no longer offerable.
+    // The CA backend, however, is the label-resolved one.
     let enroll_profile = match prior_profile {
         Some(p) if OFFERABLE_EST_PROFILES.contains(&p.as_str()) => p,
-        _ => resolve_enroll_profile(&state, &user).await,
+        _ => resolved.profile.clone(),
     };
-    let certificate_id = match ca_client
-        .enroll(enrollment.id, &csr_der, client_identifier, &enroll_profile)
+    let certificate_id = match resolved
+        .client
+        .enroll(
+            enrollment.id,
+            &csr_der,
+            client_identifier,
+            &enroll_profile,
+            &resolved.label_metadata(),
+        )
         .await
     {
         Ok(id) => id,
@@ -1428,8 +1629,10 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
 async fn server_key_gen(
     State(state): State<EstState>,
     AuthUser(user): AuthUser,
+    label: Option<axum::extract::Path<String>>,
     body: Bytes,
 ) -> Result<Response> {
+    let label = label.map(|p| p.0);
     use crate::serverkeygen::{ServerKeyGenRequest, generate_key_pair_for_client};
     use ostrich_crypto::KeyType;
 
@@ -1503,23 +1706,24 @@ async fn server_key_gen(
         .filter_map(|s| s.strip_prefix("DNS:").map(String::from))
         .collect();
 
-    // CA integration is required (fail closed, never fabricate).
-    let Some(ca_client) = state.ca_client.as_ref() else {
-        emit_failure_audit(
-            &state,
-            client_identifier,
-            "est:serverkeygen",
-            "ca_not_configured",
-        )
-        .await;
-        return Err(Error::Internal(
-            "EST CA integration not configured".to_string(),
-        ));
+    // Resolve the CA backend + profile (fail closed; RFC 7030 §3.2.2 label
+    // routing selects the backend by key algorithm and the profile by type).
+    let resolved = match state.resolve_enrollment(label.as_deref(), &user).await {
+        Ok(r) => r,
+        Err(e) => {
+            emit_failure_audit(
+                &state,
+                client_identifier,
+                "est:serverkeygen",
+                "ca_not_configured",
+            )
+            .await;
+            return Err(e);
+        }
     };
 
-    // Resolve once: the same profile drives both the server-built CSR and the
-    // CA issuance call, honoring any operator-pinned profile on the token.
-    let enroll_profile = resolve_enroll_profile(&state, &user).await;
+    // The same profile drives both the server-built CSR and the CA issuance call.
+    let enroll_profile = resolved.profile.clone();
 
     // Generate the key pair + a CSR signed by it (proof-of-possession).
     let request = ServerKeyGenRequest {
@@ -1549,12 +1753,14 @@ async fn server_key_gen(
         .await
         .map_err(|e| Error::Internal(format!("Failed to create enrollment: {}", e)))?;
 
-    let issue_result = ca_client
+    let issue_result = resolved
+        .client
         .enroll(
             enrollment.id,
             &material.csr_der,
             client_identifier,
             &enroll_profile,
+            &resolved.label_metadata(),
         )
         .await;
 
