@@ -1835,11 +1835,16 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
   applications") resolve consistently across requests. The portal strips any
   inbound `X-Npe-*` headers so the identity cannot be spoofed.
 - **CM-6 (Fail Secure):** `ca-server` refuses to start when
-  `CA_TRUSTED_PROXY_SUBJECTS` is set without a client CA, and the trusted-proxy
-  path is disabled entirely when the allow-list is empty.
-- POAM: the `est-server` binary wiring (a `--portal-client-ca` distinct from the
-  EST enrollment client CA) is pending; the `ostrich-est` crate already supports
-  the bridge (`EstState::with_trusted_proxy`).
+  `CA_TRUSTED_PROXY_SUBJECTS` is set without a client CA; `est-server` refuses to
+  start when `EST_TRUSTED_PROXY_SUBJECTS` is set without a portal/enrollment
+  client CA. The trusted-proxy path is disabled entirely when the allow-list is
+  empty.
+- **EST token management:** `est-server` wires the bridge on the
+  token-management endpoints in bearer-enrollment mode via
+  `EST_TRUSTED_PROXY_SUBJECTS` + `EST_PORTAL_CLIENT_CA` (a portal client CA kept
+  separate from the EST enrollment client CA so enabling the bridge does not flip
+  enrollment to mTLS mode). The portal's "Generate Single/Multi-Use Token" pages
+  thus authenticate as the requesting NPE operator.
 
 ---
 
