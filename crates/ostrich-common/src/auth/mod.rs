@@ -75,7 +75,9 @@ pub use audit::{AuthAuditEvent, AuthAuditHook, AuthAuditKind};
 pub use basic::{BasicAuthLayer, MtlsOrBasicAuthLayer};
 pub use lockout::{AuthLockout, LockoutConfig, LockoutStatus};
 pub use middleware::{
-    AuthLayer, AuthResponse, AuthUser, AuthzLayer, MtlsAuthLayer, MtlsOrBearerAuthLayer,
+    AuthLayer, AuthResponse, AuthUser, AuthzLayer, HEADER_NPE_ROLES, HEADER_NPE_SESSION,
+    HEADER_NPE_SUBJECT, HEADER_NPE_USER, MtlsAuthLayer, MtlsOrBearerAuthLayer,
+    TrustedProxyAuthLayer, TrustedProxyConfig,
 };
 pub use mtls::{CertificateAuthConfig, CertificateAuthProvider, CertificateUserRepository};
 pub use password::{

@@ -53,6 +53,19 @@ pub struct BackendConfig {
     /// EST service URL (RFC 7030 enrollment, password/token management).
     #[serde(default = "default_est_url")]
     pub est_url: String,
+
+    /// Client certificate (PEM) the portal presents to the CA/EST backends so
+    /// they can verify it and trust the forwarded X-Npe-* identity (the identity
+    /// bridge). When set with `mtls_client_key` + `mtls_ca_cert`, the proxy dials
+    /// the backends over mTLS; otherwise it uses plain HTTP (development).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtls_client_cert: Option<String>,
+    /// Client private key (PEM) for the backend mTLS channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtls_client_key: Option<String>,
+    /// CA bundle (PEM) used to verify the CA/EST server certificates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtls_ca_cert: Option<String>,
 }
 
 fn default_est_url() -> String {
@@ -164,6 +177,9 @@ impl Default for NpePortalConfig {
             backend: BackendConfig {
                 ca_url: "http://localhost:8081".to_string(),
                 est_url: default_est_url(),
+                mtls_client_cert: None,
+                mtls_client_key: None,
+                mtls_ca_cert: None,
             },
             session: SessionConfig::default(),
             oid_mapping: super::oid::OidRoleMapping::default(),

@@ -129,6 +129,11 @@ pub struct EstState {
     /// How the requested certificate identity is authorized against the
     /// authenticated principal (H1). Defaults to `MatchUsername`.
     pub identity_policy: EstIdentityPolicy,
+    /// Trusted reverse-proxy (NPE portal) identity bridge. When set, the
+    /// token-management endpoints additionally accept the portal's
+    /// mTLS-forwarded X-Npe-* identity. `None` keeps the configured auth mode
+    /// only. NIST 800-53: IA-2 / AC-3.
+    pub trusted_proxy: Option<Arc<ostrich_common::auth::TrustedProxyConfig>>,
 }
 
 impl EstState {
@@ -217,6 +222,7 @@ impl EstState {
             enroll_profile: "tls_client".to_string(),
             auth_mode: EstAuthMode::BearerToken,
             identity_policy: EstIdentityPolicy::MatchUsername,
+            trusted_proxy: None,
         }
     }
 
@@ -239,7 +245,19 @@ impl EstState {
             enroll_profile: "tls_client".to_string(),
             auth_mode: EstAuthMode::BearerToken,
             identity_policy: EstIdentityPolicy::MatchUsername,
+            trusted_proxy: None,
         }
+    }
+
+    /// Enable the NPE portal identity bridge for token-management endpoints.
+    ///
+    /// NIST 800-53: IA-2 / AC-3 - accept the portal's mTLS-forwarded identity.
+    pub fn with_trusted_proxy(
+        mut self,
+        trusted_proxy: Option<Arc<ostrich_common::auth::TrustedProxyConfig>>,
+    ) -> Self {
+        self.trusted_proxy = trusted_proxy;
+        self
     }
 
     /// Attach the CA gRPC client and CA certificate used for issuance.
@@ -464,26 +482,42 @@ pub fn create_router(state: EstState) -> Router {
             "/api/v1/est/enrollment-tokens/{id}",
             axum::routing::delete(revoke_enrollment_token),
         );
-    let admin_routes = match state.auth_mode {
-        EstAuthMode::Mtls => admin_routes.layer(middleware::from_fn_with_state(
-            admin_auth_provider,
-            ostrich_common::auth::MtlsAuthLayer::authenticate,
-        )),
-        EstAuthMode::MtlsWithBasicFallback => admin_routes.layer(middleware::from_fn_with_state(
-            admin_auth_provider,
-            ostrich_common::auth::MtlsOrBasicAuthLayer::authenticate,
-        )),
-        EstAuthMode::BearerToken => admin_routes.layer(middleware::from_fn_with_state(
-            admin_auth_provider,
-            AuthLayer::authenticate,
-        )),
-        // Operator authenticates by client certificate or session bearer token.
-        // Uses the raw provider (NOT the enrollment-token wrapper), so a device
-        // enrollment token can never mint/list/revoke tokens (AC-6).
-        EstAuthMode::MtlsWithTokenBootstrap => admin_routes.layer(middleware::from_fn_with_state(
-            admin_auth_provider,
-            ostrich_common::auth::MtlsOrBearerAuthLayer::authenticate,
-        )),
+    let admin_routes = match (&state.trusted_proxy, state.auth_mode) {
+        // Identity bridge (bearer-mode deployments only): the NPE portal's
+        // mTLS-forwarded identity OR an operator bearer session may manage
+        // tokens. Restricted to BearerToken mode so the bridge never displaces
+        // operator mTLS admin auth in the cert-based modes.
+        (Some(cfg), EstAuthMode::BearerToken) => {
+            admin_routes.layer(middleware::from_fn_with_state(
+                (admin_auth_provider, cfg.clone()),
+                ostrich_common::auth::TrustedProxyAuthLayer::authenticate,
+            ))
+        }
+        _ => match state.auth_mode {
+            EstAuthMode::Mtls => admin_routes.layer(middleware::from_fn_with_state(
+                admin_auth_provider,
+                ostrich_common::auth::MtlsAuthLayer::authenticate,
+            )),
+            EstAuthMode::MtlsWithBasicFallback => {
+                admin_routes.layer(middleware::from_fn_with_state(
+                    admin_auth_provider,
+                    ostrich_common::auth::MtlsOrBasicAuthLayer::authenticate,
+                ))
+            }
+            EstAuthMode::BearerToken => admin_routes.layer(middleware::from_fn_with_state(
+                admin_auth_provider,
+                AuthLayer::authenticate,
+            )),
+            // Operator authenticates by client certificate or session bearer token.
+            // Uses the raw provider (NOT the enrollment-token wrapper), so a device
+            // enrollment token can never mint/list/revoke tokens (AC-6).
+            EstAuthMode::MtlsWithTokenBootstrap => {
+                admin_routes.layer(middleware::from_fn_with_state(
+                    admin_auth_provider,
+                    ostrich_common::auth::MtlsOrBearerAuthLayer::authenticate,
+                ))
+            }
+        },
     };
 
     // Merge public, protected, and admin routes
