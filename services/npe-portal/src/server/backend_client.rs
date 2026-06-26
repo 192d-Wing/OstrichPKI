@@ -26,7 +26,41 @@ pub type HttpClient =
 
 /// Build the backend client. Uses mTLS when client cert + key + CA are all
 /// configured; otherwise a plain-HTTP-capable client (development).
+///
+/// Backend mTLS is all-or-nothing: configuring some but not all of
+/// `mtls_client_cert` / `mtls_client_key` / `mtls_ca_cert` is a hard error, so a
+/// half-configured deployment fails fast at startup rather than silently dialing
+/// without a client certificate (which would break the identity bridge in a
+/// confusing way). Mirrors `TlsSettings::from_options`' fail-fast policy.
 pub fn build(backend: &BackendConfig) -> Result<HttpClient> {
+    let set_count = [
+        backend.mtls_client_cert.is_some(),
+        backend.mtls_client_key.is_some(),
+        backend.mtls_ca_cert.is_some(),
+    ]
+    .iter()
+    .filter(|x| **x)
+    .count();
+    if set_count != 0 && set_count != 3 {
+        anyhow::bail!(
+            "partial backend mTLS configuration: set all of mtlsClientCert, mtlsClientKey, \
+             and mtlsCaCert, or none (NIST 800-53: CM-6 fail-fast)"
+        );
+    }
+    // SC-8: with mTLS configured, a plaintext backend URL would send the
+    // forwarded X-Npe-* identity in the clear; warn loudly on that misconfig.
+    if set_count == 3 {
+        for (name, url) in [("caUrl", &backend.ca_url), ("estUrl", &backend.est_url)] {
+            if url.starts_with("http://") {
+                tracing::warn!(
+                    backend = name,
+                    url = %url,
+                    "backend mTLS is configured but the URL is plaintext http://; the \
+                     forwarded identity would not be protected (NIST 800-53: SC-8)"
+                );
+            }
+        }
+    }
     // Explicitly select the aws-lc-rs (FIPS) provider, matching the rest of the
     // project's TLS stack (NIST 800-53: SC-13).
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
