@@ -1,6 +1,6 @@
 # NIAP Protection Profile for Certification Authorities v2.1 Compliance Matrix
 
-**Document Version:** 2.5
+**Document Version:** 2.7
 **Date:** 2026-01-07
 **OstrichPKI Version:** 0.15.0
 **Protection Profile:** NIAP PP-CA v2.1
@@ -2228,6 +2228,25 @@ The following SFRs require a complete authentication system:
 
 ---
 
+## NPE Portal (Non-Person Entity enrollment)
+
+The `ostrich-npe-portal` service maps to the following SFRs:
+
+- **FIA_UAU.1 / FIA_X509_EXT.1 / FIA_X509_EXT.2:** mTLS client-certificate
+  authentication; the role is derived from (issuer-scoped) certificate policy
+  OIDs — `services/npe-portal/src/server/oid.rs`.
+- **FMT_SMR.2 (Security Roles):** four NPE roles — PKI Sponsor, Administrator,
+  Registration Authority, CA Admin — `crates/ostrich-common/src/auth/roles.rs`.
+- **FTA_SSL.1 / FTA_SSL.3 (Session Locking / Termination):** 30-minute inactivity
+  lock and session termination — `services/npe-portal/src/server/session.rs`.
+- **FAU_GEN.1 / FAU_GEN.2 (Audit Generation / Identity Association):**
+  authentication audit records (login/consent/logout) with user-identity
+  association — `services/npe-portal/src/server/audit.rs`.
+- **FMT_SMF.1 (Management Functions):** USG consent acknowledgement and session
+  lifecycle management — `services/npe-portal/src/server/router.rs`.
+
+---
+
 ## Document Change History
 
 | Version | Date | Author | Changes |
@@ -2243,6 +2262,7 @@ The following SFRs require a complete authentication system:
 | 2.4 | 2026-01-04 | OstrichPKI Team | Phase 19: HSM enforcement, 98% compliance |
 | 2.5 | 2026-01-07 | OstrichPKI Team | Phase 20: Web UI service - OIDC authentication (FIA_UAU_EXT.1), CSP nonces (FPT_TRP_EXT.1), session mgmt (FTA_SSL.3/4) |
 | 2.6 | 2026-06-23 | OstrichPKI Team | TAMP (RFC 5934) manager: FMT_SMF.1 (trust anchor management functions), FCS_COP.1 (CMS sign/verify), FAU_GEN.1 (TampProtocol audit), FPT_STM.1 — `ostrich-tamp` crate + `ostrich-tamp-server` |
+| 2.7 | 2026-06-26 | OstrichPKI Team | NPE Portal: FIA_UAU.1 / FIA_X509_EXT.1-.2 (mTLS cert auth), FMT_SMR.2 (4 NPE roles), FTA_SSL.1/.3 (30-min inactivity), FAU_GEN.1/.2 (auth audit), FMT_SMF.1 (consent/session mgmt) — `ostrich-npe-portal` |
 
 ---
 

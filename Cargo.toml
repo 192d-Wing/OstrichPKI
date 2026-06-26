@@ -25,6 +25,7 @@ members = [
     "services/kra-server",
     "services/tamp-server",
     "services/web-ui",
+    "services/npe-portal",
     # Tools
     "tools/ostrich-cli",
     "tools/ostrich-init",

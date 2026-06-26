@@ -3425,6 +3425,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "ostrich-npe-portal"
+version = "0.15.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "axum-extra",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "const-oid",
+ "cookie",
+ "futures",
+ "hex",
+ "hyper",
+ "hyper-util",
+ "ostrich-audit",
+ "ostrich-common",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tokio-test",
+ "tower",
+ "tower-http 0.7.0",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "x509-parser",
+]
+
+[[package]]
 name = "ostrich-ocsp"
 version = "0.15.0"
 dependencies = [

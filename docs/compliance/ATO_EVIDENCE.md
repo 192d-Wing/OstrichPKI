@@ -1,6 +1,6 @@
 # Authority to Operate (ATO) Evidence Collection Guide
 
-**Document Version:** 1.1
+**Document Version:** 1.2
 **Generated:** 2026-01-04
 **OstrichPKI Version:** 0.15.0
 **Framework:** NIST Risk Management Framework (RMF)
@@ -1621,6 +1621,31 @@ surfaced through the web-ui proxy.
 Note: the renewal-notification contact is **storage + display only** — no mail is
 sent (no mailer exists yet); see the FQDNs section of
 `services/web-ui/web/ROADMAP.md` for the deferred notification-delivery work.
+
+---
+
+## NPE Portal Evidence (`ostrich-npe-portal`)
+
+A standalone Non-Person Entity enrollment portal (Axum BFF + React/Cloudscape
+SPA) authenticated by mTLS client certificate, with OID-derived roles.
+
+| Control / SFR | Framework | Evidence |
+|---------------|-----------|----------|
+| IA-2 / IA-5(2), FIA_X509_EXT.1/.2 | NIST / NIAP | mTLS client-cert auth; verified leaf → role from certificate-policy OIDs. `services/npe-portal/src/server/oid.rs` (`authenticate`), `crates/ostrich-common/src/tls.rs` (`PeerCertificate`). |
+| CM-6 | NIST 800-53 | Fail-closed: refuses to start without mandatory mTLS unless `--allow-insecure`. `services/npe-portal/src/main.rs`. |
+| AC-3 / AC-6, FMT_SMR.2 | NIST / NIAP | Four least-privilege NPE roles + permission map; identity-forwarding proxy allowlisted to CA/EST. `crates/ostrich-common/src/auth/{roles.rs,permissions.rs}`, `services/npe-portal/src/server/proxy.rs`. |
+| AC-8 | NIST 800-53 | Mandatory USG consent gate before any API call. `services/npe-portal/src/server/middleware.rs`, `web/src/components/consent-modal.tsx`. |
+| AC-12 / SC-23, FTA_SSL.1/.3 | NIST / NIAP | 30-minute inactivity lock (refreshed only on real activity); sessions bound to certificate fingerprint. `services/npe-portal/src/server/session.rs`. |
+| AU-2 / AU-3 / AU-12, FAU_GEN.1/.2 | NIST / NIAP | Structured `Authentication` audit records for login/consent/logout. `services/npe-portal/src/server/audit.rs`. POA&M: attach `DatabaseAuditSink` (AU-9(3)/AU-10) when the portal is provisioned with the audit store. |
+
+Test evidence:
+
+```
+cargo clippy -p ostrich-npe-portal -- -D warnings    # Clean
+cargo test  -p ostrich-npe-portal                    # 15 passed
+cargo test  -p ostrich-common auth::                 # passed (incl. NPE role perms)
+tsc --noEmit (services/npe-portal/web)               # exit 0
+```
 
 ---
 
