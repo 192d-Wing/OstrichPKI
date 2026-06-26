@@ -119,6 +119,32 @@ impl ApprovalRepository {
         Ok(records)
     }
 
+    /// Fetch multiple approval requests by id, in one query, for a bulk-status
+    /// lookup. Unknown ids are simply absent from the result. The caller is
+    /// responsible for any own-scope filtering (a regular requester must only
+    /// see their own requests).
+    pub async fn list_requests_by_ids(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<Vec<ApprovalRequestRecord>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let records = sqlx::query_as::<_, ApprovalRequestRecord>(
+            r#"
+            SELECT * FROM approval_requests
+            WHERE id = ANY($1)
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Error::Query(format!("Failed to list requests by ids: {}", e)))?;
+
+        Ok(records)
+    }
+
     /// Update approval request status
     pub async fn update_request_status(
         &self,

@@ -999,7 +999,7 @@ async fn consume_enrollment_token_if_present(
         .await
     {
         Ok(true) => {
-            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token consumed (single-use)");
+            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token use consumed");
             ostrich_audit::EventOutcome::Success
         }
         Ok(false) => {
@@ -1645,6 +1645,11 @@ struct MintEnrollmentTokenRequest {
     /// Certificate profile the enrolled cert is issued under. One of
     /// `OFFERABLE_EST_PROFILES`; `None`/empty uses the EST server's default.
     profile: Option<String>,
+    /// Number of devices that may enroll with this token (the use budget).
+    /// Clamped to [1, 1000], default 1 (single-use). Values > 1 mint a
+    /// "multiple devices" token; the identity (H1) binding still applies to every
+    /// enrollment, so all devices enroll as the same pinned identity.
+    max_uses: Option<i64>,
 }
 
 /// Certificate profiles an operator may pin to an EST enrollment token. Kept in
@@ -1697,6 +1702,8 @@ struct MintEnrollmentTokenResponse {
     identity: String,
     expires_at: String,
     expires_in_seconds: i64,
+    /// Use budget the token was minted with (1 = single-use).
+    max_uses: i64,
 }
 
 /// Mint a single-use, time-limited EST enrollment token bound to a device
@@ -1765,6 +1772,12 @@ async fn create_enrollment_token(
         .clamp(MIN_TTL, MAX_TTL);
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl);
 
+    // Clamp the use budget: single-use by default, at most 1000 devices. A
+    // multi-use token stays identity-pinned and time-limited; the cap bounds the
+    // blast radius of a leaked credential (IA-5 / AC-6).
+    const MAX_USE_BUDGET: i64 = 1000;
+    let max_uses = req.max_uses.unwrap_or(1).clamp(1, MAX_USE_BUDGET);
+
     // 256-bit URL-safe token; only its SHA-256 is stored. Zeroize the raw
     // entropy after encoding (NIST 800-53 SI-12: protect secrets in memory).
     let token_bytes = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
@@ -1781,6 +1794,7 @@ async fn create_enrollment_token(
             profile.as_deref(),
             &user.username,
             expires_at,
+            max_uses as i32,
         )
         .await
         .is_ok()
@@ -1803,6 +1817,7 @@ async fn create_enrollment_token(
         "ttl_seconds": ttl,
         "token_id": token_id.to_string(),
         "profile": profile,
+        "max_uses": max_uses,
     }))
     .build();
     let _ = state.audit_sink.record(&mut event).await;
@@ -1828,6 +1843,7 @@ async fn create_enrollment_token(
             identity,
             expires_at: expires_at.to_rfc3339(),
             expires_in_seconds: ttl,
+            max_uses,
         }),
     )
         .into_response())
@@ -1844,6 +1860,10 @@ struct EnrollmentTokenSummaryDto {
     expires_at: String,
     /// live | used | revoked | expired
     status: String,
+    /// Use budget the token was minted with (1 = single-use).
+    max_uses: i32,
+    /// Remaining uses (0 once exhausted/revoked).
+    uses_remaining: i32,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1897,11 +1917,18 @@ async fn list_enrollment_tokens(
     let tokens = rows
         .into_iter()
         .map(|r| {
-            let status = match (&r.used_at, &r.used_by_cert) {
-                (Some(_), Some(_)) => "used",
-                (Some(_), None) => "revoked",
-                (None, _) if r.expires_at <= now => "expired",
-                (None, _) => "live",
+            // Derive status from the unambiguous lifecycle fields. `used_at` and
+            // `used_by_cert` cannot distinguish revoked-after-partial-use from
+            // exhausted-by-use for a multi-use token, so we key on `revoked_at`
+            // and `uses_remaining` instead.
+            let status = if r.revoked_at.is_some() {
+                "revoked"
+            } else if r.uses_remaining <= 0 {
+                "used"
+            } else if r.expires_at <= now {
+                "expired"
+            } else {
+                "live"
             };
             EnrollmentTokenSummaryDto {
                 id: r.id.to_string(),
@@ -1910,6 +1937,8 @@ async fn list_enrollment_tokens(
                 created_at: r.created_at.to_rfc3339(),
                 expires_at: r.expires_at.to_rfc3339(),
                 status: status.to_string(),
+                max_uses: r.max_uses,
+                uses_remaining: r.uses_remaining,
             }
         })
         .collect();

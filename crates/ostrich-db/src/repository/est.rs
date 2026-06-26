@@ -22,6 +22,12 @@ pub struct EstEnrollmentTokenRow {
     pub expires_at: DateTime<Utc>,
     pub used_at: Option<DateTime<Utc>>,
     pub used_by_cert: Option<Uuid>,
+    /// Use budget the token was minted with (1 = single-use).
+    pub max_uses: i32,
+    /// Remaining uses; the token is live while this is > 0.
+    pub uses_remaining: i32,
+    /// When the token was administratively revoked (NULL = not revoked).
+    pub revoked_at: Option<DateTime<Utc>>,
 }
 
 /// EST Repository
@@ -289,6 +295,9 @@ impl EstRepository {
     /// is persisted; the plaintext is returned to the operator once).
     ///
     /// NIST 800-53: IA-5 (authenticator management); NIAP PP-CA: FMT_MTD.1
+    // A thin INSERT that mirrors the table columns 1:1; bundling these into a
+    // params struct would add indirection without improving the single call site.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_enrollment_token(
         &self,
         id: Uuid,
@@ -297,12 +306,16 @@ impl EstRepository {
         profile: Option<&str>,
         created_by: &str,
         expires_at: DateTime<Utc>,
+        max_uses: i32,
     ) -> Result<()> {
+        // A token starts with its full use budget remaining. `max_uses == 1`
+        // reproduces the original single-use behaviour exactly.
         sqlx::query(
             r#"
             INSERT INTO est_enrollment_tokens
-                (id, token_hash, identity, profile, created_by, expires_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (id, token_hash, identity, profile, created_by, expires_at,
+                 max_uses, uses_remaining)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
             "#,
         )
         .bind(id)
@@ -311,6 +324,7 @@ impl EstRepository {
         .bind(profile)
         .bind(created_by)
         .bind(expires_at)
+        .bind(max_uses)
         .execute(self.pool.pool())
         .await?;
 
@@ -328,7 +342,7 @@ impl EstRepository {
             r#"
             SELECT id, identity, expires_at
             FROM est_enrollment_tokens
-            WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+            WHERE token_hash = $1 AND uses_remaining > 0 AND expires_at > now()
             "#,
         )
         .bind(token_hash)
@@ -338,11 +352,19 @@ impl EstRepository {
         Ok(row)
     }
 
-    /// Atomically mark a token consumed (single-use), keyed by its row id (the
-    /// id is carried on the authenticated principal, so no token re-hashing is
-    /// needed). Returns `true` only if this call transitioned an unused token to
-    /// used, so concurrent enrollments race safely — at most one wins.
-    /// NIST 800-53: AU-3 (accurate outcome).
+    /// Atomically spend one use of a token, keyed by its row id (the id is
+    /// carried on the authenticated principal, so no token re-hashing is needed).
+    ///
+    /// Decrements `uses_remaining`; when it reaches zero the token is stamped
+    /// `used_at`/`used_by_cert` and becomes non-live. `used_by_cert` records the
+    /// most recent certificate issued against the token (provenance). The
+    /// `uses_remaining > 0` guard means concurrent enrollments race safely — each
+    /// UPDATE that affects a row spent exactly one use, and the budget can never
+    /// go negative. For a single-use token (`max_uses == 1`) this is identical to
+    /// the original mark-consumed behaviour.
+    ///
+    /// Returns `true` only if a use was actually spent (i.e. the token was live).
+    /// NIST 800-53: AU-3 (accurate outcome), IA-5 (bounded credential).
     pub async fn consume_enrollment_token(
         &self,
         id: Uuid,
@@ -351,8 +373,10 @@ impl EstRepository {
         let result = sqlx::query(
             r#"
             UPDATE est_enrollment_tokens
-            SET used_at = now(), used_by_cert = $2
-            WHERE id = $1 AND used_at IS NULL
+            SET uses_remaining = uses_remaining - 1,
+                used_by_cert = COALESCE($2, used_by_cert),
+                used_at = CASE WHEN uses_remaining - 1 = 0 THEN now() ELSE used_at END
+            WHERE id = $1 AND uses_remaining > 0
             "#,
         )
         .bind(id)
@@ -383,7 +407,8 @@ impl EstRepository {
     pub async fn list_enrollment_tokens(&self, limit: i64) -> Result<Vec<EstEnrollmentTokenRow>> {
         let rows = sqlx::query_as::<_, EstEnrollmentTokenRow>(
             r#"
-            SELECT id, identity, created_by, created_at, expires_at, used_at, used_by_cert
+            SELECT id, identity, created_by, created_at, expires_at, used_at, used_by_cert,
+                   max_uses, uses_remaining, revoked_at
             FROM est_enrollment_tokens
             ORDER BY created_at DESC
             LIMIT $1
@@ -407,7 +432,8 @@ impl EstRepository {
     ) -> Result<Vec<EstEnrollmentTokenRow>> {
         let rows = sqlx::query_as::<_, EstEnrollmentTokenRow>(
             r#"
-            SELECT id, identity, created_by, created_at, expires_at, used_at, used_by_cert
+            SELECT id, identity, created_by, created_at, expires_at, used_at, used_by_cert,
+                   max_uses, uses_remaining, revoked_at
             FROM est_enrollment_tokens
             WHERE LOWER(identity) = $1
             ORDER BY created_at DESC
@@ -430,8 +456,8 @@ impl EstRepository {
         let result = sqlx::query(
             r#"
             UPDATE est_enrollment_tokens
-            SET used_at = now()
-            WHERE id = $1 AND used_at IS NULL AND expires_at > now()
+            SET uses_remaining = 0, revoked_at = now()
+            WHERE id = $1 AND uses_remaining > 0 AND expires_at > now()
             "#,
         )
         .bind(id)

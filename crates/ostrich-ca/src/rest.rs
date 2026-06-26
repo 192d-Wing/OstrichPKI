@@ -238,6 +238,12 @@ pub fn create_router(
             "/api/v1/approvals",
             get(list_approval_requests).route_layer(authz(Permission::ViewRequests)),
         )
+        // Bulk status: status for many applications at once. Registered before the
+        // `/{id}` capture; axum matches the static `status` segment first.
+        .route(
+            "/api/v1/approvals/status",
+            get(bulk_approval_status).route_layer(authz(Permission::ViewRequests)),
+        )
         .route(
             "/api/v1/approvals/{id}",
             get(get_approval_request).route_layer(authz(Permission::ViewRequests)),
@@ -308,11 +314,38 @@ async fn readiness_check(State(state): State<Arc<ApiState>>) -> Result<impl Into
 /// Get CA information
 async fn get_ca_info(State(state): State<Arc<ApiState>>) -> Result<Json<CaInfoResponse>> {
     let info = state.ca.info();
+    let der = state.ca.certificate_der();
 
-    Ok(Json(CaInfoResponse {
+    // Best-effort enrichment from the CA certificate. If parsing fails we still
+    // return the basic identity rather than erroring the public info endpoint.
+    let parsed = ostrich_x509::parser::parse_certificate(der).ok();
+    let mut resp = CaInfoResponse {
         ca_id: info.ca_id.to_string(),
         ca_dn: info.ca_dn,
-    }))
+        issuer_dn: None,
+        serial: None,
+        not_before: None,
+        not_after: None,
+        signature_algorithm: None,
+        key_type: None,
+        chain_pem: Some(der_to_pem(der)),
+    };
+    if let Some(c) = parsed {
+        let (alg, key_type) = describe_signature_algorithm(&c.signature_algorithm);
+        resp.issuer_dn = Some(c.issuer_dn);
+        resp.serial = Some(
+            c.serial_number
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<String>(),
+        );
+        resp.not_before = Some(c.not_before.to_rfc3339());
+        resp.not_after = Some(c.not_after.to_rfc3339());
+        resp.signature_algorithm = Some(alg);
+        resp.key_type = Some(key_type);
+    }
+
+    Ok(Json(resp))
 }
 
 /// Issue a new certificate
@@ -1562,6 +1595,66 @@ async fn get_approval_request(
     }))
 }
 
+/// Query for the bulk-status endpoint: a comma-separated list of request ids.
+#[derive(Debug, Deserialize)]
+struct BulkStatusQuery {
+    ids: String,
+}
+
+/// Bulk status lookup for many certificate applications at once.
+///
+/// `GET /api/v1/approvals/status?ids=<uuid>,<uuid>,...` — capped at 100 ids.
+/// Own-scope: a requester sees only their own applications; RA Staff / AOR see
+/// any of the requested ids. Unknown ids are simply omitted from the result.
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FDP_CER_EXT.3 - view request status
+/// - NIST 800-53: AC-3 (access enforcement), SI-10 (input validation)
+async fn bulk_approval_status(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    axum::extract::Query(q): axum::extract::Query<BulkStatusQuery>,
+) -> Result<Json<ListApprovalRequestsResponse>> {
+    const MAX_IDS: usize = 100;
+
+    // SI-10: parse + validate every id; reject the whole request on a bad id.
+    let ids: Vec<uuid::Uuid> = q
+        .ids
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(uuid::Uuid::parse_str)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| Error::InvalidRequest("Invalid request ID in 'ids'".to_string()))?;
+
+    if ids.is_empty() {
+        return Ok(Json(ListApprovalRequestsResponse { requests: vec![] }));
+    }
+    if ids.len() > MAX_IDS {
+        return Err(Error::InvalidRequest(format!(
+            "Too many ids requested (max {MAX_IDS})"
+        )));
+    }
+
+    let mut records = state.approval_repo.list_requests_by_ids(&ids).await?;
+
+    // Own-scope enforcement: only RA Staff / AOR may see other requesters' rows.
+    let can_view_all = user.roles.iter().any(|r| {
+        matches!(
+            r,
+            ostrich_common::auth::Role::RaStaff | ostrich_common::auth::Role::Aor
+        )
+    });
+    if !can_view_all {
+        let uid = *user.id.as_uuid();
+        records.retain(|r| r.requestor_id == uid);
+    }
+
+    Ok(Json(ListApprovalRequestsResponse {
+        requests: records.into_iter().map(ApprovalRequestInfo::from).collect(),
+    }))
+}
+
 /// Approve request
 ///
 /// COMPLIANCE MAPPING:
@@ -1730,11 +1823,69 @@ async fn reject_request(
 
 // REST API Request/Response types
 
-/// CA information response
+/// CA information response.
+///
+/// The basic identity (`ca_id`, `ca_dn`) is always present; the remaining
+/// fields are best-effort enrichment parsed from the CA certificate (key type,
+/// algorithm, validity, serial, PEM chain) and are `None` if parsing fails.
+/// Surfacing the key type lets clients distinguish, e.g., an EC CA from an RSA
+/// CA when several CA backends are deployed.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CaInfoResponse {
     pub ca_id: String,
     pub ca_dn: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer_dn: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_after: Option<String>,
+    /// Human-friendly signature algorithm (e.g. "ECDSA-SHA384", "RSA-SHA256").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_algorithm: Option<String>,
+    /// Public-key family: "EC", "RSA", "Ed25519", "ML-DSA", or the raw OID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_type: Option<String>,
+    /// PEM encoding of the CA certificate (the trust anchor / chain root).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_pem: Option<String>,
+}
+
+/// Map a signature-algorithm OID to a friendly name and the public-key family.
+/// Unknown OIDs are returned verbatim with an "unknown" key type so the endpoint
+/// degrades gracefully rather than failing.
+fn describe_signature_algorithm(oid: &str) -> (String, String) {
+    let (alg, key) = match oid {
+        "1.2.840.113549.1.1.11" => ("RSA-SHA256", "RSA"),
+        "1.2.840.113549.1.1.12" => ("RSA-SHA384", "RSA"),
+        "1.2.840.113549.1.1.13" => ("RSA-SHA512", "RSA"),
+        "1.2.840.113549.1.1.10" => ("RSA-PSS", "RSA"),
+        "1.2.840.10045.4.3.2" => ("ECDSA-SHA256", "EC"),
+        "1.2.840.10045.4.3.3" => ("ECDSA-SHA384", "EC"),
+        "1.2.840.10045.4.3.4" => ("ECDSA-SHA512", "EC"),
+        "1.3.101.112" => ("Ed25519", "Ed25519"),
+        // ML-DSA (FIPS 204)
+        "2.16.840.1.101.3.4.3.17" => ("ML-DSA-44", "ML-DSA"),
+        "2.16.840.1.101.3.4.3.18" => ("ML-DSA-65", "ML-DSA"),
+        "2.16.840.1.101.3.4.3.19" => ("ML-DSA-87", "ML-DSA"),
+        other => return (other.to_string(), "unknown".to_string()),
+    };
+    (alg.to_string(), key.to_string())
+}
+
+/// PEM-encode DER bytes as a CERTIFICATE block (64-char lines, RFC 7468).
+fn der_to_pem(der: &[u8]) -> String {
+    let b64 = BASE64_STANDARD.encode(der);
+    let mut out = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in b64.as_bytes().chunks(64) {
+        // chunk is a slice of the ASCII base64 string, always valid UTF-8.
+        out.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+        out.push('\n');
+    }
+    out.push_str("-----END CERTIFICATE-----\n");
+    out
 }
 
 /// Certificate issuance request
@@ -2064,6 +2215,45 @@ impl IntoResponse for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_describe_signature_algorithm_known() {
+        assert_eq!(
+            describe_signature_algorithm("1.2.840.10045.4.3.3"),
+            ("ECDSA-SHA384".to_string(), "EC".to_string())
+        );
+        assert_eq!(
+            describe_signature_algorithm("1.2.840.113549.1.1.11"),
+            ("RSA-SHA256".to_string(), "RSA".to_string())
+        );
+        assert_eq!(
+            describe_signature_algorithm("2.16.840.1.101.3.4.3.18"),
+            ("ML-DSA-65".to_string(), "ML-DSA".to_string())
+        );
+    }
+
+    #[test]
+    fn test_describe_signature_algorithm_unknown_degrades() {
+        // Unknown OIDs are returned verbatim with an "unknown" key type rather
+        // than failing the info endpoint.
+        let (alg, key) = describe_signature_algorithm("9.9.9.9");
+        assert_eq!(alg, "9.9.9.9");
+        assert_eq!(key, "unknown");
+    }
+
+    #[test]
+    fn test_der_to_pem_roundtrip() {
+        let der = b"hello world certificate bytes";
+        let pem = der_to_pem(der);
+        assert!(pem.starts_with("-----BEGIN CERTIFICATE-----\n"));
+        assert!(pem.trim_end().ends_with("-----END CERTIFICATE-----"));
+        // The base64 body must decode back to the original DER.
+        let body: String = pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect();
+        assert_eq!(BASE64_STANDARD.decode(body).unwrap(), der);
+    }
 
     // axum 0.8: GET (public) and POST (protected) live on the same path
     // `/api/v1/crl` but in two separate routers that are `.merge`d. axum merges
