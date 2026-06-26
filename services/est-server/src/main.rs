@@ -107,6 +107,23 @@ struct Args {
     #[arg(long, env = "TLS_CA_CERT_FILE")]
     tls_ca_cert: Option<String>,
 
+    /// Client CA bundle (PEM) for the NPE portal's service certificate, used to
+    /// verify the portal at the TLS layer for the identity bridge. Kept separate
+    /// from --tls-ca-cert so enabling the bridge does NOT flip enrollment to mTLS
+    /// mode: a bearer-enrollment deployment can still verify the portal cert.
+    /// Used only when --trusted-proxy-subjects is set, and only if --tls-ca-cert
+    /// is not already configured.
+    #[arg(long, env = "EST_PORTAL_CLIENT_CA")]
+    portal_client_ca: Option<String>,
+
+    /// Comma-separated RFC 4514 subject DNs of trusted reverse proxies (the NPE
+    /// portal service certificate). When set (bearer enrollment mode), EST's
+    /// token-management endpoints accept the portal's mTLS-forwarded X-Npe-*
+    /// identity in addition to operator bearer sessions (the identity bridge).
+    /// NIST 800-53: IA-2 / AC-3 / AC-17
+    #[arg(long, env = "EST_TRUSTED_PROXY_SUBJECTS", value_delimiter = ',')]
+    trusted_proxy_subjects: Vec<String>,
+
     /// Accept HTTP Basic authentication (RFC 7030 §3.2.3) as a fallback when a
     /// client does not present a TLS client certificate. Intended for bootstrap
     /// enrollment. Requires --tls-ca-cert (mTLS); Basic is rejected otherwise
@@ -139,6 +156,8 @@ struct Settings {
     tls_cert: Option<String>,
     tls_key: Option<String>,
     tls_ca_cert: Option<String>,
+    portal_client_ca: Option<String>,
+    trusted_proxy_subjects: Vec<String>,
     allow_basic_auth: bool,
     allow_bearer_auth: bool,
     mtls_token_bootstrap: bool,
@@ -179,6 +198,9 @@ impl Settings {
             tls_cert: args.tls_cert.or(file.tls_cert),
             tls_key: args.tls_key.or(file.tls_key),
             tls_ca_cert: args.tls_ca_cert.or(file.tls_ca_cert),
+            // Identity-bridge config is CLI/env only (not in the JSON config file).
+            portal_client_ca: args.portal_client_ca,
+            trusted_proxy_subjects: args.trusted_proxy_subjects,
             allow_basic_auth: args
                 .allow_basic_auth
                 .or(file.allow_basic_auth)
@@ -300,6 +322,35 @@ async fn main() -> Result<()> {
             (true, false) => EstAuthMode::Mtls,
             (false, _) => EstAuthMode::BearerToken,
         }
+    };
+
+    // Identity bridge (NPE portal -> EST token management). Active only in
+    // bearer-token enrollment mode; the portal certificate is verified at the
+    // TLS layer against --portal-client-ca (or --tls-ca-cert).
+    let trusted_proxy = if settings.trusted_proxy_subjects.is_empty() {
+        None
+    } else if auth_mode != EstAuthMode::BearerToken {
+        tracing::warn!(
+            ?auth_mode,
+            "EST identity bridge requires bearer-token enrollment mode; \
+             --trusted-proxy-subjects is ignored under the current auth mode"
+        );
+        None
+    } else if settings.tls_ca_cert.is_none() && settings.portal_client_ca.is_none() {
+        anyhow::bail!(
+            "EST_TRUSTED_PROXY_SUBJECTS is set but no portal client CA is configured to verify \
+             the portal certificate; set --portal-client-ca (or --tls-ca-cert) \
+             (NIST 800-53: IA-2)"
+        );
+    } else {
+        tracing::info!(
+            subjects = ?settings.trusted_proxy_subjects,
+            "EST identity bridge enabled: trusting NPE portal mTLS-forwarded identity on \
+             token-management endpoints"
+        );
+        Some(Arc::new(ostrich_common::auth::TrustedProxyConfig::new(
+            settings.trusted_proxy_subjects.clone(),
+        )))
     };
 
     let user_repo = Arc::new(ostrich_db::repository::DbUserRepository::new(
@@ -488,6 +539,7 @@ async fn main() -> Result<()> {
         EstAuthMode::MtlsWithTokenBootstrap => state.with_mtls_token_bootstrap(),
         EstAuthMode::BearerToken => state,
     };
+    state = state.with_trusted_proxy(trusted_proxy.clone());
 
     // H1 - certificate identity authorization policy.
     let identity_policy = match settings
@@ -512,11 +564,28 @@ async fn main() -> Result<()> {
     // Parse primary bind address.
     let addr: SocketAddr = settings.bind_address.parse().expect("Invalid bind address");
 
+    // Client CA for the TLS listener: the enrollment mTLS CA if set, otherwise
+    // the portal client CA when the bridge is enabled — so the portal cert is
+    // verified without flipping enrollment to mTLS mode.
+    let tls_client_ca = settings
+        .tls_ca_cert
+        .clone()
+        .or_else(|| trusted_proxy.as_ref().and(settings.portal_client_ca.clone()));
     let tls = ostrich_common::tls::TlsSettings::from_options(
         settings.tls_cert,
         settings.tls_key,
-        settings.tls_ca_cert,
-    )?;
+        tls_client_ca,
+    )?
+    // With the bridge on, request (but do not require) a client certificate: the
+    // portal presents one and takes the trusted-proxy path, while in-cluster
+    // bearer clients without a certificate still complete the handshake.
+    .map(|s| {
+        if trusted_proxy.is_some() {
+            s.with_optional_client_auth(true)
+        } else {
+            s
+        }
+    });
 
     if auth_mode == EstAuthMode::MtlsWithTokenBootstrap {
         // Two-port deployment. The primary --bind-address stays plain HTTP for
