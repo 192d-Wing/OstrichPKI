@@ -1,6 +1,6 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 1.6
+**Document Version:** 1.8
 **Date:** 2026-01-04
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Excellent (85%)
@@ -1434,6 +1434,7 @@ consumed by the TAMP messages above.
 | 1.0 | 2026-01-03 | OstrichPKI Team | Initial RFC compliance assessment based on v0.10.0 codebase |
 | 1.2 | 2026-01-04 | OstrichPKI Team | Added RFC 4514 DN parsing implementation, documented SAN parsing from CSR extensions, updated compliance to 70% |
 | 1.7 | 2026-06-23 | OstrichPKI Team | Added RFC 5934 (TAMP manager role) and RFC 5914 (Trust Anchor Format) implementation in the `ostrich-tamp` crate and `ostrich-tamp-server` |
+| 1.8 | 2026-06-26 | OstrichPKI Team | NPE Portal (`ostrich-npe-portal`): RFC 8446 (TLS 1.3) + RFC 9325 (TLS client authentication / mTLS) for operator auth; RFC 5280 §4.2.1.4 certificate-policy OIDs consumed for role mapping. (RFC 7030 §3.2.2 EST label routing is planned for a later milestone.) |
 
 ---
 

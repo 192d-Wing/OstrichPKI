@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OstrichPKI NPE Portal</title>
+    <!--
+      The Rust Axum server serves this built file and injects, at request time:
+        - a CSP nonce onto the injected inline config script (SC-18), and
+        - window.__OSTRICH_NPE_CONFIG__ = { apiBaseUrl, classificationBanner, ... }
+      See services/npe-portal/src/server/template.rs.
+    -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

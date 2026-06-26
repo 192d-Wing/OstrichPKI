@@ -1,0 +1,25 @@
+{
+  "backend": {
+    "caUrl": "http://ca-service:8081",
+    "estUrl": "http://est-service:8087"
+  },
+  "session": {
+    "cookieName": "ostrich_npe_session",
+    "inactivityTimeoutSecs": 1800,
+    "absoluteTimeoutSecs": 28800,
+    "secureCookies": true
+  },
+  "oidMapping": {
+    "sponsorOids": ["2.16.840.1.101.2.1.11.42"],
+    "adminOid": "2.16.840.1.101.2.1.11.43",
+    "raOids": ["2.16.840.1.101.2.1.11.44"],
+    "caaOids": ["2.16.840.1.101.2.1.11.45"],
+    "allowedIssuers": ["CN=Example NPE Issuing CA,O=U.S. Government,C=US"]
+  },
+  "classificationBanner": "CUI",
+  "cspNonceLength": 16,
+  "staticFiles": {
+    "directory": "/app/static",
+    "urlPrefix": "/static"
+  }
+}

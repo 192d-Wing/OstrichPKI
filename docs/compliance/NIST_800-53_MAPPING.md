@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 1.6
+**Document Version:** 1.8
 **Date:** 2026-01-07
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -1794,6 +1794,45 @@ implement the following controls:
 
 ---
 
+## NPE Portal (Non-Person Entity enrollment)
+
+The `ostrich-npe-portal` service (standalone Axum BFF + React/Cloudscape SPA)
+adds a self-service enrollment portal authenticated by mTLS client certificate.
+
+- **IA-2 / IA-5(2) (Identification & PKI-Based Authentication):** operators
+  authenticate passwordlessly by client certificate; the verified leaf is
+  surfaced via `ostrich_common::tls::PeerCertificate` and mapped to an NPE role
+  from its certificate-policy OIDs — `services/npe-portal/src/server/oid.rs`
+  (`authenticate`).
+- **CM-6 (Secure Defaults / Fail Secure):** the service refuses to start without
+  mandatory mTLS (server cert/key + client CA) unless `--allow-insecure` is set
+  for development — `services/npe-portal/src/main.rs`.
+- **AC-3 / AC-6 (Access Enforcement / Least Privilege):** four OID-derived roles
+  (PkiSponsor, PkiSponsorAdmin, RegistrationAuthority, CaaAdmin) with a
+  least-privilege permission map —
+  `crates/ostrich-common/src/auth/{roles.rs,permissions.rs}`. The proxy forwards
+  the authenticated identity (`X-Npe-*` headers, with inbound spoofs stripped)
+  and is allowlisted to CA/EST only — `services/npe-portal/src/server/proxy.rs`.
+  Issuer scoping (`allowed_issuers`) prevents a role-granting OID asserted by an
+  unauthorized CA in the trusted bundle from conferring privilege.
+- **AC-8 (System Use Notification):** mandatory USG consent gate before any
+  proxied API call — `services/npe-portal/src/server/{router.rs,middleware.rs}`
+  and `web/src/components/consent-modal.tsx`.
+- **AC-12 (Session Termination):** 30-minute inactivity lock; the timer is
+  refreshed only on genuine API activity, not passive session probes —
+  `services/npe-portal/src/server/session.rs`.
+- **SC-23 (Session Authenticity):** sessions are bound to the SHA-256 fingerprint
+  of the authenticating certificate and re-verified on every request.
+- **SC-8 (Transmission Confidentiality):** TLS 1.3 / mTLS via `ostrich_common::tls`.
+- **AU-2 / AU-3 / AU-12 (Audit):** login success/failure, USG consent, and logout
+  emit structured `EventType::Authentication` records with actor/outcome/IP/
+  session — `services/npe-portal/src/server/audit.rs`. POAM: records are emitted
+  to the audit pipeline via the `ostrich_audit` tracing target; attach a
+  `DatabaseAuditSink` (AU-9(3)/AU-10 hash chain + signing) once the portal is
+  provisioned with the audit store.
+
+---
+
 ## Document Change History
 
 | Version | Date | Author | Changes |
@@ -1802,6 +1841,7 @@ implement the following controls:
 | 1.5 | 2026-01-04 | OstrichPKI Team | HSM enforcement and 98% NIAP compliance |
 | 1.6 | 2026-01-07 | OstrichPKI Team | Web UI: AC-2 partial (OIDC), AC-12 implemented (sessions), SC-23 implemented (CSP nonces, PKCE) |
 | 1.7 | 2026-06-23 | OstrichPKI Team | TAMP (RFC 5934) manager: SC-12/SC-13/SC-23/SI-10/SI-12/AU-2/AU-3/AU-12/IA-7/AC-3 evidence (`ostrich-tamp`) |
+| 1.8 | 2026-06-26 | OstrichPKI Team | NPE Portal (`ostrich-npe-portal`): IA-2/IA-5(2) mTLS OID→role auth, CM-6 fail-closed mTLS, AC-3/AC-6 four NPE roles + identity-forwarding allowlisted proxy, AC-8 USG consent, AC-12 30-min inactivity, SC-23 cert-bound sessions, AU-2/AU-3/AU-12 auth audit |
 
 ---
 
