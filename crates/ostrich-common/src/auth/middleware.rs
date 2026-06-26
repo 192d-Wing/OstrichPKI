@@ -288,8 +288,26 @@ fn peer_cert_subject(cert_der: &[u8]) -> Option<String> {
         .map(|c| c.tbs_certificate.subject.to_string())
 }
 
+/// Maximum accepted length for a forwarded identity field (username / subject
+/// DN), so a malformed proxy assertion can't pollute audit/own-scope state.
+const MAX_PROXY_IDENTITY_LEN: usize = 512;
+
+/// Whether a role may be asserted over the trusted-proxy bridge. Defense in
+/// depth (AC-6): even though the portal is the only caller past the mTLS gate, a
+/// bridged identity is capped to the NPE portal roles, so a portal bug that
+/// forwarded a privileged role string (e.g. "administrator", "auditor") can
+/// never confer CA-operator/admin/auditor authority through the bridge.
+fn is_bridgeable_role(role: super::roles::Role) -> bool {
+    use super::roles::Role;
+    matches!(
+        role,
+        Role::PkiSponsor | Role::PkiSponsorAdmin | Role::RegistrationAuthority | Role::CaaAdmin
+    )
+}
+
 /// Build a synthetic [`AuthenticatedUser`] from the trusted-proxy identity
-/// headers. Returns `None` if the mandatory user header is missing/empty.
+/// headers. Returns `None` if the mandatory user header is missing/empty or a
+/// forwarded field exceeds [`MAX_PROXY_IDENTITY_LEN`].
 fn build_trusted_proxy_user(headers: &header::HeaderMap) -> Option<AuthenticatedUser> {
     let get = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
 
@@ -300,12 +318,22 @@ fn build_trusted_proxy_user(headers: &header::HeaderMap) -> Option<Authenticated
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(username);
+
+    // SI-10: bound the forwarded identity sizes.
+    if username.len() > MAX_PROXY_IDENTITY_LEN || subject.len() > MAX_PROXY_IDENTITY_LEN {
+        warn!("trusted-proxy identity field exceeds {MAX_PROXY_IDENTITY_LEN} chars; rejecting");
+        return None;
+    }
+
+    // Parse roles, dropping unknown names AND any role not permitted over the
+    // bridge (AC-6 defense in depth).
     let roles: Vec<super::roles::Role> = get(HEADER_NPE_ROLES)
         .unwrap_or("")
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .filter_map(super::roles::Role::from_name)
+        .filter(|r| is_bridgeable_role(*r))
         .collect();
 
     Some(AuthenticatedUser::from_trusted_proxy(subject, username, roles))
@@ -329,7 +357,6 @@ fn build_trusted_proxy_user(headers: &header::HeaderMap) -> Option<Authenticated
 /// # COMPLIANCE MAPPING
 /// - NIST 800-53: IA-2 / AC-3 / AC-17 - mTLS-gated proxied identity, bearer fallback
 /// - NIAP PP-CA: FIA_UAU.1 / FTP_ITC.1
-#[allow(dead_code)]
 pub struct TrustedProxyAuthLayer;
 
 impl TrustedProxyAuthLayer {
@@ -348,23 +375,31 @@ impl TrustedProxyAuthLayer {
                 .get::<PeerCertificate>()
                 .and_then(|p| p.0.clone())
             && let Some(subject) = peer_cert_subject(&cert_der)
-            && config.is_trusted_subject(&subject)
         {
-            // The proxy is trusted; its asserted identity headers are required.
-            let user = build_trusted_proxy_user(req.headers()).ok_or_else(|| {
-                warn!(
+            if config.is_trusted_subject(&subject) {
+                // The proxy is trusted; its asserted identity headers are required.
+                let user = build_trusted_proxy_user(req.headers()).ok_or_else(|| {
+                    warn!(
+                        proxy_subject = %subject,
+                        "trusted proxy presented no/invalid {HEADER_NPE_USER} identity header"
+                    );
+                    AuthResponse::Unauthorized
+                })?;
+                debug!(
+                    user = %user.username,
                     proxy_subject = %subject,
-                    "trusted proxy presented no {HEADER_NPE_USER} identity header"
+                    "authenticated via trusted-proxy identity bridge"
                 );
-                AuthResponse::Unauthorized
-            })?;
+                req.extensions_mut().insert(user);
+                return Ok(next.run(req).await);
+            }
+            // A verified client cert whose subject is not an allow-listed proxy:
+            // fall through to bearer. Logged so a subject-string mismatch (e.g.
+            // an RFC 4514 rendering difference) is diagnosable rather than silent.
             debug!(
-                user = %user.username,
-                proxy_subject = %subject,
-                "authenticated via trusted-proxy identity bridge"
+                peer_subject = %subject,
+                "peer certificate subject is not a trusted proxy; falling back to bearer auth"
             );
-            req.extensions_mut().insert(user);
-            return Ok(next.run(req).await);
         }
 
         // Bearer fallback (admin console / direct API).
@@ -621,18 +656,32 @@ mod tests {
         headers.insert(HEADER_NPE_SUBJECT, "CN=DOE.JOHN.A.123".parse().unwrap());
         headers.insert(
             HEADER_NPE_ROLES,
-            "pki_sponsor,bogus_role,registration_authority".parse().unwrap(),
+            // Includes an unknown name and a privileged non-bridge role, both of
+            // which must be dropped.
+            "pki_sponsor,bogus_role,administrator,registration_authority"
+                .parse()
+                .unwrap(),
         );
 
         let user = build_trusted_proxy_user(&headers).expect("user");
         assert_eq!(user.username, "DOE.JOHN.A.123");
-        // Known roles parsed; unknown role names silently dropped.
+        // Known, bridgeable roles parsed.
         assert!(user.has_role(Role::PkiSponsor));
         assert!(user.has_role(Role::RegistrationAuthority));
+        // Unknown names AND non-bridge privileged roles dropped (AC-6).
+        assert!(!user.has_role(Role::Administrator));
         assert_eq!(user.roles.len(), 2);
 
         // Missing the mandatory user header -> None.
         assert!(build_trusted_proxy_user(&header::HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn test_trusted_proxy_rejects_overlong_identity() {
+        let mut headers = header::HeaderMap::new();
+        let long = "a".repeat(MAX_PROXY_IDENTITY_LEN + 1);
+        headers.insert(HEADER_NPE_USER, long.parse().unwrap());
+        assert!(build_trusted_proxy_user(&headers).is_none());
     }
 
     #[test]
