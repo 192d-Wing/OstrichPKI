@@ -127,6 +127,10 @@ pub struct LabelRoutingConfig {
 struct ResolvedEnrollment<'a> {
     client: &'a Arc<crate::ca_integration::EstCaClient>,
     profile: String,
+    /// Key algorithm requested by the label, if any. For client-CSR enrollment
+    /// the client already chose the key; for server-side key generation the
+    /// server must honor (or reject) this.
+    key_algo: Option<crate::label::KeyAlgo>,
     validity_days: Option<u32>,
     ccsa: Option<String>,
 }
@@ -382,6 +386,7 @@ impl EstState {
                 Ok(ResolvedEnrollment {
                     client,
                     profile: resolve_enroll_profile(self, user).await,
+                    key_algo: None,
                     validity_days: None,
                     ccsa: None,
                 })
@@ -397,6 +402,7 @@ impl EstState {
                 Ok(ResolvedEnrollment {
                     client: &backend.client,
                     profile,
+                    key_algo: parsed.key_algo,
                     validity_days: parsed.validity_days,
                     ccsa: parsed.ccsa,
                 })
@@ -411,12 +417,17 @@ impl EstState {
         let routing = self.label_routing.as_ref().ok_or_else(|| {
             Error::BadRequest("labeled EST enrollment is not configured".to_string())
         })?;
+        // Fail closed: an explicit key-algorithm token with no mapping is an
+        // error, NOT a silent fallback to the default backend (that would issue
+        // under the wrong algorithm). Only a label without an AK token uses the
+        // routing default.
         let backend_name = match parsed.key_algo {
-            Some(algo) => routing
-                .algo_backends
-                .get(algo.token())
-                .cloned()
-                .unwrap_or_else(|| routing.default_backend.clone()),
+            Some(algo) => routing.algo_backends.get(algo.token()).cloned().ok_or_else(|| {
+                Error::BadRequest(format!(
+                    "no CA backend is configured for key algorithm '{}'",
+                    algo.token()
+                ))
+            })?,
             None => routing.default_backend.clone(),
         };
         self.ca_backends.get(&backend_name).ok_or_else(|| {
@@ -743,7 +754,7 @@ async fn get_ca_certs(
     let label = label.map(|p| p.0);
     let ca_cert = state.resolve_ca_certificate(label.as_deref())?;
     let pkcs7_der = match ca_cert {
-        Some(der) => encode_certs_only_pkcs7(std::slice::from_ref(&der.to_vec()))?,
+        Some(der) => encode_certs_only_pkcs7(&[der.to_vec()])?,
         None => {
             tracing::warn!("EST /cacerts: no CA certificate configured; returning empty PKCS#7");
             encode_certs_only_pkcs7(&[])?
@@ -1721,6 +1732,24 @@ async fn server_key_gen(
             return Err(e);
         }
     };
+
+    // Server-side key generation chooses the key (EC P-256 below), so it cannot
+    // honor a label-requested key algorithm. Reject AK-labeled serverkeygen
+    // rather than silently issuing a different algorithm than requested
+    // (fail closed; full multi-algorithm SSKG is a follow-up).
+    if let Some(algo) = resolved.key_algo {
+        emit_failure_audit(
+            &state,
+            client_identifier,
+            "est:serverkeygen",
+            "serverkeygen_keyalgo_unsupported",
+        )
+        .await;
+        return Err(Error::BadRequest(format!(
+            "server-side key generation does not support a label-requested key algorithm '{}' yet",
+            algo.token()
+        )));
+    }
 
     // The same profile drives both the server-built CSR and the CA issuance call.
     let enroll_profile = resolved.profile.clone();
