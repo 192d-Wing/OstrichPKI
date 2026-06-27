@@ -3656,15 +3656,20 @@ version = "0.15.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
+ "cms",
  "const-oid",
  "der",
  "digest 0.10.7",
  "hex",
+ "hmac 0.12.1",
  "ostrich-common",
  "ostrich-crypto",
  "pem-rfc7468 1.0.0",
  "pkcs1",
+ "pkcs12",
+ "pkcs5",
  "pkcs8",
  "serde",
  "sha1 0.10.6",
@@ -3903,6 +3908,21 @@ dependencies = [
  "der",
  "pkcs8",
  "spki",
+]
+
+[[package]]
+name = "pkcs12"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "695b3df3d3cc1015f12d70235e35b6b79befc5fa7a9b95b951eab1dd07c9efc2"
+dependencies = [
+ "cms",
+ "const-oid",
+ "der",
+ "digest 0.10.7",
+ "spki",
+ "x509-cert",
+ "zeroize",
 ]
 
 [[package]]
