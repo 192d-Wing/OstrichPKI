@@ -560,6 +560,9 @@ async fn main() -> Result<()> {
             ca_cert_pem,
             ..Default::default()
         };
+        // NOTE: ca_insecure is a single GLOBAL dev escape hatch — it applies to
+        // the default CA client AND every named backend. EstCaClient::new still
+        // fails closed on a non-loopback plaintext endpoint unless it is set.
         let client = ostrich_est::ca_integration::EstCaClient::new(
             config,
             db_pool.clone(),
@@ -567,12 +570,20 @@ async fn main() -> Result<()> {
         )
         .await?;
         // This backend's issuing CA certificate, served by /{label}/cacerts.
+        // A configured id that resolves to no row is a misconfiguration (the
+        // operator explicitly named a cert) and fails fast (CM-6).
         let cert_der = match &backend.ca_certificate_id {
             Some(id) => {
                 let uuid = uuid::Uuid::parse_str(id).map_err(|e| {
                     anyhow::anyhow!("caBackends['{}'].caCertificateId invalid: {e}", backend.name)
                 })?;
-                ca_repo.find_ca_certificate(uuid).await?.map(|c| c.der_encoded)
+                let cert = ca_repo.find_ca_certificate(uuid).await?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "caBackends['{}'].caCertificateId {uuid} matches no registered CA certificate",
+                        backend.name
+                    )
+                })?;
+                Some(cert.der_encoded)
             }
             None => None,
         };
@@ -580,7 +591,8 @@ async fn main() -> Result<()> {
         ca_backends.push((backend.name.clone(), Arc::new(client), cert_der));
     }
 
-    // Validate label routing references real backends (fail fast, CM-6).
+    // Validate label routing references real backends and known key-algorithm
+    // tokens (fail fast, CM-6).
     if let Some(lr) = &settings.label_routing {
         if !backend_names.contains(&lr.default_backend) {
             anyhow::bail!(
@@ -589,12 +601,27 @@ async fn main() -> Result<()> {
             );
         }
         for (algo, name) in &lr.algo_backends {
+            // The key-algorithm token must be one the label parser can emit, or
+            // the mapping is permanently unreachable dead config.
+            if ostrich_est::label::KeyAlgo::from_token(algo).is_none() {
+                anyhow::bail!(
+                    "labelRouting.algoBackends key '{algo}' is not a valid key-algorithm token \
+                     (expected one of 2048, P384)"
+                );
+            }
             if !backend_names.contains(name) {
                 anyhow::bail!(
                     "labelRouting.algoBackends['{algo}'] -> '{name}' is not a configured caBackend"
                 );
             }
         }
+    } else if !ca_backends.is_empty() {
+        // Backends were built (gRPC channels opened) but no labeled path serves
+        // them — surface the inert config rather than silently ignoring it.
+        tracing::warn!(
+            "caBackends are configured but labelRouting is absent; the labeled \
+             /.well-known/est/{{label}}/... paths are disabled and these backends are unreachable"
+        );
     }
 
     let mut state = ostrich_est::rest::EstState::new_with_auth(
