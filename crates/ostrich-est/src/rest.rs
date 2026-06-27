@@ -1754,10 +1754,20 @@ async fn server_key_gen(
     // The same profile drives both the server-built CSR and the CA issuance call.
     let enroll_profile = resolved.profile.clone();
 
+    // EFS (Microsoft Encrypting File System) certificates are delivered as an
+    // encrypted PKCS#12 holding an RSA key — Windows EFS requires RSA. Every
+    // other server-keygen profile gets a modern EC P-256 key.
+    let is_efs = enroll_profile == EFS_PROFILE_NAME;
+    let key_type = if is_efs {
+        KeyType::Rsa2048
+    } else {
+        KeyType::EcP256
+    };
+
     // Generate the key pair + a CSR signed by it (proof-of-possession).
     let request = ServerKeyGenRequest {
         subject,
-        key_type: KeyType::EcP256, // server-chosen; modern default
+        key_type, // server-chosen: EFS → RSA, otherwise EC P-256
         dns_sans,
         profile_name: enroll_profile.clone(),
     };
@@ -1828,40 +1838,78 @@ async fn server_key_gen(
     // token would be reusable here, defeating single-use.
     consume_enrollment_token_if_present(&state, &user, certificate_id).await;
 
-    // Fetch the issued certificate and encode it as a certs-only PKCS#7.
+    // Fetch the issued certificate.
     let cert = ostrich_db::repository::CertificateRepository::new(state.db_pool.clone())
         .find_by_id(certificate_id)
         .await
         .map_err(|e| Error::Internal(format!("Failed to load issued certificate: {}", e)))?
         .ok_or_else(|| Error::Internal("Issued certificate not found".to_string()))?;
-    let pkcs7 = encode_certs_only_pkcs7(&[cert.der_encoded])
-        .map_err(|e| Error::Internal(format!("PKCS#7 encoding failed: {}", e)))?;
 
-    // RFC 7030 §4.4.2 - multipart/mixed: the private key (application/pkcs8) and
-    // the certificate (application/pkcs7-mime; certs-only). Both base64.
-    //
-    // M3 - the private key is sensitive: encode it into a Zeroizing buffer and
-    // assemble the body in a Zeroizing buffer so these intermediate copies are
-    // wiped on drop. (One copy still lives in the outbound HTTP body buffer,
-    // which is inherent to returning the key; everything else is zeroized.)
-    const BOUNDARY: &str = "estServerKeyGenBoundary";
-    let key_b64 =
-        zeroize::Zeroizing::new(BASE64_STANDARD.encode(material.private_key_pkcs8.as_slice()));
-    let cert_b64 = BASE64_STANDARD.encode(&pkcs7);
-    let body = zeroize::Zeroizing::new(format!(
-        "--{b}\r\n\
-         Content-Type: application/pkcs8\r\n\
-         Content-Transfer-Encoding: base64\r\n\r\n\
-         {key}\r\n\
-         --{b}\r\n\
-         Content-Type: application/pkcs7-mime; smime-type=certs-only\r\n\
-         Content-Transfer-Encoding: base64\r\n\r\n\
-         {cert}\r\n\
-         --{b}--\r\n",
-        b = BOUNDARY,
-        key = key_b64.as_str(),
-        cert = cert_b64,
-    ));
+    // The server-held private key is sensitive: every intermediate that touches
+    // it lives in a Zeroizing buffer and is wiped on drop. (One copy still lives
+    // in the outbound HTTP body buffer, which is inherent to returning the key;
+    // everything else is zeroized.)
+    let response = if is_efs {
+        // EFS delivery: wrap the RSA key + issued cert in an encrypted PKCS#12
+        // protected by a freshly generated one-time password. The password is
+        // returned exactly once, in this response, and is never stored server
+        // side, so it is unrecoverable after the operator closes the page
+        // (SC-12 key management, SI-12 handling of sensitive output).
+        let password = generate_one_time_pkcs12_password();
+        let pkcs12 = ostrich_x509::pkcs12::build_encrypted_pkcs12(
+            material.private_key_pkcs8.as_slice(),
+            &cert.der_encoded,
+            password.as_str(),
+        )
+        .map_err(|e| Error::Internal(format!("PKCS#12 assembly failed: {}", e)))?;
+        let body = zeroize::Zeroizing::new(
+            serde_json::json!({
+                "format": "pkcs12",
+                "certificateId": certificate_id.to_string(),
+                "pkcs12": BASE64_STANDARD.encode(&pkcs12),
+                "password": password.as_str(),
+            })
+            .to_string(),
+        );
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json".to_string())],
+            body.to_string(),
+        )
+            .into_response()
+    } else {
+        // RFC 7030 §4.4.2 - multipart/mixed: the private key (application/pkcs8)
+        // and the certificate (application/pkcs7-mime; certs-only). Both base64.
+        let pkcs7 = encode_certs_only_pkcs7(&[cert.der_encoded])
+            .map_err(|e| Error::Internal(format!("PKCS#7 encoding failed: {}", e)))?;
+        const BOUNDARY: &str = "estServerKeyGenBoundary";
+        let key_b64 =
+            zeroize::Zeroizing::new(BASE64_STANDARD.encode(material.private_key_pkcs8.as_slice()));
+        let cert_b64 = BASE64_STANDARD.encode(&pkcs7);
+        let body = zeroize::Zeroizing::new(format!(
+            "--{b}\r\n\
+             Content-Type: application/pkcs8\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n\
+             {key}\r\n\
+             --{b}\r\n\
+             Content-Type: application/pkcs7-mime; smime-type=certs-only\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n\
+             {cert}\r\n\
+             --{b}--\r\n",
+            b = BOUNDARY,
+            key = key_b64.as_str(),
+            cert = cert_b64,
+        ));
+        (
+            StatusCode::OK,
+            [(
+                header::CONTENT_TYPE,
+                format!("multipart/mixed; boundary=\"{}\"", BOUNDARY),
+            )],
+            body.to_string(),
+        )
+            .into_response()
+    };
 
     // H2 - audit the successful server-side key generation + issuance.
     emit_enrollment_audit(
@@ -1873,15 +1921,7 @@ async fn server_key_gen(
     )
     .await;
 
-    Ok((
-        StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            format!("multipart/mixed; boundary=\"{}\"", BOUNDARY),
-        )],
-        body.to_string(),
-    )
-        .into_response())
+    Ok(response)
 }
 
 // ===========================================================================
@@ -1923,12 +1963,32 @@ struct MintEnrollmentTokenRequest {
 
 /// Certificate profiles an operator may pin to an EST enrollment token. Kept in
 /// lockstep with the CA's registered issuance profiles (`default_profiles` in
-/// ca-server): `tls_client` (clientAuth), `tls_server` (serverAuth), and
-/// `tls_server_client` (serverAuth + clientAuth, for mutual-TLS devices).
+/// ca-server): `tls_client` (clientAuth), `tls_server` (serverAuth),
+/// `tls_server_client` (serverAuth + clientAuth, for mutual-TLS devices), and
+/// `efs` (Microsoft EFS — server-side keygen delivered as an encrypted PKCS#12).
 ///
 /// SI-10: reject anything else so a token can never reference an unissuable or
 /// over-privileged profile.
-const OFFERABLE_EST_PROFILES: [&str; 3] = ["tls_client", "tls_server", "tls_server_client"];
+const OFFERABLE_EST_PROFILES: [&str; 4] =
+    ["tls_client", "tls_server", "tls_server_client", EFS_PROFILE_NAME];
+
+/// Profile name that triggers the EFS server-side key-generation delivery path
+/// (RSA key + issued cert wrapped in an encrypted PKCS#12). Must match the CA's
+/// registered EFS profile (`CertificateProfile::efs`, `ProfileType::Efs`).
+const EFS_PROFILE_NAME: &str = "efs";
+
+/// Generate the one-time password that protects an EFS PKCS#12 bundle.
+///
+/// 18 CSPRNG bytes rendered as URL-safe unpadded base64 → 24 characters (~144
+/// bits of entropy), comfortably above the builder's 12-char floor. The value
+/// is returned to the operator exactly once and never stored, so it is the sole
+/// protection on the escrowed key in transit (SC-12, SI-12).
+fn generate_one_time_pkcs12_password() -> zeroize::Zeroizing<String> {
+    let bytes = zeroize::Zeroizing::new(rand::random::<[u8; 18]>());
+    zeroize::Zeroizing::new(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes.as_slice()),
+    )
+}
 
 /// Capability rank of an EST certificate profile, used so re-enrollment can
 /// preserve the broadest EKU set ever issued to an identity (RFC 7030 §4.2.2 — a
@@ -2470,6 +2530,29 @@ async fn delete_account_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The EFS profile must be offerable, or serverkeygen would reject it before
+    /// ever reaching the PKCS#12 delivery path.
+    #[test]
+    fn efs_profile_is_offerable() {
+        assert!(OFFERABLE_EST_PROFILES.contains(&EFS_PROFILE_NAME));
+    }
+
+    /// The one-time PKCS#12 password must clear the builder's 12-char floor and
+    /// be unique per call (CSPRNG-derived, not a fixed/derivable value).
+    #[test]
+    fn one_time_pkcs12_password_is_long_and_unique() {
+        let a = generate_one_time_pkcs12_password();
+        let b = generate_one_time_pkcs12_password();
+        assert!(a.len() >= 12, "password must clear the builder's minimum");
+        assert_ne!(a.as_str(), b.as_str(), "passwords must not repeat");
+        // URL-safe base64 alphabet only (no '+', '/', or '=' padding).
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "password must be URL-safe base64"
+        );
+    }
 
     /// Re-enrollment must preserve the broadest EKU profile ever issued to an
     /// identity (RFC 7030 §4.2.2): a server+client node must not be narrowed to

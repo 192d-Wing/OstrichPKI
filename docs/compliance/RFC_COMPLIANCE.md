@@ -904,6 +904,20 @@ RFC 5958) and the certificate (`application/pkcs7-mime`, certs-only). The
 private key is exported via `CryptoProvider::export_private_key` (software
 provider only) and zeroized after the response is built.
 
+**EFS delivery variant (RFC 7292 PKCS#12):** when the resolved profile is `efs`
+(Microsoft Encrypting File System), `/serverkeygen` generates an RSA-2048 key
+(Windows EFS requires RSA), and instead of the `multipart/mixed` PKCS#8 + PKCS#7
+response it wraps the key and the issued certificate in an encrypted PKCS#12
+(RFC 7292) built by `ostrich_x509::pkcs12::build_encrypted_pkcs12` — PBES2
+(PBKDF2-HMAC-SHA256 + AES-256-CBC) shrouded key bag, HMAC-SHA256 integrity MAC,
+matching `localKeyId` on both bags. The PKCS#12 is protected by a freshly
+generated, CSPRNG-derived one-time password (~144 bits) returned exactly once in
+the JSON response (`{format, certificateId, pkcs12, password}`) and never stored
+server side (SC-12 key management, SI-12 sensitive-output handling). Builder
+implementation: [crates/ostrich-x509/src/pkcs12.rs](../../crates/ostrich-x509/src/pkcs12.rs);
+delivery path: [crates/ostrich-est/src/rest.rs](../../crates/ostrich-est/src/rest.rs)
+`server_key_gen`.
+
 **Live full-stack proof:** [tests/integration/est_serverkeygen_e2e.rs](../../tests/integration/est_serverkeygen_e2e.rs)
 spins up the CA gRPC service (SoftHSM-backed) and the EST HTTP server in-process,
 POSTs a CSR to `/.well-known/est/serverkeygen` over real HTTP, and verifies with
@@ -920,7 +934,7 @@ plus a CA-issued certificate for it, end to end.
 - ✅ §3.2.2 - CA Certificates (/cacerts)
 - ✅ §3.3.1 - Simple Enrollment (/simpleenroll)
 - ✅ §3.3.2 - Simple Re-enrollment (/simplereenroll)
-- ✅ §3.4 - Server-Side Key Generation (/serverkeygen) - implemented (ECDSA P-256; CSR-based PoP; PKCS#8 + PKCS#7 multipart per §4.4.2)
+- ✅ §3.4 - Server-Side Key Generation (/serverkeygen) - implemented (ECDSA P-256; CSR-based PoP; PKCS#8 + PKCS#7 multipart per §4.4.2; EFS profile → RSA-2048 delivered as an encrypted PKCS#12 (RFC 7292) with a one-time password)
 
 **Implementation:**
 
