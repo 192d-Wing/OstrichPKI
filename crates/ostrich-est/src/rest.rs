@@ -1625,16 +1625,22 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
 ///
 /// # Response Format
 ///
-/// Returns a PKCS#12 bundle (application/pkcs12) containing:
-/// - Issued certificate
-/// - Encrypted private key (password-protected)
-/// - CA certificate chain
+/// Two delivery shapes, selected by the resolved profile:
+/// - Default: RFC 7030 §4.4.2 `multipart/mixed` carrying the EC P-256 private
+///   key (`application/pkcs8`, RFC 5958) and the certificate (certs-only
+///   `application/pkcs7-mime`).
+/// - EFS profile: an `application/json` envelope `{format, certificateId,
+///   pkcs12, password}` where `pkcs12` is a base64 encrypted PKCS#12 (RFC 7292)
+///   holding the RSA key + certificate, and `password` is its one-time
+///   decryption password.
 ///
 /// # Security Notes
 ///
 /// - CRITICAL: This endpoint MUST require client authentication (mTLS)
-/// - Private keys are zeroized from memory after PKCS#12 creation
-/// - PKCS#12 password should be communicated out-of-band (not in this response)
+/// - Private keys are zeroized from memory after the response body is built
+/// - The EFS one-time PKCS#12 password is returned exactly once, over the mTLS
+///   channel, and is never stored server side (unrecoverable after the operator
+///   closes the page); it is never written to logs or audit records
 /// - Consider KRA escrow for key recovery capability
 ///
 async fn server_key_gen(
@@ -1733,10 +1739,11 @@ async fn server_key_gen(
         }
     };
 
-    // Server-side key generation chooses the key (EC P-256 below), so it cannot
-    // honor a label-requested key algorithm. Reject AK-labeled serverkeygen
-    // rather than silently issuing a different algorithm than requested
-    // (fail closed; full multi-algorithm SSKG is a follow-up).
+    // Server-side key generation chooses the key by profile (EC P-256, or
+    // RSA-2048 for the EFS profile below), so it cannot honor a label-requested
+    // key algorithm. Reject AK-labeled serverkeygen rather than silently issuing
+    // a different algorithm than requested (fail closed; full multi-algorithm
+    // SSKG is a follow-up).
     if let Some(algo) = resolved.key_algo {
         emit_failure_audit(
             &state,
@@ -1853,8 +1860,14 @@ async fn server_key_gen(
         // EFS delivery: wrap the RSA key + issued cert in an encrypted PKCS#12
         // protected by a freshly generated one-time password. The password is
         // returned exactly once, in this response, and is never stored server
-        // side, so it is unrecoverable after the operator closes the page
-        // (SC-12 key management, SI-12 handling of sensitive output).
+        // side, so it is unrecoverable after the operator closes the page.
+        //
+        // COMPLIANCE MAPPING:
+        // - NIST 800-53: SC-12 (key establishment — escrow transport key),
+        //   SC-13 (PBES2/AES-256 + HMAC-SHA256 protection of the key bag),
+        //   SI-12 (one-time password never persisted; sensitive output handling)
+        // - NIAP PP-CA: FCS_CKM.1 (RSA key generation), FCS_COP.1 (PKCS#12 MAC)
+        // - RFC 7292 - PKCS#12 Personal Information Exchange
         let password = generate_one_time_pkcs12_password();
         let pkcs12 = ostrich_x509::pkcs12::build_encrypted_pkcs12(
             material.private_key_pkcs8.as_slice(),
@@ -1990,10 +2003,15 @@ fn generate_one_time_pkcs12_password() -> zeroize::Zeroizing<String> {
     )
 }
 
-/// Capability rank of an EST certificate profile, used so re-enrollment can
-/// preserve the broadest EKU set ever issued to an identity (RFC 7030 §4.2.2 — a
-/// renewal must not silently narrow a server+client node to client-only).
-/// `tls_server_client` (serverAuth + clientAuth) outranks the single-EKU profiles.
+/// Capability rank of an EST certificate profile within the TLS clientAuth/
+/// serverAuth breadth ladder, used so re-enrollment can preserve the broadest
+/// EKU set ever issued to an identity (RFC 7030 §4.2.2 — a renewal must not
+/// silently narrow a server+client node to client-only). `tls_server_client`
+/// (serverAuth + clientAuth) outranks the single-EKU profiles.
+///
+/// EFS is intentionally NOT on this ladder: it is a distinct certificate purpose
+/// (Microsoft EFS EKU), not a wider/narrower TLS EKU set. `broadest_est_profile`
+/// never compares it by rank — see the family guard there.
 fn profile_capability_rank(profile: &str) -> u8 {
     match profile {
         "tls_server_client" => 2,
@@ -2010,7 +2028,14 @@ fn broadest_est_profile(current: Option<String>, candidate: &Option<String>) -> 
         .filter(|p| OFFERABLE_EST_PROFILES.contains(p));
     match (current, candidate) {
         (Some(cur), Some(cand)) => {
-            if profile_capability_rank(cand) > profile_capability_rank(&cur) {
+            // EFS is orthogonal to the TLS EKU breadth ladder. A renewal must
+            // never silently swap an identity between the EFS and TLS families
+            // (that would change the certificate's purpose, not just widen its
+            // EKUs), so when exactly one side is EFS keep the profile already
+            // selected and never rank-compare across the boundary (fail secure).
+            if (cur == EFS_PROFILE_NAME) != (cand == EFS_PROFILE_NAME) {
+                Some(cur)
+            } else if profile_capability_rank(cand) > profile_capability_rank(&cur) {
                 Some(cand.to_string())
             } else {
                 Some(cur)
@@ -2582,6 +2607,32 @@ mod tests {
         assert_eq!(broadest_est_profile(None, &Some("bogus".into())), None);
         assert_eq!(broadest_est_profile(None, &None), None);
         assert!(profile_capability_rank("tls_server_client") > profile_capability_rank("tls_client"));
+    }
+
+    /// EFS is orthogonal to the TLS EKU ladder: the broadest-profile fold must
+    /// never silently swap an identity between the EFS and TLS families (that
+    /// would change the certificate's purpose), in either encounter order.
+    #[test]
+    fn reenroll_never_swaps_efs_and_tls_families() {
+        // A pure-EFS identity renews as EFS (preserved, not folded away).
+        let efs_only = broadest_est_profile(
+            broadest_est_profile(None, &Some(EFS_PROFILE_NAME.to_string())),
+            &Some(EFS_PROFILE_NAME.to_string()),
+        );
+        assert_eq!(efs_only.as_deref(), Some(EFS_PROFILE_NAME));
+
+        // Mixed-purpose identity (same subject+SANs): never silently swap purpose,
+        // regardless of which family the fold encounters first.
+        let efs_then_tls = broadest_est_profile(
+            broadest_est_profile(None, &Some(EFS_PROFILE_NAME.to_string())),
+            &Some("tls_server_client".to_string()),
+        );
+        assert_eq!(efs_then_tls.as_deref(), Some(EFS_PROFILE_NAME));
+        let tls_then_efs = broadest_est_profile(
+            broadest_est_profile(None, &Some("tls_server_client".to_string())),
+            &Some(EFS_PROFILE_NAME.to_string()),
+        );
+        assert_eq!(tls_then_efs.as_deref(), Some("tls_server_client"));
     }
 
     #[test]
