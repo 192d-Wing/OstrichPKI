@@ -21,6 +21,29 @@
   "allowBasicAuth": false,
   "allowBearerAuth": false,
 
+  "caBackends": [
+    {
+      "name": "ec",
+      "grpcUrl": "https://ostrich-ca-ec:50051",
+      "clientCert": "/etc/ostrich/est/ca-client.crt",
+      "clientKey": "/etc/ostrich/est/ca-client.key",
+      "caCert": "/etc/ostrich/est/ca-server-ca.crt",
+      "caCertificateId": "00000000-0000-0000-0000-0000000000ec"
+    },
+    {
+      "name": "rsa",
+      "grpcUrl": "https://ostrich-ca-rsa:50051",
+      "clientCert": "/etc/ostrich/est/ca-client.crt",
+      "clientKey": "/etc/ostrich/est/ca-client.key",
+      "caCert": "/etc/ostrich/est/ca-server-ca.crt",
+      "caCertificateId": "00000000-0000-0000-0000-00000000a5a0"
+    }
+  ],
+  "labelRouting": {
+    "algoBackends": { "P384": "ec", "2048": "rsa" },
+    "defaultBackend": "ec"
+  },
+
   "logLevel": "info",
   "logJson": true
 }

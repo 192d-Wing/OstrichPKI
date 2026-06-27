@@ -161,6 +161,9 @@ struct Settings {
     allow_basic_auth: bool,
     allow_bearer_auth: bool,
     mtls_token_bootstrap: bool,
+    /// Named CA backends + label routing for RFC 7030 §3.2.2 (config-file only).
+    ca_backends: Vec<config::CaBackendFileConfig>,
+    label_routing: Option<config::LabelRoutingFileConfig>,
     log_level: String,
     log_json: bool,
 }
@@ -213,6 +216,9 @@ impl Settings {
                 .mtls_token_bootstrap
                 .or(file.mtls_token_bootstrap)
                 .unwrap_or(false),
+            // Multi-CA label routing is config-file only (nested structure).
+            ca_backends: file.ca_backends.unwrap_or_default(),
+            label_routing: file.label_routing,
             log_level: args
                 .log_level
                 .or(file.log_level)
@@ -524,6 +530,73 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Named CA backends for RFC 7030 §3.2.2 label routing (e.g. an EC CA and an
+    // RSA CA). Built before EstState so each client gets its own db_pool clone.
+    let mut ca_backends: Vec<(String, Arc<ostrich_est::ca_integration::EstCaClient>, Option<Vec<u8>>)> =
+        Vec::new();
+    let mut backend_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for backend in &settings.ca_backends {
+        if !backend_names.insert(backend.name.clone()) {
+            anyhow::bail!("duplicate caBackends name '{}'", backend.name);
+        }
+        // mTLS to the backend gRPC channel is all-or-nothing (SC-8 / AC-17).
+        let client_cert_pem = read_optional_pem(&backend.client_cert)?;
+        let client_key_pem = read_optional_pem(&backend.client_key)?;
+        let ca_cert_pem = read_optional_pem(&backend.ca_cert)?;
+        let any =
+            !client_cert_pem.is_empty() || !client_key_pem.is_empty() || !ca_cert_pem.is_empty();
+        let all =
+            !client_cert_pem.is_empty() && !client_key_pem.is_empty() && !ca_cert_pem.is_empty();
+        if any && !all {
+            anyhow::bail!(
+                "caBackends['{}'] mTLS requires all of clientCert, clientKey, caCert",
+                backend.name
+            );
+        }
+        let config = ostrich_common::GrpcClientConfig {
+            endpoint: backend.grpc_url.clone(),
+            client_cert_pem,
+            client_key_pem,
+            ca_cert_pem,
+            ..Default::default()
+        };
+        let client = ostrich_est::ca_integration::EstCaClient::new(
+            config,
+            db_pool.clone(),
+            settings.ca_insecure,
+        )
+        .await?;
+        // This backend's issuing CA certificate, served by /{label}/cacerts.
+        let cert_der = match &backend.ca_certificate_id {
+            Some(id) => {
+                let uuid = uuid::Uuid::parse_str(id).map_err(|e| {
+                    anyhow::anyhow!("caBackends['{}'].caCertificateId invalid: {e}", backend.name)
+                })?;
+                ca_repo.find_ca_certificate(uuid).await?.map(|c| c.der_encoded)
+            }
+            None => None,
+        };
+        tracing::info!(name = %backend.name, url = %backend.grpc_url, "Registered EST CA backend");
+        ca_backends.push((backend.name.clone(), Arc::new(client), cert_der));
+    }
+
+    // Validate label routing references real backends (fail fast, CM-6).
+    if let Some(lr) = &settings.label_routing {
+        if !backend_names.contains(&lr.default_backend) {
+            anyhow::bail!(
+                "labelRouting.defaultBackend '{}' is not a configured caBackend",
+                lr.default_backend
+            );
+        }
+        for (algo, name) in &lr.algo_backends {
+            if !backend_names.contains(name) {
+                anyhow::bail!(
+                    "labelRouting.algoBackends['{algo}'] -> '{name}' is not a configured caBackend"
+                );
+            }
+        }
+    }
+
     let mut state = ostrich_est::rest::EstState::new_with_auth(
         db_pool,
         Arc::new(crypto_provider),
@@ -555,6 +628,21 @@ async fn main() -> Result<()> {
     };
     tracing::info!(?identity_policy, "EST certificate identity policy");
     state = state.with_identity_policy(identity_policy);
+
+    // Register the named CA backends + label routing (RFC 7030 §3.2.2).
+    for (name, client, cert_der) in ca_backends {
+        state = state.with_ca_backend(name, client, cert_der);
+    }
+    if let Some(lr) = &settings.label_routing {
+        tracing::info!(
+            default_backend = %lr.default_backend,
+            "EST label routing enabled (RFC 7030 §3.2.2)"
+        );
+        state = state.with_label_routing(ostrich_est::rest::LabelRoutingConfig {
+            algo_backends: lr.algo_backends.clone(),
+            default_backend: lr.default_backend.clone(),
+        });
+    }
 
     // Create router and mount the shared session API (login/logout).
     // Public by necessity; brute-force is mitigated by lockout (AC-7 / FIA_AFL.1).
@@ -646,6 +734,15 @@ async fn main() -> Result<()> {
 
     tracing::info!("EST Server shutdown complete");
     Ok(())
+}
+
+/// Read a PEM file into a string, returning an empty string when the path is
+/// absent (mirrors the default-backend mTLS material handling).
+fn read_optional_pem(path: &Option<String>) -> Result<String> {
+    match path {
+        Some(p) => Ok(std::fs::read_to_string(p)?),
+        None => Ok(String::new()),
+    }
 }
 
 fn init_logging(level: &str, json: bool) -> Result<()> {
