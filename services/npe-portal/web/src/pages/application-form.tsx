@@ -110,9 +110,9 @@ export function ApplicationForm({
         )}
         {isServerAuth && (
           <Alert type="warning" header="397-day validity limit">
-            TLS server certificates are issued for at most 397 days. Apple/iOS and other
-            mainstream TLS clients reject server certificates valid for longer, so the CA caps
-            this profile at 397 days regardless of the requested period.
+            Certificates from this TLS server profile are issued for at most 397 days, because
+            Apple/iOS and other mainstream TLS clients reject server certificates valid for
+            longer.
           </Alert>
         )}
         <Container>
