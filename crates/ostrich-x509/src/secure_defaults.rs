@@ -9,7 +9,7 @@
 //! This module enforces secure default values for certificate issuance
 //! and CA configuration as required by NIAP PP-CA v2.1.
 
-use crate::profile::{CertificateProfile, ExtendedKeyUsage, KeyUsage, ProfileType};
+use crate::profile::{CertificateProfile, KeyUsage, ProfileType};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -26,9 +26,11 @@ pub const MIN_EC_KEY_SIZE: u32 = 256;
 pub const MAX_END_ENTITY_VALIDITY_DAYS: u32 = 825; // ~27 months per CA/Browser Forum
 
 /// Maximum validity for a TLS server-authentication (id-kp-serverAuth) leaf.
-/// Apple/Safari reject TLS server certificates valid for more than 398 days
-/// (issued on/after 2020-09-01); 397 is the widely-used safe ceiling that all
-/// major TLS clients accept. Any profile carrying serverAuth is capped here.
+/// The CA/Browser Forum BR §6.3.2 and Apple's policy set the ceiling at 398 days
+/// for certificates issued on/after 2020-09-01; 397 is deliberately one day
+/// under that ceiling (the widely-used safe value that avoids off-by-one /
+/// timezone rejections across all major TLS clients). Detected by serverAuth EKU
+/// OID, so it applies to any profile that asserts serverAuth.
 pub const SERVER_AUTH_MAX_VALIDITY_DAYS: u32 = 397;
 
 /// Maximum certificate validity in days for CA certificates
@@ -213,6 +215,25 @@ impl SecureDefaults {
             )));
         }
 
+        // TLS server-auth certificates are capped at 397 days (Apple/iOS reject
+        // longer-lived serverAuth leaves). Checked BEFORE the generic ceiling so
+        // a serverAuth profile gets the specific, actionable error. Detection is
+        // by EKU *OID*, so a profile expressing serverAuth via
+        // `ExtendedKeyUsage::Custom("1.3.6.1.5.5.7.3.1")` cannot bypass the cap.
+        // NIST 800-53: CM-6 (secure config); CA/Browser Forum BR §6.3.2.
+        const SERVER_AUTH_EKU_OID: &str = "1.3.6.1.5.5.7.3.1";
+        let has_server_auth = profile
+            .extended_key_usage
+            .iter()
+            .any(|eku| eku.oid() == SERVER_AUTH_EKU_OID);
+        if has_server_auth && profile.validity_days > SERVER_AUTH_MAX_VALIDITY_DAYS {
+            return Err(Error::SecureDefaults(format!(
+                "serverAuth (TLS server) validity {} days exceeds the {}-day maximum that \
+                 Apple/iOS and other TLS clients accept",
+                profile.validity_days, SERVER_AUTH_MAX_VALIDITY_DAYS
+            )));
+        }
+
         // Validate validity period
         let max_validity = if profile.basic_constraints_ca {
             self.max_ca_validity_days
@@ -231,20 +252,6 @@ impl SecureDefaults {
             return Err(Error::SecureDefaults(format!(
                 "Validity period {} days is below minimum {} day",
                 profile.validity_days, MIN_VALIDITY_DAYS
-            )));
-        }
-
-        // TLS server-auth certificates are capped at 397 days (Apple/iOS reject
-        // longer-lived serverAuth leaves). Enforced as policy so a misconfigured
-        // serverAuth profile can never issue a cert that mainstream TLS clients
-        // will refuse. NIST 800-53: CM-6 (secure config); CA/Browser Forum.
-        if profile.extended_key_usage.contains(&ExtendedKeyUsage::ServerAuth)
-            && profile.validity_days > SERVER_AUTH_MAX_VALIDITY_DAYS
-        {
-            return Err(Error::SecureDefaults(format!(
-                "serverAuth (TLS server) validity {} days exceeds the {}-day maximum that \
-                 Apple/iOS and other TLS clients accept",
-                profile.validity_days, SERVER_AUTH_MAX_VALIDITY_DAYS
             )));
         }
 
@@ -532,11 +539,13 @@ mod tests {
         );
     }
 
-    /// FMT_MSA.1.2 - Test profile validation with excessive validity
+    /// FMT_MSA.1.2 - Test profile validation with excessive validity.
+    /// Uses a clientAuth profile so this exercises the generic end-entity ceiling
+    /// rather than the (earlier-checked) serverAuth 397-day cap.
     #[test]
     fn test_validate_profile_excessive_validity() {
         let defaults = SecureDefaults::new();
-        let mut profile = CertificateProfile::tls_server(1000);
+        let mut profile = CertificateProfile::tls_client(1000);
         profile.validity_days = 1000; // Exceeds MAX_END_ENTITY_VALIDITY_DAYS
 
         let result = defaults.validate_profile(&profile);
@@ -567,6 +576,22 @@ mod tests {
         let defaults = SecureDefaults::new();
         // tls_client carries clientAuth (no serverAuth); 500 days is fine.
         assert!(defaults.validate_profile(&CertificateProfile::tls_client(500)).is_ok());
+    }
+
+    /// The cap is detected by EKU OID, so expressing serverAuth via a Custom OID
+    /// cannot bypass it.
+    #[test]
+    fn test_serverauth_custom_oid_cannot_bypass_cap() {
+        use crate::profile::ExtendedKeyUsage;
+        let defaults = SecureDefaults::new();
+        // Start from a clientAuth profile (passes), then assert serverAuth via a
+        // Custom OID with an over-cap validity.
+        let mut profile = CertificateProfile::tls_client(500);
+        profile.extended_key_usage =
+            vec![ExtendedKeyUsage::Custom("1.3.6.1.5.5.7.3.1".to_string())];
+        let result = defaults.validate_profile(&profile);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("397"));
     }
 
     /// FMT_MSA.1.2 - Regression: every built-in profile constructor must pass
