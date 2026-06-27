@@ -606,6 +606,8 @@ mod tests {
             CertificateProfile::tls_server(397),
             CertificateProfile::tls_client(365),
             CertificateProfile::ocsp_signing(90),
+            CertificateProfile::code_signing(365),
+            CertificateProfile::efs(730),
         ] {
             assert!(
                 defaults.validate_profile(&profile).is_ok(),
