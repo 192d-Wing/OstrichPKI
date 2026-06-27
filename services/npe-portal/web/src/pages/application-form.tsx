@@ -26,6 +26,11 @@ const PROFILES = [
 
 const CSR_MARKER = "-----BEGIN CERTIFICATE REQUEST-----";
 
+// Profiles whose certificates carry the id-kp-serverAuth EKU (TLS server),
+// which Apple/iOS cap at 397 days. The CA enforces the cap; this drives the
+// advisory banner.
+const SERVER_AUTH_PROFILES = new Set(["tls_server", "tls_server_client"]);
+
 export function ApplicationForm({
   mode,
   title,
@@ -50,6 +55,7 @@ export function ApplicationForm({
   const emailValid = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
   const csrValid = csr.trim().includes(CSR_MARKER);
   const canSubmit = csrValid && emailValid && !mutation.isPending;
+  const isServerAuth = SERVER_AUTH_PROFILES.has(profile.value);
 
   // Editing any field after a submission clears the stale success/Request-ID
   // banner so it can never appear to describe the current (edited) input.
@@ -100,6 +106,13 @@ export function ApplicationForm({
         {error && (
           <Alert type="error" header="Submission failed">
             {error}
+          </Alert>
+        )}
+        {isServerAuth && (
+          <Alert type="warning" header="397-day validity limit">
+            Certificates from this TLS server profile are issued for at most 397 days, because
+            Apple/iOS and other mainstream TLS clients reject server certificates valid for
+            longer.
           </Alert>
         )}
         <Container>
