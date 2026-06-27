@@ -68,6 +68,17 @@ impl KeyAlgo {
             KeyAlgo::EcP384 => "P384",
         }
     }
+
+    /// Parse a key-algorithm token, or `None` if unrecognized. The single source
+    /// of truth for which AK tokens exist (used by the parser and by config
+    /// validation so an operator can't map an unreachable token to a backend).
+    pub fn from_token(token: &str) -> Option<KeyAlgo> {
+        match token {
+            "2048" => Some(KeyAlgo::Rsa2048),
+            "P384" => Some(KeyAlgo::EcP384),
+            _ => None,
+        }
+    }
 }
 
 /// A parsed, validated EST profile label.
@@ -131,11 +142,10 @@ pub fn parse_label(raw: &str) -> Result<ParsedLabel, LabelError> {
             if key_algo.is_some() {
                 return Err(LabelError::BadSegment(seg.to_string()));
             }
-            key_algo = Some(match v {
-                "2048" => KeyAlgo::Rsa2048,
-                "P384" => KeyAlgo::EcP384,
-                other => return Err(LabelError::UnknownKeyAlgorithm(other.to_string())),
-            });
+            key_algo = Some(
+                KeyAlgo::from_token(v)
+                    .ok_or_else(|| LabelError::UnknownKeyAlgorithm(v.to_string()))?,
+            );
         } else if let Some(v) = seg.strip_prefix("VP") {
             if validity_days.is_some() {
                 return Err(LabelError::BadSegment(seg.to_string()));
@@ -269,5 +279,15 @@ mod tests {
     #[test]
     fn rejects_empty() {
         assert_eq!(parse_label("   "), Err(LabelError::Empty));
+    }
+
+    #[test]
+    fn key_algo_from_token_roundtrip() {
+        assert_eq!(KeyAlgo::from_token("2048"), Some(KeyAlgo::Rsa2048));
+        assert_eq!(KeyAlgo::from_token("P384"), Some(KeyAlgo::EcP384));
+        assert_eq!(KeyAlgo::from_token("4096"), None);
+        for a in [KeyAlgo::Rsa2048, KeyAlgo::EcP384] {
+            assert_eq!(KeyAlgo::from_token(a.token()), Some(a));
+        }
     }
 }
