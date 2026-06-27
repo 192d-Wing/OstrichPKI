@@ -1625,16 +1625,22 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
 ///
 /// # Response Format
 ///
-/// Returns a PKCS#12 bundle (application/pkcs12) containing:
-/// - Issued certificate
-/// - Encrypted private key (password-protected)
-/// - CA certificate chain
+/// Two delivery shapes, selected by the resolved profile:
+/// - Default: RFC 7030 §4.4.2 `multipart/mixed` carrying the EC P-256 private
+///   key (`application/pkcs8`, RFC 5958) and the certificate (certs-only
+///   `application/pkcs7-mime`).
+/// - EFS profile: an `application/json` envelope `{format, certificateId,
+///   pkcs12, password}` where `pkcs12` is a base64 encrypted PKCS#12 (RFC 7292)
+///   holding the RSA key + certificate, and `password` is its one-time
+///   decryption password.
 ///
 /// # Security Notes
 ///
 /// - CRITICAL: This endpoint MUST require client authentication (mTLS)
-/// - Private keys are zeroized from memory after PKCS#12 creation
-/// - PKCS#12 password should be communicated out-of-band (not in this response)
+/// - Private keys are zeroized from memory after the response body is built
+/// - The EFS one-time PKCS#12 password is returned exactly once, over the mTLS
+///   channel, and is never stored server side (unrecoverable after the operator
+///   closes the page); it is never written to logs or audit records
 /// - Consider KRA escrow for key recovery capability
 ///
 async fn server_key_gen(
@@ -1733,10 +1739,11 @@ async fn server_key_gen(
         }
     };
 
-    // Server-side key generation chooses the key (EC P-256 below), so it cannot
-    // honor a label-requested key algorithm. Reject AK-labeled serverkeygen
-    // rather than silently issuing a different algorithm than requested
-    // (fail closed; full multi-algorithm SSKG is a follow-up).
+    // Server-side key generation chooses the key by profile (EC P-256, or
+    // RSA-2048 for the EFS profile below), so it cannot honor a label-requested
+    // key algorithm. Reject AK-labeled serverkeygen rather than silently issuing
+    // a different algorithm than requested (fail closed; full multi-algorithm
+    // SSKG is a follow-up).
     if let Some(algo) = resolved.key_algo {
         emit_failure_audit(
             &state,
@@ -1754,10 +1761,20 @@ async fn server_key_gen(
     // The same profile drives both the server-built CSR and the CA issuance call.
     let enroll_profile = resolved.profile.clone();
 
+    // EFS (Microsoft Encrypting File System) certificates are delivered as an
+    // encrypted PKCS#12 holding an RSA key — Windows EFS requires RSA. Every
+    // other server-keygen profile gets a modern EC P-256 key.
+    let is_efs = enroll_profile == EFS_PROFILE_NAME;
+    let key_type = if is_efs {
+        KeyType::Rsa2048
+    } else {
+        KeyType::EcP256
+    };
+
     // Generate the key pair + a CSR signed by it (proof-of-possession).
     let request = ServerKeyGenRequest {
         subject,
-        key_type: KeyType::EcP256, // server-chosen; modern default
+        key_type, // server-chosen: EFS → RSA, otherwise EC P-256
         dns_sans,
         profile_name: enroll_profile.clone(),
     };
@@ -1828,40 +1845,84 @@ async fn server_key_gen(
     // token would be reusable here, defeating single-use.
     consume_enrollment_token_if_present(&state, &user, certificate_id).await;
 
-    // Fetch the issued certificate and encode it as a certs-only PKCS#7.
+    // Fetch the issued certificate.
     let cert = ostrich_db::repository::CertificateRepository::new(state.db_pool.clone())
         .find_by_id(certificate_id)
         .await
         .map_err(|e| Error::Internal(format!("Failed to load issued certificate: {}", e)))?
         .ok_or_else(|| Error::Internal("Issued certificate not found".to_string()))?;
-    let pkcs7 = encode_certs_only_pkcs7(&[cert.der_encoded])
-        .map_err(|e| Error::Internal(format!("PKCS#7 encoding failed: {}", e)))?;
 
-    // RFC 7030 §4.4.2 - multipart/mixed: the private key (application/pkcs8) and
-    // the certificate (application/pkcs7-mime; certs-only). Both base64.
-    //
-    // M3 - the private key is sensitive: encode it into a Zeroizing buffer and
-    // assemble the body in a Zeroizing buffer so these intermediate copies are
-    // wiped on drop. (One copy still lives in the outbound HTTP body buffer,
-    // which is inherent to returning the key; everything else is zeroized.)
-    const BOUNDARY: &str = "estServerKeyGenBoundary";
-    let key_b64 =
-        zeroize::Zeroizing::new(BASE64_STANDARD.encode(material.private_key_pkcs8.as_slice()));
-    let cert_b64 = BASE64_STANDARD.encode(&pkcs7);
-    let body = zeroize::Zeroizing::new(format!(
-        "--{b}\r\n\
-         Content-Type: application/pkcs8\r\n\
-         Content-Transfer-Encoding: base64\r\n\r\n\
-         {key}\r\n\
-         --{b}\r\n\
-         Content-Type: application/pkcs7-mime; smime-type=certs-only\r\n\
-         Content-Transfer-Encoding: base64\r\n\r\n\
-         {cert}\r\n\
-         --{b}--\r\n",
-        b = BOUNDARY,
-        key = key_b64.as_str(),
-        cert = cert_b64,
-    ));
+    // The server-held private key is sensitive: every intermediate that touches
+    // it lives in a Zeroizing buffer and is wiped on drop. (One copy still lives
+    // in the outbound HTTP body buffer, which is inherent to returning the key;
+    // everything else is zeroized.)
+    let response = if is_efs {
+        // EFS delivery: wrap the RSA key + issued cert in an encrypted PKCS#12
+        // protected by a freshly generated one-time password. The password is
+        // returned exactly once, in this response, and is never stored server
+        // side, so it is unrecoverable after the operator closes the page.
+        //
+        // COMPLIANCE MAPPING:
+        // - NIST 800-53: SC-12 (key establishment — escrow transport key),
+        //   SC-13 (PBES2/AES-256 + HMAC-SHA256 protection of the key bag),
+        //   SI-12 (one-time password never persisted; sensitive output handling)
+        // - NIAP PP-CA: FCS_CKM.1 (RSA key generation), FCS_COP.1 (PKCS#12 MAC)
+        // - RFC 7292 - PKCS#12 Personal Information Exchange
+        let password = generate_one_time_pkcs12_password();
+        let pkcs12 = ostrich_x509::pkcs12::build_encrypted_pkcs12(
+            material.private_key_pkcs8.as_slice(),
+            &cert.der_encoded,
+            password.as_str(),
+        )
+        .map_err(|e| Error::Internal(format!("PKCS#12 assembly failed: {}", e)))?;
+        let body = zeroize::Zeroizing::new(
+            serde_json::json!({
+                "format": "pkcs12",
+                "certificateId": certificate_id.to_string(),
+                "pkcs12": BASE64_STANDARD.encode(&pkcs12),
+                "password": password.as_str(),
+            })
+            .to_string(),
+        );
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json".to_string())],
+            body.to_string(),
+        )
+            .into_response()
+    } else {
+        // RFC 7030 §4.4.2 - multipart/mixed: the private key (application/pkcs8)
+        // and the certificate (application/pkcs7-mime; certs-only). Both base64.
+        let pkcs7 = encode_certs_only_pkcs7(&[cert.der_encoded])
+            .map_err(|e| Error::Internal(format!("PKCS#7 encoding failed: {}", e)))?;
+        const BOUNDARY: &str = "estServerKeyGenBoundary";
+        let key_b64 =
+            zeroize::Zeroizing::new(BASE64_STANDARD.encode(material.private_key_pkcs8.as_slice()));
+        let cert_b64 = BASE64_STANDARD.encode(&pkcs7);
+        let body = zeroize::Zeroizing::new(format!(
+            "--{b}\r\n\
+             Content-Type: application/pkcs8\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n\
+             {key}\r\n\
+             --{b}\r\n\
+             Content-Type: application/pkcs7-mime; smime-type=certs-only\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n\
+             {cert}\r\n\
+             --{b}--\r\n",
+            b = BOUNDARY,
+            key = key_b64.as_str(),
+            cert = cert_b64,
+        ));
+        (
+            StatusCode::OK,
+            [(
+                header::CONTENT_TYPE,
+                format!("multipart/mixed; boundary=\"{}\"", BOUNDARY),
+            )],
+            body.to_string(),
+        )
+            .into_response()
+    };
 
     // H2 - audit the successful server-side key generation + issuance.
     emit_enrollment_audit(
@@ -1873,15 +1934,7 @@ async fn server_key_gen(
     )
     .await;
 
-    Ok((
-        StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            format!("multipart/mixed; boundary=\"{}\"", BOUNDARY),
-        )],
-        body.to_string(),
-    )
-        .into_response())
+    Ok(response)
 }
 
 // ===========================================================================
@@ -1923,17 +1976,42 @@ struct MintEnrollmentTokenRequest {
 
 /// Certificate profiles an operator may pin to an EST enrollment token. Kept in
 /// lockstep with the CA's registered issuance profiles (`default_profiles` in
-/// ca-server): `tls_client` (clientAuth), `tls_server` (serverAuth), and
-/// `tls_server_client` (serverAuth + clientAuth, for mutual-TLS devices).
+/// ca-server): `tls_client` (clientAuth), `tls_server` (serverAuth),
+/// `tls_server_client` (serverAuth + clientAuth, for mutual-TLS devices), and
+/// `efs` (Microsoft EFS — server-side keygen delivered as an encrypted PKCS#12).
 ///
 /// SI-10: reject anything else so a token can never reference an unissuable or
 /// over-privileged profile.
-const OFFERABLE_EST_PROFILES: [&str; 3] = ["tls_client", "tls_server", "tls_server_client"];
+const OFFERABLE_EST_PROFILES: [&str; 4] =
+    ["tls_client", "tls_server", "tls_server_client", EFS_PROFILE_NAME];
 
-/// Capability rank of an EST certificate profile, used so re-enrollment can
-/// preserve the broadest EKU set ever issued to an identity (RFC 7030 §4.2.2 — a
-/// renewal must not silently narrow a server+client node to client-only).
-/// `tls_server_client` (serverAuth + clientAuth) outranks the single-EKU profiles.
+/// Profile name that triggers the EFS server-side key-generation delivery path
+/// (RSA key + issued cert wrapped in an encrypted PKCS#12). Must match the CA's
+/// registered EFS profile (`CertificateProfile::efs`, `ProfileType::Efs`).
+const EFS_PROFILE_NAME: &str = "efs";
+
+/// Generate the one-time password that protects an EFS PKCS#12 bundle.
+///
+/// 18 CSPRNG bytes rendered as URL-safe unpadded base64 → 24 characters (~144
+/// bits of entropy), comfortably above the builder's 12-char floor. The value
+/// is returned to the operator exactly once and never stored, so it is the sole
+/// protection on the escrowed key in transit (SC-12, SI-12).
+fn generate_one_time_pkcs12_password() -> zeroize::Zeroizing<String> {
+    let bytes = zeroize::Zeroizing::new(rand::random::<[u8; 18]>());
+    zeroize::Zeroizing::new(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes.as_slice()),
+    )
+}
+
+/// Capability rank of an EST certificate profile within the TLS clientAuth/
+/// serverAuth breadth ladder, used so re-enrollment can preserve the broadest
+/// EKU set ever issued to an identity (RFC 7030 §4.2.2 — a renewal must not
+/// silently narrow a server+client node to client-only). `tls_server_client`
+/// (serverAuth + clientAuth) outranks the single-EKU profiles.
+///
+/// EFS is intentionally NOT on this ladder: it is a distinct certificate purpose
+/// (Microsoft EFS EKU), not a wider/narrower TLS EKU set. `broadest_est_profile`
+/// never compares it by rank — see the family guard there.
 fn profile_capability_rank(profile: &str) -> u8 {
     match profile {
         "tls_server_client" => 2,
@@ -1950,7 +2028,14 @@ fn broadest_est_profile(current: Option<String>, candidate: &Option<String>) -> 
         .filter(|p| OFFERABLE_EST_PROFILES.contains(p));
     match (current, candidate) {
         (Some(cur), Some(cand)) => {
-            if profile_capability_rank(cand) > profile_capability_rank(&cur) {
+            // EFS is orthogonal to the TLS EKU breadth ladder. A renewal must
+            // never silently swap an identity between the EFS and TLS families
+            // (that would change the certificate's purpose, not just widen its
+            // EKUs), so when exactly one side is EFS keep the profile already
+            // selected and never rank-compare across the boundary (fail secure).
+            if (cur == EFS_PROFILE_NAME) != (cand == EFS_PROFILE_NAME) {
+                Some(cur)
+            } else if profile_capability_rank(cand) > profile_capability_rank(&cur) {
                 Some(cand.to_string())
             } else {
                 Some(cur)
@@ -2471,6 +2556,29 @@ async fn delete_account_identity(
 mod tests {
     use super::*;
 
+    /// The EFS profile must be offerable, or serverkeygen would reject it before
+    /// ever reaching the PKCS#12 delivery path.
+    #[test]
+    fn efs_profile_is_offerable() {
+        assert!(OFFERABLE_EST_PROFILES.contains(&EFS_PROFILE_NAME));
+    }
+
+    /// The one-time PKCS#12 password must clear the builder's 12-char floor and
+    /// be unique per call (CSPRNG-derived, not a fixed/derivable value).
+    #[test]
+    fn one_time_pkcs12_password_is_long_and_unique() {
+        let a = generate_one_time_pkcs12_password();
+        let b = generate_one_time_pkcs12_password();
+        assert!(a.len() >= 12, "password must clear the builder's minimum");
+        assert_ne!(a.as_str(), b.as_str(), "passwords must not repeat");
+        // URL-safe base64 alphabet only (no '+', '/', or '=' padding).
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "password must be URL-safe base64"
+        );
+    }
+
     /// Re-enrollment must preserve the broadest EKU profile ever issued to an
     /// identity (RFC 7030 §4.2.2): a server+client node must not be narrowed to
     /// client-only on renewal, and one already narrowed (e.g. by an earlier
@@ -2499,6 +2607,32 @@ mod tests {
         assert_eq!(broadest_est_profile(None, &Some("bogus".into())), None);
         assert_eq!(broadest_est_profile(None, &None), None);
         assert!(profile_capability_rank("tls_server_client") > profile_capability_rank("tls_client"));
+    }
+
+    /// EFS is orthogonal to the TLS EKU ladder: the broadest-profile fold must
+    /// never silently swap an identity between the EFS and TLS families (that
+    /// would change the certificate's purpose), in either encounter order.
+    #[test]
+    fn reenroll_never_swaps_efs_and_tls_families() {
+        // A pure-EFS identity renews as EFS (preserved, not folded away).
+        let efs_only = broadest_est_profile(
+            broadest_est_profile(None, &Some(EFS_PROFILE_NAME.to_string())),
+            &Some(EFS_PROFILE_NAME.to_string()),
+        );
+        assert_eq!(efs_only.as_deref(), Some(EFS_PROFILE_NAME));
+
+        // Mixed-purpose identity (same subject+SANs): never silently swap purpose,
+        // regardless of which family the fold encounters first.
+        let efs_then_tls = broadest_est_profile(
+            broadest_est_profile(None, &Some(EFS_PROFILE_NAME.to_string())),
+            &Some("tls_server_client".to_string()),
+        );
+        assert_eq!(efs_then_tls.as_deref(), Some(EFS_PROFILE_NAME));
+        let tls_then_efs = broadest_est_profile(
+            broadest_est_profile(None, &Some("tls_server_client".to_string())),
+            &Some(EFS_PROFILE_NAME.to_string()),
+        );
+        assert_eq!(tls_then_efs.as_deref(), Some("tls_server_client"));
     }
 
     #[test]

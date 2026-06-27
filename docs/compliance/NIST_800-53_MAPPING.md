@@ -1117,6 +1117,8 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - [crates/ostrich-crypto/src/pkcs11/mod.rs:890-1111](../../crates/ostrich-crypto/src/pkcs11/mod.rs#L890-L1111) - Key wrapping/unwrapping for KRA
 - [crates/ostrich-crypto/tests/pkcs11_integration_test.rs](../../crates/ostrich-crypto/tests/pkcs11_integration_test.rs) - Comprehensive key management tests
 - [crates/ostrich-kra/](../../crates/ostrich-kra/) - Key Recovery Authority
+- [crates/ostrich-x509/src/pkcs12.rs](../../crates/ostrich-x509/src/pkcs12.rs) - Encrypted PKCS#12 (RFC 7292) builder for EFS key delivery: PBES2 (PBKDF2-HMAC-SHA256 + AES-256-CBC) shrouded key bag + HMAC-SHA256 MAC
+- [crates/ostrich-est/src/rest.rs](../../crates/ostrich-est/src/rest.rs) `server_key_gen` - EFS server-side keygen wraps the escrowed RSA key in a PKCS#12 protected by a CSPRNG-derived one-time password returned exactly once and never persisted (SC-12, SI-12)
 
 **Evidence:**
 
