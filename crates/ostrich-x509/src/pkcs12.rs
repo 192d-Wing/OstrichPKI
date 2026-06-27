@@ -17,7 +17,7 @@
 //! NIST 800-53: SC-12/SC-13 (key management), SC-28 (protection at rest in transit).
 
 use cms::content_info::ContentInfo;
-use der::asn1::OctetString;
+use der::asn1::{OctetString, SetOfVec};
 use der::{Any, Decode, Encode, Tag};
 use hmac::{Hmac, Mac};
 use pkcs12::cert_type::CertBag;
@@ -29,16 +29,24 @@ use pkcs12::safe_bag::SafeBag;
 use pkcs12::{PKCS_12_CERT_BAG_OID, PKCS_12_PKCS8_KEY_BAG_OID, PKCS_12_X509_CERT_OID};
 use pkcs8::PrivateKeyInfo;
 use pkcs8::pkcs5::pbes2;
+use sha1::Sha1;
 use sha2::Sha256;
 use spki::AlgorithmIdentifierOwned;
+use x509_cert::attr::{Attribute, Attributes};
+use zeroize::Zeroizing;
 
 use crate::{Error, Result};
 
-/// PBKDF2 iteration count for the key envelope. OWASP-recommended floor for
-/// PBKDF2-HMAC-SHA256.
-const PBKDF2_ITERATIONS: u32 = 600_000;
+/// PBKDF2 iteration count for the key envelope. Lower than the OWASP login floor
+/// on purpose: the protecting password is a high-entropy, server-generated,
+/// single-use secret (not a human password), so brute force is not the threat;
+/// a high count would only add per-issuance server CPU (DoS surface).
+const PBKDF2_ITERATIONS: u32 = 100_000;
 /// PKCS#12 MAC KDF iteration count.
 const MAC_ITERATIONS: i32 = 100_000;
+/// Minimum protecting-password length (defense against a misconfigured caller
+/// passing an empty/trivial password that would leave the key unprotected).
+const MIN_PASSWORD_LEN: usize = 12;
 
 /// `id-data` content type (PKCS#7/CMS).
 const OID_DATA: der::oid::ObjectIdentifier =
@@ -46,9 +54,31 @@ const OID_DATA: der::oid::ObjectIdentifier =
 /// SHA-256 digest algorithm OID.
 const OID_SHA256: der::oid::ObjectIdentifier =
     der::oid::ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
+/// PKCS#9 `localKeyId` attribute OID (binds a key bag to its cert bag).
+const OID_LOCAL_KEY_ID: der::oid::ObjectIdentifier =
+    der::oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.21");
 
 fn enc_err(ctx: &str, e: impl std::fmt::Display) -> Error {
     Error::Encoding(format!("PKCS#12 {ctx}: {e}"))
+}
+
+/// Build a `localKeyId` attribute set binding a key bag to its cert bag.
+/// The id is the SHA-1 of the certificate DER (the conventional value), placed
+/// on BOTH bags so importers (notably Windows CryptoAPI / EFS) pair the private
+/// key with its certificate.
+fn local_key_id_attributes(certificate_der: &[u8]) -> Result<Attributes> {
+    use sha1::Digest;
+    let key_id = Sha1::digest(certificate_der);
+    let value = Any::new(Tag::OctetString, key_id.to_vec()).map_err(|e| enc_err("localKeyId", e))?;
+    let mut values: SetOfVec<Any> = SetOfVec::new();
+    values.insert(value).map_err(|e| enc_err("localKeyId set", e))?;
+    let attr = Attribute {
+        oid: OID_LOCAL_KEY_ID,
+        values,
+    };
+    let mut attrs: Attributes = SetOfVec::new();
+    attrs.insert(attr).map_err(|e| enc_err("attributes", e))?;
+    Ok(attrs)
 }
 
 /// Build a `ContentInfo` of type `data` whose content is `inner_der` wrapped in
@@ -75,6 +105,16 @@ pub fn build_encrypted_pkcs12(
 ) -> Result<Vec<u8>> {
     use ostrich_common::util::random::secure_random_bytes;
 
+    // Fail secure: never produce a PKCS#12 whose key is effectively unprotected.
+    if password.len() < MIN_PASSWORD_LEN {
+        return Err(Error::Encoding(format!(
+            "PKCS#12 protecting password too short (min {MIN_PASSWORD_LEN} chars)"
+        )));
+    }
+
+    // Bind the key and cert bags so importers pair them (localKeyId).
+    let attrs = local_key_id_attributes(certificate_der)?;
+
     // 1. Encrypt the private key with PBES2 (PBKDF2-SHA256 + AES-256-CBC). The
     //    salt/iv come from the FIPS RNG; only the PBE math is RustCrypto.
     let salt = secure_random_bytes(16);
@@ -95,7 +135,7 @@ pub fn build_encrypted_pkcs12(
     let key_bag = SafeBag {
         bag_id: PKCS_12_PKCS8_KEY_BAG_OID,
         bag_value: encrypted_key.as_bytes().to_vec(),
-        bag_attributes: None,
+        bag_attributes: Some(attrs.clone()),
     };
     let key_safe_contents: Vec<SafeBag> = vec![key_bag];
     let key_contents_der = key_safe_contents
@@ -111,7 +151,7 @@ pub fn build_encrypted_pkcs12(
     let cert_safe_bag = SafeBag {
         bag_id: PKCS_12_CERT_BAG_OID,
         bag_value: cert_bag_der,
-        bag_attributes: None,
+        bag_attributes: Some(attrs),
     };
     let cert_safe_contents: Vec<SafeBag> = vec![cert_safe_bag];
     let cert_contents_der = cert_safe_contents
@@ -128,14 +168,11 @@ pub fn build_encrypted_pkcs12(
     // 5. PKCS#12 MAC (HMAC-SHA256) over the AuthenticatedSafe DER, keyed via the
     //    RFC 7292 Appendix B KDF.
     let mac_salt = secure_random_bytes(20);
-    let mac_key = derive_key_utf8::<Sha256>(
-        password,
-        &mac_salt,
-        Pkcs12KeyType::Mac,
-        MAC_ITERATIONS,
-        32,
-    )
-    .map_err(|e| enc_err("mac kdf", e))?;
+    // The derived MAC key is a password-derived secret; zeroize it after use.
+    let mac_key = Zeroizing::new(
+        derive_key_utf8::<Sha256>(password, &mac_salt, Pkcs12KeyType::Mac, MAC_ITERATIONS, 32)
+            .map_err(|e| enc_err("mac kdf", e))?,
+    );
     let mut mac =
         Hmac::<Sha256>::new_from_slice(&mac_key).map_err(|e| enc_err("hmac key", e))?;
     mac.update(&auth_safe_der);
@@ -144,8 +181,9 @@ pub fn build_encrypted_pkcs12(
     let mac_data = MacData {
         mac: DigestInfo {
             algorithm: AlgorithmIdentifierOwned {
+                // RFC 5754 §2: SHA-2 AlgorithmIdentifiers omit the parameters.
                 oid: OID_SHA256,
-                parameters: Some(Any::new(Tag::Null, Vec::new()).map_err(|e| enc_err("null", e))?),
+                parameters: None,
             },
             digest: OctetString::new(mac_value.as_slice()).map_err(|e| enc_err("mac octets", e))?,
         },
