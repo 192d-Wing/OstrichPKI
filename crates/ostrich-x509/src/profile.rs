@@ -63,6 +63,12 @@ pub enum ProfileType {
     /// For PIV/CAC cards
     SmartcardAuth,
 
+    /// Encrypting File System (EFS) certificate
+    ///
+    /// Microsoft EFS EKU (1.3.6.1.4.1.311.10.3.4); typically RSA, used for
+    /// server-side key generation delivered as an encrypted PKCS#12.
+    Efs,
+
     /// Custom profile
     Custom,
 }
@@ -79,6 +85,7 @@ impl ProfileType {
             ProfileType::EmailProtection => "email_protection",
             ProfileType::OcspSigning => "ocsp_signing",
             ProfileType::SmartcardAuth => "smartcard_auth",
+            ProfileType::Efs => "efs",
             ProfileType::Custom => "custom",
         }
     }
@@ -132,6 +139,8 @@ pub enum ExtendedKeyUsage {
     TimeStamping,
     /// OCSP signing
     OcspSigning,
+    /// Microsoft Encrypting File System (EFS)
+    Efs,
     /// Custom OID
     Custom(String),
 }
@@ -146,6 +155,8 @@ impl ExtendedKeyUsage {
             ExtendedKeyUsage::EmailProtection => "1.3.6.1.5.5.7.3.4",
             ExtendedKeyUsage::TimeStamping => "1.3.6.1.5.5.7.3.8",
             ExtendedKeyUsage::OcspSigning => "1.3.6.1.5.5.7.3.9",
+            // Microsoft EFS (szOID_EFS_CRYPTO).
+            ExtendedKeyUsage::Efs => "1.3.6.1.4.1.311.10.3.4",
             ExtendedKeyUsage::Custom(oid) => oid,
         }
     }
@@ -313,6 +324,30 @@ impl CertificateProfile {
         profile
     }
 
+    /// Create an EFS (Encrypting File System) profile.
+    ///
+    /// Microsoft EFS EKU (1.3.6.1.4.1.311.10.3.4). RSA by default; the key is
+    /// generated server-side and delivered as an encrypted PKCS#12. Used for the
+    /// portal's server-side key generation flow.
+    pub fn efs(validity_days: u32) -> Self {
+        let mut profile = Self::new(
+            "EFS",
+            ProfileType::Efs,
+            validity_days,
+            "rsa_2048",
+            "rsa_pss_sha256",
+        );
+        // EFS uses the certificate's public key to wrap the per-file encryption
+        // key, so keyEncipherment/dataEncipherment are the operative usages.
+        profile.key_usage = vec![
+            KeyUsage::DigitalSignature,
+            KeyUsage::KeyEncipherment,
+            KeyUsage::DataEncipherment,
+        ];
+        profile.extended_key_usage = vec![ExtendedKeyUsage::Efs];
+        profile
+    }
+
     /// Create an OCSP Signing profile
     ///
     /// RFC 6960 §4.2.2.2 - Delegated OCSP responder
@@ -415,6 +450,27 @@ mod tests {
                 .extended_key_usage
                 .contains(&ExtendedKeyUsage::ServerAuth)
         );
+        assert!(profile.validate().is_ok());
+    }
+
+    #[test]
+    fn test_efs_profile() {
+        let profile = CertificateProfile::efs(730);
+        assert_eq!(profile.profile_type, ProfileType::Efs);
+        assert_eq!(profile.profile_type.as_str(), "efs");
+        assert!(!profile.basic_constraints_ca);
+        // EFS EKU OID (Microsoft szOID_EFS_CRYPTO).
+        assert!(profile.extended_key_usage.contains(&ExtendedKeyUsage::Efs));
+        assert_eq!(ExtendedKeyUsage::Efs.oid(), "1.3.6.1.4.1.311.10.3.4");
+        // EFS is not serverAuth, so it carries neither the serverAuth EKU nor its
+        // 397-day cap.
+        assert!(
+            !profile
+                .extended_key_usage
+                .iter()
+                .any(|e| e.oid() == "1.3.6.1.5.5.7.3.1")
+        );
+        assert!(profile.key_type.starts_with("rsa_"));
         assert!(profile.validate().is_ok());
     }
 

@@ -583,6 +583,9 @@ impl TbsCertificate {
                     ExtendedKeyUsage::OcspSigning => {
                         ObjectIdentifier::new("1.3.6.1.5.5.7.3.9").unwrap()
                     }
+                    ExtendedKeyUsage::Efs => {
+                        ObjectIdentifier::new("1.3.6.1.4.1.311.10.3.4").unwrap()
+                    }
                     ExtendedKeyUsage::Custom(oid_str) => ObjectIdentifier::new(oid_str)
                         .map_err(|e| Error::Encoding(format!("Invalid custom EKU OID: {}", e)))?,
                 };

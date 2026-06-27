@@ -595,6 +595,12 @@ fn default_profiles() -> Vec<ostrich_x509::CertificateProfile> {
     acme_default.name = "acme-default".to_string();
     acme_default.description = Some("ACME-issued TLS server certificates (RFC 8555)".to_string());
 
+    // EFS (Encrypting File System): server-side key generation delivered as an
+    // encrypted PKCS#12. RSA, Microsoft EFS EKU (1.3.6.1.4.1.311.10.3.4).
+    let mut efs = CertificateProfile::efs(730);
+    efs.name = "efs".to_string();
+    efs.description = Some("Microsoft EFS, server-side key generation".to_string());
+
     // Subordinate (intermediate) CA issuance via gRPC: CA=true, keyCertSign +
     // cRLSign, pathLenConstraint 0 (RFC 5280 §4.2.1.9), ~5 year validity.
     // NIAP PP-CA: FMT_SMF.1 - CA hierarchy management.
@@ -608,6 +614,7 @@ fn default_profiles() -> Vec<ostrich_x509::CertificateProfile> {
         tls_client,
         tls_server_client,
         acme_default,
+        efs,
         intermediate_ca,
     ]
 }
