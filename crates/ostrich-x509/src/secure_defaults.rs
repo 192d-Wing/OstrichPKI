@@ -9,7 +9,7 @@
 //! This module enforces secure default values for certificate issuance
 //! and CA configuration as required by NIAP PP-CA v2.1.
 
-use crate::profile::{CertificateProfile, KeyUsage, ProfileType};
+use crate::profile::{CertificateProfile, ExtendedKeyUsage, KeyUsage, ProfileType};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -24,6 +24,12 @@ pub const MIN_EC_KEY_SIZE: u32 = 256;
 /// Maximum certificate validity in days for end-entity certificates
 /// NIAP PP-CA: FMT_SMF.1 - Certificate lifecycle management
 pub const MAX_END_ENTITY_VALIDITY_DAYS: u32 = 825; // ~27 months per CA/Browser Forum
+
+/// Maximum validity for a TLS server-authentication (id-kp-serverAuth) leaf.
+/// Apple/Safari reject TLS server certificates valid for more than 398 days
+/// (issued on/after 2020-09-01); 397 is the widely-used safe ceiling that all
+/// major TLS clients accept. Any profile carrying serverAuth is capped here.
+pub const SERVER_AUTH_MAX_VALIDITY_DAYS: u32 = 397;
 
 /// Maximum certificate validity in days for CA certificates
 pub const MAX_CA_VALIDITY_DAYS: u32 = 7300; // 20 years for root CAs
@@ -225,6 +231,20 @@ impl SecureDefaults {
             return Err(Error::SecureDefaults(format!(
                 "Validity period {} days is below minimum {} day",
                 profile.validity_days, MIN_VALIDITY_DAYS
+            )));
+        }
+
+        // TLS server-auth certificates are capped at 397 days (Apple/iOS reject
+        // longer-lived serverAuth leaves). Enforced as policy so a misconfigured
+        // serverAuth profile can never issue a cert that mainstream TLS clients
+        // will refuse. NIST 800-53: CM-6 (secure config); CA/Browser Forum.
+        if profile.extended_key_usage.contains(&ExtendedKeyUsage::ServerAuth)
+            && profile.validity_days > SERVER_AUTH_MAX_VALIDITY_DAYS
+        {
+            return Err(Error::SecureDefaults(format!(
+                "serverAuth (TLS server) validity {} days exceeds the {}-day maximum that \
+                 Apple/iOS and other TLS clients accept",
+                profile.validity_days, SERVER_AUTH_MAX_VALIDITY_DAYS
             )));
         }
 
@@ -522,6 +542,31 @@ mod tests {
         let result = defaults.validate_profile(&profile);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("exceeds maximum"));
+    }
+
+    /// A serverAuth (TLS server) profile over 397 days is rejected even when it
+    /// is under the generic end-entity ceiling (Apple/iOS 397-day rule).
+    #[test]
+    fn test_serverauth_validity_capped_at_397() {
+        let defaults = SecureDefaults::new();
+
+        // 397 and below: OK (tls_server carries serverAuth EKU).
+        assert!(defaults.validate_profile(&CertificateProfile::tls_server(397)).is_ok());
+        assert!(defaults.validate_profile(&CertificateProfile::tls_server(365)).is_ok());
+
+        // 398..=825: under the generic max but over the serverAuth cap -> rejected.
+        let result = defaults.validate_profile(&CertificateProfile::tls_server(500));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("397"));
+    }
+
+    /// The 397-day cap applies ONLY to serverAuth; a clientAuth profile may use
+    /// the full end-entity validity.
+    #[test]
+    fn test_clientauth_not_capped_at_397() {
+        let defaults = SecureDefaults::new();
+        // tls_client carries clientAuth (no serverAuth); 500 days is fine.
+        assert!(defaults.validate_profile(&CertificateProfile::tls_client(500)).is_ok());
     }
 
     /// FMT_MSA.1.2 - Regression: every built-in profile constructor must pass
