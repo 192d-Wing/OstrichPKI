@@ -95,8 +95,8 @@ pub struct ParsedLabel {
 }
 
 /// Recognized profile-type tokens (whether or not currently issuable).
-const KNOWN_PROFILE_TYPES: [&str; 8] = [
-    "DEV", "TLS", "DC", "EMAIL", "IPSEC", "MCAUTH", "MCKEY", "KERB",
+const KNOWN_PROFILE_TYPES: [&str; 9] = [
+    "DEV", "TLS", "DC", "EMAIL", "IPSEC", "MCAUTH", "MCKEY", "KERB", "EFS",
 ];
 
 impl ParsedLabel {
@@ -110,6 +110,9 @@ impl ParsedLabel {
             "DEV" => Ok("tls_client"),
             "TLS" => Ok("tls_server"),
             "DC" => Ok("tls_server_client"),
+            // EFS (Microsoft Encrypting File System): server-side keygen only,
+            // delivered as an encrypted PKCS#12 (see `server_key_gen`).
+            "EFS" => Ok("efs"),
             other => Err(LabelError::UnsupportedProfileType(other.to_string())),
         }
     }
@@ -229,6 +232,15 @@ mod tests {
             p.profile_name(),
             Err(LabelError::UnsupportedProfileType("KERB".to_string()))
         );
+    }
+
+    #[test]
+    fn efs_label_resolves_to_efs_profile() {
+        // EFS is delivered via server-side keygen with no AK token (the EFS
+        // profile pins the subject key to RSA-2048 regardless of CA backend).
+        let p = parse_label("PTEFS").unwrap();
+        assert_eq!(p.key_algo, None);
+        assert_eq!(p.profile_name().unwrap(), "efs");
     }
 
     #[test]

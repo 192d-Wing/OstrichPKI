@@ -1,3 +1,6 @@
 node_modules/
 dist/
 *.local
+# No lockfile is committed for the SPA (matches services/web-ui/web); the
+# Docker web-builder runs a fresh `npm install`.
+package-lock.json

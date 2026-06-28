@@ -1597,6 +1597,31 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
         .into_response())
 }
 
+/// Structured server-side key-generation request for the EFS portal flow.
+///
+/// Unlike the RFC 7030 §4.4.1 CSR body, this carries NO client key or PKCS#10:
+/// the subject is taken from the mTLS-authenticated NPE identity (never supplied
+/// by the client), so there is no untrusted CSR/ASN.1 to parse and no client key
+/// to discard. Accepted only when the resolved profile is EFS.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-10 (input validation — the subject is never client-supplied
+///   and requested SANs are still checked against the caller's allowed identities)
+/// - NIAP PP-CA: FDP_CER_EXT.1 (the requested certificate content is constrained)
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EfsKeygenRequest {
+    /// Additional Subject Alternative Names to request (e.g. `"DNS:host.mil"`).
+    /// Each is still checked against the caller's allowlist (H1) — the form
+    /// cannot widen the identity beyond what the principal may assert.
+    #[serde(default)]
+    sans: Vec<String>,
+    /// Requested RSA key size. Optional; only 2048 (the EFS profile's key) is
+    /// accepted, so a mismatch fails fast rather than at CA issuance.
+    #[serde(default)]
+    key_strength: Option<u32>,
+}
+
 /// Server-side key generation (RFC 7030 §4.4)
 ///
 /// Server generates key pair and returns PKCS#12 with certificate + encrypted private key.
@@ -1615,13 +1640,13 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
 ///
 /// # Request Format
 ///
-/// The client sends a base64-encoded "CSR-like" structure containing:
-/// - Subject distinguished name
-/// - Requested key type (from CSR algorithm field or attributes)
-/// - Optional SANs
-///
-/// Unlike normal CSR, there is no proof-of-possession since the client
-/// doesn't have the private key yet.
+/// Two input shapes:
+/// - RFC 7030 §4.4.1: a base64 PKCS#10 CSR conveying the desired subject/SANs.
+///   The server generates the key, so the CSR's own key and signature are not
+///   used for proof-of-possession.
+/// - EFS portal flow (`Content-Type: application/json`, EFS profile only): an
+///   [`EfsKeygenRequest`] carrying optional SANs + key strength. The subject is
+///   taken from the mTLS-authenticated identity, so no client CSR/key is sent.
 ///
 /// # Response Format
 ///
@@ -1647,84 +1672,20 @@ async fn server_key_gen(
     State(state): State<EstState>,
     AuthUser(user): AuthUser,
     label: Option<axum::extract::Path<String>>,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response> {
     let label = label.map(|p| p.0);
     use crate::serverkeygen::{ServerKeyGenRequest, generate_key_pair_for_client};
+    use ostrich_common::types::DistinguishedName;
     use ostrich_crypto::KeyType;
 
     let client_identifier = &user.username;
 
-    // The client POSTs a base64 PKCS#10 CSR conveying the desired subject/SANs
-    // (RFC 7030 §4.4.1); the server generates the key, so the CSR's own key and
-    // signature are not used for proof-of-possession.
-    let request_der = match BASE64_STANDARD.decode(&body) {
-        Ok(der) if der.len() >= 10 => der,
-        _ => {
-            emit_failure_audit(
-                &state,
-                client_identifier,
-                "est:serverkeygen",
-                "invalid_csr_encoding",
-            )
-            .await;
-            return Err(Error::BadRequest("Invalid or too-short CSR".to_string()));
-        }
-    };
-    let parsed = match ostrich_x509::parser::parse_csr(&request_der) {
-        Ok(c) => c,
-        Err(e) => {
-            emit_failure_audit(
-                &state,
-                client_identifier,
-                "est:serverkeygen",
-                "csr_parse_failed",
-            )
-            .await;
-            return Err(Error::InvalidCsr(format!(
-                "Failed to parse serverkeygen CSR: {}",
-                e
-            )));
-        }
-    };
-    let subject = ostrich_x509::parser::parse_csr_subject_dn(&request_der)
-        .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR subject: {}", e)))?;
-
-    // H1 - the server is about to mint a key AND a certificate for whatever
-    // identity the CSR names; bind that identity to the authenticated principal
-    // (CN or a SAN must equal `client_identifier`). Fail secure: deny + audit.
-    if !identity_authorized(
-        &state,
-        &user,
-        subject.common_name.as_deref(),
-        &parsed.subject_alternative_names,
-    )
-    .await?
-    {
-        emit_failure_audit(
-            &state,
-            client_identifier,
-            "est:serverkeygen",
-            "identity_not_bound",
-        )
-        .await;
-        tracing::warn!(
-            client = %client_identifier,
-            "EST serverkeygen denied: CSR identity does not match authenticated principal (H1)"
-        );
-        return Err(Error::Forbidden(
-            "CSR subject CN or a SAN must match the authenticated client identity".to_string(),
-        ));
-    }
-
-    let dns_sans: Vec<String> = parsed
-        .subject_alternative_names
-        .iter()
-        .filter_map(|s| s.strip_prefix("DNS:").map(String::from))
-        .collect();
-
-    // Resolve the CA backend + profile (fail closed; RFC 7030 §3.2.2 label
-    // routing selects the backend by key algorithm and the profile by type).
+    // Resolve the CA backend + profile first (fail closed; RFC 7030 §3.2.2 label
+    // routing selects the backend by key algorithm and the profile by type). The
+    // resolved profile decides both the key type and which input shapes are
+    // accepted (the structured EFS body is EFS-only).
     let resolved = match state.resolve_enrollment(label.as_deref(), &user).await {
         Ok(r) => r,
         Err(e) => {
@@ -1738,12 +1699,21 @@ async fn server_key_gen(
             return Err(e);
         }
     };
+    let enroll_profile = resolved.profile.clone();
+    // EFS (Microsoft Encrypting File System) certificates are delivered as an
+    // encrypted PKCS#12 holding an RSA key — Windows EFS requires RSA. Every
+    // other server-keygen profile gets a modern EC P-256 key.
+    let is_efs = enroll_profile == EFS_PROFILE_NAME;
+    let key_type = if is_efs {
+        KeyType::Rsa2048
+    } else {
+        KeyType::EcP256
+    };
 
-    // Server-side key generation chooses the key by profile (EC P-256, or
-    // RSA-2048 for the EFS profile below), so it cannot honor a label-requested
-    // key algorithm. Reject AK-labeled serverkeygen rather than silently issuing
-    // a different algorithm than requested (fail closed; full multi-algorithm
-    // SSKG is a follow-up).
+    // Server-side key generation chooses the key by profile, so it cannot honor a
+    // label-requested key algorithm. Reject AK-labeled serverkeygen rather than
+    // silently issuing a different algorithm than requested (fail closed; full
+    // multi-algorithm SSKG is a follow-up).
     if let Some(algo) = resolved.key_algo {
         emit_failure_audit(
             &state,
@@ -1758,18 +1728,145 @@ async fn server_key_gen(
         )));
     }
 
-    // The same profile drives both the server-built CSR and the CA issuance call.
-    let enroll_profile = resolved.profile.clone();
+    // Two input shapes select the subject + requested SANs:
+    //  - EFS portal flow (application/json): subject = the authenticated identity
+    //    (never client-supplied), so there is no untrusted CSR/ASN.1 to parse and
+    //    no throwaway client key. Accepted only for the EFS profile.
+    //  - RFC 7030 §4.4.1: a base64 PKCS#10 CSR conveying the subject/SANs.
+    let is_json_efs = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| {
+            ct.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/json")
+        })
+        .unwrap_or(false);
 
-    // EFS (Microsoft Encrypting File System) certificates are delivered as an
-    // encrypted PKCS#12 holding an RSA key — Windows EFS requires RSA. Every
-    // other server-keygen profile gets a modern EC P-256 key.
-    let is_efs = enroll_profile == EFS_PROFILE_NAME;
-    let key_type = if is_efs {
-        KeyType::Rsa2048
+    let (subject, requested_sans): (DistinguishedName, Vec<String>) = if is_json_efs {
+        if !is_efs {
+            emit_failure_audit(
+                &state,
+                client_identifier,
+                "est:serverkeygen",
+                "structured_input_non_efs",
+            )
+            .await;
+            return Err(Error::BadRequest(
+                "structured (JSON) server-side key generation is only supported for the EFS profile"
+                    .to_string(),
+            ));
+        }
+        let req: EfsKeygenRequest = match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                emit_failure_audit(
+                    &state,
+                    client_identifier,
+                    "est:serverkeygen",
+                    "invalid_efs_request",
+                )
+                .await;
+                return Err(Error::BadRequest(format!(
+                    "invalid EFS server-keygen request: {e}"
+                )));
+            }
+        };
+        // EFS issues an RSA-2048 key; reject any other requested strength up
+        // front. Audit the rejection like every other input-validation failure
+        // (AU-2): a client probing for accepted key sizes must leave a trace.
+        if let Some(bits) = req.key_strength
+            && bits != 2048
+        {
+            emit_failure_audit(
+                &state,
+                client_identifier,
+                "est:serverkeygen",
+                "unsupported_key_strength",
+            )
+            .await;
+            return Err(Error::BadRequest(format!(
+                "EFS server-side key generation supports only RSA-2048 (requested {bits})"
+            )));
+        }
+        // SI-10: the subject CN is ALWAYS the authenticated identity, never taken
+        // from the request body — the client cannot name a different subject.
+        let subject = DistinguishedName {
+            common_name: Some(client_identifier.to_string()),
+            ..Default::default()
+        };
+        (subject, req.sans)
     } else {
-        KeyType::EcP256
+        let request_der = match BASE64_STANDARD.decode(&body) {
+            Ok(der) if der.len() >= 10 => der,
+            _ => {
+                emit_failure_audit(
+                    &state,
+                    client_identifier,
+                    "est:serverkeygen",
+                    "invalid_csr_encoding",
+                )
+                .await;
+                return Err(Error::BadRequest("Invalid or too-short CSR".to_string()));
+            }
+        };
+        let parsed = match ostrich_x509::parser::parse_csr(&request_der) {
+            Ok(c) => c,
+            Err(e) => {
+                emit_failure_audit(
+                    &state,
+                    client_identifier,
+                    "est:serverkeygen",
+                    "csr_parse_failed",
+            )
+            .await;
+            return Err(Error::InvalidCsr(format!(
+                "Failed to parse serverkeygen CSR: {}",
+                e
+            )));
+        }
     };
+        let subject = ostrich_x509::parser::parse_csr_subject_dn(&request_der)
+            .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR subject: {}", e)))?;
+        (subject, parsed.subject_alternative_names)
+    };
+
+    // H1 - the server is about to mint a key AND a certificate for whatever
+    // identity was requested; bind that identity to the authenticated principal
+    // (CN or a SAN must equal `client_identifier`). For the EFS JSON path the CN
+    // is already the authenticated identity; this still runs every requested SAN
+    // through the same authorization policy so the form cannot widen the identity
+    // beyond what the principal may assert. Fail secure: deny + audit.
+    if !identity_authorized(
+        &state,
+        &user,
+        subject.common_name.as_deref(),
+        &requested_sans,
+    )
+    .await?
+    {
+        emit_failure_audit(
+            &state,
+            client_identifier,
+            "est:serverkeygen",
+            "identity_not_bound",
+        )
+        .await;
+        tracing::warn!(
+            client = %client_identifier,
+            "EST serverkeygen denied: requested identity does not match authenticated principal (H1)"
+        );
+        return Err(Error::Forbidden(
+            "subject CN or a SAN must match the authenticated client identity".to_string(),
+        ));
+    }
+
+    let dns_sans: Vec<String> = requested_sans
+        .iter()
+        .filter_map(|s| s.strip_prefix("DNS:").map(String::from))
+        .collect();
 
     // Generate the key pair + a CSR signed by it (proof-of-possession).
     let request = ServerKeyGenRequest {
@@ -2561,6 +2658,21 @@ mod tests {
     #[test]
     fn efs_profile_is_offerable() {
         assert!(OFFERABLE_EST_PROFILES.contains(&EFS_PROFILE_NAME));
+    }
+
+    /// The structured EFS serverkeygen body uses camelCase `keyStrength` and a
+    /// defaultable `sans`; both must round-trip so the portal contract holds.
+    #[test]
+    fn efs_keygen_request_deserializes() {
+        let full: EfsKeygenRequest =
+            serde_json::from_str(r#"{"sans":["DNS:host.mil"],"keyStrength":2048}"#).unwrap();
+        assert_eq!(full.sans, vec!["DNS:host.mil"]);
+        assert_eq!(full.key_strength, Some(2048));
+
+        // Both fields are optional (subject comes from the authenticated identity).
+        let empty: EfsKeygenRequest = serde_json::from_str("{}").unwrap();
+        assert!(empty.sans.is_empty());
+        assert_eq!(empty.key_strength, None);
     }
 
     /// The one-time PKCS#12 password must clear the builder's 12-char floor and
