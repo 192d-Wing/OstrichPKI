@@ -16,6 +16,7 @@ import {
   Textarea,
 } from "@cloudscape-design/components";
 
+import { downloadBase64 } from "@/lib/download";
 import { portalApi } from "@/lib/portal-api";
 
 const PROFILES = [
@@ -37,22 +38,6 @@ const CSR_MARKER = "-----BEGIN CERTIFICATE REQUEST-----";
 // which Apple/iOS cap at 397 days. The CA enforces the cap; this drives the
 // advisory banner.
 const SERVER_AUTH_PROFILES = new Set(["tls_server", "tls_server_client"]);
-
-// Decode a base64 PKCS#12 and trigger a browser download. The bytes never leave
-// the page until the operator saves them.
-function downloadPkcs12(base64: string, filename: string) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.codePointAt(i) ?? 0;
-  const url = URL.createObjectURL(new Blob([bytes], { type: "application/x-pkcs12" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
 
 export function ApplicationForm({
   mode,
@@ -179,7 +164,11 @@ export function ApplicationForm({
               <Button
                 iconName="download"
                 onClick={() =>
-                  downloadPkcs12(efsResult.pkcs12, `efs-${efsResult.certificateId}.p12`)
+                  downloadBase64(
+                    efsResult.pkcs12,
+                    `efs-${efsResult.certificateId}.p12`,
+                    "application/x-pkcs12",
+                  )
                 }
               >
                 Download .p12
