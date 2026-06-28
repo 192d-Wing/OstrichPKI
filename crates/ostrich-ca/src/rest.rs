@@ -1650,13 +1650,10 @@ async fn bulk_approval_status(
 
     let mut records = state.approval_repo.list_requests_by_ids(&ids).await?;
 
-    // Own-scope enforcement: only RA Staff / AOR may see other requesters' rows.
-    let can_view_all = user.roles.iter().any(|r| {
-        matches!(
-            r,
-            ostrich_common::auth::Role::RaStaff | ostrich_common::auth::Role::Aor
-        )
-    });
+    // Own-scope enforcement: only approvers (holders of ApproveRequest) may see
+    // other requesters' rows — kept in lockstep with list_approval_requests so an
+    // RA's bulk-status view matches their single-request and list views.
+    let can_view_all = any_role_has_permission(&user.roles, Permission::ApproveRequest);
     if !can_view_all {
         let uid = *user.id.as_uuid();
         records.retain(|r| r.requestor_id == uid);
@@ -1725,6 +1722,12 @@ async fn approve_request(
         }
     };
     if q.r#override {
+        // The durable, tamper-evident record of the override is the persisted
+        // approval decision below (`metadata.validation_overridden` + annotated
+        // justification, in the append-only approval_decisions table). This
+        // tracing line is the operational signal.
+        // POAM: also emit a formal hash-chained AuditEvent (AU-10) for the
+        // override once that audit infrastructure lands (see line ~1043).
         tracing::warn!(
             request_id = %request_id,
             approver = %user.username,
@@ -2269,6 +2272,18 @@ impl IntoResponse for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The raw-identifier field `r#override` must (de)serialize under the key
+    /// "override" so `POST .../approve?override=true` is actually honored. serde
+    /// strips the `r#` prefix; this guards against that ever silently changing
+    /// (which would disable the override path while still appearing to work).
+    #[test]
+    fn approve_query_override_uses_unprefixed_key() {
+        let on: ApproveQuery = serde_json::from_str(r#"{"override": true}"#).unwrap();
+        assert!(on.r#override, "?override=true must deserialize to true");
+        let absent: ApproveQuery = serde_json::from_str("{}").unwrap();
+        assert!(!absent.r#override, "absent override must default to false");
+    }
 
     #[test]
     fn test_describe_signature_algorithm_known() {
