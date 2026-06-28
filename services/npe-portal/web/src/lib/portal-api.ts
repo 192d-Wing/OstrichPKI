@@ -51,6 +51,19 @@ export interface MintTokenResponse {
   maxUses: number;
 }
 
+export interface EfsKeygenResponse {
+  format: string;
+  certificateId: string;
+  /** Base64-encoded encrypted PKCS#12 (RFC 7292) holding the key + certificate. */
+  pkcs12: string;
+  /** One-time PKCS#12 decryption password — shown once, never recoverable. */
+  password: string;
+}
+
+// EST label that resolves to the EFS profile (server-side keygen, RSA-2048
+// delivered as an encrypted PKCS#12). See `ParsedLabel::profile_name`.
+export const EFS_EST_LABEL = "PTEFS";
+
 // EST password TTL is fixed at 8 hours per the portal requirements.
 export const EST_TOKEN_TTL_SECONDS = 8 * 60 * 60;
 
@@ -85,4 +98,16 @@ export const portalApi = {
       ttlSeconds: EST_TOKEN_TTL_SECONDS,
       maxUses,
     }),
+
+  /**
+   * EFS server-side key generation. The server generates the RSA key (the
+   * subject is the authenticated identity — no CSR or client key is sent) and
+   * returns it + the issued certificate as an encrypted PKCS#12 with a one-time
+   * password. Auto-issued: this does NOT go through the approval queue.
+   */
+  efsServerKeygen: (keyStrength: number) =>
+    api.post<EfsKeygenResponse>(
+      `/est/.well-known/est/${EFS_EST_LABEL}/serverkeygen`,
+      { keyStrength },
+    ),
 };
