@@ -607,6 +607,17 @@ mod tests {
 
     #[test]
     fn test_npe_ra_can_override_and_revoke() {
+        // The CA approval handlers gate "see the whole queue" and "approve" on
+        // these two permissions (not a hardcoded RaStaff/Aor role set), so an NPE
+        // RegistrationAuthority MUST hold them to work the queue it can act on.
+        assert!(role_has_permission(
+            Role::RegistrationAuthority,
+            Permission::ViewRequests
+        ));
+        assert!(role_has_permission(
+            Role::RegistrationAuthority,
+            Permission::ApproveRequest
+        ));
         assert!(role_has_permission(
             Role::RegistrationAuthority,
             Permission::OverrideValidation
