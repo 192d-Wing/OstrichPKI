@@ -22,7 +22,14 @@ const PROFILES = [
   { label: "TLS Client", value: "tls_client" },
   { label: "TLS Server", value: "tls_server" },
   { label: "TLS Server + Client", value: "tls_server_client" },
+  { label: "EFS (File Encryption)", value: "efs" },
 ];
+
+// EFS keys are generated server-side; the form only offers what the EFS profile
+// actually issues today (RSA-2048). Adding strengths here is the single change
+// needed once the profile supports them.
+const EFS_ALGORITHMS = [{ label: "RSA", value: "rsa" }];
+const EFS_KEY_STRENGTHS = [{ label: "2048", value: "2048" }];
 
 const CSR_MARKER = "-----BEGIN CERTIFICATE REQUEST-----";
 
@@ -30,6 +37,22 @@ const CSR_MARKER = "-----BEGIN CERTIFICATE REQUEST-----";
 // which Apple/iOS cap at 397 days. The CA enforces the cap; this drives the
 // advisory banner.
 const SERVER_AUTH_PROFILES = new Set(["tls_server", "tls_server_client"]);
+
+// Decode a base64 PKCS#12 and trigger a browser download. The bytes never leave
+// the page until the operator saves them.
+function downloadPkcs12(base64: string, filename: string) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.codePointAt(i) ?? 0;
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/x-pkcs12" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
 export function ApplicationForm({
   mode,
@@ -39,7 +62,11 @@ export function ApplicationForm({
   const [csr, setCsr] = useState("");
   const [profile, setProfile] = useState(PROFILES[0]);
   const [email, setEmail] = useState("");
+  const [algorithm, setAlgorithm] = useState(EFS_ALGORITHMS[0]);
+  const [keyStrength, setKeyStrength] = useState(EFS_KEY_STRENGTHS[0]);
   const [error, setError] = useState<string | null>(null);
+
+  const isEfs = profile.value === "efs";
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -52,19 +79,36 @@ export function ApplicationForm({
     onError: (e: Error) => setError(e.message),
   });
 
+  // EFS is auto-issued via server-side keygen, NOT queued for RA review.
+  const efsMutation = useMutation({
+    mutationFn: () => portalApi.efsServerKeygen(Number(keyStrength.value)),
+    onSuccess: () => setError(null),
+    onError: (e: Error) => setError(e.message),
+  });
+
   const emailValid = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
   const csrValid = csr.trim().includes(CSR_MARKER);
-  const canSubmit = csrValid && emailValid && !mutation.isPending;
+  const pending = mutation.isPending || efsMutation.isPending;
+  const canSubmit = (isEfs ? emailValid : csrValid && emailValid) && !pending;
   const isServerAuth = SERVER_AUTH_PROFILES.has(profile.value);
 
-  // Editing any field after a submission clears the stale success/Request-ID
-  // banner so it can never appear to describe the current (edited) input.
+  // Editing any field after a submission clears the stale success/result banner
+  // so it can never appear to describe the current (edited) input.
   function clearStale() {
     if (mutation.data || mutation.isError) mutation.reset();
+    if (efsMutation.data || efsMutation.isError) efsMutation.reset();
     if (error) setError(null);
   }
 
   function onSubmit() {
+    if (isEfs) {
+      if (!emailValid) {
+        setError("Enter a valid notification email address.");
+        return;
+      }
+      efsMutation.mutate();
+      return;
+    }
     if (!csrValid) {
       setError("Paste a valid PKCS #10 PEM certificate request.");
       return;
@@ -77,6 +121,7 @@ export function ApplicationForm({
   }
 
   const result = mutation.data;
+  const efsResult = efsMutation.data;
 
   return (
     <ContentLayout header={<Header variant="h1" description={description}>{title}</Header>}>
@@ -103,6 +148,45 @@ export function ApplicationForm({
             </SpaceBetween>
           </Alert>
         )}
+        {efsResult && (
+          <Alert type="success" header="EFS certificate issued — save it now">
+            <SpaceBetween size="s">
+              <Box>
+                Your key and certificate were generated and bundled into an encrypted PKCS#12
+                (.p12) file. <strong>The one-time password below is shown only once and cannot be
+                recovered after you leave this page.</strong> Download the file and record the
+                password before continuing.
+              </Box>
+              <Box>
+                One-time PKCS#12 password:{" "}
+                <Box variant="code" display="inline">
+                  {efsResult.password}
+                </Box>{" "}
+                <CopyToClipboard
+                  copyButtonText="Copy"
+                  copyErrorText="Failed to copy"
+                  copySuccessText="Copied"
+                  textToCopy={efsResult.password}
+                  variant="inline"
+                />
+              </Box>
+              <Box>
+                Certificate ID:{" "}
+                <Box variant="code" display="inline">
+                  {efsResult.certificateId}
+                </Box>
+              </Box>
+              <Button
+                iconName="download"
+                onClick={() =>
+                  downloadPkcs12(efsResult.pkcs12, `efs-${efsResult.certificateId}.p12`)
+                }
+              >
+                Download .p12
+              </Button>
+            </SpaceBetween>
+          </Alert>
+        )}
         {error && (
           <Alert type="error" header="Submission failed">
             {error}
@@ -115,6 +199,13 @@ export function ApplicationForm({
             longer.
           </Alert>
         )}
+        {isEfs && (
+          <Alert type="info" header="Server-side key generation">
+            The EFS key is generated on the server for the signed-in identity and delivered as a
+            password-protected PKCS#12. No certificate request is required, and this request is
+            issued immediately rather than queued for review.
+          </Alert>
+        )}
         <Container>
           <Form
             actions={
@@ -122,10 +213,10 @@ export function ApplicationForm({
                 <Button
                   variant="primary"
                   onClick={onSubmit}
-                  loading={mutation.isPending}
+                  loading={pending}
                   disabled={!canSubmit}
                 >
-                  Submit
+                  {isEfs ? "Generate certificate" : "Submit"}
                 </Button>
               </SpaceBetween>
             }
@@ -158,21 +249,56 @@ export function ApplicationForm({
                   options={PROFILES}
                 />
               </FormField>
-              <FormField
-                label="Certificate request (PKCS #10 PEM)"
-                description="Paste the PEM-encoded CSR generated on the device."
-                errorText={csr && !csrValid ? "Not a PEM certificate request." : undefined}
-              >
-                <Textarea
-                  value={csr}
-                  onChange={(e) => {
-                    clearStale();
-                    setCsr(e.detail.value);
-                  }}
-                  rows={10}
-                  placeholder={CSR_MARKER}
-                />
-              </FormField>
+              {isEfs ? (
+                <>
+                  <FormField
+                    label="Key algorithm"
+                    description="EFS certificates use RSA keys."
+                  >
+                    <Select
+                      selectedOption={algorithm}
+                      onChange={(e) => {
+                        clearStale();
+                        setAlgorithm(
+                          EFS_ALGORITHMS.find((a) => a.value === e.detail.selectedOption.value) ??
+                            EFS_ALGORITHMS[0],
+                        );
+                      }}
+                      options={EFS_ALGORITHMS}
+                    />
+                  </FormField>
+                  <FormField label="Key strength (bits)">
+                    <Select
+                      selectedOption={keyStrength}
+                      onChange={(e) => {
+                        clearStale();
+                        setKeyStrength(
+                          EFS_KEY_STRENGTHS.find(
+                            (k) => k.value === e.detail.selectedOption.value,
+                          ) ?? EFS_KEY_STRENGTHS[0],
+                        );
+                      }}
+                      options={EFS_KEY_STRENGTHS}
+                    />
+                  </FormField>
+                </>
+              ) : (
+                <FormField
+                  label="Certificate request (PKCS #10 PEM)"
+                  description="Paste the PEM-encoded CSR generated on the device."
+                  errorText={csr && !csrValid ? "Not a PEM certificate request." : undefined}
+                >
+                  <Textarea
+                    value={csr}
+                    onChange={(e) => {
+                      clearStale();
+                      setCsr(e.detail.value);
+                    }}
+                    rows={10}
+                    placeholder={CSR_MARKER}
+                  />
+                </FormField>
+              )}
             </SpaceBetween>
           </Form>
         </Container>

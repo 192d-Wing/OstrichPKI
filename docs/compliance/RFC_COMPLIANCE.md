@@ -918,6 +918,15 @@ implementation: [crates/ostrich-x509/src/pkcs12.rs](../../crates/ostrich-x509/sr
 delivery path: [crates/ostrich-est/src/rest.rs](../../crates/ostrich-est/src/rest.rs)
 `server_key_gen`.
 
+For the portal EFS flow the request MAY instead be an `application/json` body
+(`{sans, keyStrength}`) with no PKCS#10 CSR: the subject is taken from the
+mTLS-authenticated identity rather than a client-supplied CSR, so no untrusted
+ASN.1 is parsed and no throwaway client key is generated (attack-surface
+reduction; SI-10 input validation — requested SANs are still checked against the
+caller's allowlist). The RFC 7030 §4.4.1 base64-CSR input remains supported for
+standard EST clients. The EFS profile is reached via the `PTEFS` label
+(`ParsedLabel::profile_name`).
+
 **Live full-stack proof:** [tests/integration/est_serverkeygen_e2e.rs](../../tests/integration/est_serverkeygen_e2e.rs)
 spins up the CA gRPC service (SoftHSM-backed) and the EST HTTP server in-process,
 POSTs a CSR to `/.well-known/est/serverkeygen` over real HTTP, and verifies with
