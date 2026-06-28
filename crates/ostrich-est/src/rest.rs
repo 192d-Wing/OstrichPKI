@@ -1603,6 +1603,11 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
 /// the subject is taken from the mTLS-authenticated NPE identity (never supplied
 /// by the client), so there is no untrusted CSR/ASN.1 to parse and no client key
 /// to discard. Accepted only when the resolved profile is EFS.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-10 (input validation — the subject is never client-supplied
+///   and requested SANs are still checked against the caller's allowed identities)
+/// - NIAP PP-CA: FDP_CER_EXT.1 (the requested certificate content is constrained)
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EfsKeygenRequest {
@@ -1769,10 +1774,19 @@ async fn server_key_gen(
                 )));
             }
         };
-        // EFS issues an RSA-2048 key; reject any other requested strength up front.
+        // EFS issues an RSA-2048 key; reject any other requested strength up
+        // front. Audit the rejection like every other input-validation failure
+        // (AU-2): a client probing for accepted key sizes must leave a trace.
         if let Some(bits) = req.key_strength
             && bits != 2048
         {
+            emit_failure_audit(
+                &state,
+                client_identifier,
+                "est:serverkeygen",
+                "unsupported_key_strength",
+            )
+            .await;
             return Err(Error::BadRequest(format!(
                 "EFS server-side key generation supports only RSA-2048 (requested {bits})"
             )));
@@ -1822,9 +1836,9 @@ async fn server_key_gen(
     // H1 - the server is about to mint a key AND a certificate for whatever
     // identity was requested; bind that identity to the authenticated principal
     // (CN or a SAN must equal `client_identifier`). For the EFS JSON path the CN
-    // is already the authenticated identity; this still validates every requested
-    // SAN against the allowlist so the form cannot widen the identity beyond what
-    // the principal may assert. Fail secure: deny + audit.
+    // is already the authenticated identity; this still runs every requested SAN
+    // through the same authorization policy so the form cannot widen the identity
+    // beyond what the principal may assert. Fail secure: deny + audit.
     if !identity_authorized(
         &state,
         &user,

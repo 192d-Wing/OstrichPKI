@@ -12,6 +12,7 @@ import {
   Spinner,
 } from "@cloudscape-design/components";
 
+import { downloadText } from "@/lib/download";
 import { portalApi } from "@/lib/portal-api";
 
 export function CaDetailsPage() {
@@ -23,17 +24,7 @@ export function CaDetailsPage() {
 
   function downloadChain() {
     if (!data?.chain_pem) return;
-    const blob = new Blob([data.chain_pem], { type: "application/x-pem-file" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "ca-certificate.pem";
-    // The anchor must be in the DOM for a synthetic click to trigger a download
-    // in some browsers; revoke the object URL only after the click is dispatched.
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+    downloadText(data.chain_pem, "ca-certificate.pem", "application/x-pem-file");
   }
 
   return (
