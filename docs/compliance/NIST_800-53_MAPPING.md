@@ -1804,7 +1804,10 @@ adds a self-service enrollment portal authenticated by mTLS client certificate.
   queue handlers gate "see all pending / view any request" on the `ApproveRequest`
   permission (not a hardcoded role set), so every approver role — including the
   NPE `RegistrationAuthority` — sees the queue it is authorized to act on
-  (`crates/ostrich-ca/src/rest.rs` `list_approval_requests` / `get_approval_request`).
+  (`crates/ostrich-ca/src/rest.rs` `list_approval_requests` / `get_approval_request` /
+  `bulk_approval_status`). The approval engine's segregation-of-duties check
+  (`ApprovalRequest::can_approve`, used by both approve and reject) likewise gates
+  on the `ApproveRequest` permission, so the REST and engine layers agree.
 - **AC-3 / AU-2 (Override of validation):** approving despite validation advisories
   (`POST /api/v1/approvals/{id}/approve?override=true`) requires the distinct
   `OverrideValidation` permission on top of `ApproveRequest`; the override is

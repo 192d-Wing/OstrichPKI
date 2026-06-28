@@ -41,7 +41,7 @@ use uuid::Uuid;
 
 use crate::{Error, Result};
 use ostrich_common::auth::{
-    Role,
+    Permission, Role, any_role_has_permission,
     user::{AuthenticatedUser, UserId},
 };
 
@@ -319,7 +319,7 @@ impl ApprovalRequest {
     ///
     /// # Segregation of Duties
     /// - Requestor CANNOT approve their own request
-    /// - User must have RaStaff or Aor role
+    /// - User must hold the `ApproveRequest` permission
     ///
     /// # Arguments
     /// * `user` - User attempting to approve
@@ -334,10 +334,14 @@ impl ApprovalRequest {
             return Err(Error::SelfApprovalProhibited);
         }
 
-        // Check user has RA Staff or AOR role
-        if !user.has_any_role(&[Role::RaStaff, Role::Aor]) {
+        // The approver must hold the ApproveRequest permission. Gating on the
+        // permission (not a hardcoded RaStaff/Aor role set) keeps the engine in
+        // lockstep with the REST authorization layer and admits every approver
+        // role — RaStaff, Aor, and the NPE RegistrationAuthority alike. (Without
+        // this, an NPE RA passed the route guard but was rejected here.)
+        if !any_role_has_permission(&user.roles, Permission::ApproveRequest) {
             return Err(Error::InsufficientRole {
-                required: "RaStaff or Aor".to_string(),
+                required: "approval permission (ApproveRequest)".to_string(),
             });
         }
 
