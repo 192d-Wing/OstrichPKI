@@ -35,6 +35,7 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use ostrich_common::auth::provider::AuthProvider;
 use ostrich_common::auth::{
     AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy, TrustedProxyAuthLayer,
+    any_role_has_permission,
     TrustedProxyConfig,
 };
 use ostrich_common::types::DistinguishedName;
@@ -1548,16 +1549,14 @@ async fn list_approval_requests(
     State(state): State<Arc<ApiState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Json<ListApprovalRequestsResponse>> {
-    let requests = if user.roles.iter().any(|r| {
-        matches!(
-            r,
-            ostrich_common::auth::Role::RaStaff | ostrich_common::auth::Role::Aor
-        )
-    }) {
-        // RA Staff and AOR can see all pending requests
+    // Anyone who may act on requests (holds ApproveRequest) sees the whole queue;
+    // everyone else sees only their own. Gating on the PERMISSION rather than a
+    // hardcoded role set means every approver role qualifies — RaStaff, Aor, and
+    // the NPE RegistrationAuthority alike (the latter was previously excluded and
+    // could not see the queue it was authorized to act on).
+    let requests = if any_role_has_permission(&user.roles, Permission::ApproveRequest) {
         state.approval_repo.list_pending_requests().await?
     } else {
-        // Regular users can only see their own requests
         state
             .approval_repo
             .list_requests_by_requestor(user.id.as_uuid())
@@ -1590,16 +1589,12 @@ async fn get_approval_request(
         .await?
         .ok_or_else(|| Error::ApprovalRequestNotFound(request_id))?;
 
-    // Authorization: user can view if they are the requestor or have approval role
-    let can_approve = user.roles.iter().any(|r| {
-        matches!(
-            r,
-            ostrich_common::auth::Role::RaStaff | ostrich_common::auth::Role::Aor
-        )
-    });
+    // Authorization: a user may view a request if they own it or may act on it
+    // (holds ApproveRequest — RaStaff, Aor, or the NPE RegistrationAuthority).
+    let can_approve = any_role_has_permission(&user.roles, Permission::ApproveRequest);
     if request.requestor_id != *user.id.as_uuid() && !can_approve {
         return Err(Error::InsufficientRole {
-            required: "RaStaff/Aor role or request ownership".to_string(),
+            required: "approval permission or request ownership".to_string(),
         });
     }
 
@@ -1683,12 +1678,22 @@ async fn approve_request(
     State(state): State<Arc<ApiState>>,
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
+    Query(q): Query<ApproveQuery>,
     Json(req): Json<ApprovalDecisionRequest>,
 ) -> Result<Json<ApprovalDecisionResponse>> {
     use ostrich_common::auth::user::AuthMethod;
 
     let request_id = uuid::Uuid::parse_str(&id)
         .map_err(|_| Error::InvalidRequest("Invalid request ID".to_string()))?;
+
+    // AC-3 - approving despite validation advisories is a distinct, higher
+    // privilege than ordinary approval: require OverrideValidation on top of the
+    // route's ApproveRequest guard. Fail closed (403) if the approver lacks it.
+    if q.r#override && !any_role_has_permission(&user.roles, Permission::OverrideValidation) {
+        return Err(Error::InsufficientRole {
+            required: "OverrideValidation".to_string(),
+        });
+    }
 
     // Get request from database
     let request_record = state
@@ -1708,12 +1713,29 @@ async fn approve_request(
         AuthMethod::Password,
     );
 
+    // AU-2/AU-3 - when validation is overridden, annotate the decision so the
+    // override is visible in the human-readable justification AND emit a
+    // high-signal audit log line with who/what/when context.
+    let justification = {
+        let base = req.justification.unwrap_or_else(|| "Approved".to_string());
+        if q.r#override {
+            format!("{base} [validation overridden]")
+        } else {
+            base
+        }
+    };
+    if q.r#override {
+        tracing::warn!(
+            request_id = %request_id,
+            approver = %user.username,
+            "approval validation OVERRIDDEN (OverrideValidation)"
+        );
+    }
+
     // Approve via engine (enforces segregation of duties)
-    let decision = state.approval_engine.approve_request(
-        &mut request,
-        &approver,
-        req.justification.unwrap_or_else(|| "Approved".to_string()),
-    )?;
+    let decision = state
+        .approval_engine
+        .approve_request(&mut request, &approver, justification)?;
 
     // Persist decision
     use ostrich_db::models::ApprovalDecisionRecord;
@@ -1731,7 +1753,11 @@ async fn approve_request(
         reason: decision.reason.clone(),
         justification: decision.justification.clone(),
         decided_at: decision.decided_at,
-        metadata: None,
+        metadata: if q.r#override {
+            Some(serde_json::json!({ "validation_overridden": true }))
+        } else {
+            None
+        },
     };
 
     state
@@ -2137,6 +2163,17 @@ impl From<ostrich_db::models::ApprovalDecisionRecord> for ApprovalDecisionInfo {
 pub struct ApprovalDecisionRequest {
     pub reason: Option<String>,
     pub justification: Option<String>,
+}
+
+/// Query parameters for the approve endpoint.
+#[derive(Debug, Default, Deserialize)]
+struct ApproveQuery {
+    /// When true, the approver is consciously approving despite validation
+    /// advisories (e.g. validity/namespace/policy warnings). This is a distinct,
+    /// higher privilege: it requires `OverrideValidation` on top of the route's
+    /// `ApproveRequest` guard, and the override is recorded on the decision.
+    #[serde(default)]
+    r#override: bool,
 }
 
 /// Approval decision response

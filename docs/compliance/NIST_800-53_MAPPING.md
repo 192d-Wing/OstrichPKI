@@ -1800,7 +1800,17 @@ adds a self-service enrollment portal authenticated by mTLS client certificate.
   the authenticated identity (`X-Npe-*` headers, with inbound spoofs stripped)
   and is allowlisted to CA/EST only — `services/npe-portal/src/server/proxy.rs`.
   Issuer scoping (`allowed_issuers`) prevents a role-granting OID asserted by an
-  unauthorized CA in the trusted bundle from conferring privilege.
+  unauthorized CA in the trusted bundle from conferring privilege. The approval
+  queue handlers gate "see all pending / view any request" on the `ApproveRequest`
+  permission (not a hardcoded role set), so every approver role — including the
+  NPE `RegistrationAuthority` — sees the queue it is authorized to act on
+  (`crates/ostrich-ca/src/rest.rs` `list_approval_requests` / `get_approval_request`).
+- **AC-3 / AU-2 (Override of validation):** approving despite validation advisories
+  (`POST /api/v1/approvals/{id}/approve?override=true`) requires the distinct
+  `OverrideValidation` permission on top of `ApproveRequest`; the override is
+  recorded on the decision (`metadata.validation_overridden`, annotated
+  justification) and emitted as a high-signal audit log line —
+  `crates/ostrich-ca/src/rest.rs` `approve_request`.
 - **AC-8 (System Use Notification):** mandatory USG consent gate before any
   proxied API call — `services/npe-portal/src/server/{router.rs,middleware.rs}`
   and `web/src/components/consent-modal.tsx`.
