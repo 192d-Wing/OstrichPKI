@@ -69,6 +69,10 @@ tokio-rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1"] }
 
+# ACME client (RFC 8555): the portal auto-enrolls + renews its own TLS server
+# certificate from the OstrichPKI ACME server (HTTP-01).
+instant-acme = { workspace = true }
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 
