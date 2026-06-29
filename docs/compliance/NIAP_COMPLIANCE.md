@@ -2245,6 +2245,35 @@ The `ostrich-npe-portal` service maps to the following SFRs:
 - **FMT_SMF.1 (Management Functions):** USG consent acknowledgement and session
   lifecycle management — `services/npe-portal/src/server/router.rs`.
 
+The portal also drives these CA/EST capabilities (gated by the proxy allowlist
+and per-route RBAC):
+
+- **FDP_CER_EXT.3 / FDP_SEPP.1 (Issuance Approval / Segregation of Duties):** the
+  RA approval queue (approve/reject/override) is gated on the `ApproveRequest`
+  permission at BOTH the REST layer and the approval engine's `can_approve`
+  (requestor ≠ approver enforced); approving despite validation advisories
+  additionally requires `OverrideValidation` and is recorded on the decision —
+  `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-ca/src/approval.rs`.
+- **FMT_SMR.2 / FMT_MTD.1 (Role Management):** CAA user management
+  (create/list/assign-roles/status/delete) with a self-action block (a CAA cannot
+  modify/disable/delete their own account — AC-5 separation of duties) and a
+  privilege ceiling (only the four NPE roles are assignable) —
+  `crates/ostrich-ca/src/rest.rs` (`load_target_user_guarded`, `parse_roles`).
+- **FMT_SMF.1 / FDP_ACF.1 (Management Functions / Name Constraints):** CAA
+  wildcard/namespace policy management and system-configuration management, both
+  attributed + audited (CM-3) — `crates/ostrich-ca/src/rest.rs`.
+- **FCS_CKM.1 / FCS_COP.1 (Key Generation / Crypto Operation):** EFS server-side
+  key generation delivering an encrypted PKCS#12 (RFC 7292; PBES2 +
+  HMAC-SHA256 MAC) under a one-time password —
+  `crates/ostrich-x509/src/pkcs12.rs`, `crates/ostrich-est/src/rest.rs`.
+- **FDP_CER_EXT.2 (Certificate Request Linkage):** Administrator bulk enrollment
+  validates each CSR in an uploaded archive and queues it as an approval request,
+  recording a durable per-CSR outcome — `crates/ostrich-ca/src/rest.rs`,
+  `crates/ostrich-db/src/repository/bulk_enrollment.rs`.
+
+Deployment (active-active, IL5): container image + Helm chart (mTLS, per-network
+ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
+
 ---
 
 ## Document Change History
@@ -2263,6 +2292,7 @@ The `ostrich-npe-portal` service maps to the following SFRs:
 | 2.5 | 2026-01-07 | OstrichPKI Team | Phase 20: Web UI service - OIDC authentication (FIA_UAU_EXT.1), CSP nonces (FPT_TRP_EXT.1), session mgmt (FTA_SSL.3/4) |
 | 2.6 | 2026-06-23 | OstrichPKI Team | TAMP (RFC 5934) manager: FMT_SMF.1 (trust anchor management functions), FCS_COP.1 (CMS sign/verify), FAU_GEN.1 (TampProtocol audit), FPT_STM.1 — `ostrich-tamp` crate + `ostrich-tamp-server` |
 | 2.7 | 2026-06-26 | OstrichPKI Team | NPE Portal: FIA_UAU.1 / FIA_X509_EXT.1-.2 (mTLS cert auth), FMT_SMR.2 (4 NPE roles), FTA_SSL.1/.3 (30-min inactivity), FAU_GEN.1/.2 (auth audit), FMT_SMF.1 (consent/session mgmt) — `ostrich-npe-portal` |
+| 2.8 | 2026-06-29 | OstrichPKI Team | NPE Portal workflows: FDP_CER_EXT.3 / FDP_SEPP.1 (RA approval + override, engine-gated segregation), FMT_SMR.2 / FMT_MTD.1 (CAA user mgmt + self-action block + role ceiling), FMT_SMF.1 / FDP_ACF.1 (namespace + system-config mgmt), FCS_CKM.1 / FCS_COP.1 (EFS PKCS#12 delivery), FDP_CER_EXT.2 (bulk enrollment); container image + Helm chart |
 
 ---
 
