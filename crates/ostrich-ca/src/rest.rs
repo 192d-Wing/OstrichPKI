@@ -316,6 +316,15 @@ pub fn create_router(
         .route(
             "/api/v1/namespaces/{id}",
             delete(delete_namespace).route_layer(authz(Permission::ManageNamespaces)),
+        )
+        // CAA system configuration.
+        .route(
+            "/api/v1/config",
+            get(list_config).route_layer(authz(Permission::ViewConfig)),
+        )
+        .route(
+            "/api/v1/config/{key}",
+            put(set_config).route_layer(authz(Permission::ModifyConfig)),
         );
 
     // Authentication layer. With a trusted-proxy config, use the composite layer
@@ -2573,6 +2582,72 @@ fn is_valid_namespace_pattern(pattern: &str) -> bool {
     }
 }
 
+// ===========================================================================
+// CAA system configuration
+//
+// POAM: this milestone delivers the managed, audited settings store + the CAA
+// management surface. Wiring each setting to runtime behavior (reading
+// `default_certificate_validity_days` / `require_approval_for_issuance` /
+// `max_bulk_csrs` from this store instead of the current compile-time constants)
+// is the follow-up integration, tracked separately.
+// ===========================================================================
+
+/// List all system configuration settings. Requires ViewConfig.
+async fn list_config(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(_user): AuthUser,
+) -> Result<Json<Vec<ConfigDto>>> {
+    let repo =
+        ostrich_db::repository::SystemConfigRepository::new(state.db_pool.as_ref().clone());
+    let settings = repo
+        .list()
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to list config: {e}")))?;
+    Ok(Json(settings.into_iter().map(ConfigDto::from).collect()))
+}
+
+/// Set a configuration value (and optional description). Requires ModifyConfig.
+///
+/// CM-3: the change is attributed to the authenticated CAA and audited. Only
+/// existing (seeded) keys may be set, so the config surface cannot sprawl into
+/// arbitrary unconsumed keys.
+async fn set_config(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(key): Path<String>,
+    Json(req): Json<SetConfigRequest>,
+) -> Result<Json<ConfigDto>> {
+    const MAX_VALUE: usize = 4096;
+    let value = req.value.trim().to_string();
+    if value.len() > MAX_VALUE {
+        return Err(Error::InvalidRequest(format!(
+            "value exceeds {MAX_VALUE} characters"
+        )));
+    }
+
+    let repo =
+        ostrich_db::repository::SystemConfigRepository::new(state.db_pool.as_ref().clone());
+
+    // CM-3 / fail closed: only a known (seeded) setting may be changed; reject an
+    // unknown key rather than creating an unconsumed configuration entry.
+    if repo
+        .get(&key)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to load config: {e}")))?
+        .is_none()
+    {
+        return Err(Error::NotFound(format!("unknown configuration key '{key}'")));
+    }
+
+    let updated = repo
+        .upsert(&key, &value, req.description.as_deref(), &user.username)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to update config: {e}")))?;
+
+    tracing::info!(actor = %user.username, key = %key, "CAA updated system configuration");
+    Ok(Json(ConfigDto::from(updated)))
+}
+
 // REST API Request/Response types
 
 /// Summary of a bulk enrollment job.
@@ -2731,6 +2806,37 @@ struct CreateNamespaceRequest {
     pattern: String,
     #[serde(default)]
     allow: Option<bool>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+/// A system configuration setting as exposed to the CAA UI.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigDto {
+    key: String,
+    value: String,
+    description: Option<String>,
+    updated_by: String,
+    updated_at: String,
+}
+
+impl From<ostrich_db::models::SystemConfigRecord> for ConfigDto {
+    fn from(c: ostrich_db::models::SystemConfigRecord) -> Self {
+        Self {
+            key: c.key,
+            value: c.value,
+            description: c.description,
+            updated_by: c.updated_by,
+            updated_at: c.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+/// Set-config request (the key is in the path).
+#[derive(Debug, Deserialize)]
+struct SetConfigRequest {
+    value: String,
     #[serde(default)]
     description: Option<String>,
 }
