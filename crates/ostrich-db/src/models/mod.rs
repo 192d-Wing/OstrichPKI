@@ -11,6 +11,7 @@ pub mod certificate;
 pub mod crl;
 pub mod est;
 pub mod kra;
+pub mod namespace;
 pub mod scms;
 
 pub use acme::{AcmeAccount, AcmeAuthorization, AcmeChallenge, AcmeNonce, AcmeOrder};
@@ -22,4 +23,5 @@ pub use certificate::Certificate;
 pub use crl::Crl;
 pub use est::{EstClient, EstEnrollment};
 pub use kra::{EscrowedKey, RecoveryAgent, RecoveryRequest, RecoveryShare};
+pub use namespace::NamespaceRecord;
 pub use scms::{Token, TokenEvent, TokenKey, TokenModel};
