@@ -30,6 +30,15 @@ spec:
         app: npe-portal
     spec:
       serviceAccountName: ostrich-pki
+      # acme.oopl.dev.mil is not in cluster DNS, but its Traefik Ingress (TLS
+      # terminated with the acme-ingress-tls cert) answers on the .54 VIP. Pin
+      # the name to that VIP so the portal's ACME client reaches the directory
+      # over its advertised https base_url. (npe-portal.oopl.dev.mil resolves
+      # in-cluster on its own, so HTTP-01 validation needs no alias.)
+      hostAliases:
+        - ip: "10.10.10.54"
+          hostnames:
+            - acme.oopl.dev.mil
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
