@@ -1,0 +1,31 @@
+# OstrichPKI NPE Portal external route (TLS passthrough)
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: IA-2 (mTLS to the portal), SC-8 (Transmission Confidentiality)
+#
+# The portal terminates mTLS itself and derives the operator role from the client
+# certificate, so Traefik must pass the TLS connection through (HostSNI match, no
+# re-termination) to the portal pod. Reachable on the ostrich-ingress VIP
+# (10.10.10.61 / 2601:443:c200:575::61), the same VIP est.oopl.dev.mil uses.
+#
+# PREREQUISITE: the portal must be serving mTLS HTTPS on :8443 (drop
+# NPE_ALLOW_INSECURE; mount a server cert whose SAN includes
+# npe-portal.oopl.dev.mil + the NPE operator client CA). Until then this route
+# exists but the TLS handshake will fail (the pod is still plain HTTP).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: npe-portal
+  namespace: ostrich-pki
+  labels:
+    app: npe-portal
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: HostSNI(`npe-portal.oopl.dev.mil`)
+      services:
+        - name: npe-portal
+          port: 8443
+  tls:
+    passthrough: true
