@@ -124,8 +124,6 @@ export const ASSIGNABLE_ROLES = [
   { label: "CA Admin (CAA)", value: "caa_admin" },
 ] as const;
 
-export const ACCOUNT_STATUSES = ["active", "disabled", "suspended", "locked"] as const;
-
 export interface Namespace {
   id: string;
   pattern: string;
