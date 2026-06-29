@@ -75,6 +75,8 @@ instant-acme = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+# Self-signed cert/key generation for the ACME TLS-plumbing unit tests.
+rcgen = { workspace = true }
 
 [features]
 default = []

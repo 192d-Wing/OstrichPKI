@@ -3495,6 +3495,7 @@ dependencies = [
  "instant-acme",
  "ostrich-audit",
  "ostrich-common",
+ "rcgen",
  "rustls",
  "rustls-pki-types",
  "serde",
