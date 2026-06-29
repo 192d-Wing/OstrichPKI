@@ -88,6 +88,14 @@ async fn main() -> Result<()> {
         "Starting OstrichPKI NPE Portal"
     );
 
+    // Install the process-wide default rustls CryptoProvider (aws-lc-rs / FIPS).
+    // ostrich_common::tls and the portal's own server config select the provider
+    // explicitly, but the embedded ACME client (instant-acme) builds its HTTPS
+    // client from the *process default*, which rustls cannot auto-select when
+    // both aws-lc-rs and ring appear in the dependency graph. Idempotent: returns
+    // Err if already installed, which we ignore. NIST 800-53: SC-13 (FIPS).
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let config = NpePortalConfig::load(&args.config).await?;
 
     // ACME mode: the portal sources its server certificate from an ACME directory
