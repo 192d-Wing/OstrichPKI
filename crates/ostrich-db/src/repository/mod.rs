@@ -29,6 +29,7 @@
 pub mod acme;
 pub mod approval;
 pub mod audit;
+pub mod bulk_enrollment;
 pub mod ca;
 pub mod certificate;
 pub mod crl;
@@ -43,6 +44,7 @@ pub mod users;
 pub use acme::AcmeRepository;
 pub use approval::ApprovalRepository;
 pub use audit::AuditRepository;
+pub use bulk_enrollment::BulkEnrollmentRepository;
 pub use ca::CaRepository;
 pub use certificate::{CertificateRepository, CertificateStatusCounts};
 pub use crl::CrlRepository;

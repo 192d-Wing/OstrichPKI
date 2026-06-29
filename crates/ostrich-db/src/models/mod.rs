@@ -5,6 +5,7 @@
 pub mod acme;
 pub mod approval;
 pub mod audit;
+pub mod bulk_enrollment;
 pub mod ca;
 pub mod certificate;
 pub mod crl;
@@ -15,6 +16,7 @@ pub mod scms;
 pub use acme::{AcmeAccount, AcmeAuthorization, AcmeChallenge, AcmeNonce, AcmeOrder};
 pub use approval::{ApprovalDecisionRecord, ApprovalRequestRecord};
 pub use audit::AuditEvent;
+pub use bulk_enrollment::{BulkEnrollmentItemRecord, BulkEnrollmentJobRecord};
 pub use ca::{CaCertificate, CaKey};
 pub use certificate::Certificate;
 pub use crl::Crl;
