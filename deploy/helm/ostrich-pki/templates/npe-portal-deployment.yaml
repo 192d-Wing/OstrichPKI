@@ -55,15 +55,15 @@ spec:
             - name: NPE_ALLOW_INSECURE
               value: "true"
             {{- end }}
-            {{- if .Values.npePortal.tls.certFile }}
+            {{- /* Only point at the cert files when the secret that provides them
+                   is actually mounted (below). Without a secret the portal gets no
+                   TLS args and fails closed with a clear "mandatory mTLS" message,
+                   rather than crashlooping on a missing file. */}}
+            {{- if .Values.npePortal.tls.existingSecret }}
             - name: TLS_CERT_FILE
               value: {{ .Values.npePortal.tls.certFile | quote }}
-            {{- end }}
-            {{- if .Values.npePortal.tls.keyFile }}
             - name: TLS_KEY_FILE
               value: {{ .Values.npePortal.tls.keyFile | quote }}
-            {{- end }}
-            {{- if .Values.npePortal.tls.clientCaFile }}
             - name: TLS_CLIENT_CA_FILE
               value: {{ .Values.npePortal.tls.clientCaFile | quote }}
             {{- end }}

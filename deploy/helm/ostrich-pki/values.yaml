@@ -244,8 +244,15 @@ npePortal:
       urlPrefix: "/static"
 
   # Per-network ingress hosts (e.g. npe.<niprnet-domain> / npe.<sipr-domain>).
-  # The portal terminates mTLS, so the ingress must pass the client certificate
-  # through (ssl-passthrough) rather than re-terminating TLS.
+  #
+  # CRITICAL: the portal terminates mTLS itself and derives the operator's role
+  # from the client certificate. The ingress MUST pass the TLS connection through
+  # to the portal (ssl-passthrough) — do NOT let the ingress terminate TLS, or it
+  # strips the client certificate and every request fails authentication (IA-2).
+  # Set the passthrough annotation for your controller (e.g. for ingress-nginx:
+  # nginx.ingress.kubernetes.io/ssl-passthrough: "true"), and leave `tls` empty
+  # (a `tls` block here implies the ingress re-terminates TLS — incompatible with
+  # mTLS passthrough).
   ingress:
     enabled: false
     className: ""
