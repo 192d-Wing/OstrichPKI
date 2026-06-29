@@ -265,9 +265,13 @@ pub fn create_router(
             post(reject_request).route_layer(authz(Permission::ApproveRequest)),
         )
         // Bulk enrollment (Administrator "Submit Bulk"): upload a ZIP of CSRs.
+        // The explicit body limit bounds the buffered multipart upload (the
+        // per-CSR and entry caps bound what is then extracted from it).
         .route(
             "/api/v1/bulk-enroll",
-            post(bulk_enroll).route_layer(authz(Permission::BulkEnroll)),
+            post(bulk_enroll)
+                .layer(axum::extract::DefaultBodyLimit::max(MAX_BULK_UPLOAD_BYTES))
+                .route_layer(authz(Permission::BulkEnroll)),
         )
         .route(
             "/api/v1/bulk-enroll",
@@ -1888,6 +1892,13 @@ async fn reject_request(
 const MAX_BULK_CSRS: usize = 100;
 /// Per-CSR size ceiling (anti zip-bomb). A PEM CSR is a few KiB; 64 KiB is ample.
 const MAX_CSR_BYTES: u64 = 64 * 1024;
+/// Total ZIP entry ceiling, independent of how many are CSRs. Bounds the
+/// directory scan so a pathological archive (e.g. 100k empty/non-CSR entries
+/// alongside a few CSRs) cannot force a huge iteration past the CSR cap.
+const MAX_ZIP_ENTRIES: usize = 1000;
+/// Whole-upload ceiling for the multipart body (defense in depth on top of the
+/// per-CSR and entry caps). 8 MiB is ample for 100 PEM CSRs + ZIP overhead.
+const MAX_BULK_UPLOAD_BYTES: usize = 8 * 1024 * 1024;
 
 /// Extract the CSR-bearing entries from an uploaded ZIP, capped and size-bounded.
 /// Returns `(source_name, raw_bytes)` for each `.csr/.pem/.req/.der` file.
@@ -1895,6 +1906,11 @@ fn extract_csr_entries(zip_bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     use std::io::Read;
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
         .map_err(|e| Error::InvalidRequest(format!("invalid ZIP archive: {e}")))?;
+    if archive.len() > MAX_ZIP_ENTRIES {
+        return Err(Error::InvalidRequest(format!(
+            "archive has more than {MAX_ZIP_ENTRIES} entries"
+        )));
+    }
     let mut entries = Vec::new();
     for i in 0..archive.len() {
         let file = archive
