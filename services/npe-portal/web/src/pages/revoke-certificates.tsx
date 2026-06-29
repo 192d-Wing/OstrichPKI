@@ -39,7 +39,13 @@ export function RevokeCertificatesPage() {
 
   const lookup = useMutation({
     mutationFn: (certId: string) => portalApi.getCertificate(certId),
-    onSuccess: () => setError(null),
+    onSuccess: () => {
+      setError(null);
+      // Start each certificate from a clean revoke form so a reason/justification
+      // typed for a previous certificate can never carry over to a different one.
+      setReason(REASON_OPTIONS[1]);
+      setJustification("");
+    },
     onError: (e: Error) => setError(e.message),
   });
 
@@ -118,13 +124,13 @@ export function RevokeCertificatesPage() {
               <KeyValuePairs
                 columns={3}
                 items={[
-                  { label: "Subject", value: cert.subject_dn },
-                  { label: "Serial", value: cert.serial_number },
+                  { label: "Subject", value: cert.subjectDn },
+                  { label: "Serial", value: cert.serialNumber },
                   { label: "Status", value: <StatusBadge status={cert.status} /> },
-                  { label: "Valid to", value: cert.valid_to },
+                  { label: "Valid to", value: cert.validTo },
                   {
                     label: "Days remaining",
-                    value: cert.days_remaining != null ? String(cert.days_remaining) : "-",
+                    value: cert.daysRemaining == null ? "-" : String(cert.daysRemaining),
                   },
                 ]}
               />
@@ -189,8 +195,8 @@ export function RevokeCertificatesPage() {
             <KeyValuePairs
               columns={2}
               items={[
-                { label: "Subject", value: cert.subject_dn },
-                { label: "Serial", value: cert.serial_number },
+                { label: "Subject", value: cert.subjectDn },
+                { label: "Serial", value: cert.serialNumber },
                 { label: "Reason", value: reason.label ?? String(reason.value) },
               ]}
             />
