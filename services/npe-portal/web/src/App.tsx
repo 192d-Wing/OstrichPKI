@@ -15,12 +15,12 @@ import { BulkStatusPage } from "@/pages/bulk-status";
 import { CaDetailsPage } from "@/pages/ca-details";
 import { PasswordManagementPage } from "@/pages/password-management";
 import { ManageApplicationsPage } from "@/pages/manage-applications";
+import { RevokeCertificatesPage } from "@/pages/revoke-certificates";
 import { SearchPage } from "@/pages/search";
 
-// Routes still rendered as M-later placeholders (RA revoke, CAA, bulk enroll).
+// Routes still rendered as M-later placeholders (CAA, bulk enroll).
 const PLACEHOLDER_ROUTES: { path: string; title: string; description: string }[] = [
   { path: "/certificates/bulk", title: "Submit Bulk", description: "Submit a ZIP of CSRs for asynchronous bulk enrollment." },
-  { path: "/ra/revoke", title: "Revoke Certificates", description: "Revoke issued certificates." },
   { path: "/caa/users", title: "User Management", description: "Manage CAA/RA users and role assignments." },
   { path: "/caa/namespaces", title: "Wildcard Management", description: "Manage certificate namespaces and wildcard policy." },
   { path: "/caa/config", title: "System Configuration", description: "Global portal and issuance configuration." },
@@ -80,6 +80,7 @@ export default function App() {
         <Route path="/passwords/multi-use" element={<PasswordManagementPage multi />} />
         {/* Registration Authority */}
         <Route path="/ra/applications" element={<ManageApplicationsPage />} />
+        <Route path="/ra/revoke" element={<RevokeCertificatesPage />} />
         {/* Search */}
         <Route path="/search" element={<SearchPage />} />
         {/* Later-milestone placeholders */}
