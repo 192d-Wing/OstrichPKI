@@ -1,0 +1,23 @@
+# OstrichPKI NPE Portal Service (ACME production overlay)
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SC-8 (Transmission Confidentiality)
+#
+# Adds the HTTP-01 challenge port (8080) alongside the mTLS port (8443). Replaces
+# the smoke service, which exposes only 8443.
+apiVersion: v1
+kind: Service
+metadata:
+  name: npe-portal
+  namespace: ostrich-pki
+  labels:
+    app: npe-portal
+spec:
+  type: ClusterIP
+  ports:
+    - { name: https, port: 8443, targetPort: https }
+    # Plain-HTTP ACME HTTP-01 responder; reached only via the challenge
+    # IngressRoute on Traefik's web (:80) entrypoint.
+    - { name: acme-http, port: 8080, targetPort: acme-http }
+  selector:
+    app: npe-portal

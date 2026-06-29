@@ -1,0 +1,54 @@
+# OstrichPKI NPE Portal config (ACME production overlay)
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: CM-2/CM-6 (baseline + secure configuration settings)
+# - NIST 800-53: SC-8/SC-12 (mTLS + ACME-managed server certificate)
+#
+# Differences vs. the smoke configmap:
+#  - secureCookies: true (served over HTTPS)
+#  - acme block: the portal enrolls/renews its own server cert (RFC 8555 HTTP-01)
+#  - allowedIssuers MUST be set to the real operator issuing-CA subject DN(s)
+#    before cutover (placeholder below).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: npe-portal-config
+  namespace: ostrich-pki
+  labels:
+    app: npe-portal
+data:
+  npe-portal.json: |
+    {
+      "backend": {
+        "caUrl": "http://ca-service:8080",
+        "estUrl": "http://est-service:8443"
+      },
+      "session": {
+        "cookieName": "ostrich_npe_session",
+        "inactivityTimeoutSecs": 1800,
+        "absoluteTimeoutSecs": 28800,
+        "secureCookies": true
+      },
+      "oidMapping": {
+        "sponsorOids": ["2.16.840.1.101.2.1.11.42"],
+        "adminOid": "2.16.840.1.101.2.1.11.43",
+        "raOids": ["2.16.840.1.101.2.1.11.44"],
+        "caaOids": ["2.16.840.1.101.2.1.11.45"],
+        "allowedIssuers": ["CN=OstrichPKI NPE Issuing CA,O=U.S. Government,C=US"]
+      },
+      "classificationBanner": "UNCLASSIFIED//FOUO",
+      "cspNonceLength": 16,
+      "staticFiles": {
+        "directory": "/app/static",
+        "urlPrefix": "/static"
+      },
+      "acme": {
+        "directoryUrl": "https://acme.oopl.dev.mil/acme/directory",
+        "domains": ["npe-portal.oopl.dev.mil"],
+        "contact": "mailto:pki@oopl.dev.mil",
+        "caBundle": "/app/tls/acme-ca-bundle.pem",
+        "challengePort": 8080,
+        "renewBeforeDays": 30,
+        "cacheDir": "/app/acme-cache"
+      }
+    }
