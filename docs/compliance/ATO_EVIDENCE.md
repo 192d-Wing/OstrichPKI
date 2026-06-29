@@ -1637,14 +1637,23 @@ SPA) authenticated by mTLS client certificate, with OID-derived roles.
 | AC-8 | NIST 800-53 | Mandatory USG consent gate before any API call. `services/npe-portal/src/server/middleware.rs`, `web/src/components/consent-modal.tsx`. |
 | AC-12 / SC-23, FTA_SSL.1/.3 | NIST / NIAP | 30-minute inactivity lock (refreshed only on real activity); sessions bound to certificate fingerprint. `services/npe-portal/src/server/session.rs`. |
 | AU-2 / AU-3 / AU-12, FAU_GEN.1/.2 | NIST / NIAP | Structured `Authentication` audit records for login/consent/logout. `services/npe-portal/src/server/audit.rs`. POA&M: attach `DatabaseAuditSink` (AU-9(3)/AU-10) when the portal is provisioned with the audit store. |
+| AC-3 / AU-2, FDP_CER_EXT.3 / FDP_SEPP.1 | NIST / NIAP | RA approval queue (approve/reject/override) gated on `ApproveRequest` at the REST layer AND the approval engine's `can_approve` (requestor ≠ approver); override requires `OverrideValidation`, recorded on the decision. `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-ca/src/approval.rs`. |
+| AC-2 / AC-5, FMT_SMR.2 / FMT_MTD.1 | NIST / NIAP | CAA user management with self-action block (no self modify/disable/delete) and a role-assignment ceiling (NPE roles only). `crates/ostrich-ca/src/rest.rs` (`load_target_user_guarded`, `parse_roles`). |
+| CM-3, FMT_SMF.1 / FDP_ACF.1 | NIST / NIAP | CAA wildcard/namespace policy + system-config management, attributed + audited; config writes are known-key + type-validated. `crates/ostrich-ca/src/rest.rs`, migrations `00019`/`00020`. |
+| SC-12 / SI-12, FCS_CKM.1 / FCS_COP.1 | NIST / NIAP | EFS server-side keygen → encrypted PKCS#12 (RFC 7292) under a one-time password (verified against openssl 3.5). `crates/ostrich-x509/src/pkcs12.rs`, `crates/ostrich-est/src/rest.rs`. |
+| AC-3 / SI-10, FDP_CER_EXT.2 | NIST / NIAP | Administrator bulk enrollment (ZIP of CSRs): per-CSR validation + queued requests + durable per-CSR outcome; entry/size caps (anti zip-bomb). `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-db/src/repository/bulk_enrollment.rs`. |
+| SA-10 / SI-7, SC-8 | NIST 800-53 | Reproducible container image (`Dockerfile` `npe-portal` target, CI-published) + Helm chart (2-replica active-active, mTLS, per-network ssl-passthrough ingress). `deploy/helm/ostrich-pki/`. |
 
 Test evidence:
 
 ```
-cargo clippy -p ostrich-npe-portal -- -D warnings    # Clean
-cargo test  -p ostrich-npe-portal                    # 15 passed
-cargo test  -p ostrich-common auth::                 # passed (incl. NPE role perms)
-tsc --noEmit (services/npe-portal/web)               # exit 0
+cargo clippy -p ostrich-npe-portal -p ostrich-ca -p ostrich-x509 -p ostrich-est -- -D warnings  # Clean
+cargo test  -p ostrich-ca       # passed (incl. override serde, parse_roles, namespace/config validation)
+cargo test  -p ostrich-x509     # passed (incl. encrypted PKCS#12 round-trip)
+cargo test  -p ostrich-est      # passed (incl. EFS serverkeygen, label routing)
+cargo test  -p ostrich-common auth::   # passed (incl. NPE role perms + RA ceiling)
+tsc --noEmit + vite build (services/npe-portal/web)    # exit 0
+helm template ... npe-portal-*                          # renders (deployment/service/configmap/ingress)
 ```
 
 ---
