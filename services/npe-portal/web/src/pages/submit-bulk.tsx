@@ -32,7 +32,16 @@ const PROFILES: SelectProps.Option[] = [
 
 // Build a CSV result sheet (Bulk Identifier header + per-CSR rows) for download.
 function resultCsv(bulkIdentifier: string, items: BulkItem[]): string {
-  const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
+  // RFC-4180 quoting + spreadsheet formula-injection neutralization: cells embed
+  // attacker-influenced data (ZIP file names, CSR parse errors), and a cell that
+  // begins with =,+,-,@ executes as a formula in Excel/Sheets even when quoted.
+  // Prefix those with an apostrophe so they render as literal text.
+  const esc = (v: string) => {
+    const safe = /^[=+\-@]/.test(v) ? `'${v}` : v;
+    // Global regex replace (equivalent to replaceAll; replaceAll needs es2021,
+    // which is newer than this project's tsconfig lib target).
+    return `"${safe.replace(/"/g, '""')}"`;
+  };
   const rows = [
     `Bulk Identifier,${esc(bulkIdentifier)}`,
     "",
