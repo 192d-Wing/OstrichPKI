@@ -693,6 +693,18 @@ These gaps should be addressed after critical gaps are resolved.
 - Configuration changes not restricted by role
 - No validation of configuration changes
 
+**NPE Portal Update (2026-06-29):**
+
+- ✅ Portal certificate inventory and FQDN history reads are owner-scoped for
+  PKI Sponsor / NPE Administrator self-service users at the SQL repository layer
+  (`crates/ostrich-db/src/repository/{certificate,fqdn}.rs`), with global access
+  retained only for approver/operator roles.
+- ✅ EST enrollment-token list/revoke is scoped to `created_by` for NPE sponsors
+  (`crates/ostrich-est/src/rest.rs`, `crates/ostrich-db/src/repository/est.rs`).
+- ✅ NPE portal `/auth/userinfo` and `/auth/consent` re-check the mTLS
+  certificate fingerprint before disclosing session identity or mutating consent
+  state (`services/npe-portal/src/server/router.rs`).
+
 **Required Capabilities:**
 
 ```rust

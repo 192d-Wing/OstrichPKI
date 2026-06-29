@@ -34,9 +34,8 @@ use axum::{
 use base64::{Engine, prelude::BASE64_STANDARD};
 use ostrich_common::auth::provider::AuthProvider;
 use ostrich_common::auth::{
-    AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy, TrustedProxyAuthLayer,
-    any_role_has_permission,
-    TrustedProxyConfig,
+    AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy, Role, TrustedProxyAuthLayer,
+    TrustedProxyConfig, any_role_has_permission,
 };
 use ostrich_common::types::DistinguishedName;
 use ostrich_db::DatabasePool;
@@ -262,7 +261,7 @@ pub fn create_router(
         )
         .route(
             "/api/v1/approvals/{id}/reject",
-            post(reject_request).route_layer(authz(Permission::ApproveRequest)),
+            post(reject_request).route_layer(authz(Permission::RejectRequest)),
         )
         // Bulk enrollment (Administrator "Submit Bulk"): upload a ZIP of CSRs.
         // The explicit body limit bounds the buffered multipart upload (the
@@ -562,6 +561,20 @@ struct ListCertificatesQuery {
     order: Option<String>,
 }
 
+/// NPE sponsors are self-service requesters: they can view and manage only
+/// certificate/token records they created. Approver roles retain global queue
+/// and inventory visibility for review duties.
+fn is_npe_self_service(user: &ostrich_common::auth::AuthenticatedUser) -> bool {
+    user.roles
+        .iter()
+        .any(|r| matches!(r, Role::PkiSponsor | Role::PkiSponsorAdmin))
+        && !any_role_has_permission(&user.roles, Permission::ApproveRequest)
+}
+
+fn certificate_requestor_scope(user: &ostrich_common::auth::AuthenticatedUser) -> Option<&str> {
+    is_npe_self_service(user).then_some(user.username.as_str())
+}
+
 /// One row in the certificate inventory listing.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -852,6 +865,7 @@ async fn list_certificates(
         .list_filtered(
             &status,
             search.as_deref(),
+            certificate_requestor_scope(&user),
             query.sort.as_deref(),
             descending,
             i64::from(page_size),
@@ -894,7 +908,9 @@ async fn certificate_stats(
     AuthUser(user): AuthUser,
 ) -> Result<Json<CertificateStatsDto>> {
     let repo = CertificateRepository::new(state.db_pool.clone());
-    let counts = repo.count_by_status().await?;
+    let counts = repo
+        .count_by_status(certificate_requestor_scope(&user))
+        .await?;
 
     tracing::info!(
         actor = %user.username,
@@ -934,7 +950,12 @@ async fn list_fqdns(
         .map(str::to_lowercase);
 
     let (rows, total) = repo
-        .list_fqdns(search.as_deref(), i64::from(page_size), offset)
+        .list_fqdns(
+            search.as_deref(),
+            certificate_requestor_scope(&user),
+            i64::from(page_size),
+            offset,
+        )
         .await?;
     let fqdns = rows
         .into_iter()
@@ -971,7 +992,15 @@ async fn get_fqdn_record(
     let now = chrono::Utc::now();
 
     // Certs are newest-first; the oldest (history start) is last in the vec.
-    let certs = repo.certs_for_fqdn(&fqdn).await?;
+    let scope = certificate_requestor_scope(&user);
+    let certs = repo.certs_for_fqdn_scoped(&fqdn, scope).await?;
+    // Own-scope (AC-3): a self-service sponsor who owns no certificate for this
+    // FQDN must not learn it exists or see its renewal-notification contact.
+    // Return 404 before reading any unscoped per-FQDN data. (An approver/admin is
+    // unscoped — `scope` is None — and still gets the full global record.)
+    if scope.is_some() && certs.is_empty() {
+        return Err(Error::NotFound(format!("no record for '{fqdn}'")));
+    }
     let newest = certs.first();
     let oldest = certs.last();
 
@@ -1038,7 +1067,9 @@ async fn get_fqdn_est_tokens(
     let repo = EstRepository::new(state.db_pool.clone());
     let now = chrono::Utc::now();
 
-    let rows = repo.list_enrollment_tokens_for_identity(&fqdn, 200).await?;
+    let rows = repo
+        .list_enrollment_tokens_for_identity(&fqdn, certificate_requestor_scope(&user), 200)
+        .await?;
     let tokens = rows
         .into_iter()
         .map(|t| {
@@ -1271,6 +1302,13 @@ async fn get_certificate(
         Some(cert) => cert,
         None => return Ok((StatusCode::NOT_FOUND, "certificate not found").into_response()),
     };
+    if let Some(requestor) = certificate_requestor_scope(&user)
+        && cert.requestor.as_deref() != Some(requestor)
+    {
+        return Err(Error::InsufficientRole {
+            required: "certificate ownership or global certificate-view permission".to_string(),
+        });
+    }
 
     let now = chrono::Utc::now();
     // Rich X.509 detail (key alg/size, fingerprints, EKU, AKI/SKI, extension

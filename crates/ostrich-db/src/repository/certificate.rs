@@ -209,7 +209,10 @@ impl CertificateRepository {
     ///
     /// Inventory-wide (independent of any list filter/pagination), so the UI can
     /// show true totals while the table shows a filtered subset.
-    pub async fn count_by_status(&self) -> Result<CertificateStatusCounts> {
+    pub async fn count_by_status(
+        &self,
+        requestor: Option<&str>,
+    ) -> Result<CertificateStatusCounts> {
         let row = sqlx::query(
             r#"
             SELECT
@@ -223,8 +226,10 @@ impl CertificateRepository {
                     WHERE NOT revoked AND not_after >= NOW() AND not_before > NOW()
                 ) AS pending
             FROM certificates
+            WHERE ($1::text IS NULL OR requestor = $1)
             "#,
         )
+        .bind(requestor)
         .fetch_one(self.pool.pool())
         .await
         .map_err(|e| Error::Query(e.to_string()))?;
@@ -255,10 +260,15 @@ impl CertificateRepository {
     /// - `descending`: direction for a recognized `sort` (ignored by the default).
     ///
     /// Returns `(page rows, total matching count)`.
+    // Independent query parameters (status/search/requestor scope/sort/paging);
+    // a struct would not read more clearly than the named args. Consistent with
+    // the other repository query methods.
+    #[allow(clippy::too_many_arguments)]
     pub async fn list_filtered(
         &self,
         status: &str,
         search: Option<&str>,
+        requestor: Option<&str>,
         sort: Option<&str>,
         descending: bool,
         limit: i64,
@@ -279,6 +289,7 @@ impl CertificateRepository {
                 OR POSITION(LOWER($2) IN LOWER(subject_dn)) > 0
                 OR POSITION(LOWER($2) IN encode(serial_number, 'hex')) > 0
             )
+            AND ($3::text IS NULL OR requestor = $3)
         "#;
 
         // SI-10: the ORDER BY is built only from a closed whitelist (column from a
@@ -296,10 +307,11 @@ impl CertificateRepository {
         // SI-10: PREDICATE is a fixed fragment with $N placeholders; status/search
         // are bound, not interpolated. AssertSqlSafe (sqlx 0.9) marks it audited.
         let rows = sqlx::query_as::<_, Certificate>(sqlx::AssertSqlSafe(format!(
-            "SELECT * FROM certificates WHERE {PREDICATE} ORDER BY {order_by}, id LIMIT $3 OFFSET $4"
+            "SELECT * FROM certificates WHERE {PREDICATE} ORDER BY {order_by}, id LIMIT $4 OFFSET $5"
         )))
         .bind(status)
         .bind(search)
+        .bind(requestor)
         .bind(limit)
         .bind(offset)
         .fetch_all(self.pool.pool())
@@ -311,6 +323,7 @@ impl CertificateRepository {
         )))
         .bind(status)
         .bind(search)
+        .bind(requestor)
         .fetch_one(self.pool.pool())
         .await
         .map_err(|e| Error::Query(e.to_string()))?;

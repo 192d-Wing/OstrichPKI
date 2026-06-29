@@ -1824,6 +1824,12 @@ adds a self-service enrollment portal authenticated by mTLS client certificate.
   `bulk_approval_status`). The approval engine's segregation-of-duties check
   (`ApprovalRequest::can_approve`, used by both approve and reject) likewise gates
   on the `ApproveRequest` permission, so the REST and engine layers agree.
+  Sponsor self-service inventory views are explicitly scoped to the authenticated
+  requestor: certificate list/detail/stats, FQDN history, and EST token metadata
+  use repository-level owner predicates (`crates/ostrich-ca/src/rest.rs`,
+  `crates/ostrich-db/src/repository/{certificate,fqdn,est}.rs`). Token list and
+  revoke in EST are likewise scoped to `created_by` for NPE sponsors while legacy
+  CA operator/admin token managers retain global visibility (`crates/ostrich-est/src/rest.rs`).
 - **AC-3 / AU-2 (Override of validation):** approving despite validation advisories
   (`POST /api/v1/approvals/{id}/approve?override=true`) requires the distinct
   `OverrideValidation` permission on top of `ApproveRequest`; the override is
@@ -1845,7 +1851,9 @@ adds a self-service enrollment portal authenticated by mTLS client certificate.
   refreshed only on genuine API activity, not passive session probes —
   `services/npe-portal/src/server/session.rs`.
 - **SC-23 (Session Authenticity):** sessions are bound to the SHA-256 fingerprint
-  of the authenticating certificate and re-verified on every request.
+  of the authenticating certificate and re-verified on every API and authenticated
+  session endpoint (`/auth/userinfo`, `/auth/consent`), so a copied cookie cannot
+  read session metadata or acknowledge consent without the same client certificate.
 - **SC-8 (Transmission Confidentiality):** TLS 1.3 / mTLS via `ostrich_common::tls`.
 - **AU-2 / AU-3 / AU-12 (Audit):** login success/failure, USG consent, and logout
   emit structured `EventType::Authentication` records with actor/outcome/IP/

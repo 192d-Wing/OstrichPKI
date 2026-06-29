@@ -47,6 +47,7 @@ impl FqdnRepository {
     pub async fn list_fqdns(
         &self,
         search: Option<&str>,
+        requestor: Option<&str>,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<FqdnSummary>, i64)> {
@@ -59,12 +60,14 @@ impl FqdnRepository {
             FROM certificate_sans s
             JOIN certificates c ON c.id = s.certificate_id
             WHERE ($1::text IS NULL OR POSITION(LOWER($1) IN s.name) > 0)
+              AND ($2::text IS NULL OR c.requestor = $2)
             GROUP BY s.name
             ORDER BY s.name
-            LIMIT $2 OFFSET $3
+            LIMIT $3 OFFSET $4
             "#,
         )
         .bind(search)
+        .bind(requestor)
         .bind(limit)
         .bind(offset)
         .fetch_all(self.pool.pool())
@@ -75,10 +78,13 @@ impl FqdnRepository {
             r#"
             SELECT COUNT(DISTINCT s.name)
             FROM certificate_sans s
+            JOIN certificates c ON c.id = s.certificate_id
             WHERE ($1::text IS NULL OR POSITION(LOWER($1) IN s.name) > 0)
+              AND ($2::text IS NULL OR c.requestor = $2)
             "#,
         )
         .bind(search)
+        .bind(requestor)
         .fetch_one(self.pool.pool())
         .await
         .map_err(|e| Error::Query(e.to_string()))?;
@@ -90,16 +96,27 @@ impl FqdnRepository {
     /// newest first. `fqdn` is matched case-insensitively (the index stores
     /// lowercased names, so the caller should lowercase too).
     pub async fn certs_for_fqdn(&self, fqdn: &str) -> Result<Vec<Certificate>> {
+        self.certs_for_fqdn_scoped(fqdn, None).await
+    }
+
+    /// All certificates that cover `fqdn`, optionally limited to one requestor.
+    pub async fn certs_for_fqdn_scoped(
+        &self,
+        fqdn: &str,
+        requestor: Option<&str>,
+    ) -> Result<Vec<Certificate>> {
         let certs = sqlx::query_as::<_, Certificate>(
             r#"
             SELECT c.*
             FROM certificates c
             JOIN certificate_sans s ON s.certificate_id = c.id
             WHERE s.name = $1
+              AND ($2::text IS NULL OR c.requestor = $2)
             ORDER BY c.created_at DESC
             "#,
         )
         .bind(fqdn)
+        .bind(requestor)
         .fetch_all(self.pool.pool())
         .await
         .map_err(|e| Error::Query(e.to_string()))?;

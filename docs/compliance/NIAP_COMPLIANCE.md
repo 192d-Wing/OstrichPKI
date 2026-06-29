@@ -2243,7 +2243,9 @@ The `ostrich-npe-portal` service maps to the following SFRs:
   authentication audit records (login/consent/logout) with user-identity
   association — `services/npe-portal/src/server/audit.rs`.
 - **FMT_SMF.1 (Management Functions):** USG consent acknowledgement and session
-  lifecycle management — `services/npe-portal/src/server/router.rs`.
+  lifecycle management — `services/npe-portal/src/server/router.rs`. Consent and
+  userinfo endpoints re-check the session's certificate fingerprint before
+  returning identity data or mutating consent state.
 
 The portal also drives these CA/EST capabilities (gated by the proxy allowlist
 and per-route RBAC):
@@ -2254,6 +2256,12 @@ and per-route RBAC):
   (requestor ≠ approver enforced); approving despite validation advisories
   additionally requires `OverrideValidation` and is recorded on the decision —
   `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-ca/src/approval.rs`.
+- **FMT_MTD.1 / FDP_ACC.1 (TSF Data / Access Control):** PKI Sponsor and NPE
+  Administrator self-service reads are owner-scoped at the repository layer for
+  certificate inventory/detail/stats, FQDN history, and EST token metadata; EST
+  token list/revoke is scoped to tokens created by the same NPE sponsor unless a
+  legacy global token-management role is present — `crates/ostrich-ca/src/rest.rs`,
+  `crates/ostrich-est/src/rest.rs`, `crates/ostrich-db/src/repository/{certificate,fqdn,est}.rs`.
 - **FMT_SMR.2 / FMT_MTD.1 (Role Management):** CAA user management
   (create/list/assign-roles/status/delete) with a self-action block (a CAA cannot
   modify/disable/delete their own account — AC-5 separation of duties) and a
