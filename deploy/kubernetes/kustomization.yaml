@@ -37,6 +37,7 @@ resources:
   - npe-portal-configmap.yaml
   - npe-portal-deployment.yaml
   - npe-portal-service.yaml
+  - npe-portal-ingressroute.yaml
 
 labels:
   - pairs:
