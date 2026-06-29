@@ -93,11 +93,7 @@ async fn proxy_to_service(
     // client-supplied X-Npe-* identity headers — the latter MUST be stripped so
     // a caller cannot spoof the identity we attach below.
     for (key, value) in parts.headers.iter() {
-        let name = key.as_str();
-        if is_hop_by_hop_header(name)
-            || name.eq_ignore_ascii_case("authorization")
-            || name.to_ascii_lowercase().starts_with("x-npe-")
-        {
+        if is_stripped_inbound_header(key.as_str()) {
             continue;
         }
         proxy_request = proxy_request.header(key, value);
@@ -159,6 +155,18 @@ fn is_hop_by_hop_header(name: &str) -> bool {
     )
 }
 
+/// Whether an inbound (client-supplied) header must be dropped before forwarding
+/// to the backend. This is the portal's anti-spoofing boundary: hop-by-hop
+/// headers, any client `Authorization` (the portal is the sole authority for the
+/// upstream credential), and ALL `X-Npe-*` identity headers are stripped — the
+/// proxy re-attaches the authenticated `X-Npe-*` identity itself, so a client can
+/// never forge its identity or role by sending those headers (NIST 800-53 AC-3).
+fn is_stripped_inbound_header(name: &str) -> bool {
+    is_hop_by_hop_header(name)
+        || name.eq_ignore_ascii_case("authorization")
+        || name.to_ascii_lowercase().starts_with("x-npe-")
+}
+
 fn error_response(status: StatusCode, error: &str, message: &str) -> Response {
     let body = serde_json::to_string(&json!({ "error": error, "message": message }))
         .unwrap_or_else(|_| r#"{"error":"internal_error"}"#.to_string());
@@ -178,5 +186,31 @@ mod tests {
         assert!(is_hop_by_hop_header("Connection"));
         assert!(is_hop_by_hop_header("Host"));
         assert!(!is_hop_by_hop_header("Content-Type"));
+    }
+
+    /// Anti-spoofing boundary: a client must not be able to forge its identity or
+    /// role by sending X-Npe-* / Authorization headers — they are stripped before
+    /// the proxy forwards (and re-attaches the authenticated identity). Legitimate
+    /// content headers pass through.
+    #[test]
+    fn inbound_identity_headers_are_stripped() {
+        // Stripped regardless of case.
+        for h in [
+            "X-Npe-User",
+            "x-npe-user",
+            "X-Npe-Roles",
+            "X-Npe-Subject",
+            "X-Npe-Session",
+            "Authorization",
+            "authorization",
+            "Connection",
+            "Host",
+        ] {
+            assert!(is_stripped_inbound_header(h), "{h} must be stripped");
+        }
+        // Forwarded.
+        for h in ["Content-Type", "Accept", "Content-Length", "X-Request-Id"] {
+            assert!(!is_stripped_inbound_header(h), "{h} must pass through");
+        }
     }
 }
