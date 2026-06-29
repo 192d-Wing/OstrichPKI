@@ -991,6 +991,7 @@ allowed_pqc_algorithms = [
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-01-03 | OstrichPKI Team | Initial FIPS compliance assessment based on v0.10.0 codebase |
+| 1.3 | 2026-06-29 | OstrichPKI Team | NPE portal vulnerability fixes reviewed for FIPS impact: access-control/session-binding changes only; no cryptographic algorithm, key-generation, signature, KEM, DRBG, or module-boundary changes. |
 
 ---
 

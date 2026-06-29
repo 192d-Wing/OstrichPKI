@@ -133,6 +133,19 @@ fn userinfo_json(session: &SessionData) -> serde_json::Value {
     })
 }
 
+fn presented_fingerprint(peer_cert: Option<&Extension<PeerCertificate>>) -> Option<String> {
+    peer_cert
+        .and_then(|Extension(p)| p.0.as_deref())
+        .map(oid::fingerprint)
+}
+
+fn session_matches_presented_cert(
+    session: &SessionData,
+    peer_cert: Option<&Extension<PeerCertificate>>,
+) -> bool {
+    presented_fingerprint(peer_cert).as_deref() == Some(session.cert_fingerprint.as_str())
+}
+
 /// mTLS login: resolve the verified client certificate's OIDs to an NPE role,
 /// mint a session (consent pending), and set the session cookie. If the caller
 /// already holds a live session, return it instead of re-minting.
@@ -194,7 +207,12 @@ async fn login(
 }
 
 /// Acknowledge the USG consent banner for the current session.
-async fn consent(State(state): State<AppState>, headers: HeaderMap, jar: CookieJar) -> Response {
+async fn consent(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    peer_cert: Option<Extension<PeerCertificate>>,
+) -> Response {
     let token = match jar.get(&state.config.session.cookie_name) {
         Some(c) if !c.value().is_empty() => c.value().to_string(),
         _ => {
@@ -205,12 +223,30 @@ async fn consent(State(state): State<AppState>, headers: HeaderMap, jar: CookieJ
                 .into_response();
         }
     };
+    let current = match state.session_manager.validate_session(&token, false).await {
+        Some(session) if session_matches_presented_cert(&session, peer_cert.as_ref()) => session,
+        Some(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "certificate_mismatch" })),
+            )
+                .into_response();
+        }
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "invalid_session" })),
+            )
+                .into_response();
+        }
+    };
+
     match state.session_manager.accept_consent(&token).await {
         Some(session) => {
             audit::consent_accepted(
-                &session.common_name,
+                &current.common_name,
                 client_ip(&headers).as_deref(),
-                &session.id,
+                &current.id,
             );
             Json(userinfo_json(&session)).into_response()
         }
@@ -224,7 +260,11 @@ async fn consent(State(state): State<AppState>, headers: HeaderMap, jar: CookieJ
 
 /// Return the current session's identity, or 401 if there is none. This is a
 /// passive probe (no inactivity refresh).
-async fn userinfo(State(state): State<AppState>, jar: CookieJar) -> Response {
+async fn userinfo(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    peer_cert: Option<Extension<PeerCertificate>>,
+) -> Response {
     let token = match jar.get(&state.config.session.cookie_name) {
         Some(c) if !c.value().is_empty() => c.value().to_string(),
         _ => {
@@ -239,6 +279,11 @@ async fn userinfo(State(state): State<AppState>, jar: CookieJar) -> Response {
         Some(session) if session.locked => (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "session_locked" })),
+        )
+            .into_response(),
+        Some(session) if !session_matches_presented_cert(&session, peer_cert.as_ref()) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "certificate_mismatch" })),
         )
             .into_response(),
         Some(session) => Json(userinfo_json(&session)).into_response(),

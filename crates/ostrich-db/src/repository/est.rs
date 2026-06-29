@@ -404,16 +404,22 @@ impl EstRepository {
     /// List recently minted enrollment tokens (most recent first), for operator
     /// review. Never returns the token itself (only its hash is stored); callers
     /// derive a status from `used_at`/`used_by_cert`/`expires_at`.
-    pub async fn list_enrollment_tokens(&self, limit: i64) -> Result<Vec<EstEnrollmentTokenRow>> {
+    pub async fn list_enrollment_tokens(
+        &self,
+        created_by: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<EstEnrollmentTokenRow>> {
         let rows = sqlx::query_as::<_, EstEnrollmentTokenRow>(
             r#"
             SELECT id, identity, created_by, created_at, expires_at, used_at, used_by_cert,
                    max_uses, uses_remaining, revoked_at
             FROM est_enrollment_tokens
+            WHERE ($1::text IS NULL OR created_by = $1)
             ORDER BY created_at DESC
-            LIMIT $1
+            LIMIT $2
             "#,
         )
+        .bind(created_by)
         .bind(limit)
         .fetch_all(self.pool.pool())
         .await?;
@@ -428,6 +434,7 @@ impl EstRepository {
     pub async fn list_enrollment_tokens_for_identity(
         &self,
         identity: &str,
+        created_by: Option<&str>,
         limit: i64,
     ) -> Result<Vec<EstEnrollmentTokenRow>> {
         let rows = sqlx::query_as::<_, EstEnrollmentTokenRow>(
@@ -436,11 +443,13 @@ impl EstRepository {
                    max_uses, uses_remaining, revoked_at
             FROM est_enrollment_tokens
             WHERE LOWER(identity) = $1
+              AND ($2::text IS NULL OR created_by = $2)
             ORDER BY created_at DESC
-            LIMIT $2
+            LIMIT $3
             "#,
         )
         .bind(identity)
+        .bind(created_by)
         .bind(limit)
         .fetch_all(self.pool.pool())
         .await?;
@@ -452,15 +461,21 @@ impl EstRepository {
     /// with no associated certificate (so it derives as "revoked", distinct from
     /// "used"). Returns `true` only if a live token was actually revoked.
     /// NIST 800-53: IA-5 (authenticator revocation), AU-3 (accurate outcome).
-    pub async fn revoke_enrollment_token(&self, id: Uuid) -> Result<bool> {
+    pub async fn revoke_enrollment_token(
+        &self,
+        id: Uuid,
+        created_by: Option<&str>,
+    ) -> Result<bool> {
         let result = sqlx::query(
             r#"
             UPDATE est_enrollment_tokens
             SET uses_remaining = 0, revoked_at = now()
             WHERE id = $1 AND uses_remaining > 0 AND expires_at > now()
+              AND ($2::text IS NULL OR created_by = $2)
             "#,
         )
         .bind(id)
+        .bind(created_by)
         .execute(self.pool.pool())
         .await?;
 

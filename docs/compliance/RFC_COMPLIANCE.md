@@ -852,6 +852,12 @@ identity, and the token is consumed on first successful issuance (single-use).
 Only the token's SHA-256 is stored. See `crates/ostrich-est/src/enrollment_token.rs`
 and `migrations/00013_est_enrollment_tokens.sql`.
 
+Token-management metadata endpoints (`GET/DELETE /api/v1/est/enrollment-tokens`)
+are outside RFC 7030 but support the bootstrap extension operationally. NPE
+Sponsor callers are scoped to tokens they created (`created_by`), while legacy CA
+operator/admin token managers retain global review/revocation. This preserves the
+RFC enrollment behavior while enforcing AC-3/AC-6 on the management API.
+
 **Certificate-profile selection (§4.2):** when minting a token the operator may
 pin the issuance profile the enrolled certificate is cut under, chosen from an
 allowlist (`OFFERABLE_EST_PROFILES` = `tls_client`, `tls_server`,

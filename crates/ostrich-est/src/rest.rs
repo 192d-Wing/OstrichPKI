@@ -56,7 +56,9 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use ostrich_audit::AuditSink;
 use ostrich_common::auth::provider::AuthProvider;
-use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy};
+use ostrich_common::auth::{
+    AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy, Role, any_role_has_permission,
+};
 use ostrich_crypto::CryptoProvider;
 use ostrich_db::DatabasePool;
 use std::sync::Arc;
@@ -2347,6 +2349,24 @@ async fn authorize_token_mgmt(
     Ok(())
 }
 
+/// NPE sponsor token management is self-service; anyone with global oversight
+/// keeps the full view. "Global oversight" mirrors the CA's own-scope rule
+/// (`is_npe_self_service`) — a legacy operator/admin role OR any approver role
+/// (`ApproveRequest`) — so the two services never disagree on who is scoped.
+fn enrollment_token_owner_scope(user: &ostrich_common::auth::AuthenticatedUser) -> Option<&str> {
+    let is_npe_sponsor = user
+        .roles
+        .iter()
+        .any(|r| matches!(r, Role::PkiSponsor | Role::PkiSponsorAdmin));
+    let has_global_oversight = user
+        .roles
+        .iter()
+        .any(|r| matches!(r, Role::Administrator | Role::OperationsStaff))
+        || any_role_has_permission(&user.roles, Permission::ApproveRequest);
+
+    (is_npe_sponsor && !has_global_oversight).then_some(user.username.as_str())
+}
+
 /// List recently minted enrollment tokens (operator review).
 ///
 /// `GET /api/v1/est/enrollment-tokens` — requires `Permission::GenerateEstToken`.
@@ -2360,7 +2380,7 @@ async fn list_enrollment_tokens(
 
     let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
     let rows = repo
-        .list_enrollment_tokens(200)
+        .list_enrollment_tokens(enrollment_token_owner_scope(&user), 200)
         .await
         .map_err(|e| Error::Internal(format!("Failed to list enrollment tokens: {e}")))?;
 
@@ -2416,7 +2436,7 @@ async fn revoke_enrollment_token(
 
     let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
     let revoked = repo
-        .revoke_enrollment_token(token_id)
+        .revoke_enrollment_token(token_id, enrollment_token_owner_scope(&user))
         .await
         .map_err(|e| Error::Internal(format!("Failed to revoke enrollment token: {e}")))?;
 
