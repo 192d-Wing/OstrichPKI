@@ -1,0 +1,22 @@
+# Persistent cert cache for the NPE portal's ACME-issued server certificate.
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SC-12 (key/cert persisted across restarts), SC-28 (the portal
+#   writes the cert+key here as a single 0600 PEM bundle), CP-9 (survives pod
+#   reschedule so the portal reuses a still-valid cert instead of re-enrolling)
+#
+# ReadWriteOnce is sufficient because the ACME overlay runs a single replica
+# (see README — HTTP-01 challenge locality). The cache is small: one cert+key.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: npe-portal-acme-cache
+  namespace: ostrich-pki
+  labels:
+    app: npe-portal
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi
