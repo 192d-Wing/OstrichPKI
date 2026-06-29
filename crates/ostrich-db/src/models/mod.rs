@@ -13,6 +13,7 @@ pub mod est;
 pub mod kra;
 pub mod namespace;
 pub mod scms;
+pub mod system_config;
 
 pub use acme::{AcmeAccount, AcmeAuthorization, AcmeChallenge, AcmeNonce, AcmeOrder};
 pub use approval::{ApprovalDecisionRecord, ApprovalRequestRecord};
@@ -24,4 +25,5 @@ pub use crl::Crl;
 pub use est::{EstClient, EstEnrollment};
 pub use kra::{EscrowedKey, RecoveryAgent, RecoveryRequest, RecoveryShare};
 pub use namespace::NamespaceRecord;
+pub use system_config::SystemConfigRecord;
 pub use scms::{Token, TokenEvent, TokenKey, TokenModel};
