@@ -34,7 +34,7 @@ data:
         "adminOid": "2.16.840.1.101.2.1.11.43",
         "raOids": ["2.16.840.1.101.2.1.11.44"],
         "caaOids": ["2.16.840.1.101.2.1.11.45"],
-        "allowedIssuers": ["CN=OstrichPKI NPE Issuing CA,O=U.S. Government,C=US"]
+        "allowedIssuers": ["CN=OstrichPKI NPE Operator CA, O=U.S. Government, OU=NPE, C=US"]
       },
       "classificationBanner": "UNCLASSIFIED//FOUO",
       "cspNonceLength": 16,
