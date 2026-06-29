@@ -9,14 +9,14 @@ importers:
   .:
     dependencies:
       '@cloudscape-design/components':
-        specifier: ^3.0.0
-        version: 3.0.1316(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+        specifier: ^3.0.1320
+        version: 3.0.1320(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@cloudscape-design/global-styles':
         specifier: ^1.0.0
         version: 1.0.61
       '@tanstack/react-query':
-        specifier: ^5.51.23
-        version: 5.101.1(react@18.3.1)
+        specifier: ^5.101.2
+        version: 5.101.2(react@18.3.1)
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -46,8 +46,8 @@ importers:
         specifier: ^5.1.0-rc.0
         version: 5.2.0(eslint@9.39.4(jiti@1.21.7))
       eslint-plugin-react-refresh:
-        specifier: ^0.4.9
-        version: 0.4.26(eslint@9.39.4(jiti@1.21.7))
+        specifier: ^0.5.3
+        version: 0.5.3(eslint@9.39.4(jiti@1.21.7))
       globals:
         specifier: ^15.9.0
         version: 15.15.0
@@ -155,13 +155,13 @@ packages:
     peerDependencies:
       react: '>=16.8.0'
 
-  '@cloudscape-design/component-toolkit@1.0.0-beta.167':
-    resolution: {integrity: sha512-PdIdHsG47tkQ5Q/hO1SUQW61B2iKLifepxf9rLeNGzRltTIQrXBger9B6VpkiSPWUmI5532xGFyaCcdyaK5pHA==}
+  '@cloudscape-design/component-toolkit@1.0.0-beta.168':
+    resolution: {integrity: sha512-NiAPvBEYrwH4uRXp2EN/6pgYWkl9+blpZTO7jBj6q4qqjuMyAe45zSgQKyjPcwWmxdwJhUq2cx3Mx7hCc28xHw==}
     peerDependencies:
       react: '>=16.8.0'
 
-  '@cloudscape-design/components@3.0.1316':
-    resolution: {integrity: sha512-vXT4WmhI9JoVQ8TePimCjxdRsrZMHAsCfcYs5OKGbfguihozjTBefx+PmKj2RaqAuL20FYfTuQt3nlFc5M+0gA==}
+  '@cloudscape-design/components@3.0.1320':
+    resolution: {integrity: sha512-qD2QxyWarAJLGj7R4wZLBknKyrkZ/UfKjVe8bYyF0mz4w8rtGCnoLPWME5RK1DtY/QUktTkFNJhFjaVY6UQMOw==}
     peerDependencies:
       react: '>=16.8.0'
 
@@ -171,8 +171,8 @@ packages:
   '@cloudscape-design/test-utils-core@1.0.84':
     resolution: {integrity: sha512-Fm4hB9JPBpClyLt7D8ur8fofrv7rRVefuqsNJGMTS+5crs7yw8mdFio9WpiZobnlh59tRpzyTc6dAkVkcYYebg==}
 
-  '@cloudscape-design/theming-runtime@1.0.115':
-    resolution: {integrity: sha512-TbuEwXXp+73+L2q604eGDZLrzqIE4bC0KWnoQ1hqzMsifKABKWqCGRYJTJBXa66WdPgsepM5V2icM5yDi7QNwA==}
+  '@cloudscape-design/theming-runtime@1.0.116':
+    resolution: {integrity: sha512-IO7unp0usT0+/8QWanMydMIw1t6H7sWiWHCLf26xvrUDvccYEtQVspm+1pvV1RRQWX/is6VV/jy5Jwoagcor0w==}
 
   '@dnd-kit/accessibility@3.1.1':
     resolution: {integrity: sha512-2P+YgaXF+gRsIihwwY1gCsQSYnu9Zyj2py8kY5fFvUM1qm2WA2u639R6YNVfU4GWr+ZM5mqEsfHZZLoRONbemw==}
@@ -558,11 +558,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@tanstack/query-core@5.101.1':
-    resolution: {integrity: sha512-Y6Y92dkXtNqx67m2pMSxUsA3zOCwv862JexZRP8/EPwvKXMPu9m8rv43spiXWzOUIggQ3SQApttALStzhA8B4g==}
+  '@tanstack/query-core@5.101.2':
+    resolution: {integrity: sha512-hH5MLoJhF7KaIGd7q3xTXGXvslI+GYlM1Z/35aSHHWaCJWB7XvTSHYuV3eM7tw+aE0mT/xMro4M4Q9rCGHT0lw==}
 
-  '@tanstack/react-query@5.101.1':
-    resolution: {integrity: sha512-ZnONUuQKJe1bJMStXUL1s5uKN9FcfC28j5cK+iDZcdSHtUv1wtin1cGc/Oewhf2Oc4eKY7lggtpvT/AbMmhHew==}
+  '@tanstack/react-query@5.101.2':
+    resolution: {integrity: sha512-seDkr6kzGzX1okaaTtZPtgA688CDPlXUz1C6xSg0ESqn04Vuc8tlrYms1s3de+znBqhPVxFRfpAfUf+6XvfPWg==}
     peerDependencies:
       react: ^18 || ^19
 
@@ -803,10 +803,10 @@ packages:
     peerDependencies:
       eslint: ^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0-0 || ^9.0.0
 
-  eslint-plugin-react-refresh@0.4.26:
-    resolution: {integrity: sha512-1RETEylht2O6FM/MvgnyvT+8K21wLqDNg4qD51Zj3guhjt433XbnnkVttHMyaVyAFD03QSV4LPS5iE3VQmO7XQ==}
+  eslint-plugin-react-refresh@0.5.3:
+    resolution: {integrity: sha512-5EMmLCV98Pi4o/f/3DP/v/tNqLHMIc9I8LKClNDWhZ9JTho89/kQcitCXQBMG7sAfVRK0Ie3T2EDOzp1YXYiVA==}
     peerDependencies:
-      eslint: '>=8.40'
+      eslint: ^9 || ^10
 
   eslint-scope@8.4.0:
     resolution: {integrity: sha512-sNXOfKCn74rt8RICKMvJS7XKV/Xk9kA7DyJr8mJik3S7Cwgy3qlkkmyS2uQB3jiJg6VNdZd/pDBJu0nvG2NlTg==}
@@ -1360,21 +1360,21 @@ snapshots:
 
   '@cloudscape-design/collection-hooks@1.0.99(react@18.3.1)':
     dependencies:
-      '@cloudscape-design/component-toolkit': 1.0.0-beta.167(react@18.3.1)
+      '@cloudscape-design/component-toolkit': 1.0.0-beta.168(react@18.3.1)
       react: 18.3.1
 
-  '@cloudscape-design/component-toolkit@1.0.0-beta.167(react@18.3.1)':
+  '@cloudscape-design/component-toolkit@1.0.0-beta.168(react@18.3.1)':
     dependencies:
       react: 18.3.1
       tslib: 2.8.1
       weekstart: 2.0.0
 
-  '@cloudscape-design/components@3.0.1316(react-dom@18.3.1(react@18.3.1))(react@18.3.1)':
+  '@cloudscape-design/components@3.0.1320(react-dom@18.3.1(react@18.3.1))(react@18.3.1)':
     dependencies:
       '@cloudscape-design/collection-hooks': 1.0.99(react@18.3.1)
-      '@cloudscape-design/component-toolkit': 1.0.0-beta.167(react@18.3.1)
+      '@cloudscape-design/component-toolkit': 1.0.0-beta.168(react@18.3.1)
       '@cloudscape-design/test-utils-core': 1.0.84
-      '@cloudscape-design/theming-runtime': 1.0.115
+      '@cloudscape-design/theming-runtime': 1.0.116
       '@dnd-kit/core': 6.3.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@dnd-kit/sortable': 7.0.2(@dnd-kit/core@6.3.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(react@18.3.1)
       '@dnd-kit/utilities': 3.2.2(react@18.3.1)
@@ -1399,7 +1399,7 @@ snapshots:
       css-selector-tokenizer: 0.8.0
       css.escape: 1.5.1
 
-  '@cloudscape-design/theming-runtime@1.0.115':
+  '@cloudscape-design/theming-runtime@1.0.116':
     dependencies:
       '@material/material-color-utilities': 0.3.0
       tslib: 2.8.1
@@ -1686,11 +1686,11 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@tanstack/query-core@5.101.1': {}
+  '@tanstack/query-core@5.101.2': {}
 
-  '@tanstack/react-query@5.101.1(react@18.3.1)':
+  '@tanstack/react-query@5.101.2(react@18.3.1)':
     dependencies:
-      '@tanstack/query-core': 5.101.1
+      '@tanstack/query-core': 5.101.2
       react: 18.3.1
 
   '@types/babel__core@7.20.5':
@@ -1973,7 +1973,7 @@ snapshots:
     dependencies:
       eslint: 9.39.4(jiti@1.21.7)
 
-  eslint-plugin-react-refresh@0.4.26(eslint@9.39.4(jiti@1.21.7)):
+  eslint-plugin-react-refresh@0.5.3(eslint@9.39.4(jiti@1.21.7)):
     dependencies:
       eslint: 9.39.4(jiti@1.21.7)
 
