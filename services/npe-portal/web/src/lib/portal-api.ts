@@ -47,12 +47,14 @@ export interface ApprovalDecisionResult {
   updated_status: string;
 }
 
+// NOTE: the CA's certificate detail DTO is serialized camelCase
+// (`#[serde(rename_all = "camelCase")]`), unlike the snake_case approval DTOs.
 export interface CertificateSummary {
-  serial_number: string;
+  serialNumber: string;
   status: string;
-  subject_dn: string;
-  valid_to: string;
-  days_remaining?: number | null;
+  subjectDn: string;
+  validTo: string;
+  daysRemaining?: number | null;
 }
 
 // RFC 5280 §5.3.1 revocation reason codes, serialized as the RevocationReason
