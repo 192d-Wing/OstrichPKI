@@ -33,6 +33,57 @@ pub struct NpePortalConfig {
     /// Static file serving configuration.
     #[serde(default)]
     pub static_files: StaticFilesConfig,
+
+    /// ACME client: when set, the portal auto-enrolls + renews its own TLS
+    /// server certificate (RFC 8555, HTTP-01) instead of using a static
+    /// `TLS_CERT_FILE`/`TLS_KEY_FILE`.
+    #[serde(default)]
+    pub acme: Option<AcmeConfig>,
+}
+
+/// ACME client configuration (RFC 8555). The portal obtains its server cert
+/// from an ACME directory using the HTTP-01 challenge.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcmeConfig {
+    /// ACME directory URL (e.g. `https://acme.oopl.dev.mil/acme/directory`).
+    pub directory_url: String,
+
+    /// Domains to request on the certificate. The first is the primary CN; all
+    /// become Subject Alternative Names. Each is validated via HTTP-01.
+    pub domains: Vec<String>,
+
+    /// Optional account contact (e.g. `mailto:pki@example.mil`).
+    #[serde(default)]
+    pub contact: Option<String>,
+
+    /// PEM bundle of CA certificate(s) to trust for the ACME directory's own
+    /// HTTPS endpoint (the OstrichPKI ACME server presents a private-CA cert, so
+    /// the public web PKI roots would reject it).
+    #[serde(default)]
+    pub ca_bundle: Option<String>,
+
+    /// Local port the HTTP-01 challenge responder listens on. The ACME server
+    /// validates by fetching `http://<domain>:<port>/.well-known/acme-challenge/`.
+    #[serde(default = "default_acme_challenge_port")]
+    pub challenge_port: u16,
+
+    /// Renew the certificate once it is within this many days of expiry.
+    #[serde(default = "default_renew_before_days")]
+    pub renew_before_days: i64,
+
+    /// Directory to cache the issued cert/key (and ACME account) across restarts.
+    /// When unset the portal re-enrolls on every start.
+    #[serde(default)]
+    pub cache_dir: Option<String>,
+}
+
+fn default_acme_challenge_port() -> u16 {
+    80
+}
+
+fn default_renew_before_days() -> i64 {
+    30
 }
 
 fn default_classification() -> String {
@@ -186,6 +237,7 @@ impl Default for NpePortalConfig {
             classification_banner: default_classification(),
             csp_nonce_length: default_nonce_length(),
             static_files: StaticFilesConfig::default(),
+            acme: None,
         }
     }
 }

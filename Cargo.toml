@@ -112,6 +112,16 @@ webpki-roots = "1.0"
 # ZIP reading for bulk certificate enrollment (Administrator "Submit Bulk").
 # Read-only + deflate is all the bulk-enroll handler needs.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# ACME client (RFC 8555) so the NPE portal auto-enrolls + renews its own TLS
+# server certificate. `fips` selects the aws-lc-rs FIPS crypto backend (matching
+# the rest of the project), `hyper-rustls` gives the default client + the
+# custom-root-CA builder (the OstrichPKI ACME server uses a private-CA cert), and
+# `rcgen` lets `Order::finalize()` generate the keypair + CSR.
+instant-acme = { version = "0.8", default-features = false, features = [
+    "fips",
+    "hyper-rustls",
+    "rcgen",
+] }
 
 # Cryptographic primitives
 ring = "0.17"
