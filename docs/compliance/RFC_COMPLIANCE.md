@@ -605,6 +605,22 @@ Key corrections in this phase:
 
 **Status:** 🟢 **Good** (85% compliant)
 
+**ACME client (NPE portal, HTTP-01):** In addition to the OstrichPKI ACME
+*server* below, the NPE portal embeds an ACME *client* (`instant-acme`, FIPS /
+aws-lc-rs backend) so it auto-enrolls and auto-renews **its own TLS server
+certificate** from an ACME directory using the HTTP-01 challenge (§8.3):
+
+- [services/npe-portal/src/server/acme.rs](../../services/npe-portal/src/server/acme.rs) -
+  account creation (§7.1.2), order + authorization handling (§7.1.3/§7.1.4),
+  HTTP-01 key-authorization responder at `/.well-known/acme-challenge/{token}`
+  (§8.1/§8.3), `finalize` + certificate download (§7.4), and a background
+  renewal loop. Served challenge tokens are removed after every order (success
+  or failure); terminal (non-pending) authorizations are not re-answered.
+- The issued cert is swapped into the live rustls listener via a dynamic
+  `ResolvesServerCert` resolver — renewal takes effect without a restart.
+- The directory's own private-CA HTTPS endpoint is trusted via a configured CA
+  bundle (`acme.caBundle`), not the public web-PKI roots.
+
 **Sections:**
 
 #### §7.1: Resources

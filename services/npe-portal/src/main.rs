@@ -90,14 +90,24 @@ async fn main() -> Result<()> {
 
     let config = NpePortalConfig::load(&args.config).await?;
 
+    // ACME mode: the portal sources its server certificate from an ACME directory
+    // (auto-enroll + auto-renew) instead of a static --tls-cert/--tls-key. The
+    // server key never touches disk-as-config; mTLS client auth is still
+    // mandatory, so a client CA bundle is required even in ACME mode.
+    let acme_cfg = config.acme.clone();
+
     // Fail closed: mTLS is the portal's only human-auth path, so the service
     // refuses to start unless full mTLS (server cert + key + client CA) is
     // configured. The OID->role mapping cannot run without a verified client
     // certificate, and serving plain HTTP would expose an unauthenticated
     // portal. The --allow-insecure flag is the only way to bypass this, for
     // local development. NIST 800-53: IA-2, AC-17, CM-6 (fail secure).
-    let mtls_ready =
-        args.tls_cert.is_some() && args.tls_key.is_some() && args.tls_client_ca.is_some();
+    let mtls_ready = if acme_cfg.is_some() {
+        // Server cert comes from ACME; client CA is still required for mTLS.
+        args.tls_client_ca.is_some()
+    } else {
+        args.tls_cert.is_some() && args.tls_key.is_some() && args.tls_client_ca.is_some()
+    };
     if !mtls_ready && !args.allow_insecure {
         anyhow::bail!(
             "refusing to start without mandatory mTLS: set --tls-cert, --tls-key, and \
@@ -116,14 +126,77 @@ async fn main() -> Result<()> {
     let addr: SocketAddr = args.listen.parse()?;
     info!(%addr, "NPE Portal server listening");
 
-    // NIST 800-53: SC-8 - serves HTTPS with mandatory client-cert verification
-    // when a client CA is configured; the verified leaf certificate is surfaced
-    // to handlers via ostrich_common::tls::PeerCertificate.
-    let tls =
-        ostrich_common::tls::TlsSettings::from_options(args.tls_cert, args.tls_key, args.tls_client_ca)?;
-    ostrich_common::tls::serve(addr, app, tls.as_ref(), shutdown_signal()).await?;
+    match acme_cfg {
+        // ACME mode: enroll + serve mTLS with an auto-renewing server certificate.
+        Some(acme) => {
+            let client_ca = args.tls_client_ca.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ACME is configured but no client CA bundle was provided; mTLS client \
+                     authentication is mandatory: set --tls-client-ca (TLS_CLIENT_CA_FILE)"
+                )
+            })?;
+            serve_with_acme(addr, app, acme, &client_ca).await?;
+        }
+        // Static mode: serve HTTPS from a fixed --tls-cert/--tls-key (or plain
+        // HTTP under --allow-insecure). NIST 800-53: SC-8.
+        None => {
+            let tls = ostrich_common::tls::TlsSettings::from_options(
+                args.tls_cert,
+                args.tls_key,
+                args.tls_client_ca,
+            )?;
+            ostrich_common::tls::serve(addr, app, tls.as_ref(), shutdown_signal()).await?;
+        }
+    }
 
     info!("NPE Portal server shutdown complete");
+    Ok(())
+}
+
+/// Serve the portal over mTLS using an ACME-issued, auto-renewing server
+/// certificate. Spawns the HTTP-01 challenge responder, blocks until the initial
+/// certificate is enrolled (so readiness is meaningful), then serves with a
+/// dynamic resolver while a background task renews ahead of expiry.
+///
+/// NIST 800-53: SC-8 (TLS 1.3), SC-12 (automated key/cert rotation), IA-2/AC-17
+/// (mandatory mTLS client authentication).
+async fn serve_with_acme(
+    addr: SocketAddr,
+    app: axum::Router,
+    acme: server::config::AcmeConfig,
+    client_ca_path: &str,
+) -> Result<()> {
+    use server::acme::{
+        AcmeCertResolver, acquire_on_startup, bind_challenge_responder, build_mtls_server_config,
+        new_challenge_store, renewal_loop, run_challenge_responder,
+    };
+
+    let resolver = std::sync::Arc::new(AcmeCertResolver::new());
+    let store = new_challenge_store();
+
+    // Bind the challenge port up front so a bind failure (port in use, or no
+    // privilege to bind :80) is fatal here rather than a silently-stalled
+    // enrollment. The responder then runs detached for the life of the process,
+    // serving HTTP-01 key authorizations for both initial enrollment and renewal.
+    let listener = bind_challenge_responder(acme.challenge_port).await?;
+    let challenge_store = store.clone();
+    tokio::spawn(async move {
+        if let Err(e) = run_challenge_responder(listener, challenge_store).await {
+            tracing::error!(error = %e, "ACME challenge responder exited");
+        }
+    });
+
+    // Block on the initial enrollment so the listener only comes up once it can
+    // present a certificate.
+    let not_after = acquire_on_startup(&acme, &store, &resolver).await?;
+
+    // Build the mTLS server config bound to the dynamic resolver, then spawn the
+    // background renewal task (swaps the cert in place — no restart).
+    let server_config = std::sync::Arc::new(build_mtls_server_config(client_ca_path, resolver.clone())?);
+    tokio::spawn(renewal_loop(acme, store, resolver, not_after));
+
+    info!(%addr, "Serving HTTPS (TLS 1.3, mTLS) with ACME-managed certificate");
+    ostrich_common::tls::serve_with_config(addr, app, server_config, shutdown_signal()).await?;
     Ok(())
 }
 
