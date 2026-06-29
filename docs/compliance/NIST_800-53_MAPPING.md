@@ -1119,6 +1119,7 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - [crates/ostrich-kra/](../../crates/ostrich-kra/) - Key Recovery Authority
 - [crates/ostrich-x509/src/pkcs12.rs](../../crates/ostrich-x509/src/pkcs12.rs) - Encrypted PKCS#12 (RFC 7292) builder for EFS key delivery: PBES2 (PBKDF2-HMAC-SHA256 + AES-256-CBC) shrouded key bag + HMAC-SHA256 MAC
 - [crates/ostrich-est/src/rest.rs](../../crates/ostrich-est/src/rest.rs) `server_key_gen` - EFS server-side keygen wraps the escrowed RSA key in a PKCS#12 protected by a CSPRNG-derived one-time password returned exactly once and never persisted (SC-12, SI-12)
+- [services/npe-portal/src/server/acme.rs](../../services/npe-portal/src/server/acme.rs) - NPE portal TLS server-certificate lifecycle is fully automated (SC-8/SC-12): the portal enrolls its own cert via ACME (RFC 8555 HTTP-01) on a FIPS/aws-lc-rs backend, caches the cert+key as a single atomic, owner-only (0600) PEM bundle, and a background task renews ahead of expiry, hot-swapping the new key/cert into the live rustls listener (`ResolvesServerCert`) with no restart and no operator action (also CP-10 self-recovery)
 
 **Evidence:**
 
