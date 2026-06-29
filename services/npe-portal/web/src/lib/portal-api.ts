@@ -47,6 +47,32 @@ export interface ApprovalDecisionResult {
   updated_status: string;
 }
 
+export interface CertificateSummary {
+  serial_number: string;
+  status: string;
+  subject_dn: string;
+  valid_to: string;
+  days_remaining?: number | null;
+}
+
+// RFC 5280 §5.3.1 revocation reason codes, serialized as the RevocationReason
+// enum variant names the CA expects.
+export const REVOCATION_REASONS = [
+  { label: "Unspecified", value: "Unspecified" },
+  { label: "Key compromise", value: "KeyCompromise" },
+  { label: "CA compromise", value: "CaCompromise" },
+  { label: "Affiliation changed", value: "AffiliationChanged" },
+  { label: "Superseded", value: "Superseded" },
+  { label: "Cessation of operation", value: "CessationOfOperation" },
+  { label: "Certificate hold", value: "CertificateHold" },
+  { label: "Privilege withdrawn", value: "PrivilegeWithdrawn" },
+] as const;
+
+export interface RevokeResult {
+  success: boolean;
+  revocation_time: string;
+}
+
 export interface SubmitApplicationResponse {
   id: string;
   request_type: string;
@@ -114,6 +140,17 @@ export const portalApi = {
   rejectApplication: (id: string, reason: string, justification: string) =>
     api.post<ApprovalDecisionResult>(
       `/ca/api/v1/approvals/${encodeURIComponent(id)}/reject`,
+      { reason, justification },
+    ),
+
+  /** Look up an issued certificate by id (for review before revoking). */
+  getCertificate: (id: string) =>
+    api.get<CertificateSummary>(`/ca/api/v1/certificates/${encodeURIComponent(id)}`),
+
+  /** Revoke an issued certificate. `reason` is an RFC 5280 reason-code name. */
+  revokeCertificate: (id: string, reason: string, justification: string) =>
+    api.post<RevokeResult>(
+      `/ca/api/v1/certificates/${encodeURIComponent(id)}/revoke`,
       { reason, justification },
     ),
 
