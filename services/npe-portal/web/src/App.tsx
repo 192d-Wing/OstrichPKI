@@ -6,7 +6,6 @@ import { ConsentModal } from "@/components/consent-modal";
 import { PortalLayout } from "@/components/portal-layout";
 import { useAuth } from "@/lib/auth-context";
 import { HomePage } from "@/pages/home";
-import { PlaceholderPage } from "@/pages/placeholder";
 import { SubmitApplicationPage } from "@/pages/submit-application";
 import { SubmitRekeyPage } from "@/pages/submit-rekey";
 import { MyApplicationsPage } from "@/pages/my-applications";
@@ -17,14 +16,10 @@ import { PasswordManagementPage } from "@/pages/password-management";
 import { ManageApplicationsPage } from "@/pages/manage-applications";
 import { RevokeCertificatesPage } from "@/pages/revoke-certificates";
 import { SubmitBulkPage } from "@/pages/submit-bulk";
+import { CaaUsersPage } from "@/pages/caa-users";
+import { CaaNamespacesPage } from "@/pages/caa-namespaces";
+import { CaaConfigPage } from "@/pages/caa-config";
 import { SearchPage } from "@/pages/search";
-
-// Routes still rendered as M-later placeholders (CAA).
-const PLACEHOLDER_ROUTES: { path: string; title: string; description: string }[] = [
-  { path: "/caa/users", title: "User Management", description: "Manage CAA/RA users and role assignments." },
-  { path: "/caa/namespaces", title: "Wildcard Management", description: "Manage certificate namespaces and wildcard policy." },
-  { path: "/caa/config", title: "System Configuration", description: "Global portal and issuance configuration." },
-];
 
 function FullPageNotice({ title, body }: Readonly<{ title: string; body: string }>) {
   return (
@@ -82,16 +77,12 @@ export default function App() {
         {/* Registration Authority */}
         <Route path="/ra/applications" element={<ManageApplicationsPage />} />
         <Route path="/ra/revoke" element={<RevokeCertificatesPage />} />
+        {/* Certificate Authority Admin (CAA) */}
+        <Route path="/caa/users" element={<CaaUsersPage />} />
+        <Route path="/caa/namespaces" element={<CaaNamespacesPage />} />
+        <Route path="/caa/config" element={<CaaConfigPage />} />
         {/* Search */}
         <Route path="/search" element={<SearchPage />} />
-        {/* Later-milestone placeholders */}
-        {PLACEHOLDER_ROUTES.map((r) => (
-          <Route
-            key={r.path}
-            path={r.path}
-            element={<PlaceholderPage title={r.title} description={r.description} />}
-          />
-        ))}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </PortalLayout>
