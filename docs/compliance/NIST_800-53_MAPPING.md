@@ -1830,6 +1830,14 @@ adds a self-service enrollment portal authenticated by mTLS client certificate.
   recorded on the decision (`metadata.validation_overridden`, annotated
   justification) and emitted as a high-signal audit log line —
   `crates/ostrich-ca/src/rest.rs` `approve_request`.
+- **AC-2 / AC-5 (Account Management / Separation of Duties):** the CAA user
+  management API (`crates/ostrich-ca/src/rest.rs` `list_users` / `create_user` /
+  `set_user_roles` / `set_user_status` / `delete_user`) is gated per-verb by the
+  `ViewUsers` / `CreateUser` / `AssignRoles` / `ModifyUser` / `DeleteUser`
+  permissions, and enforces a self-action block: a CAA may never modify, disable,
+  or delete their own account (`load_target_user_guarded`), so a privileged admin
+  cannot remove the controls on themselves. Unknown role names are rejected
+  (SI-10) rather than silently dropped.
 - **AC-8 (System Use Notification):** mandatory USG consent gate before any
   proxied API call — `services/npe-portal/src/server/{router.rs,middleware.rs}`
   and `web/src/components/consent-modal.tsx`.

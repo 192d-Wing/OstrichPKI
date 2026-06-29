@@ -12,7 +12,7 @@
 //! - NIAP PP-CA: FIA_UID.1 / FIA_UAU.1 - user identification and authentication
 //! - NIAP PP-CA: FIA_AFL.1 - failed-attempt counter with threshold lockout
 
-use crate::{DatabasePool, Result};
+use crate::{DatabasePool, Error, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use ostrich_common::auth::provider::{AuthError, AuthResult};
@@ -142,6 +142,104 @@ impl DbUserRepository {
         let count: i64 = row.get("count");
         Ok(count > 0)
     }
+
+    // ===================================================================
+    // Administrative user management (CAA "User Management")
+    //
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: AC-2 (account management lifecycle), AC-6 (role assignment),
+    //   AU-2 (auditable account changes — the REST layer audits)
+    // - NIAP PP-CA: FMT_SMR.2 (role management), FMT_MTD.1 (management of TSF data)
+    // ===================================================================
+
+    /// List every user account, ordered by username (administrative view).
+    pub async fn list_users(&self) -> Result<Vec<UserAccount>> {
+        let rows = sqlx::query_as::<_, UserRow>("SELECT * FROM users ORDER BY username ASC")
+            .fetch_all(self.pool.pool())
+            .await?;
+        rows.into_iter()
+            .map(|r| r.into_account().map_err(|e| Error::Query(e.to_string())))
+            .collect()
+    }
+
+    /// Fetch a single user by id.
+    pub async fn get_user(&self, id: Uuid) -> Result<Option<UserAccount>> {
+        let row = sqlx::query_as::<_, UserRow>("SELECT * FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(self.pool.pool())
+            .await?;
+        row.map(|r| r.into_account().map_err(|e| Error::Query(e.to_string())))
+            .transpose()
+    }
+
+    /// Create a certificate-authenticated user (no password) with assigned roles.
+    /// Used by the NPE portal where operators authenticate by mTLS, not password.
+    pub async fn create_certificate_user(
+        &self,
+        username: &str,
+        certificate_subject: &str,
+        display_name: Option<&str>,
+        email: Option<&str>,
+        roles: &[Role],
+    ) -> Result<Uuid> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO users (username, certificate_subject, display_name, email, roles, status)
+            VALUES ($1, $2, $3, $4, $5, 'active')
+            RETURNING id
+            "#,
+        )
+        .bind(username)
+        .bind(certificate_subject)
+        .bind(display_name)
+        .bind(email)
+        .bind(role_strings(roles))
+        .fetch_one(self.pool.pool())
+        .await?;
+        Ok(row.get("id"))
+    }
+
+    /// Replace a user's assigned roles. Returns false if no such user.
+    pub async fn set_user_roles(&self, id: Uuid, roles: &[Role]) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE users SET roles = $2, updated_at = now() WHERE id = $1",
+        )
+        .bind(id)
+        .bind(role_strings(roles))
+        .execute(self.pool.pool())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Set a user's account status (e.g. `active`, `disabled`). Returns false if
+    /// no such user. The status string is validated by the table CHECK.
+    pub async fn set_user_status(&self, id: Uuid, status: &str) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE users SET status = $2, updated_at = now() WHERE id = $1",
+        )
+        .bind(id)
+        .bind(status)
+        .execute(self.pool.pool())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Delete a user account. Returns false if no such user.
+    pub async fn delete_user(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(id)
+            .execute(self.pool.pool())
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+}
+
+/// Render assigned roles as the DB's snake_case string array.
+fn role_strings(roles: &[Role]) -> Vec<String> {
+    roles
+        .iter()
+        .map(|r| to_snake_case(&format!("{:?}", r)))
+        .collect()
 }
 
 /// Render a Role debug name ("OperationsStaff") as the DB's snake_case form.
