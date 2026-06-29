@@ -1,0 +1,34 @@
+{
+  "_comment": "Development-only NPE portal config for docker-compose. Backends are reached over plain HTTP on the internal network (no backend mTLS bridge), secure cookies are off, and the portal is started with NPE_ALLOW_INSECURE=true so it serves without a client-CA. Production uses config/npe-portal.example.json with real mTLS material.",
+  "backend": {
+    "caUrl": "http://ca-service:8080",
+    "estUrl": "http://est-service:8443"
+  },
+  "session": {
+    "cookieName": "ostrich_npe_session",
+    "inactivityTimeoutSecs": 1800,
+    "absoluteTimeoutSecs": 28800,
+    "secureCookies": false
+  },
+  "oidMapping": {
+    "sponsorOids": [
+      "2.16.840.1.101.2.1.11.42"
+    ],
+    "adminOid": "2.16.840.1.101.2.1.11.43",
+    "raOids": [
+      "2.16.840.1.101.2.1.11.44"
+    ],
+    "caaOids": [
+      "2.16.840.1.101.2.1.11.45"
+    ],
+    "allowedIssuers": [
+      "CN=Example NPE Issuing CA,O=U.S. Government,C=US"
+    ]
+  },
+  "classificationBanner": "UNCLASSIFIED",
+  "cspNonceLength": 16,
+  "staticFiles": {
+    "directory": "/app/static",
+    "urlPrefix": "/static"
+  }
+}

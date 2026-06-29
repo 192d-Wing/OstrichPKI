@@ -177,6 +177,37 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
+  # NPE Portal (Non-Person Entity enrollment portal; mTLS BFF + React SPA)
+  # ===========================================================================
+  # Authenticates operators by mTLS client certificate (OID->role) and proxies an
+  # allowlisted set of CA/EST routes. This dev entry runs with NPE_ALLOW_INSECURE
+  # (no client-CA) and reaches the backends over plain HTTP on the internal
+  # network; production supplies real mTLS material + config/npe-portal.json.
+  npe-portal:
+    build:
+      context: .
+      target: npe-portal
+    image: ghcr.io/ostrich-pki/npe-portal:0.15.0
+    container_name: ostrich-npe-portal
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      NPE_BIND_ADDRESS: 0.0.0.0:8443
+      # Development only: serve without mandatory mTLS. Production removes this
+      # and mounts TLS_CERT_FILE / TLS_KEY_FILE / TLS_CLIENT_CA_FILE.
+      NPE_ALLOW_INSECURE: "true"
+    volumes:
+      - ./docker/npe-portal.dev.json:/app/config/npe-portal.json:ro
+    ports:
+      - "9443:8443"  # portal HTTPS (8443 on host is taken by est-service)
+    depends_on:
+      - ca-service
+      - est-service
+    networks:
+      - ostrich_internal
+      - ostrich_external
+    restart: unless-stopped
+
+  # ===========================================================================
   # OCSP Service (RFC 6960 Online Certificate Status Protocol)
   # ===========================================================================
   ocsp-service:

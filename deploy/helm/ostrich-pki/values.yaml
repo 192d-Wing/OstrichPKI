@@ -191,6 +191,86 @@ est:
   extraEnv: []
 
 # =============================================================================
+# NPE Portal (Non-Person Entity enrollment portal; mTLS BFF + React SPA)
+# =============================================================================
+npePortal:
+  enabled: true
+  # Active-active behind the load balancer (IL5 posture).
+  replicaCount: 2
+
+  image:
+    repository: npe-portal
+    tag: ""
+
+  service:
+    type: ClusterIP
+    port: 8443
+
+  # Development escape hatch only: serve without mandatory mTLS. NEVER set true
+  # in production — the OID->role authentication requires a verified client cert.
+  allowInsecure: false
+
+  # mTLS material. existingSecret mounts server cert/key + client CA at /app/certs;
+  # the *File paths point into that mount. SC-8 / IA-2.
+  tls:
+    existingSecret: ""
+    certFile: "/app/certs/tls.crt"
+    keyFile: "/app/certs/tls.key"
+    clientCaFile: "/app/certs/client-ca.crt"
+
+  # Portal config (rendered to npe-portal.json) unless existingConfigMap is set.
+  # Backends are reached over the in-cluster service DNS; production sets the
+  # backend mTLS material so the identity bridge runs authenticated.
+  existingConfigMap: ""
+  config:
+    backend:
+      caUrl: "https://ostrich-pki-ca:8080"
+      estUrl: "https://ostrich-pki-est:8443"
+    session:
+      cookieName: "ostrich_npe_session"
+      inactivityTimeoutSecs: 1800
+      absoluteTimeoutSecs: 28800
+      secureCookies: true
+    oidMapping:
+      sponsorOids: ["2.16.840.1.101.2.1.11.42"]
+      adminOid: "2.16.840.1.101.2.1.11.43"
+      raOids: ["2.16.840.1.101.2.1.11.44"]
+      caaOids: ["2.16.840.1.101.2.1.11.45"]
+      allowedIssuers: ["CN=Example NPE Issuing CA,O=U.S. Government,C=US"]
+    classificationBanner: "CUI"
+    cspNonceLength: 16
+    staticFiles:
+      directory: "/app/static"
+      urlPrefix: "/static"
+
+  # Per-network ingress hosts (e.g. npe.<niprnet-domain> / npe.<sipr-domain>).
+  # The portal terminates mTLS, so the ingress must pass the client certificate
+  # through (ssl-passthrough) rather than re-terminating TLS.
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: npe.oopl.dev.mil
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+# =============================================================================
 # OCSP Responder (RFC 6960)
 # =============================================================================
 ocsp:
