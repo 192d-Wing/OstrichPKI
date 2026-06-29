@@ -2238,15 +2238,35 @@ async fn get_bulk_job(
 // CAA user management
 // ===========================================================================
 
+/// Roles the CAA may assign through the portal. This is a privilege ceiling
+/// (AC-6): the CAA manages NPE portal accounts, so it may grant only the four
+/// NPE roles — never a legacy CA super-role (e.g. `Administrator`, `Auditor`).
+const ASSIGNABLE_NPE_ROLES: [ostrich_common::auth::Role; 4] = {
+    use ostrich_common::auth::Role;
+    [
+        Role::PkiSponsor,
+        Role::PkiSponsorAdmin,
+        Role::RegistrationAuthority,
+        Role::CaaAdmin,
+    ]
+};
+
 /// Parse a list of role-name strings into `Role`s, rejecting any unknown name
-/// (SI-10: never silently drop or mis-assign a role).
+/// (SI-10) and any role outside the CAA's assignable ceiling (AC-6). Never
+/// silently drops or mis-assigns a role.
 fn parse_roles(names: &[String]) -> Result<Vec<ostrich_common::auth::Role>> {
     use std::str::FromStr;
     names
         .iter()
         .map(|n| {
-            ostrich_common::auth::Role::from_str(n.trim())
-                .map_err(|_| Error::InvalidRequest(format!("unknown role '{n}'")))
+            let role = ostrich_common::auth::Role::from_str(n.trim())
+                .map_err(|_| Error::InvalidRequest(format!("unknown role '{n}'")))?;
+            if !ASSIGNABLE_NPE_ROLES.contains(&role) {
+                return Err(Error::InvalidRequest(format!(
+                    "role '{n}' may not be assigned through the portal"
+                )));
+            }
+            Ok(role)
         })
         .collect()
 }
@@ -2326,7 +2346,9 @@ async fn load_target_user_guarded(
         .await
         .map_err(|e| Error::Internal(format!("Failed to load user: {e}")))?
         .ok_or_else(|| Error::NotFound(format!("user {user_id} not found")))?;
-    if target.username == actor {
+    // Case-insensitive so a CAA cannot sidestep the block via a case-variant
+    // username (defense in depth; usernames are unique but not case-normalized).
+    if target.username.eq_ignore_ascii_case(actor) {
         return Err(Error::InsufficientRole {
             required: "a different administrator (cannot act on your own account)".to_string(),
         });
@@ -2958,6 +2980,12 @@ mod tests {
         // Whitespace is tolerated; an empty/garbage entry is not.
         assert!(parse_roles(&["  registration_authority  ".to_string()]).is_ok());
         assert!(parse_roles(&["".to_string()]).is_err());
+        // Privilege ceiling (AC-6): a real but non-NPE role is rejected, so a CAA
+        // cannot mint a legacy CA super-role through the portal.
+        assert!(
+            parse_roles(&["ra_staff".to_string()]).is_err(),
+            "legacy roles must be outside the CAA's assignable ceiling"
+        );
     }
 
     /// A bulk CSR entry that is not a valid PKCS#10 request is rejected (and, in
