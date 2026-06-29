@@ -100,26 +100,37 @@ pub async fn obtain_certificate(
         cfg.domains.iter().map(|d| Identifier::Dns(d.clone())).collect();
     let mut order = account.new_order(&NewOrder::new(identifiers.as_slice())).await?;
 
-    // Answer each pending authorization's HTTP-01 challenge.
+    // Run the whole challenge -> finalize flow inside one fallible block so that
+    // EVERY exit path (including an authorization-fetch or set_ready error) falls
+    // through to the token cleanup below — a served challenge token must never be
+    // left in the store after the order ends.
     let mut tokens = Vec::new();
-    let mut authorizations = order.authorizations();
-    while let Some(result) = authorizations.next().await {
-        let mut authz = result?;
-        if authz.status == AuthorizationStatus::Valid {
-            continue;
+    let result: anyhow::Result<CertMaterial> = async {
+        // Answer each pending authorization's HTTP-01 challenge.
+        {
+            let mut authorizations = order.authorizations();
+            while let Some(result) = authorizations.next().await {
+                let mut authz = result?;
+                match authz.status {
+                    // Already validated (e.g. a reused authorization) — nothing to do.
+                    AuthorizationStatus::Valid => continue,
+                    AuthorizationStatus::Pending => {}
+                    // Invalid / Revoked / Expired / Deactivated are terminal: do not
+                    // attempt to answer a challenge on them (RFC 8555 §7.1.4).
+                    other => anyhow::bail!("authorization is in a non-pending state: {other:?}"),
+                }
+                let mut challenge = authz
+                    .challenge(ChallengeType::Http01)
+                    .ok_or_else(|| anyhow::anyhow!("ACME server offered no http-01 challenge"))?;
+                let token = challenge.token.to_string();
+                let key_auth = challenge.key_authorization().as_str().to_string();
+                store.write().await.insert(token.clone(), key_auth);
+                tokens.push(token);
+                challenge.set_ready().await?;
+            }
         }
-        let mut challenge = authz
-            .challenge(ChallengeType::Http01)
-            .ok_or_else(|| anyhow::anyhow!("ACME server offered no http-01 challenge"))?;
-        let token = challenge.token.to_string();
-        let key_auth = challenge.key_authorization().as_str().to_string();
-        store.write().await.insert(token.clone(), key_auth);
-        tokens.push(token);
-        challenge.set_ready().await?;
-    }
 
-    // Wait for validation, finalize (generates the keypair + CSR), fetch the cert.
-    let result = async {
+        // Wait for validation, finalize (generates the keypair + CSR), fetch cert.
         let status = order.poll_ready(&RetryPolicy::default()).await?;
         if status != OrderStatus::Ready {
             anyhow::bail!("ACME order did not become ready (status: {status:?})");
@@ -131,11 +142,12 @@ pub async fn obtain_certificate(
     .await;
 
     // Always drop the served challenge tokens, success or failure.
-    let mut map = store.write().await;
-    for t in &tokens {
-        map.remove(t);
+    {
+        let mut map = store.write().await;
+        for t in &tokens {
+            map.remove(t);
+        }
     }
-    drop(map);
 
     result
 }
