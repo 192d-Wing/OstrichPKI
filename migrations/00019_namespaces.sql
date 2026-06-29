@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS namespaces (
     -- Attribution for the change-control record (CM-3 / AU-3).
     created_by  TEXT        NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT namespace_pattern_nonempty CHECK (length(pattern) > 0)
+    -- DNS names are at most 253 octets (RFC 1035); enforce at the DB too so the
+    -- bound holds even if a future caller skips the application-layer validator.
+    CONSTRAINT namespace_pattern_len CHECK (length(pattern) BETWEEN 1 AND 253)
 );
 
 CREATE INDEX IF NOT EXISTS idx_namespaces_pattern ON namespaces (pattern);
