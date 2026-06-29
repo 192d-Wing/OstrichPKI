@@ -35,6 +35,18 @@ export interface CaInfo {
   chain_pem?: string;
 }
 
+export interface ApprovalDecisionResult {
+  decision: {
+    id: string;
+    approver_username: string;
+    decision: string;
+    reason?: string | null;
+    justification?: string | null;
+    decided_at: string;
+  };
+  updated_status: string;
+}
+
 export interface SubmitApplicationResponse {
   id: string;
   request_type: string;
@@ -80,6 +92,30 @@ export const portalApi = {
 
   listMyApplications: () =>
     api.get<{ requests: ApplicationInfo[] }>("/ca/api/v1/approvals"),
+
+  /**
+   * The approval queue. Hits the same endpoint as listMyApplications; the CA
+   * returns every pending request (not just the caller's own) when the caller
+   * holds the ApproveRequest permission, i.e. for an RA.
+   */
+  listApprovalQueue: () =>
+    api.get<{ requests: ApplicationInfo[] }>("/ca/api/v1/approvals"),
+
+  /** Approve a pending application. `override` requires OverrideValidation. */
+  approveApplication: (id: string, justification: string, override = false) =>
+    api.post<ApprovalDecisionResult>(
+      `/ca/api/v1/approvals/${encodeURIComponent(id)}/approve${
+        override ? "?override=true" : ""
+      }`,
+      { justification },
+    ),
+
+  /** Reject a pending application with a reason + justification. */
+  rejectApplication: (id: string, reason: string, justification: string) =>
+    api.post<ApprovalDecisionResult>(
+      `/ca/api/v1/approvals/${encodeURIComponent(id)}/reject`,
+      { reason, justification },
+    ),
 
   getApplication: (id: string) =>
     api.get<ApplicationDetail>(`/ca/api/v1/approvals/${encodeURIComponent(id)}`),
