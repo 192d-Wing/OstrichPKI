@@ -2485,19 +2485,44 @@ async fn create_namespace(
         )));
     }
 
+    // SI-10 defense in depth: bound the free-text description (the column is TEXT).
+    const MAX_DESCRIPTION: usize = 1024;
+    let description = req
+        .description
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty());
+    if let Some(d) = &description
+        && d.len() > MAX_DESCRIPTION
+    {
+        return Err(Error::InvalidRequest(format!(
+            "description exceeds {MAX_DESCRIPTION} characters"
+        )));
+    }
+
     let rule = ostrich_db::models::NamespaceRecord {
         id: uuid::Uuid::new_v4(),
         pattern,
         allow: req.allow.unwrap_or(true),
-        description: req.description.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()),
+        description,
         created_by: user.username.clone(),
         created_at: chrono::Utc::now(),
     };
 
     let repo = ostrich_db::repository::NamespaceRepository::new(state.db_pool.as_ref().clone());
     let created = repo.create(&rule).await.map_err(|e| {
-        // A duplicate pattern is a client error, not a server fault.
-        Error::InvalidRequest(format!("could not create namespace: {e}"))
+        // Distinguish a duplicate pattern (client error, clean message) from a
+        // genuine infrastructure failure (server error) — and never echo the raw
+        // DB error to the client (SI-11). The detail is logged server-side.
+        let detail = e.to_string().to_ascii_lowercase();
+        if detail.contains("duplicate") || detail.contains("unique") {
+            Error::InvalidRequest(format!(
+                "a namespace rule for '{}' already exists",
+                rule.pattern
+            ))
+        } else {
+            tracing::error!(error = %e, "failed to create namespace rule");
+            Error::Internal("failed to create namespace rule".to_string())
+        }
     })?;
     tracing::info!(actor = %user.username, pattern = %created.pattern, allow = created.allow, "CAA created namespace rule");
     Ok(Json(NamespaceDto::from(created)))
