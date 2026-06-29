@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Alert,
+  Box,
   Button,
   Container,
   ContentLayout,
@@ -9,6 +10,7 @@ import {
   FormField,
   Header,
   Input,
+  Modal,
   Select,
   type SelectProps,
   SpaceBetween,
@@ -49,9 +51,14 @@ export function CaaNamespacesPage() {
     onError: (e: Error) => setFormError(e.message),
   });
 
+  const [deleteTarget, setDeleteTarget] = useState<Namespace | null>(null);
   const remove = useMutation({
     mutationFn: (id: string) => portalApi.deleteNamespace(id),
-    onSuccess: () => refetch(),
+    onSuccess: () => {
+      setDeleteTarget(null);
+      refetch();
+    },
+    onError: () => setDeleteTarget(null),
   });
 
   function onCreate() {
@@ -100,14 +107,7 @@ export function CaaNamespacesPage() {
             {
               id: "actions",
               header: "",
-              cell: (n) => (
-                <Button
-                  onClick={() => remove.mutate(n.id)}
-                  loading={remove.isPending && remove.variables === n.id}
-                >
-                  Delete
-                </Button>
-              ),
+              cell: (n) => <Button onClick={() => setDeleteTarget(n)}>Delete</Button>,
             },
           ]}
           empty="No namespace rules"
@@ -144,6 +144,31 @@ export function CaaNamespacesPage() {
           </Form>
         </Container>
       </SpaceBetween>
+
+      {deleteTarget && (
+        <Modal
+          visible
+          onDismiss={() => setDeleteTarget(null)}
+          header="Delete namespace rule"
+          footer={
+            <Box float="right">
+              <SpaceBetween direction="horizontal" size="xs">
+                <Button variant="link" onClick={() => setDeleteTarget(null)} disabled={remove.isPending}>
+                  Cancel
+                </Button>
+                <Button variant="primary" onClick={() => remove.mutate(deleteTarget.id)} loading={remove.isPending}>
+                  Delete rule
+                </Button>
+              </SpaceBetween>
+            </Box>
+          }
+        >
+          <Alert type="warning" header="Confirm deletion">
+            Delete the {deleteTarget.allow ? "allow" : "deny"} rule for{" "}
+            <b>{deleteTarget.pattern}</b>?
+          </Alert>
+        </Modal>
+      )}
     </ContentLayout>
   );
 }

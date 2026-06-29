@@ -19,6 +19,7 @@ import {
 } from "@cloudscape-design/components";
 
 import { StatusBadge } from "@/components/status-badge";
+import { useAuth } from "@/lib/auth-context";
 import { ASSIGNABLE_ROLES, portalApi, type PortalUser } from "@/lib/portal-api";
 
 const ROLE_OPTIONS: MultiselectProps.Option[] = ASSIGNABLE_ROLES.map((r) => ({
@@ -31,12 +32,14 @@ function roleLabel(value: string): string {
 }
 
 export function CaaUsersPage() {
+  const { user: currentUser } = useAuth();
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["caa-users"],
     queryFn: portalApi.listUsers,
   });
 
   const [banner, setBanner] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<PortalUser | null>(null);
 
   // Create form state.
   const [username, setUsername] = useState("");
@@ -98,8 +101,14 @@ export function CaaUsersPage() {
 
   const remove = useMutation({
     mutationFn: (id: string) => portalApi.deleteUser(id),
-    onSuccess: () => afterChange("User deleted."),
-    onError: onMutationError,
+    onSuccess: () => {
+      setDeleteTarget(null);
+      afterChange("User deleted.");
+    },
+    onError: (e: Error) => {
+      setDeleteTarget(null);
+      onMutationError(e);
+    },
   });
 
   function openEdit(u: PortalUser) {
@@ -172,26 +181,33 @@ export function CaaUsersPage() {
             {
               id: "actions",
               header: "",
-              cell: (u) => (
-                <ButtonDropdown
-                  ariaLabel={`Manage ${u.username}`}
-                  items={[
-                    { id: "roles", text: "Edit roles" },
-                    u.status === "active"
-                      ? { id: "disable", text: "Disable" }
-                      : { id: "enable", text: "Enable" },
-                    { id: "delete", text: "Delete" },
-                  ]}
-                  onItemClick={(e) => {
-                    if (e.detail.id === "roles") openEdit(u);
-                    else if (e.detail.id === "disable") setStatus.mutate({ id: u.id, status: "disabled" });
-                    else if (e.detail.id === "enable") setStatus.mutate({ id: u.id, status: "active" });
-                    else if (e.detail.id === "delete") remove.mutate(u.id);
-                  }}
-                >
-                  Manage
-                </ButtonDropdown>
-              ),
+              cell: (u) => {
+                // A CAA cannot act on their own account (the backend blocks it);
+                // disable the menu on the self row rather than offer actions that
+                // would always 403.
+                const isSelf = currentUser?.commonName === u.username;
+                return (
+                  <ButtonDropdown
+                    ariaLabel={`Manage ${u.username}`}
+                    disabled={isSelf}
+                    items={[
+                      { id: "roles", text: "Edit roles" },
+                      u.status === "active"
+                        ? { id: "disable", text: "Disable" }
+                        : { id: "enable", text: "Enable" },
+                      { id: "delete", text: "Delete" },
+                    ]}
+                    onItemClick={(e) => {
+                      if (e.detail.id === "roles") openEdit(u);
+                      else if (e.detail.id === "disable") setStatus.mutate({ id: u.id, status: "disabled" });
+                      else if (e.detail.id === "enable") setStatus.mutate({ id: u.id, status: "active" });
+                      else if (e.detail.id === "delete") setDeleteTarget(u);
+                    }}
+                  >
+                    {isSelf ? "You" : "Manage"}
+                  </ButtonDropdown>
+                );
+              },
             },
           ]}
           empty="No users"
@@ -264,6 +280,31 @@ export function CaaUsersPage() {
               />
             </FormField>
           </SpaceBetween>
+        </Modal>
+      )}
+
+      {deleteTarget && (
+        <Modal
+          visible
+          onDismiss={() => setDeleteTarget(null)}
+          header="Delete user"
+          footer={
+            <Box float="right">
+              <SpaceBetween direction="horizontal" size="xs">
+                <Button variant="link" onClick={() => setDeleteTarget(null)} disabled={remove.isPending}>
+                  Cancel
+                </Button>
+                <Button variant="primary" onClick={() => remove.mutate(deleteTarget.id)} loading={remove.isPending}>
+                  Delete user
+                </Button>
+              </SpaceBetween>
+            </Box>
+          }
+        >
+          <Alert type="warning" header="This action cannot be undone">
+            Permanently delete the account <b>{deleteTarget.username}</b>? Consider disabling it
+            instead if you may need to restore access.
+          </Alert>
         </Modal>
       )}
     </ContentLayout>
