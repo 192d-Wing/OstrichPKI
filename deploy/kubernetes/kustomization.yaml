@@ -34,6 +34,9 @@ resources:
   - est-service.yaml
   - ocsp-deployment.yaml
   - ocsp-service.yaml
+  - npe-portal-configmap.yaml
+  - npe-portal-deployment.yaml
+  - npe-portal-service.yaml
 
 labels:
   - pairs:

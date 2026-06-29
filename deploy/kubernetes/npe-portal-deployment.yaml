@@ -1,0 +1,72 @@
+# OstrichPKI NPE Portal Deployment (Non-Person Entity enrollment portal)
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: IA-2 (mTLS identification), AC-3 (OID->role + proxy allowlist)
+# - NIST 800-53: CM-2 (Baseline Configuration)
+#
+# Smoke-test variant: NPE_ALLOW_INSECURE serves the SPA + allowlisted CA/EST
+# proxy over plain HTTP (no client-cert auth; OID->role flows are disabled). A
+# production overlay removes NPE_ALLOW_INSECURE and mounts TLS_CERT_FILE /
+# TLS_KEY_FILE / TLS_CLIENT_CA_FILE so the portal serves mTLS HTTPS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: npe-portal
+  namespace: ostrich-pki
+  labels:
+    app: npe-portal
+spec:
+  # Active-active behind the load balancer.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: npe-portal
+  template:
+    metadata:
+      labels:
+        app: npe-portal
+    spec:
+      serviceAccountName: ostrich-pki
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: npe-portal
+          image: ghcr.io/192d-wing/npe-portal:latest
+          imagePullPolicy: Always
+          ports:
+            - { name: http, containerPort: 8443 }
+          env:
+            - { name: RUST_LOG, value: "info" }
+            - { name: NPE_BIND_ADDRESS, value: "0.0.0.0:8443" }
+            # Smoke test only: serve without mandatory mTLS. Remove in production.
+            - { name: NPE_ALLOW_INSECURE, value: "true" }
+          volumeMounts:
+            - name: npe-config
+              mountPath: /app/config/npe-portal.json
+              subPath: npe-portal.json
+              readOnly: true
+          livenessProbe:
+            # In allow-insecure mode the listener is plain HTTP; /health is public.
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+      volumes:
+        - name: npe-config
+          configMap:
+            name: npe-portal-config

@@ -1,0 +1,17 @@
+# OstrichPKI NPE Portal Service
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SC-8 (Transmission Confidentiality)
+apiVersion: v1
+kind: Service
+metadata:
+  name: npe-portal
+  namespace: ostrich-pki
+  labels:
+    app: npe-portal
+spec:
+  type: ClusterIP
+  ports:
+    - { name: http, port: 8443, targetPort: http }
+  selector:
+    app: npe-portal
