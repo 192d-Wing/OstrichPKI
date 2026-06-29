@@ -1,0 +1,100 @@
+# OstrichPKI NPE Portal Deployment (ACME production overlay)
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: IA-2/AC-17 (mandatory mTLS client auth), AC-3 (OID->role +
+#   proxy allowlist), SC-8 (TLS 1.3), SC-12 (ACME-managed, auto-renewed cert),
+#   CM-2/CM-6 (secure-by-default: no NPE_ALLOW_INSECURE)
+#
+# Production posture: serves mTLS HTTPS on :8443 with an ACME-issued server cert
+# and a required operator client CA. Single replica — see README (HTTP-01
+# challenge locality with an in-memory challenge store).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: npe-portal
+  namespace: ostrich-pki
+  labels:
+    app: npe-portal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: npe-portal
+  strategy:
+    # The cert-cache PVC is ReadWriteOnce; avoid two pods contending for it
+    # during a rollout.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: npe-portal
+    spec:
+      serviceAccountName: ostrich-pki
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: npe-portal
+          image: ghcr.io/192d-wing/npe-portal:latest
+          imagePullPolicy: Always
+          ports:
+            - { name: https, containerPort: 8443 }
+            - { name: acme-http, containerPort: 8080 }
+          env:
+            - { name: RUST_LOG, value: "info" }
+            - { name: NPE_BIND_ADDRESS, value: "0.0.0.0:8443" }
+            # mTLS is mandatory: the operator client CA is required. The server
+            # cert is sourced from ACME (no TLS_CERT_FILE/TLS_KEY_FILE), so the
+            # fail-closed gate treats ACME mode as ready with just the client CA.
+            - { name: TLS_CLIENT_CA_FILE, value: "/app/tls/operator-client-ca.pem" }
+          volumeMounts:
+            - name: npe-config
+              mountPath: /app/config/npe-portal.json
+              subPath: npe-portal.json
+              readOnly: true
+            - name: operator-client-ca
+              mountPath: /app/tls/operator-client-ca.pem
+              subPath: ca.pem
+              readOnly: true
+            - name: acme-ca-bundle
+              mountPath: /app/tls/acme-ca-bundle.pem
+              subPath: acme-ca-bundle.pem
+              readOnly: true
+            - name: acme-cache
+              mountPath: /app/acme-cache
+          livenessProbe:
+            # The :8443 listener requires a client cert, so an HTTP GET probe
+            # can't complete the handshake; a TCP check confirms it is accepting.
+            tcpSocket: { port: https }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            # The ACME responder on :8080 is plain HTTP; once it serves, the pod
+            # has bound its ports and (after enrollment) the mTLS listener is up.
+            tcpSocket: { port: https }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+      volumes:
+        - name: npe-config
+          configMap:
+            name: npe-portal-config
+        - name: operator-client-ca
+          secret:
+            secretName: npe-operator-client-ca
+        - name: acme-ca-bundle
+          configMap:
+            name: npe-acme-ca-bundle
+        - name: acme-cache
+          persistentVolumeClaim:
+            claimName: npe-portal-acme-cache

@@ -1,0 +1,28 @@
+# ACME HTTP-01 challenge route (Traefik web / :80 entrypoint).
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SC-8 (the ONLY plain-HTTP path exposed; scoped to the ACME
+#   challenge well-known prefix, which carries no confidential data per RFC 8555)
+#
+# RFC 8555 §8.3 validation: the ACME server fetches
+#   http://npe-portal.oopl.dev.mil/.well-known/acme-challenge/{token}
+# on port 80. Traefik's web entrypoint terminates that and forwards ONLY the
+# challenge prefix to the portal's in-pod responder (service port 8080). All
+# other traffic for the host is served over mTLS via the passthrough route
+# (npe-portal-ingressroute.yaml). The path match keeps everything else off :80.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: npe-portal-acme-challenge
+  namespace: ostrich-pki
+  labels:
+    app: npe-portal
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`npe-portal.oopl.dev.mil`) && PathPrefix(`/.well-known/acme-challenge/`)
+      kind: Rule
+      services:
+        - name: npe-portal
+          port: 8080
