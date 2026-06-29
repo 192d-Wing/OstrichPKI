@@ -31,7 +31,12 @@ CREATE TABLE IF NOT EXISTS bulk_enrollment_jobs (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at    TIMESTAMPTZ,
     CONSTRAINT bulk_job_counts_nonneg
-        CHECK (total_count >= 0 AND succeeded_count >= 0 AND failed_count >= 0)
+        CHECK (total_count >= 0 AND succeeded_count >= 0 AND failed_count >= 0),
+    -- Every CSR is either a success or a failure, so the resolved outcomes can
+    -- never exceed the batch size. Equality holds once the job is `completed`;
+    -- the inequality also admits the in-progress state (counts climbing to total).
+    CONSTRAINT bulk_job_counts_within_total
+        CHECK (succeeded_count + failed_count <= total_count)
 );
 
 CREATE INDEX IF NOT EXISTS idx_bulk_enrollment_jobs_submitter
