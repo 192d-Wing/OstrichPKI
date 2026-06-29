@@ -263,6 +263,19 @@ pub fn create_router(
         .route(
             "/api/v1/approvals/{id}/reject",
             post(reject_request).route_layer(authz(Permission::ApproveRequest)),
+        )
+        // Bulk enrollment (Administrator "Submit Bulk"): upload a ZIP of CSRs.
+        .route(
+            "/api/v1/bulk-enroll",
+            post(bulk_enroll).route_layer(authz(Permission::BulkEnroll)),
+        )
+        .route(
+            "/api/v1/bulk-enroll",
+            get(list_bulk_jobs).route_layer(authz(Permission::ViewRequests)),
+        )
+        .route(
+            "/api/v1/bulk-enroll/{id}",
+            get(get_bulk_job).route_layer(authz(Permission::ViewRequests)),
         );
 
     // Authentication layer. With a trusted-proxy config, use the composite layer
@@ -1867,7 +1880,386 @@ async fn reject_request(
     }))
 }
 
+// ===========================================================================
+// Bulk enrollment (Administrator "Submit Bulk")
+// ===========================================================================
+
+/// Maximum number of CSRs accepted in one bulk upload (spec cap).
+const MAX_BULK_CSRS: usize = 100;
+/// Per-CSR size ceiling (anti zip-bomb). A PEM CSR is a few KiB; 64 KiB is ample.
+const MAX_CSR_BYTES: u64 = 64 * 1024;
+
+/// Extract the CSR-bearing entries from an uploaded ZIP, capped and size-bounded.
+/// Returns `(source_name, raw_bytes)` for each `.csr/.pem/.req/.der` file.
+fn extract_csr_entries(zip_bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+        .map_err(|e| Error::InvalidRequest(format!("invalid ZIP archive: {e}")))?;
+    let mut entries = Vec::new();
+    for i in 0..archive.len() {
+        let file = archive
+            .by_index(i)
+            .map_err(|e| Error::InvalidRequest(format!("unreadable ZIP entry: {e}")))?;
+        if !file.is_file() {
+            continue;
+        }
+        let name = file.name().to_string();
+        let lower = name.to_ascii_lowercase();
+        if !(lower.ends_with(".csr")
+            || lower.ends_with(".pem")
+            || lower.ends_with(".req")
+            || lower.ends_with(".der"))
+        {
+            continue;
+        }
+        if entries.len() >= MAX_BULK_CSRS {
+            return Err(Error::InvalidRequest(format!(
+                "archive contains more than {MAX_BULK_CSRS} certificate requests"
+            )));
+        }
+        // SI-10 / anti zip-bomb: bound the read regardless of the entry's claimed
+        // size, then reject anything over the ceiling.
+        let mut buf = Vec::new();
+        file.take(MAX_CSR_BYTES + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| Error::InvalidRequest(format!("failed reading '{name}': {e}")))?;
+        if buf.len() as u64 > MAX_CSR_BYTES {
+            return Err(Error::InvalidRequest(format!(
+                "entry '{name}' exceeds the {MAX_CSR_BYTES}-byte per-CSR limit"
+            )));
+        }
+        entries.push((name, buf));
+    }
+    Ok(entries)
+}
+
+/// Validate one CSR entry (PEM or DER). Returns `(canonical_pem, subject_cn)` on
+/// success, or a human-readable reason on failure (recorded per-item, never fatal
+/// to the batch).
+fn validate_csr_entry(bytes: &[u8]) -> std::result::Result<(String, Option<String>), String> {
+    let der = if bytes.starts_with(b"-----BEGIN") {
+        let (label, der) =
+            pem_rfc7468::decode_vec(bytes).map_err(|e| format!("invalid PEM: {e}"))?;
+        if !label.contains("CERTIFICATE REQUEST") {
+            return Err(format!("unexpected PEM label '{label}' (expected a CSR)"));
+        }
+        der
+    } else {
+        bytes.to_vec()
+    };
+    // SI-10: the bytes must parse as a PKCS#10 CSR to be queued.
+    ostrich_x509::parser::parse_csr(&der).map_err(|e| format!("invalid CSR: {e}"))?;
+    let subject_cn = ostrich_x509::parser::parse_csr_subject_dn(&der)
+        .ok()
+        .and_then(|dn| dn.common_name);
+    let pem = pem_rfc7468::encode_string("CERTIFICATE REQUEST", pem_rfc7468::LineEnding::LF, &der)
+        .map_err(|e| format!("could not normalize CSR: {e}"))?;
+    Ok((pem, subject_cn))
+}
+
+/// Bulk-enroll a ZIP of CSRs under one profile (multipart: `profile` + `archive`).
+///
+/// Each CSR is validated and, if valid, queued as an Issuance approval request so
+/// the RA can review it; the per-CSR outcome is recorded durably and the batch is
+/// summarized by a Bulk Identifier. Processing is synchronous (the spec caps a
+/// batch at 100 CSRs, which is a handful of inserts).
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-3/AC-6 (BulkEnroll permission; submitter-owned),
+///   AU-2/AU-3 (auditable bulk operation + per-CSR outcome), SI-10 (each CSR
+///   validated before it is queued)
+/// - NIAP PP-CA: FDP_CER_EXT.2 (CSR -> request linkage), FDP_CER_EXT.3 (workflow)
+// POAM: for very large batches, move processing to a durable background worker
+// with restart recovery, and notify the submitter by email on completion (no
+// email subsystem exists yet; the result is retrievable in-portal meanwhile).
+async fn bulk_enroll(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    mut multipart: axum::extract::Multipart,
+) -> Result<Json<BulkJobDetailDto>> {
+    use ostrich_common::auth::user::{AuthMethod, AuthenticatedUser};
+    use ostrich_db::models::{BulkEnrollmentItemRecord, BulkEnrollmentJobRecord};
+    use ostrich_db::repository::BulkEnrollmentRepository;
+
+    // Read the multipart fields: a `profile` text field and an `archive` ZIP.
+    let mut profile_name: Option<String> = None;
+    let mut zip_bytes: Option<Vec<u8>> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| Error::InvalidRequest(format!("invalid multipart body: {e}")))?
+    {
+        match field.name() {
+            Some("profile") => {
+                profile_name = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| Error::InvalidRequest(format!("invalid profile field: {e}")))?,
+                );
+            }
+            Some("archive") | Some("file") => {
+                zip_bytes = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| Error::InvalidRequest(format!("invalid archive field: {e}")))?
+                        .to_vec(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let profile_name = profile_name
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| Error::InvalidRequest("missing 'profile' field".to_string()))?;
+    let zip_bytes =
+        zip_bytes.ok_or_else(|| Error::InvalidRequest("missing 'archive' (ZIP) field".to_string()))?;
+
+    let entries = extract_csr_entries(&zip_bytes)?;
+    if entries.is_empty() {
+        return Err(Error::InvalidRequest(
+            "archive contains no .csr/.pem/.req/.der certificate requests".to_string(),
+        ));
+    }
+
+    let bulk_repo = BulkEnrollmentRepository::new(state.db_pool.as_ref().clone());
+
+    // Create the job row up front (status `processing`) with the known total, so a
+    // crash mid-batch leaves a non-terminal job rather than nothing.
+    let job_id = uuid::Uuid::new_v4();
+    let bulk_identifier = format!(
+        "BULK-{}",
+        job_id.simple().to_string()[..12].to_uppercase()
+    );
+    let now = chrono::Utc::now();
+    let job = BulkEnrollmentJobRecord {
+        id: job_id,
+        bulk_identifier: bulk_identifier.clone(),
+        submitter_id: *user.id.as_uuid(),
+        submitter_username: user.username.clone(),
+        profile_name: profile_name.clone(),
+        status: "processing".to_string(),
+        total_count: entries.len() as i32,
+        succeeded_count: 0,
+        failed_count: 0,
+        created_at: now,
+        completed_at: None,
+    };
+    bulk_repo.create_job(&job).await?;
+
+    let auth_user = AuthenticatedUser::new(
+        user.id,
+        user.username.clone(),
+        user.roles.clone(),
+        AuthMethod::Password,
+    );
+
+    let mut succeeded = 0i32;
+    let mut failed = 0i32;
+    let mut items = Vec::with_capacity(entries.len());
+    for (idx, (name, bytes)) in entries.into_iter().enumerate() {
+        let mut item = BulkEnrollmentItemRecord {
+            id: uuid::Uuid::new_v4(),
+            job_id,
+            item_index: idx as i32,
+            source_name: name.clone(),
+            subject_cn: None,
+            status: "failed".to_string(),
+            request_id: None,
+            certificate_id: None,
+            error: None,
+            created_at: chrono::Utc::now(),
+        };
+
+        match validate_csr_entry(&bytes) {
+            Err(reason) => {
+                item.error = Some(reason);
+                failed += 1;
+            }
+            Ok((csr_pem, subject_cn)) => {
+                // Queue an Issuance approval request carrying the CSR + profile,
+                // exactly like a single submission (the RA reviews it later).
+                let details = serde_json::json!({
+                    "profile": profile_name,
+                    "csr_pem": csr_pem,
+                    "source": name,
+                    "bulk_identifier": bulk_identifier,
+                });
+                let submitted = state.approval_engine.create_request(
+                    crate::approval::RequestType::Issuance,
+                    &auth_user,
+                    details,
+                );
+                let record = ostrich_db::models::ApprovalRequestRecord {
+                    id: submitted.id,
+                    request_type: submitted.request_type.to_string(),
+                    csr_id: submitted.csr_id,
+                    certificate_id: submitted.certificate_id,
+                    requestor_id: *submitted.requestor_id.as_uuid(),
+                    requestor_username: submitted.requestor_username.clone(),
+                    requestor_roles: submitted
+                        .requestor_roles
+                        .iter()
+                        .map(|r| r.to_string())
+                        .collect(),
+                    status: submitted.status.to_string(),
+                    request_details: submitted.request_details.clone(),
+                    created_at: submitted.created_at,
+                    expires_at: submitted.expires_at,
+                    approved_at: submitted.approved_at,
+                    completed_at: submitted.completed_at,
+                    metadata: None,
+                };
+                state.approval_repo.create_request(&record).await?;
+                item.subject_cn = subject_cn;
+                item.status = "queued".to_string();
+                item.request_id = Some(submitted.id);
+                succeeded += 1;
+            }
+        }
+
+        let stored = bulk_repo.create_item(&item).await?;
+        items.push(BulkItemDto::from(stored));
+    }
+
+    bulk_repo
+        .finalize_job(job_id, "completed", succeeded, failed)
+        .await?;
+
+    tracing::info!(
+        actor = %user.username,
+        bulk_identifier = %bulk_identifier,
+        total = items.len(),
+        succeeded,
+        failed,
+        "bulk enrollment completed"
+    );
+
+    let final_job = BulkEnrollmentJobRecord {
+        status: "completed".to_string(),
+        succeeded_count: succeeded,
+        failed_count: failed,
+        completed_at: Some(chrono::Utc::now()),
+        ..job
+    };
+    Ok(Json(BulkJobDetailDto {
+        job: BulkJobSummaryDto::from(final_job),
+        items,
+    }))
+}
+
+/// List the bulk jobs the authenticated user submitted (own-scope).
+async fn list_bulk_jobs(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+) -> Result<Json<Vec<BulkJobSummaryDto>>> {
+    let bulk_repo = ostrich_db::repository::BulkEnrollmentRepository::new(
+        state.db_pool.as_ref().clone(),
+    );
+    let jobs = bulk_repo.list_jobs_by_submitter(*user.id.as_uuid()).await?;
+    Ok(Json(jobs.into_iter().map(BulkJobSummaryDto::from).collect()))
+}
+
+/// Fetch one bulk job + its per-CSR items. Own-scope: the submitter, or any
+/// approver (ApproveRequest), may read it.
+async fn get_bulk_job(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<BulkJobDetailDto>> {
+    let job_id = uuid::Uuid::parse_str(&id)
+        .map_err(|_| Error::InvalidRequest("Invalid bulk job ID".to_string()))?;
+    let bulk_repo = ostrich_db::repository::BulkEnrollmentRepository::new(
+        state.db_pool.as_ref().clone(),
+    );
+    let job = bulk_repo
+        .get_job(job_id)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("bulk job {job_id} not found")))?;
+
+    if job.submitter_id != *user.id.as_uuid()
+        && !any_role_has_permission(&user.roles, Permission::ApproveRequest)
+    {
+        return Err(Error::InsufficientRole {
+            required: "bulk job ownership or approval permission".to_string(),
+        });
+    }
+
+    let items = bulk_repo.list_items(job_id).await?;
+    Ok(Json(BulkJobDetailDto {
+        job: BulkJobSummaryDto::from(job),
+        items: items.into_iter().map(BulkItemDto::from).collect(),
+    }))
+}
+
 // REST API Request/Response types
+
+/// Summary of a bulk enrollment job.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkJobSummaryDto {
+    id: String,
+    bulk_identifier: String,
+    profile_name: String,
+    status: String,
+    total_count: i32,
+    succeeded_count: i32,
+    failed_count: i32,
+    created_at: String,
+    completed_at: Option<String>,
+}
+
+impl From<ostrich_db::models::BulkEnrollmentJobRecord> for BulkJobSummaryDto {
+    fn from(j: ostrich_db::models::BulkEnrollmentJobRecord) -> Self {
+        Self {
+            id: j.id.to_string(),
+            bulk_identifier: j.bulk_identifier,
+            profile_name: j.profile_name,
+            status: j.status,
+            total_count: j.total_count,
+            succeeded_count: j.succeeded_count,
+            failed_count: j.failed_count,
+            created_at: j.created_at.to_rfc3339(),
+            completed_at: j.completed_at.map(|t| t.to_rfc3339()),
+        }
+    }
+}
+
+/// One CSR's outcome within a bulk enrollment job.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkItemDto {
+    item_index: i32,
+    source_name: String,
+    subject_cn: Option<String>,
+    status: String,
+    request_id: Option<String>,
+    error: Option<String>,
+}
+
+impl From<ostrich_db::models::BulkEnrollmentItemRecord> for BulkItemDto {
+    fn from(i: ostrich_db::models::BulkEnrollmentItemRecord) -> Self {
+        Self {
+            item_index: i.item_index,
+            source_name: i.source_name,
+            subject_cn: i.subject_cn,
+            status: i.status,
+            request_id: i.request_id.map(|r| r.to_string()),
+            error: i.error,
+        }
+    }
+}
+
+/// A bulk job plus its per-CSR items.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkJobDetailDto {
+    job: BulkJobSummaryDto,
+    items: Vec<BulkItemDto>,
+}
 
 /// CA information response.
 ///
@@ -2230,6 +2622,7 @@ impl IntoResponse for Error {
             Error::Audit(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.to_string()),
             Error::Common(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.to_string()),
             Error::ProfileNotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            Error::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             Error::CrlGeneration(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             Error::NotInitialized => (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -2272,6 +2665,25 @@ impl IntoResponse for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bulk CSR entry that is not a valid PKCS#10 request is rejected (and, in
+    /// the handler, recorded as a per-item failure rather than aborting the
+    /// batch). Covers the guard logic in `validate_csr_entry`.
+    #[test]
+    fn validate_csr_entry_rejects_non_csr() {
+        // Arbitrary bytes are not DER CSR.
+        assert!(validate_csr_entry(b"this is not a csr").is_err());
+        assert!(validate_csr_entry(b"").is_err());
+        // A PEM block with the wrong label must be rejected before parsing.
+        let cert_pem = pem_rfc7468::encode_string(
+            "CERTIFICATE",
+            pem_rfc7468::LineEnding::LF,
+            &[0x30, 0x03, 0x02, 0x01, 0x00],
+        )
+        .unwrap();
+        let err = validate_csr_entry(cert_pem.as_bytes()).unwrap_err();
+        assert!(err.contains("unexpected PEM label"), "got: {err}");
+    }
 
     /// The raw-identifier field `r#override` must (de)serialize under the key
     /// "override" so `POST .../approve?override=true` is actually honored. serde

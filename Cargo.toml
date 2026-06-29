@@ -109,6 +109,9 @@ pkcs5 = { version = "0.7", features = ["pbes2", "alloc"] }
 cms = "0.2"
 pem-rfc7468 = { version = "1", features = ["alloc"] }
 webpki-roots = "1.0"
+# ZIP reading for bulk certificate enrollment (Administrator "Submit Bulk").
+# Read-only + deflate is all the bulk-enroll handler needs.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Cryptographic primitives
 ring = "0.17"

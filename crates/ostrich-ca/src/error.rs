@@ -55,6 +55,10 @@ pub enum Error {
     #[error("Approval request not found: {0}")]
     ApprovalRequestNotFound(uuid::Uuid),
 
+    /// Generic resource-not-found (maps to HTTP 404).
+    #[error("Not found: {0}")]
+    NotFound(String),
+
     /// Database error
     #[error("Database error: {0}")]
     Database(#[from] ostrich_db::Error),
