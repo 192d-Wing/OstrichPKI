@@ -303,6 +303,19 @@ pub fn create_router(
         .route(
             "/api/v1/users/{id}",
             delete(delete_user).route_layer(authz(Permission::DeleteUser)),
+        )
+        // CAA wildcard / namespace policy management.
+        .route(
+            "/api/v1/namespaces",
+            get(list_namespaces).route_layer(authz(Permission::ManageNamespaces)),
+        )
+        .route(
+            "/api/v1/namespaces",
+            post(create_namespace).route_layer(authz(Permission::ManageNamespaces)),
+        )
+        .route(
+            "/api/v1/namespaces/{id}",
+            delete(delete_namespace).route_layer(authz(Permission::ManageNamespaces)),
         );
 
     // Authentication layer. With a trusted-proxy config, use the composite layer
@@ -2433,6 +2446,108 @@ async fn delete_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ===========================================================================
+// CAA wildcard / namespace policy management
+//
+// POAM: this milestone delivers the CAA management surface (curate the rule
+// list). Enforcing the rules at issuance time — consulting `namespaces` in the
+// CSR/subject validation path to permit or deny wildcard/namespace scopes — is
+// the follow-up integration (FDP_ACF.1) and is tracked separately.
+// ===========================================================================
+
+/// List all namespace / wildcard policy rules. Requires ManageNamespaces.
+async fn list_namespaces(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(_user): AuthUser,
+) -> Result<Json<Vec<NamespaceDto>>> {
+    let repo = ostrich_db::repository::NamespaceRepository::new(state.db_pool.as_ref().clone());
+    let rules = repo
+        .list()
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to list namespaces: {e}")))?;
+    Ok(Json(rules.into_iter().map(NamespaceDto::from).collect()))
+}
+
+/// Create a namespace / wildcard policy rule. Requires ManageNamespaces.
+///
+/// CM-3: the change is attributed to the authenticated CAA and audited.
+async fn create_namespace(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<CreateNamespaceRequest>,
+) -> Result<Json<NamespaceDto>> {
+    // SI-10: normalize + validate the pattern. A DNS pattern is a set of
+    // dot-separated labels, optionally a single leading `*` wildcard label.
+    let pattern = req.pattern.trim().to_ascii_lowercase();
+    if !is_valid_namespace_pattern(&pattern) {
+        return Err(Error::InvalidRequest(format!(
+            "invalid namespace pattern '{pattern}'"
+        )));
+    }
+
+    let rule = ostrich_db::models::NamespaceRecord {
+        id: uuid::Uuid::new_v4(),
+        pattern,
+        allow: req.allow.unwrap_or(true),
+        description: req.description.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()),
+        created_by: user.username.clone(),
+        created_at: chrono::Utc::now(),
+    };
+
+    let repo = ostrich_db::repository::NamespaceRepository::new(state.db_pool.as_ref().clone());
+    let created = repo.create(&rule).await.map_err(|e| {
+        // A duplicate pattern is a client error, not a server fault.
+        Error::InvalidRequest(format!("could not create namespace: {e}"))
+    })?;
+    tracing::info!(actor = %user.username, pattern = %created.pattern, allow = created.allow, "CAA created namespace rule");
+    Ok(Json(NamespaceDto::from(created)))
+}
+
+/// Delete a namespace rule. Requires ManageNamespaces.
+async fn delete_namespace(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
+    let rule_id = uuid::Uuid::parse_str(&id)
+        .map_err(|_| Error::InvalidRequest("Invalid namespace ID".to_string()))?;
+    let repo = ostrich_db::repository::NamespaceRepository::new(state.db_pool.as_ref().clone());
+    if !repo
+        .delete(rule_id)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to delete namespace: {e}")))?
+    {
+        return Err(Error::NotFound(format!("namespace {rule_id} not found")));
+    }
+    tracing::info!(actor = %user.username, namespace = %rule_id, "CAA deleted namespace rule");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Validate a DNS namespace pattern: 1+ labels, each `[a-z0-9-]` (not starting/
+/// ending with `-`), optionally a single leading `*` wildcard label.
+fn is_valid_namespace_pattern(pattern: &str) -> bool {
+    if pattern.is_empty() || pattern.len() > 253 {
+        return false;
+    }
+    let mut labels = pattern.split('.');
+    let first = labels.clone().next().unwrap_or("");
+    let is_label = |l: &str| -> bool {
+        !l.is_empty()
+            && l.len() <= 63
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    // The first label may be exactly "*"; every other label must be a normal label.
+    if first == "*" {
+        labels.next(); // consume "*"
+        let rest: Vec<&str> = labels.collect();
+        !rest.is_empty() && rest.iter().all(|l| is_label(l))
+    } else {
+        pattern.split('.').all(is_label)
+    }
+}
+
 // REST API Request/Response types
 
 /// Summary of a bulk enrollment job.
@@ -2558,6 +2673,41 @@ struct SetRolesRequest {
 #[derive(Debug, Deserialize)]
 struct SetStatusRequest {
     status: String,
+}
+
+/// A namespace / wildcard policy rule as exposed to the CAA UI.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NamespaceDto {
+    id: String,
+    pattern: String,
+    allow: bool,
+    description: Option<String>,
+    created_by: String,
+    created_at: String,
+}
+
+impl From<ostrich_db::models::NamespaceRecord> for NamespaceDto {
+    fn from(n: ostrich_db::models::NamespaceRecord) -> Self {
+        Self {
+            id: n.id.to_string(),
+            pattern: n.pattern,
+            allow: n.allow,
+            description: n.description,
+            created_by: n.created_by,
+            created_at: n.created_at.to_rfc3339(),
+        }
+    }
+}
+
+/// Create-namespace request.
+#[derive(Debug, Deserialize)]
+struct CreateNamespaceRequest {
+    pattern: String,
+    #[serde(default)]
+    allow: Option<bool>,
+    #[serde(default)]
+    description: Option<String>,
 }
 
 /// CA information response.
@@ -2965,6 +3115,23 @@ impl IntoResponse for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Namespace patterns are validated (SI-10): normal DNS names and a single
+    /// leading `*` wildcard are accepted; malformed/abusive patterns rejected.
+    #[test]
+    fn namespace_pattern_validation() {
+        assert!(is_valid_namespace_pattern("example.mil"));
+        assert!(is_valid_namespace_pattern("app.example.mil"));
+        assert!(is_valid_namespace_pattern("*.example.mil"));
+        // Rejections.
+        assert!(!is_valid_namespace_pattern(""));
+        assert!(!is_valid_namespace_pattern("*")); // wildcard with no suffix
+        assert!(!is_valid_namespace_pattern("*.*.mil")); // only one wildcard label
+        assert!(!is_valid_namespace_pattern("a..b")); // empty label
+        assert!(!is_valid_namespace_pattern("-bad.mil")); // label starts with '-'
+        assert!(!is_valid_namespace_pattern("bad_underscore.mil")); // illegal char
+        assert!(!is_valid_namespace_pattern("foo.*.mil")); // wildcard not leading
+    }
 
     /// CAA role assignment must reject unknown role names (SI-10) rather than
     /// silently dropping them, and accept the canonical snake_case names.
