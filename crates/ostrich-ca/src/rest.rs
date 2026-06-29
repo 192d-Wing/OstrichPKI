@@ -29,7 +29,7 @@ use axum::{
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use base64::{Engine, prelude::BASE64_STANDARD};
 use ostrich_common::auth::provider::AuthProvider;
@@ -280,6 +280,29 @@ pub fn create_router(
         .route(
             "/api/v1/bulk-enroll/{id}",
             get(get_bulk_job).route_layer(authz(Permission::ViewRequests)),
+        )
+        // CAA user management. Each verb is gated by its own permission; the
+        // handlers additionally enforce a self-action block (a CAA cannot modify,
+        // disable, or delete their own account).
+        .route(
+            "/api/v1/users",
+            get(list_users).route_layer(authz(Permission::ViewUsers)),
+        )
+        .route(
+            "/api/v1/users",
+            post(create_user).route_layer(authz(Permission::CreateUser)),
+        )
+        .route(
+            "/api/v1/users/{id}/roles",
+            put(set_user_roles).route_layer(authz(Permission::AssignRoles)),
+        )
+        .route(
+            "/api/v1/users/{id}/status",
+            put(set_user_status).route_layer(authz(Permission::ModifyUser)),
+        )
+        .route(
+            "/api/v1/users/{id}",
+            delete(delete_user).route_layer(authz(Permission::DeleteUser)),
         );
 
     // Authentication layer. With a trusted-proxy config, use the composite layer
@@ -2211,6 +2234,205 @@ async fn get_bulk_job(
     }))
 }
 
+// ===========================================================================
+// CAA user management
+// ===========================================================================
+
+/// Roles the CAA may assign through the portal. This is a privilege ceiling
+/// (AC-6): the CAA manages NPE portal accounts, so it may grant only the four
+/// NPE roles — never a legacy CA super-role (e.g. `Administrator`, `Auditor`).
+const ASSIGNABLE_NPE_ROLES: [ostrich_common::auth::Role; 4] = {
+    use ostrich_common::auth::Role;
+    [
+        Role::PkiSponsor,
+        Role::PkiSponsorAdmin,
+        Role::RegistrationAuthority,
+        Role::CaaAdmin,
+    ]
+};
+
+/// Parse a list of role-name strings into `Role`s, rejecting any unknown name
+/// (SI-10) and any role outside the CAA's assignable ceiling (AC-6). Never
+/// silently drops or mis-assigns a role.
+fn parse_roles(names: &[String]) -> Result<Vec<ostrich_common::auth::Role>> {
+    use std::str::FromStr;
+    names
+        .iter()
+        .map(|n| {
+            let role = ostrich_common::auth::Role::from_str(n.trim())
+                .map_err(|_| Error::InvalidRequest(format!("unknown role '{n}'")))?;
+            if !ASSIGNABLE_NPE_ROLES.contains(&role) {
+                return Err(Error::InvalidRequest(format!(
+                    "role '{n}' may not be assigned through the portal"
+                )));
+            }
+            Ok(role)
+        })
+        .collect()
+}
+
+/// List all user accounts (CAA "User Management"). Requires ViewUsers.
+async fn list_users(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(_user): AuthUser,
+) -> Result<Json<Vec<UserDto>>> {
+    let repo = ostrich_db::repository::DbUserRepository::new(state.db_pool.clone());
+    let users = repo
+        .list_users()
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to list users: {e}")))?;
+    Ok(Json(users.into_iter().map(UserDto::from).collect()))
+}
+
+/// Create a certificate-authenticated user with assigned roles. Requires CreateUser.
+async fn create_user(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<CreateUserRequest>,
+) -> Result<Json<UserDto>> {
+    let username = req.username.trim();
+    let cert_subject = req.certificate_subject.trim();
+    if username.is_empty() || cert_subject.is_empty() {
+        return Err(Error::InvalidRequest(
+            "username and certificateSubject are required".to_string(),
+        ));
+    }
+    let roles = parse_roles(&req.roles)?;
+
+    let repo = ostrich_db::repository::DbUserRepository::new(state.db_pool.clone());
+    if repo
+        .user_exists(username)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to check user: {e}")))?
+    {
+        return Err(Error::InvalidRequest(format!(
+            "a user named '{username}' already exists"
+        )));
+    }
+
+    let id = repo
+        .create_certificate_user(
+            username,
+            cert_subject,
+            req.display_name.as_deref(),
+            req.email.as_deref(),
+            &roles,
+        )
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to create user: {e}")))?;
+
+    tracing::info!(actor = %user.username, new_user = %username, "CAA created user account");
+
+    let created = repo
+        .get_user(id)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to load user: {e}")))?
+        .ok_or_else(|| Error::Internal("created user not found".to_string()))?;
+    Ok(Json(UserDto::from(created)))
+}
+
+/// Load the target user and enforce the CAA self-action block: a CAA may never
+/// modify, disable, or delete their own account (AC-5 separation of duties — a
+/// privileged admin cannot remove the controls on themselves).
+async fn load_target_user_guarded(
+    repo: &ostrich_db::repository::DbUserRepository,
+    actor: &str,
+    id: &str,
+) -> Result<(uuid::Uuid, ostrich_common::auth::UserAccount)> {
+    let user_id = uuid::Uuid::parse_str(id)
+        .map_err(|_| Error::InvalidRequest("Invalid user ID".to_string()))?;
+    let target = repo
+        .get_user(user_id)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to load user: {e}")))?
+        .ok_or_else(|| Error::NotFound(format!("user {user_id} not found")))?;
+    // Case-insensitive so a CAA cannot sidestep the block via a case-variant
+    // username (defense in depth; usernames are unique but not case-normalized).
+    if target.username.eq_ignore_ascii_case(actor) {
+        return Err(Error::InsufficientRole {
+            required: "a different administrator (cannot act on your own account)".to_string(),
+        });
+    }
+    Ok((user_id, target))
+}
+
+/// Replace a user's roles. Requires AssignRoles; self-action blocked.
+async fn set_user_roles(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    Json(req): Json<SetRolesRequest>,
+) -> Result<Json<UserDto>> {
+    let roles = parse_roles(&req.roles)?;
+    let repo = ostrich_db::repository::DbUserRepository::new(state.db_pool.clone());
+    let (user_id, _target) = load_target_user_guarded(&repo, &user.username, &id).await?;
+
+    repo.set_user_roles(user_id, &roles)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to set roles: {e}")))?;
+    tracing::info!(actor = %user.username, target = %user_id, "CAA reassigned user roles");
+
+    let updated = repo
+        .get_user(user_id)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to load user: {e}")))?
+        .ok_or_else(|| Error::NotFound(format!("user {user_id} not found")))?;
+    Ok(Json(UserDto::from(updated)))
+}
+
+/// Set a user's account status (e.g. enable/disable). Requires ModifyUser;
+/// self-action blocked. Only the table's allowed status values are accepted.
+async fn set_user_status(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    Json(req): Json<SetStatusRequest>,
+) -> Result<Json<UserDto>> {
+    const ALLOWED: [&str; 5] = [
+        "active",
+        "locked",
+        "suspended",
+        "disabled",
+        "pending_activation",
+    ];
+    let status = req.status.trim().to_ascii_lowercase();
+    if !ALLOWED.contains(&status.as_str()) {
+        return Err(Error::InvalidRequest(format!(
+            "invalid status '{status}' (expected one of {ALLOWED:?})"
+        )));
+    }
+    let repo = ostrich_db::repository::DbUserRepository::new(state.db_pool.clone());
+    let (user_id, _target) = load_target_user_guarded(&repo, &user.username, &id).await?;
+
+    repo.set_user_status(user_id, &status)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to set status: {e}")))?;
+    tracing::info!(actor = %user.username, target = %user_id, status = %status, "CAA changed user status");
+
+    let updated = repo
+        .get_user(user_id)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to load user: {e}")))?
+        .ok_or_else(|| Error::NotFound(format!("user {user_id} not found")))?;
+    Ok(Json(UserDto::from(updated)))
+}
+
+/// Delete a user account. Requires DeleteUser; self-action blocked.
+async fn delete_user(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
+    let repo = ostrich_db::repository::DbUserRepository::new(state.db_pool.clone());
+    let (user_id, _target) = load_target_user_guarded(&repo, &user.username, &id).await?;
+
+    repo.delete_user(user_id)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to delete user: {e}")))?;
+    tracing::info!(actor = %user.username, target = %user_id, "CAA deleted user account");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // REST API Request/Response types
 
 /// Summary of a bulk enrollment job.
@@ -2275,6 +2497,67 @@ impl From<ostrich_db::models::BulkEnrollmentItemRecord> for BulkItemDto {
 struct BulkJobDetailDto {
     job: BulkJobSummaryDto,
     items: Vec<BulkItemDto>,
+}
+
+/// A user account as exposed to the CAA management UI. The password hash is
+/// never included (the model marks it `#[serde(skip_serializing)]` anyway, but
+/// this DTO simply does not carry it).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserDto {
+    id: String,
+    username: String,
+    display_name: Option<String>,
+    email: Option<String>,
+    certificate_subject: Option<String>,
+    roles: Vec<String>,
+    status: String,
+    created_at: String,
+    updated_at: String,
+    last_login_at: Option<String>,
+}
+
+impl From<ostrich_common::auth::UserAccount> for UserDto {
+    fn from(u: ostrich_common::auth::UserAccount) -> Self {
+        Self {
+            id: u.id.as_uuid().to_string(),
+            username: u.username,
+            display_name: u.display_name,
+            email: u.email,
+            certificate_subject: u.certificate_subject,
+            roles: u.roles.iter().map(|r| r.name().to_string()).collect(),
+            status: u.status.to_string(),
+            created_at: u.created_at.to_rfc3339(),
+            updated_at: u.updated_at.to_rfc3339(),
+            last_login_at: u.last_login_at.map(|t| t.to_rfc3339()),
+        }
+    }
+}
+
+/// Create-user request (certificate-authenticated NPE account).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateUserRequest {
+    username: String,
+    certificate_subject: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    roles: Vec<String>,
+}
+
+/// Replace-roles request.
+#[derive(Debug, Deserialize)]
+struct SetRolesRequest {
+    roles: Vec<String>,
+}
+
+/// Set-status request.
+#[derive(Debug, Deserialize)]
+struct SetStatusRequest {
+    status: String,
 }
 
 /// CA information response.
@@ -2639,6 +2922,7 @@ impl IntoResponse for Error {
             Error::Common(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.to_string()),
             Error::ProfileNotFound(msg) => (StatusCode::NOT_FOUND, msg),
             Error::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            Error::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             Error::CrlGeneration(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             Error::NotInitialized => (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -2681,6 +2965,28 @@ impl IntoResponse for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CAA role assignment must reject unknown role names (SI-10) rather than
+    /// silently dropping them, and accept the canonical snake_case names.
+    #[test]
+    fn parse_roles_accepts_known_rejects_unknown() {
+        let ok = parse_roles(&[
+            "registration_authority".to_string(),
+            "caa_admin".to_string(),
+        ])
+        .expect("known roles parse");
+        assert_eq!(ok.len(), 2);
+        assert!(parse_roles(&["not_a_role".to_string()]).is_err());
+        // Whitespace is tolerated; an empty/garbage entry is not.
+        assert!(parse_roles(&["  registration_authority  ".to_string()]).is_ok());
+        assert!(parse_roles(&["".to_string()]).is_err());
+        // Privilege ceiling (AC-6): a real but non-NPE role is rejected, so a CAA
+        // cannot mint a legacy CA super-role through the portal.
+        assert!(
+            parse_roles(&["ra_staff".to_string()]).is_err(),
+            "legacy roles must be outside the CAA's assignable ceiling"
+        );
+    }
 
     /// A bulk CSR entry that is not a valid PKCS#10 request is rejected (and, in
     /// the handler, recorded as a per-item failure rather than aborting the

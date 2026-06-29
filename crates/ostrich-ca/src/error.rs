@@ -59,6 +59,10 @@ pub enum Error {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    /// Generic internal error (maps to HTTP 500).
+    #[error("Internal error: {0}")]
+    Internal(String),
+
     /// Database error
     #[error("Database error: {0}")]
     Database(#[from] ostrich_db::Error),
