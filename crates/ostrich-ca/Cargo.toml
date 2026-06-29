@@ -44,6 +44,7 @@ pem-rfc7468 = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 hex = { workspace = true }
+zip = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
