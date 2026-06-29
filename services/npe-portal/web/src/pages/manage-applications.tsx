@@ -8,11 +8,13 @@ import {
   ContentLayout,
   FormField,
   Header,
+  Link,
   Modal,
   SpaceBetween,
   Table,
   Textarea,
 } from "@cloudscape-design/components";
+import { useNavigate } from "react-router-dom";
 
 import { StatusBadge } from "@/components/status-badge";
 import { portalApi, type ApplicationInfo } from "@/lib/portal-api";
@@ -31,7 +33,8 @@ const ACTION_LABEL: Record<ActionKind, string> = {
 };
 
 export function ManageApplicationsPage() {
-  const { data, isLoading, refetch, isFetching } = useQuery({
+  const navigate = useNavigate();
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["approval-queue"],
     queryFn: portalApi.listApprovalQueue,
   });
@@ -119,13 +122,24 @@ export function ManageApplicationsPage() {
             {flash}
           </Alert>
         )}
+        {isError && (
+          <Alert type="error" header="Could not load the approval queue">
+            {error?.message ?? "Request failed."} Use Refresh to retry.
+          </Alert>
+        )}
         <Table<ApplicationInfo>
           loading={isLoading}
           items={items}
           variant="container"
           wrapLines
           columnDefinitions={[
-            { id: "id", header: "Request ID", cell: (i) => i.id },
+            {
+              id: "id",
+              header: "Request ID",
+              cell: (i) => (
+                <Link onFollow={() => navigate(`/certificates/status?id=${i.id}`)}>{i.id}</Link>
+              ),
+            },
             { id: "type", header: "Type", cell: (i) => i.request_type },
             { id: "requestor", header: "Requestor", cell: (i) => i.requestor_username },
             { id: "status", header: "Status", cell: (i) => <StatusBadge status={i.status} /> },
