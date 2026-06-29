@@ -75,6 +75,33 @@ export interface RevokeResult {
   revocation_time: string;
 }
 
+// Bulk enrollment DTOs (camelCase — the CA bulk endpoints serialize camelCase).
+export interface BulkJobSummary {
+  id: string;
+  bulkIdentifier: string;
+  profileName: string;
+  status: string;
+  totalCount: number;
+  succeededCount: number;
+  failedCount: number;
+  createdAt: string;
+  completedAt?: string | null;
+}
+
+export interface BulkItem {
+  itemIndex: number;
+  sourceName: string;
+  subjectCn?: string | null;
+  status: string;
+  requestId?: string | null;
+  error?: string | null;
+}
+
+export interface BulkJobDetail {
+  job: BulkJobSummary;
+  items: BulkItem[];
+}
+
 export interface SubmitApplicationResponse {
   id: string;
   request_type: string;
@@ -155,6 +182,17 @@ export const portalApi = {
       `/ca/api/v1/certificates/${encodeURIComponent(id)}/revoke`,
       { reason, justification },
     ),
+
+  /**
+   * Bulk-enroll a ZIP of CSRs under one profile (Administrator). Each valid CSR
+   * is queued as an approval request; returns the job + per-CSR outcomes.
+   */
+  bulkEnroll: (profile: string, archive: File) => {
+    const form = new FormData();
+    form.append("profile", profile);
+    form.append("archive", archive);
+    return api.postForm<BulkJobDetail>("/ca/api/v1/bulk-enroll", form);
+  },
 
   getApplication: (id: string) =>
     api.get<ApplicationDetail>(`/ca/api/v1/approvals/${encodeURIComponent(id)}`),

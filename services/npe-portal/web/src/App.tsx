@@ -16,11 +16,11 @@ import { CaDetailsPage } from "@/pages/ca-details";
 import { PasswordManagementPage } from "@/pages/password-management";
 import { ManageApplicationsPage } from "@/pages/manage-applications";
 import { RevokeCertificatesPage } from "@/pages/revoke-certificates";
+import { SubmitBulkPage } from "@/pages/submit-bulk";
 import { SearchPage } from "@/pages/search";
 
-// Routes still rendered as M-later placeholders (CAA, bulk enroll).
+// Routes still rendered as M-later placeholders (CAA).
 const PLACEHOLDER_ROUTES: { path: string; title: string; description: string }[] = [
-  { path: "/certificates/bulk", title: "Submit Bulk", description: "Submit a ZIP of CSRs for asynchronous bulk enrollment." },
   { path: "/caa/users", title: "User Management", description: "Manage CAA/RA users and role assignments." },
   { path: "/caa/namespaces", title: "Wildcard Management", description: "Manage certificate namespaces and wildcard policy." },
   { path: "/caa/config", title: "System Configuration", description: "Global portal and issuance configuration." },
@@ -75,6 +75,7 @@ export default function App() {
         <Route path="/certificates/mine" element={<MyApplicationsPage />} />
         <Route path="/certificates/bulk-status" element={<BulkStatusPage />} />
         <Route path="/certificates/ca-details" element={<CaDetailsPage />} />
+        <Route path="/certificates/bulk" element={<SubmitBulkPage />} />
         {/* Password Management (EST enrollment tokens) */}
         <Route path="/passwords/single-use" element={<PasswordManagementPage multi={false} />} />
         <Route path="/passwords/multi-use" element={<PasswordManagementPage multi />} />
