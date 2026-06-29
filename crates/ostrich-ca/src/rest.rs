@@ -2592,6 +2592,26 @@ fn is_valid_namespace_pattern(pattern: &str) -> bool {
 // is the follow-up integration, tracked separately.
 // ===========================================================================
 
+/// Validate a configuration value against the expected type for its key, so a
+/// type-invalid value (e.g. a non-boolean flag, a negative count) is never
+/// stored (SI-10). Unknown keys are rejected separately by the caller.
+fn validate_config_value(key: &str, value: &str) -> Result<()> {
+    let ok = match key {
+        "default_certificate_validity_days" | "max_bulk_csrs" => {
+            value.parse::<u32>().is_ok_and(|n| n > 0)
+        }
+        "require_approval_for_issuance" => matches!(value, "true" | "false"),
+        _ => true,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::InvalidRequest(format!(
+            "invalid value '{value}' for setting '{key}'"
+        )))
+    }
+}
+
 /// List all system configuration settings. Requires ViewConfig.
 async fn list_config(
     State(state): State<Arc<ApiState>>,
@@ -2638,6 +2658,9 @@ async fn set_config(
     {
         return Err(Error::NotFound(format!("unknown configuration key '{key}'")));
     }
+
+    // SI-10: a known key's value must match its expected type.
+    validate_config_value(&key, &value)?;
 
     let updated = repo
         .upsert(&key, &value, req.description.as_deref(), &user.username)
@@ -3246,6 +3269,19 @@ impl IntoResponse for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A known config key's value must match its expected type (SI-10).
+    #[test]
+    fn config_value_type_validation() {
+        assert!(validate_config_value("max_bulk_csrs", "100").is_ok());
+        assert!(validate_config_value("max_bulk_csrs", "-5").is_err());
+        assert!(validate_config_value("max_bulk_csrs", "0").is_err());
+        assert!(validate_config_value("max_bulk_csrs", "abc").is_err());
+        assert!(validate_config_value("require_approval_for_issuance", "true").is_ok());
+        assert!(validate_config_value("require_approval_for_issuance", "false").is_ok());
+        assert!(validate_config_value("require_approval_for_issuance", "maybe").is_err());
+        assert!(validate_config_value("default_certificate_validity_days", "397").is_ok());
+    }
 
     /// Namespace patterns are validated (SI-10): normal DNS names and a single
     /// leading `*` wildcard are accepted; malformed/abusive patterns rejected.
