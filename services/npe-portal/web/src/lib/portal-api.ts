@@ -102,6 +102,45 @@ export interface BulkJobDetail {
   items: BulkItem[];
 }
 
+// CAA DTOs (camelCase — the CA serializes these camelCase).
+export interface PortalUser {
+  id: string;
+  username: string;
+  displayName?: string | null;
+  email?: string | null;
+  certificateSubject?: string | null;
+  roles: string[];
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt?: string | null;
+}
+
+// Roles the CAA may assign (must match ASSIGNABLE_NPE_ROLES on the backend).
+export const ASSIGNABLE_ROLES = [
+  { label: "PKI Sponsor", value: "pki_sponsor" },
+  { label: "PKI Sponsor (Admin)", value: "pki_sponsor_admin" },
+  { label: "Registration Authority", value: "registration_authority" },
+  { label: "CA Admin (CAA)", value: "caa_admin" },
+] as const;
+
+export interface Namespace {
+  id: string;
+  pattern: string;
+  allow: boolean;
+  description?: string | null;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ConfigSetting {
+  key: string;
+  value: string;
+  description?: string | null;
+  updatedBy: string;
+  updatedAt: string;
+}
+
 export interface SubmitApplicationResponse {
   id: string;
   request_type: string;
@@ -223,4 +262,30 @@ export const portalApi = {
       `/est/.well-known/est/${EFS_EST_LABEL}/serverkeygen`,
       { keyStrength },
     ),
+
+  // --- CAA: user management ---
+  listUsers: () => api.get<PortalUser[]>("/ca/api/v1/users"),
+  createUser: (body: {
+    username: string;
+    certificateSubject: string;
+    displayName?: string;
+    email?: string;
+    roles: string[];
+  }) => api.post<PortalUser>("/ca/api/v1/users", body),
+  setUserRoles: (id: string, roles: string[]) =>
+    api.put<PortalUser>(`/ca/api/v1/users/${encodeURIComponent(id)}/roles`, { roles }),
+  setUserStatus: (id: string, status: string) =>
+    api.put<PortalUser>(`/ca/api/v1/users/${encodeURIComponent(id)}/status`, { status }),
+  deleteUser: (id: string) => api.del(`/ca/api/v1/users/${encodeURIComponent(id)}`),
+
+  // --- CAA: namespace / wildcard policy ---
+  listNamespaces: () => api.get<Namespace[]>("/ca/api/v1/namespaces"),
+  createNamespace: (body: { pattern: string; allow: boolean; description?: string }) =>
+    api.post<Namespace>("/ca/api/v1/namespaces", body),
+  deleteNamespace: (id: string) => api.del(`/ca/api/v1/namespaces/${encodeURIComponent(id)}`),
+
+  // --- CAA: system configuration ---
+  listConfig: () => api.get<ConfigSetting[]>("/ca/api/v1/config"),
+  setConfig: (key: string, value: string) =>
+    api.put<ConfigSetting>(`/ca/api/v1/config/${encodeURIComponent(key)}`, { value }),
 };
