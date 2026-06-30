@@ -173,7 +173,21 @@ export const EFS_EST_LABEL = "PTEFS";
 // EST password TTL is fixed at 8 hours per the portal requirements.
 export const EST_TOKEN_TTL_SECONDS = 8 * 60 * 60;
 
+/** Subject CN + SANs parsed from a pasted CSR (submit-form preview). */
+export interface ParsedCsrInfo {
+  commonName: string | null;
+  subjectDn: string;
+  sans: string[];
+}
+
 export const portalApi = {
+  /**
+   * Parse a pasted PKCS#10 CSR to preview its Common Name + Subject Alternative
+   * Names. Portal-local and session-gated; the CA re-validates on submit.
+   */
+  parseCsr: (csrPem: string) =>
+    api.post<ParsedCsrInfo>("/v1/parse-csr", { csr_pem: csrPem }),
+
   /** Submit a certificate application (issuance) or rekey (renewal). */
   submitApplication: (
     requestType: "issuance" | "renewal",
