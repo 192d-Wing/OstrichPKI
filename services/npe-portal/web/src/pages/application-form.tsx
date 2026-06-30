@@ -150,6 +150,8 @@ export function ApplicationForm({
   const [csrFiles, setCsrFiles] = useState<File[]>([]);
   const [profile, setProfile] = useState(PROFILES[0]);
   const [email, setEmail] = useState("");
+  const [issmEmail, setIssmEmail] = useState("");
+  const [pmEmail, setPmEmail] = useState("");
   const [algorithm, setAlgorithm] = useState(EFS_ALGORITHMS[0]);
   const [keyStrength, setKeyStrength] = useState(EFS_KEY_STRENGTHS[0]);
   const [ccsa, setCcsa] = useState<SelectProps.Option | null>(null);
@@ -168,6 +170,8 @@ export function ApplicationForm({
         csr_pem: csr.trim(),
         profile: profile.value,
         notification_email: email.trim(),
+        issm_email: issmEmail.trim() || null,
+        pm_email: pmEmail.trim() || null,
         ccsa: ccsa?.value ?? null,
         subject_alt_names: sans,
         key_usage: keyUsage.map((o) => o.value),
@@ -184,7 +188,11 @@ export function ApplicationForm({
     onError: (e: Error) => setError(e.message),
   });
 
-  const emailValid = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
+  const isEmail = (v: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v.trim());
+  const emailValid = isEmail(email);
+  // ISSM/PM addresses are optional, but must be well-formed if provided.
+  const issmValid = !issmEmail.trim() || isEmail(issmEmail);
+  const pmValid = !pmEmail.trim() || isEmail(pmEmail);
   const csrValid = csr.trim().includes(CSR_MARKER);
   // A complete PEM block (both markers) is worth parsing for the CN/SAN preview;
   // an in-progress paste is not.
@@ -198,7 +206,8 @@ export function ApplicationForm({
     staleTime: Infinity,
   });
   const pending = mutation.isPending || efsMutation.isPending;
-  const canSubmit = (isEfs ? emailValid : csrValid && emailValid) && !pending;
+  const canSubmit =
+    (isEfs ? emailValid : csrValid && emailValid) && issmValid && pmValid && !pending;
   const isServerAuth = SERVER_AUTH_PROFILES.has(profile.value);
 
   // Editing any field after a submission clears the stale success/result banner
@@ -372,6 +381,36 @@ export function ApplicationForm({
                   }}
                   type="email"
                   placeholder="first.last@example.mil"
+                />
+              </FormField>
+              <FormField
+                label="ISSM email address"
+                description="Information System Security Manager — also notified before this certificate expires."
+                errorText={issmValid ? undefined : "Enter a valid email address."}
+              >
+                <Input
+                  value={issmEmail}
+                  onChange={(e) => {
+                    clearStale();
+                    setIssmEmail(e.detail.value);
+                  }}
+                  type="email"
+                  placeholder="issm@example.mil"
+                />
+              </FormField>
+              <FormField
+                label="PM email address"
+                description="Program Manager — also notified before this certificate expires."
+                errorText={pmValid ? undefined : "Enter a valid email address."}
+              >
+                <Input
+                  value={pmEmail}
+                  onChange={(e) => {
+                    clearStale();
+                    setPmEmail(e.detail.value);
+                  }}
+                  type="email"
+                  placeholder="pm@example.mil"
                 />
               </FormField>
               <FormField label="Certificate profile">
