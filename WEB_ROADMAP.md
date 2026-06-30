@@ -62,9 +62,14 @@ key is offered as a one-time download — it never leaves the browser. pkijs/asn
 are lazy-loaded (dynamic import) so they stay out of the main bundle. Verified:
 RSA + ECDSA CSRs round-trip parse with a valid signature and SANs intact.
 
-### 5. EST / enrollment catalog — `Proposed` · frontend
-List available CAs, profiles, and `PTptval-…` EST labels with copy-paste
-`lego`/`curl` enrollment commands for device admins.
+### 5. EST / enrollment catalog — `Built` · frontend + backend
+New `/certificates/est-catalog` page: the issuing CA, a profile table, a key-algo
+table, and an interactive **label builder** (profile + key-algo + validity +
+CC/S/A → a `PTptval-AKakval-VPvpval-CCccval` label) that emits ready-to-run
+`openssl`/`curl` EST enrollment commands (bearer-token or mTLS) with copy
+buttons. Backend: a new public `GET /.well-known/est/catalog` endpoint sourced
+from `ostrich_est::label::catalog()` — the same token sets the label parser
+validates, so the catalog can never advertise a token issuance would reject.
 
 ## 📋 Compliance & visibility (RA / CAA)
 

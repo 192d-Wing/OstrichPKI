@@ -854,6 +854,14 @@ issued certificate (subject `CN=est-client.example.com`, issuer
 `CN=OstrichPKI EST Root`), which `openssl verify` accepts against the root.
 `/.well-known/est/cacerts` returns the CA certificate as PKCS#7.
 
+A public `GET /.well-known/est/catalog` endpoint
+(`crates/ostrich-est/src/rest.rs`) publishes the profile-label scheme
+(RFC 7030 §3.2.2) as discovery metadata — the valid `PT`/`AK` tokens, validity
+and CC/S/A bounds, and example labels — sourced from `ostrich_est::label::catalog`
+so it stays in lockstep with what `parse_label` accepts (SI-10). It backs the
+NPE-portal "EST / enrollment catalog" page; it carries no certificate or key
+material and requires no authentication.
+
 The certs-only PKCS#7 encoder (RFC 5652 §5 degenerate `SignedData`) is now a
 shared primitive, `ostrich_x509::pkcs7::encode_certs_only_pkcs7`
 (`crates/ostrich-x509/src/pkcs7.rs`), used by both the EST responses above and a

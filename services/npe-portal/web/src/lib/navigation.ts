@@ -21,6 +21,7 @@ const CERT_MGMT_SPONSOR: NavLink[] = [
   { text: "View Expiring Certificates", href: "/certificates/expiring" },
   { text: "View Bulk Status", href: "/certificates/bulk-status" },
   { text: "View Certificate Authorities Details", href: "/certificates/ca-details" },
+  { text: "EST / Enrollment Catalog", href: "/certificates/est-catalog" },
 ];
 
 const PASSWORD_MGMT: NavLink[] = [

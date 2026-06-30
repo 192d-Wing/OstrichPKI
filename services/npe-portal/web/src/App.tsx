@@ -14,6 +14,7 @@ import { CertificateDetailPage } from "@/pages/certificate-detail";
 import { ApplicationStatusPage } from "@/pages/application-status";
 import { BulkStatusPage } from "@/pages/bulk-status";
 import { CaDetailsPage } from "@/pages/ca-details";
+import { EstEnrollmentCatalogPage } from "@/pages/est-enrollment-catalog";
 import { PasswordManagementPage } from "@/pages/password-management";
 import { ManageApplicationsPage } from "@/pages/manage-applications";
 import { RevokeCertificatesPage } from "@/pages/revoke-certificates";
@@ -74,6 +75,7 @@ export default function App() {
         <Route path="/certificates/view" element={<CertificateDetailPage />} />
         <Route path="/certificates/bulk-status" element={<BulkStatusPage />} />
         <Route path="/certificates/ca-details" element={<CaDetailsPage />} />
+        <Route path="/certificates/est-catalog" element={<EstEnrollmentCatalogPage />} />
         <Route path="/certificates/bulk" element={<SubmitBulkPage />} />
         {/* Password Management (EST enrollment tokens) */}
         <Route path="/passwords/single-use" element={<PasswordManagementPage multi={false} />} />
