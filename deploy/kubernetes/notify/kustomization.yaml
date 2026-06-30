@@ -25,4 +25,4 @@ configMapGenerator:
 # Pin to a built notify-service image (bump as new builds land).
 images:
   - name: ghcr.io/192d-wing/notify-service
-    newTag: latest
+    newTag: sha-d41a31e
