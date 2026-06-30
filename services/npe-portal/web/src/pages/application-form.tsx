@@ -1,10 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Alert,
   Box,
   Button,
-  ColumnLayout,
   Container,
   ContentLayout,
   CopyToClipboard,
@@ -205,6 +204,22 @@ export function ApplicationForm({
     retry: false,
     staleTime: Infinity,
   });
+
+  // When a pasted CSR parses, fold its SANs into the editable SAN list (deduped,
+  // never removing what the user already added) so they appear as tokens the
+  // requester can review and extend — not just in the read-only preview.
+  const parsedSans = csrPreview.data?.sans;
+  useEffect(() => {
+    if (!parsedSans || parsedSans.length === 0) return;
+    setSans((prev) => {
+      const merged = [...prev];
+      for (const s of parsedSans) {
+        if (!merged.includes(s)) merged.push(s);
+      }
+      return merged.length === prev.length ? prev : merged;
+    });
+  }, [parsedSans]);
+
   const pending = mutation.isPending || efsMutation.isPending;
   const canSubmit =
     (isEfs ? emailValid : csrValid && emailValid) && issmValid && pmValid && !pending;
@@ -514,28 +529,18 @@ export function ApplicationForm({
                           <Box color="text-status-inactive">Reading request…</Box>
                         )}
                         {csrPreview.data && (
-                          <ColumnLayout columns={2} variant="text-grid">
+                          <SpaceBetween size="xxs">
                             <div>
                               <Box variant="awsui-key-label">Common Name (CN)</Box>
                               <div>{csrPreview.data.commonName ?? "—"}</div>
                             </div>
-                            <div>
-                              <Box variant="awsui-key-label">
-                                Subject Alternative Names
+                            {csrPreview.data.sans.length > 0 && (
+                              <Box color="text-status-inactive" fontSize="body-s">
+                                {csrPreview.data.sans.length} subject alternative name(s) from
+                                the request were added to the list below.
                               </Box>
-                              <div>
-                                {csrPreview.data.sans.length > 0 ? (
-                                  <SpaceBetween size="xxs">
-                                    {csrPreview.data.sans.map((san) => (
-                                      <div key={san}>{san}</div>
-                                    ))}
-                                  </SpaceBetween>
-                                ) : (
-                                  "—"
-                                )}
-                              </div>
-                            </div>
-                          </ColumnLayout>
+                            )}
+                          </SpaceBetween>
                         )}
                         {csrPreview.isError && (
                           <Box color="text-status-warning">
