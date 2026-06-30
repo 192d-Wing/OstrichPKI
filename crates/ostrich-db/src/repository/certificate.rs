@@ -277,6 +277,7 @@ impl CertificateRepository {
         status: &str,
         search: Option<&str>,
         requestor: Option<&str>,
+        expiring_in_days: Option<i64>,
         sort: Option<&str>,
         descending: bool,
         limit: i64,
@@ -284,6 +285,11 @@ impl CertificateRepository {
     ) -> Result<(Vec<Certificate>, i64)> {
         // No user input is interpolated here — only bind placeholders — so the
         // shared predicate is safe to splice into both queries.
+        //
+        // The `expiring_in_days` ($4) clause mirrors `count_by_status`'s
+        // `expiring_soon` definition exactly (active subset: not revoked, already
+        // valid, not yet expired, expiring within the window) so the drill-down
+        // list and the dashboard card count always agree.
         const PREDICATE: &str = r#"
             (
                 $1 = 'all'
@@ -298,6 +304,15 @@ impl CertificateRepository {
                 OR POSITION(LOWER($2) IN encode(serial_number, 'hex')) > 0
             )
             AND ($3::text IS NULL OR requestor = $3)
+            AND (
+                $4::int IS NULL
+                OR (
+                    NOT revoked
+                    AND not_before <= NOW()
+                    AND not_after >= NOW()
+                    AND not_after < NOW() + make_interval(days => $4)
+                )
+            )
         "#;
 
         // SI-10: the ORDER BY is built only from a closed whitelist (column from a
@@ -315,11 +330,12 @@ impl CertificateRepository {
         // SI-10: PREDICATE is a fixed fragment with $N placeholders; status/search
         // are bound, not interpolated. AssertSqlSafe (sqlx 0.9) marks it audited.
         let rows = sqlx::query_as::<_, Certificate>(sqlx::AssertSqlSafe(format!(
-            "SELECT * FROM certificates WHERE {PREDICATE} ORDER BY {order_by}, id LIMIT $4 OFFSET $5"
+            "SELECT * FROM certificates WHERE {PREDICATE} ORDER BY {order_by}, id LIMIT $5 OFFSET $6"
         )))
         .bind(status)
         .bind(search)
         .bind(requestor)
+        .bind(expiring_in_days)
         .bind(limit)
         .bind(offset)
         .fetch_all(self.pool.pool())
@@ -332,6 +348,7 @@ impl CertificateRepository {
         .bind(status)
         .bind(search)
         .bind(requestor)
+        .bind(expiring_in_days)
         .fetch_one(self.pool.pool())
         .await
         .map_err(|e| Error::Query(e.to_string()))?;
