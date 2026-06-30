@@ -21,6 +21,18 @@ export function downloadText(text: string, filename: string, mimeType: string) {
   triggerDownload(new Blob([text], { type: mimeType }), filename);
 }
 
+/**
+ * Save a PEM certificate's raw DER bytes as a binary download. Strips the PEM
+ * armor (`-----BEGIN/END …-----`) and whitespace, leaving the base64 DER body.
+ */
+export function downloadPemAsDer(pem: string, filename: string) {
+  const body = pem
+    .replace(/-----BEGIN[^-]+-----/g, "")
+    .replace(/-----END[^-]+-----/g, "")
+    .replace(/\s+/g, "");
+  downloadBase64(body, filename, "application/pkix-cert");
+}
+
 /** Decode standard base64 into bytes and save them as a binary download. */
 export function downloadBase64(base64: string, filename: string, mimeType: string) {
   const binary = atob(base64);

@@ -10,6 +10,7 @@ import { SubmitApplicationPage } from "@/pages/submit-application";
 import { SubmitRekeyPage } from "@/pages/submit-rekey";
 import { MyApplicationsPage } from "@/pages/my-applications";
 import { ExpiringCertificatesPage } from "@/pages/expiring-certificates";
+import { CertificateDetailPage } from "@/pages/certificate-detail";
 import { ApplicationStatusPage } from "@/pages/application-status";
 import { BulkStatusPage } from "@/pages/bulk-status";
 import { CaDetailsPage } from "@/pages/ca-details";
@@ -70,6 +71,7 @@ export default function App() {
         <Route path="/certificates/status" element={<ApplicationStatusPage />} />
         <Route path="/certificates/mine" element={<MyApplicationsPage />} />
         <Route path="/certificates/expiring" element={<ExpiringCertificatesPage />} />
+        <Route path="/certificates/view" element={<CertificateDetailPage />} />
         <Route path="/certificates/bulk-status" element={<BulkStatusPage />} />
         <Route path="/certificates/ca-details" element={<CaDetailsPage />} />
         <Route path="/certificates/bulk" element={<SubmitBulkPage />} />

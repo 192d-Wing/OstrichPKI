@@ -42,9 +42,14 @@ rekey form pre-filled with the certificate's current SANs. Backend: added an
 `expiringInDays` filter to `GET /api/v1/certificates` (own-scoped, mirrors the
 `expiring_soon` count exactly). Future: PEM/DER/PKCS#7 download from the row (#3).
 
-### 3. Certificate detail + multi-format download — `Proposed` · frontend (CA data exists)
-Full cert view (subject, SANs, validity, serial, chain) with download as
-**PEM / DER / PKCS#7 / full chain**. Table-stakes for retrieving issued certs.
+### 3. Certificate detail + multi-format download — `Built` · frontend + backend
+Full cert view at `/certificates/view?id=` (subject, issuer, validity, serial,
+fingerprints, SKI/AKI, SANs, key usage/EKU, CRL/OCSP, extensions table) with a
+Download dropdown: **PEM / DER / full chain (PEM) / PKCS#7 (.p7b)**. PEM/DER/chain
+are derived client-side from the leaf PEM + CA chain; PKCS#7 is a new CA endpoint
+`GET /api/v1/certificates/{id}/pkcs7` (own-scoped, certs-only leaf+CA). The
+certs-only PKCS#7 builder was lifted from EST into shared `ostrich_x509::pkcs7`.
+Reachable from the Expiring Certificates list (CN link).
 
 ## 🧰 Self-service helpers
 

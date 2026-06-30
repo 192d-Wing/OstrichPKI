@@ -771,7 +771,10 @@ async fn get_ca_certs(
         .into_response())
 }
 
-/// Encode certificates as PKCS#7 certs-only structure
+/// Encode certificates as a PKCS#7 certs-only structure.
+///
+/// Thin wrapper over the shared [`ostrich_x509::pkcs7::encode_certs_only_pkcs7`]
+/// (kept so existing EST call sites and the error type are unchanged).
 ///
 /// RFC 7030 S4.1: Responses use degenerate PKCS#7 (CMS) SignedData
 /// with no signed content, only certificates in the certificates field.
@@ -781,61 +784,8 @@ async fn get_ca_certs(
 /// - RFC 5652 S5 - CMS SignedData structure
 /// - RFC 7030 S4.1.3 - EST CA certificates response format
 pub(crate) fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
-    use cms::{content_info::ContentInfo, signed_data::SignedData};
-    use der::{
-        Decode, Encode,
-        asn1::{ObjectIdentifier, SetOfVec},
-    };
-    use x509_cert::Certificate;
-
-    // RFC 5652 §5: SignedData content type OID
-    const SIGNED_DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2");
-
-    // Parse certificates from DER
-    let mut cert_choices = SetOfVec::new();
-    for cert_der in certs {
-        let cert = Certificate::from_der(cert_der)
-            .map_err(|e| Error::Internal(format!("Invalid certificate DER: {}", e)))?;
-        let choice = cms::cert::CertificateChoices::Certificate(cert);
-        cert_choices
-            .insert(choice)
-            .map_err(|e| Error::Internal(format!("Too many certificates: {}", e)))?;
-    }
-
-    // Create degenerate SignedData with no content and empty SignerInfos
-    let digest_algorithms = SetOfVec::new();
-
-    // RFC 5652 §3: data content type OID
-    const DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
-
-    let encap_content_info = cms::signed_data::EncapsulatedContentInfo {
-        econtent_type: DATA_OID,
-        econtent: None,
-    };
-
-    let signed_data = SignedData {
-        version: cms::content_info::CmsVersion::V1,
-        digest_algorithms,
-        encap_content_info,
-        certificates: if cert_choices.is_empty() {
-            None
-        } else {
-            Some(cert_choices.into())
-        },
-        crls: None,
-        signer_infos: SetOfVec::new().into(),
-    };
-
-    // Wrap in ContentInfo
-    let content_info = ContentInfo {
-        content_type: SIGNED_DATA_OID,
-        content: der::Any::encode_from(&signed_data)
-            .map_err(|e| Error::Internal(format!("Failed to encode SignedData: {}", e)))?,
-    };
-
-    content_info
-        .to_der()
-        .map_err(|e| Error::Internal(format!("Failed to encode PKCS#7: {}", e)))
+    ostrich_x509::pkcs7::encode_certs_only_pkcs7(certs)
+        .map_err(|e| Error::Internal(format!("PKCS#7 encoding failed: {e}")))
 }
 
 /// Simple enrollment (RFC 7030 S4.2.1)
