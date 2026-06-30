@@ -46,6 +46,59 @@ data:
       },
       "classificationBanner": "CUI",
       "cspNonceLength": 16,
+      "dodMode": true,
+      "certProfiles": [
+        { "label": "TLS Client", "value": "tls_client" },
+        { "label": "TLS Server", "value": "tls_server", "serverAuth": true },
+        { "label": "TLS Server + Client", "value": "tls_server_client", "serverAuth": true },
+        { "label": "EFS (File Encryption)", "value": "efs", "efs": true }
+      ],
+      "ccsaOptions": [
+        {
+          "label": "Military Services",
+          "options": [
+            { "label": "Air Force (USAF)", "value": "USAF" },
+            { "label": "Army (USA)", "value": "USA" },
+            { "label": "Navy (USN)", "value": "USN" },
+            { "label": "Marine Corps (USMC)", "value": "USMC" },
+            { "label": "Space Force (USSF)", "value": "USSF" },
+            { "label": "Coast Guard (USCG)", "value": "USCG" }
+          ]
+        },
+        {
+          "label": "Combatant Commands",
+          "options": [
+            { "label": "AFRICOM", "value": "AFRICOM" },
+            { "label": "CENTCOM", "value": "CENTCOM" },
+            { "label": "CYBERCOM", "value": "CYBERCOM" },
+            { "label": "EUCOM", "value": "EUCOM" },
+            { "label": "INDOPACOM", "value": "INDOPACOM" },
+            { "label": "NORTHCOM", "value": "NORTHCOM" },
+            { "label": "SOCOM", "value": "SOCOM" },
+            { "label": "SOUTHCOM", "value": "SOUTHCOM" },
+            { "label": "SPACECOM", "value": "SPACECOM" },
+            { "label": "STRATCOM", "value": "STRATCOM" },
+            { "label": "TRANSCOM", "value": "TRANSCOM" }
+          ]
+        },
+        {
+          "label": "Agencies & Field Activities",
+          "options": [
+            { "label": "DISA", "value": "DISA" },
+            { "label": "DLA", "value": "DLA" },
+            { "label": "DIA", "value": "DIA" },
+            { "label": "NSA", "value": "NSA" },
+            { "label": "NGA", "value": "NGA" },
+            { "label": "DCSA", "value": "DCSA" },
+            { "label": "DCMA", "value": "DCMA" },
+            { "label": "DFAS", "value": "DFAS" },
+            { "label": "DHA", "value": "DHA" },
+            { "label": "DTRA", "value": "DTRA" },
+            { "label": "MDA", "value": "MDA" },
+            { "label": "OSD / WHS", "value": "OSD" }
+          ]
+        }
+      ],
       "staticFiles": {
         "directory": "/app/static",
         "urlPrefix": "/static"

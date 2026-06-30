@@ -50,6 +50,144 @@ pub struct NpePortalConfig {
     /// `TLS_CERT_FILE`/`TLS_KEY_FILE`.
     #[serde(default)]
     pub acme: Option<AcmeConfig>,
+
+    /// DoD deployment mode. Enables DoD-specific UI — currently the CC/S/A
+    /// (Combatant Command / Service / Agency) selector on the submit form,
+    /// which is hidden when this is false.
+    #[serde(default)]
+    pub dod_mode: bool,
+
+    /// Certificate profiles offered on the submit form. Configurable here so the
+    /// catalog is deployment-controlled (this configmap) rather than hardcoded.
+    #[serde(default = "default_cert_profiles")]
+    pub cert_profiles: Vec<CertProfileConfig>,
+
+    /// CC/S/A option groups for the submit form's selector. Shown only when
+    /// `dod_mode` is true. Deployment-controlled (this configmap).
+    #[serde(default = "default_ccsa_options")]
+    pub ccsa_options: Vec<CcsaGroupConfig>,
+}
+
+/// A selectable certificate profile on the submit form.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertProfileConfig {
+    /// Display label.
+    pub label: String,
+    /// Profile identifier sent to the CA.
+    pub value: String,
+    /// Server-side key generation flow (EFS): no CSR is required; the server
+    /// generates the key and returns a one-time PKCS#12.
+    #[serde(default)]
+    pub efs: bool,
+    /// Carries the id-kp-serverAuth EKU, which drives the 397-day validity
+    /// advisory on the form.
+    #[serde(default)]
+    pub server_auth: bool,
+}
+
+/// A CC/S/A option group (e.g. "Military Services").
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CcsaGroupConfig {
+    pub label: String,
+    pub options: Vec<CcsaOptionConfig>,
+}
+
+/// A single CC/S/A option.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CcsaOptionConfig {
+    pub label: String,
+    pub value: String,
+}
+
+fn default_cert_profiles() -> Vec<CertProfileConfig> {
+    vec![
+        CertProfileConfig {
+            label: "TLS Client".into(),
+            value: "tls_client".into(),
+            efs: false,
+            server_auth: false,
+        },
+        CertProfileConfig {
+            label: "TLS Server".into(),
+            value: "tls_server".into(),
+            efs: false,
+            server_auth: true,
+        },
+        CertProfileConfig {
+            label: "TLS Server + Client".into(),
+            value: "tls_server_client".into(),
+            efs: false,
+            server_auth: true,
+        },
+        CertProfileConfig {
+            label: "EFS (File Encryption)".into(),
+            value: "efs".into(),
+            efs: true,
+            server_auth: false,
+        },
+    ]
+}
+
+fn ccsa_group(label: &str, opts: &[(&str, &str)]) -> CcsaGroupConfig {
+    CcsaGroupConfig {
+        label: label.into(),
+        options: opts
+            .iter()
+            .map(|(l, v)| CcsaOptionConfig { label: (*l).into(), value: (*v).into() })
+            .collect(),
+    }
+}
+
+fn default_ccsa_options() -> Vec<CcsaGroupConfig> {
+    vec![
+        ccsa_group(
+            "Military Services",
+            &[
+                ("Air Force (USAF)", "USAF"),
+                ("Army (USA)", "USA"),
+                ("Navy (USN)", "USN"),
+                ("Marine Corps (USMC)", "USMC"),
+                ("Space Force (USSF)", "USSF"),
+                ("Coast Guard (USCG)", "USCG"),
+            ],
+        ),
+        ccsa_group(
+            "Combatant Commands",
+            &[
+                ("AFRICOM", "AFRICOM"),
+                ("CENTCOM", "CENTCOM"),
+                ("CYBERCOM", "CYBERCOM"),
+                ("EUCOM", "EUCOM"),
+                ("INDOPACOM", "INDOPACOM"),
+                ("NORTHCOM", "NORTHCOM"),
+                ("SOCOM", "SOCOM"),
+                ("SOUTHCOM", "SOUTHCOM"),
+                ("SPACECOM", "SPACECOM"),
+                ("STRATCOM", "STRATCOM"),
+                ("TRANSCOM", "TRANSCOM"),
+            ],
+        ),
+        ccsa_group(
+            "Agencies & Field Activities",
+            &[
+                ("DISA", "DISA"),
+                ("DLA", "DLA"),
+                ("DIA", "DIA"),
+                ("NSA", "NSA"),
+                ("NGA", "NGA"),
+                ("DCSA", "DCSA"),
+                ("DCMA", "DCMA"),
+                ("DFAS", "DFAS"),
+                ("DHA", "DHA"),
+                ("DTRA", "DTRA"),
+                ("MDA", "MDA"),
+                ("OSD / WHS", "OSD"),
+            ],
+        ),
+    ]
 }
 
 /// ACME client configuration (RFC 8555). The portal obtains its server cert
@@ -247,6 +385,9 @@ impl Default for NpePortalConfig {
             oid_mapping: super::oid::OidRoleMapping::default(),
             classification_banner: default_classification(),
             classification_color: None,
+            dod_mode: false,
+            cert_profiles: default_cert_profiles(),
+            ccsa_options: default_ccsa_options(),
             csp_nonce_length: default_nonce_length(),
             static_files: StaticFilesConfig::default(),
             acme: None,
