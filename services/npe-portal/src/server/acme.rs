@@ -137,8 +137,30 @@ pub async fn obtain_certificate(
         if status != OrderStatus::Ready {
             anyhow::bail!("ACME order did not become ready (status: {status:?})");
         }
-        let private_key_pem = order.finalize().await?;
+
+        // Finalize with a CSR that carries a subject Common Name (the primary
+        // domain), not just Subject Alternative Names. instant-acme's default
+        // `finalize()` emits a CN-less CSR (empty subject); an empty subject
+        // paired with a NON-critical SAN violates RFC 5280 §4.1.2.6 ("If the
+        // subject field contains an empty sequence ... the issuing CA MUST include
+        // a subjectAltName extension that is marked as critical") and is rejected
+        // as invalid by strict validators (notably Windows/schannel), besides
+        // showing a blank "Issued To". Supplying our own CSR with a CN avoids
+        // both. The keypair generated here is the certificate's private key.
+        let primary = cfg.domains[0].clone();
+        let key = rcgen::KeyPair::generate()
+            .map_err(|e| anyhow::anyhow!("failed to generate certificate key: {e}"))?;
+        let mut params = rcgen::CertificateParams::new(cfg.domains.clone())
+            .map_err(|e| anyhow::anyhow!("invalid domains for CSR: {e}"))?;
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(rcgen::DnType::CommonName, primary);
+        params.distinguished_name = dn;
+        let csr = params
+            .serialize_request(&key)
+            .map_err(|e| anyhow::anyhow!("failed to build CSR: {e}"))?;
+        order.finalize_csr(csr.der()).await?;
         let cert_chain_pem = order.poll_certificate(&RetryPolicy::default()).await?;
+        let private_key_pem = key.serialize_pem();
         Ok(CertMaterial { cert_chain_pem, private_key_pem })
     }
     .await;
