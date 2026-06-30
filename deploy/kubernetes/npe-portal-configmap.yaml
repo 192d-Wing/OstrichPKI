@@ -34,7 +34,7 @@ data:
         "caaOids": ["2.16.840.1.101.2.1.11.45"],
         "allowedIssuers": ["CN=Example NPE Issuing CA,O=U.S. Government,C=US"]
       },
-      "classificationBanner": "UNCLASSIFIED//FOUO",
+      "classificationBanner": "CUI",
       "cspNonceLength": 16,
       "staticFiles": {
         "directory": "/app/static",
