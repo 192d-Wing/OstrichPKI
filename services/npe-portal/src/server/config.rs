@@ -66,6 +66,12 @@ pub struct NpePortalConfig {
     /// `dod_mode` is true. Deployment-controlled (this configmap).
     #[serde(default = "default_ccsa_options")]
     pub ccsa_options: Vec<CcsaGroupConfig>,
+
+    /// Public base URL of the EST server (e.g. `https://est.example.mil`), used
+    /// to pre-fill the enrollment commands on the EST catalog page. When unset,
+    /// the page derives a best-guess from the browser host (editable there).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub est_base_url: Option<String>,
 }
 
 /// A selectable certificate profile on the submit form.
@@ -388,6 +394,7 @@ impl Default for NpePortalConfig {
             dod_mode: false,
             cert_profiles: default_cert_profiles(),
             ccsa_options: default_ccsa_options(),
+            est_base_url: None,
             csp_nonce_length: default_nonce_length(),
             static_files: StaticFilesConfig::default(),
             acme: None,
