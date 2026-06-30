@@ -20,11 +20,19 @@ CAA user / namespace / system-config, About/Preferences, ACME auto-cert.
 
 ## 🔑 Certificate lifecycle (highest impact)
 
-### 1. Expiry-notification emails — `Proposed` · backend
-A scheduled job scans for certs nearing expiry (reuse the `expiringSoon` query)
-and emails the requester + **ISSM** + **PM** (the fields already collected on the
-submit form). Needs SMTP config + a periodic task. Closes the loop the ISSM/PM
-fields opened.
+### 1. Expiry-notification emails — `Built (deploy pending)` · backend
+**Implemented as a decoupled subsystem** (`services/notify-server` +
+`deploy/kubernetes/notify/` + CA producer):
+- CA producer (`NOTIFY_ENABLED`) scans expiring certs, resolves recipients from
+  the approval request (requester + **ISSM** + **PM**), and publishes the agreed
+  JSON schedule to NATS JetStream (`cert.expiry.notify`).
+- **notify-scheduler** stores schedules in its own Postgres, ticks on
+  day/time/frequency, publishes due emails to `email.send` (dedup per cert/day).
+- **notify-sender** delivers via SMTP (lettre; plain or STARTTLS).
+
+Remaining: deploy (NATS + notify Postgres + scheduler/sender), point at an SMTP
+relay, enable `NOTIFY_ENABLED` on the CA. Future: per-cert frequency/days/time on
+the submit form (producer uses defaults today).
 
 ### 2. Expiring-soon drill-down + one-click renew — `Proposed` · frontend
 The dashboard's "Expiring in 90 Days" card opens a filtered list; each row has a
