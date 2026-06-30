@@ -184,6 +184,11 @@ pub fn create_router(
             "/api/v1/certificates/{id}",
             get(get_certificate).route_layer(authz(Permission::ViewCertificate)),
         )
+        // Certs-only PKCS#7 (.p7b) download — the leaf plus its issuing CA.
+        .route(
+            "/api/v1/certificates/{id}/pkcs7",
+            get(get_certificate_pkcs7).route_layer(authz(Permission::ViewCertificate)),
+        )
         .route(
             "/api/v1/certificates/{id}/revoke",
             post(revoke_certificate).route_layer(authz(Permission::RevokeCertificate)),
@@ -812,6 +817,14 @@ struct CertificateDetailsDto {
     pem: String,
 }
 
+/// Certs-only PKCS#7 (.p7b) download payload: base64-encoded DER of the leaf
+/// certificate plus its issuing CA certificate.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CertificatePkcs7Dto {
+    pkcs7: String,
+}
+
 /// List issued certificates (paginated).
 ///
 /// # COMPLIANCE MAPPING
@@ -1404,6 +1417,56 @@ async fn get_certificate(
     );
 
     Ok(Json(details).into_response())
+}
+
+/// Download a certificate as a certs-only PKCS#7 (.p7b): the leaf plus its
+/// issuing CA certificate, base64-encoded DER. Backs the certificate detail
+/// view's "Download PKCS#7" option (PEM/DER/full-chain are derived client-side).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3 - Access enforcement (Permission::ViewCertificate); own-scoped
+/// - NIST 800-53: AU-2/AU-3 - Records who downloaded which certificate
+/// - RFC 5652 §5 / RFC 7030 §4.1.3 - degenerate certs-only PKCS#7 (CMS SignedData)
+async fn get_certificate_pkcs7(
+    State(state): State<Arc<ApiState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Response> {
+    let cert_id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return Ok((StatusCode::BAD_REQUEST, "invalid certificate id").into_response());
+        }
+    };
+
+    let repo = CertificateRepository::new(state.db_pool.clone());
+    let cert = match repo.find_by_id(cert_id).await? {
+        Some(cert) => cert,
+        None => return Ok((StatusCode::NOT_FOUND, "certificate not found").into_response()),
+    };
+    // Own-scope: a Sponsor may download only certificates they requested.
+    if let Some(requestor) = certificate_requestor_scope(&user)
+        && cert.requestor.as_deref() != Some(requestor)
+    {
+        return Err(Error::InsufficientRole {
+            required: "certificate ownership or global certificate-view permission".to_string(),
+        });
+    }
+
+    // Leaf first, then the issuing CA certificate, so the .p7b carries the chain.
+    let bundle = [cert.der_encoded.clone(), state.ca.certificate_der().to_vec()];
+    let p7 = ostrich_x509::pkcs7::encode_certs_only_pkcs7(&bundle)?;
+
+    tracing::info!(
+        actor = %user.username,
+        resource = %cert.id,
+        "certificate downloaded as PKCS#7"
+    );
+
+    Ok(Json(CertificatePkcs7Dto {
+        pkcs7: BASE64_STANDARD.encode(&p7),
+    })
+    .into_response())
 }
 
 /// Revoke a certificate

@@ -81,17 +81,46 @@ export interface CertificateSan {
   value: string;
 }
 
-// Subset of the CA's full certificate detail DTO that the renew flow needs.
+export interface CertificateExtension {
+  oid: string;
+  name: string;
+  critical: boolean;
+  value: string;
+}
+
+// The CA's full certificate detail DTO (camelCase). Backs the detail view and
+// the renew pre-fill.
 export interface CertificateDetail {
   id: string;
   serialNumber: string;
+  version: number;
   status: string;
   subjectDn: string;
+  issuerDn: string;
+  validFrom: string;
   validTo: string;
   daysRemaining?: number | null;
+  keyAlgorithm: string;
+  keySize: number;
+  signatureAlgorithm: string;
+  fingerprintSha256: string;
+  fingerprintSha1: string;
+  extensions: CertificateExtension[];
   subjectAltNames: CertificateSan[];
   keyUsage: string[];
   extendedKeyUsage: string[];
+  authorityKeyId?: string | null;
+  subjectKeyId?: string | null;
+  crlDistributionPoints: string[];
+  ocspResponderUrls: string[];
+  revocationTime?: string | null;
+  revocationReason?: string | null;
+  pem: string;
+}
+
+// Certs-only PKCS#7 (.p7b) download payload: base64-encoded DER (leaf + CA).
+export interface CertificatePkcs7 {
+  pkcs7: string;
 }
 
 // Filters for the certificate inventory listing.
@@ -315,6 +344,10 @@ export const portalApi = {
   /** Full certificate detail (SANs, key usage) — used to pre-fill a renewal. */
   certificateDetail: (id: string) =>
     api.get<CertificateDetail>(`/ca/api/v1/certificates/${encodeURIComponent(id)}`),
+
+  /** Certs-only PKCS#7 (.p7b) for a certificate: base64 DER of leaf + issuing CA. */
+  certificatePkcs7: (id: string) =>
+    api.get<CertificatePkcs7>(`/ca/api/v1/certificates/${encodeURIComponent(id)}/pkcs7`),
 
   /** Revoke an issued certificate. `reason` is an RFC 5280 reason-code name. */
   revokeCertificate: (id: string, reason: string, justification: string) =>

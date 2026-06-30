@@ -7,6 +7,7 @@ import {
   Button,
   ContentLayout,
   Header,
+  Link,
   SpaceBetween,
   Table,
 } from "@cloudscape-design/components";
@@ -29,11 +30,20 @@ function commonName(subjectDn: string): string {
   return match ? match[1].trim() : subjectDn;
 }
 
+// <=30 days is the urgent band; <=60 is a heads-up; otherwise neutral.
+function expiryColor(days: number): "red" | "blue" | "grey" {
+  if (days <= 30) return "red";
+  if (days <= 60) return "blue";
+  return "grey";
+}
+
+function expiryLabel(days: number): string {
+  if (days <= 0) return "Expires today";
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
 function ExpiryBadge({ days }: Readonly<{ days: number }>) {
-  // <=30 days is the urgent band; <=60 is a heads-up; otherwise neutral.
-  const color = days <= 30 ? "red" : days <= 60 ? "blue" : "grey";
-  const label = days <= 0 ? "Expires today" : `${days} day${days === 1 ? "" : "s"}`;
-  return <Badge color={color}>{label}</Badge>;
+  return <Badge color={expiryColor(days)}>{expiryLabel(days)}</Badge>;
 }
 
 export function ExpiringCertificatesPage() {
@@ -79,7 +89,11 @@ export function ExpiringCertificatesPage() {
           {
             id: "subject",
             header: "Common Name",
-            cell: (c) => commonName(c.subject),
+            cell: (c) => (
+              <Link onFollow={() => navigate(`/certificates/view?id=${encodeURIComponent(c.id)}`)}>
+                {commonName(c.subject)}
+              </Link>
+            ),
           },
           {
             id: "serial",
