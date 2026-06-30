@@ -23,6 +23,7 @@
 //! - NIST 800-53: SI-10 (input validation), AC-3 (the resolved profile/backend
 //!   gates issuance)
 
+use serde::Serialize;
 use thiserror::Error;
 
 /// Maximum accepted requested-validity in days (sanity bound).
@@ -115,6 +116,128 @@ impl ParsedLabel {
             "EFS" => Ok("efs"),
             other => Err(LabelError::UnsupportedProfileType(other.to_string())),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Enrollment catalog (for the NPE-portal "EST / enrollment catalog" page).
+//
+// This is the single source of truth for which profile types and key
+// algorithms the label scheme offers — generated from the same tokens the
+// parser validates, so the catalog can never advertise a token issuance would
+// reject (or omit one it accepts).
+// ---------------------------------------------------------------------------
+
+/// One profile-type token in the enrollment catalog.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogProfile {
+    /// The `PT` token as it appears in a label (e.g. "TLS").
+    pub token: String,
+    /// The OstrichPKI profile it resolves to, if issuable today.
+    pub profile_name: Option<String>,
+    /// Human-readable name.
+    pub display: String,
+    /// What the profile is for.
+    pub description: String,
+    /// Whether the CA can issue this profile today (vs. recognized-but-reserved).
+    pub issuable: bool,
+    /// True for profiles delivered via server-side key generation (EFS): use
+    /// `serverkeygen`, not `simpleenroll`, and no CSR is supplied.
+    pub server_keygen: bool,
+}
+
+/// One key-algorithm token in the enrollment catalog.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogKeyAlgo {
+    /// The `AK` token (e.g. "P384").
+    pub token: String,
+    /// Human-readable name.
+    pub display: String,
+    /// What the token selects.
+    pub description: String,
+}
+
+/// The full enrollment catalog: the label scheme plus its valid tokens.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EstCatalog {
+    /// The label grammar, for display.
+    pub label_format: String,
+    pub profiles: Vec<CatalogProfile>,
+    pub key_algorithms: Vec<CatalogKeyAlgo>,
+    /// Maximum requested validity (`VP`) in days.
+    pub max_validity_days: u32,
+    /// Maximum CC/S/A (`CC`) code length.
+    pub max_ccsa_len: usize,
+    /// A few well-formed example labels.
+    pub examples: Vec<String>,
+}
+
+/// Static display metadata for each known profile type. Kept beside
+/// [`KNOWN_PROFILE_TYPES`] / [`ParsedLabel::profile_name`] so the three stay in
+/// step: (token, display, description, server_keygen).
+const PROFILE_META: [(&str, &str, &str, bool); 9] = [
+    ("DEV", "Device (TLS client)", "Client-authentication TLS certificate for a device or non-person entity.", false),
+    ("TLS", "TLS server", "Server-authentication TLS certificate (id-kp-serverAuth; capped at 397 days).", false),
+    ("DC", "Domain controller (mutual TLS)", "Both client and server authentication.", false),
+    ("EFS", "EFS file encryption", "Microsoft Encrypting File System: server-side RSA-2048 key generation delivered as an encrypted PKCS#12. Use serverkeygen (no CSR).", true),
+    ("EMAIL", "S/MIME email", "Email protection (S/MIME). Recognized but not yet issuable.", false),
+    ("IPSEC", "IPsec", "IPsec endpoint. Recognized but not yet issuable.", false),
+    ("MCAUTH", "Mobile-code authentication", "Recognized but not yet issuable.", false),
+    ("MCKEY", "Mobile-code key management", "Recognized but not yet issuable.", false),
+    ("KERB", "Kerberos / smartcard logon", "Recognized but not yet issuable.", false),
+];
+
+/// Build the enrollment catalog from the label scheme's own token sets.
+pub fn catalog() -> EstCatalog {
+    let profiles = PROFILE_META
+        .iter()
+        .map(|&(token, display, description, server_keygen)| {
+            // `profile_name()` is the authority on issuability.
+            let parsed = ParsedLabel {
+                profile_type: token.to_string(),
+                key_algo: None,
+                validity_days: None,
+                ccsa: None,
+            };
+            let profile_name = parsed.profile_name().ok().map(str::to_string);
+            CatalogProfile {
+                token: token.to_string(),
+                issuable: profile_name.is_some(),
+                profile_name,
+                display: display.to_string(),
+                description: description.to_string(),
+                server_keygen,
+            }
+        })
+        .collect();
+
+    let key_algorithms = [
+        (KeyAlgo::Rsa2048, "RSA 2048", "RSA-2048 issuing CA backend."),
+        (KeyAlgo::EcP384, "EC P-384", "Elliptic-curve P-384 issuing CA backend."),
+    ]
+    .iter()
+    .map(|&(algo, display, description)| CatalogKeyAlgo {
+        token: algo.token().to_string(),
+        display: display.to_string(),
+        description: description.to_string(),
+    })
+    .collect();
+
+    EstCatalog {
+        label_format: "PT<profile>[-AK<key-algo>][-VP<validity-days>][-CC<cc/s/a>]".to_string(),
+        profiles,
+        key_algorithms,
+        max_validity_days: MAX_VALIDITY_DAYS,
+        max_ccsa_len: MAX_CCSA_LEN,
+        examples: vec![
+            "PTDEV".to_string(),
+            "PTTLS-AKP384-VP397".to_string(),
+            "PTDC-AK2048-CCUSAF".to_string(),
+            "PTEFS".to_string(),
+        ],
     }
 }
 
@@ -291,6 +414,31 @@ mod tests {
     #[test]
     fn rejects_empty() {
         assert_eq!(parse_label("   "), Err(LabelError::Empty));
+    }
+
+    #[test]
+    fn catalog_matches_parser() {
+        let cat = catalog();
+        // Every catalog profile token must be one the parser recognizes, and its
+        // `issuable` flag must agree with `profile_name()`.
+        for p in &cat.profiles {
+            assert!(KNOWN_PROFILE_TYPES.contains(&p.token.as_str()), "{}", p.token);
+            let parsed = parse_label(&format!("PT{}", p.token)).unwrap();
+            assert_eq!(p.issuable, parsed.profile_name().is_ok(), "{}", p.token);
+            assert_eq!(p.profile_name.is_some(), p.issuable, "{}", p.token);
+        }
+        // DEV/TLS/DC/EFS are the issuable set today.
+        let issuable: Vec<&str> =
+            cat.profiles.iter().filter(|p| p.issuable).map(|p| p.token.as_str()).collect();
+        assert_eq!(issuable, ["DEV", "TLS", "DC", "EFS"]);
+        // Every key-algorithm token round-trips through the parser.
+        for k in &cat.key_algorithms {
+            assert!(KeyAlgo::from_token(&k.token).is_some(), "{}", k.token);
+        }
+        // Examples are all valid labels.
+        for ex in &cat.examples {
+            assert!(parse_label(ex).is_ok(), "{ex}");
+        }
     }
 
     #[test]

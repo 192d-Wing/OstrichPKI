@@ -260,6 +260,31 @@ export interface ParsedCsrInfo {
   sans: string[];
 }
 
+// --- EST enrollment catalog (GET /est/.well-known/est/catalog) ---
+export interface EstCatalogProfile {
+  token: string;
+  profileName?: string | null;
+  display: string;
+  description: string;
+  issuable: boolean;
+  serverKeygen: boolean;
+}
+
+export interface EstCatalogKeyAlgo {
+  token: string;
+  display: string;
+  description: string;
+}
+
+export interface EstCatalog {
+  labelFormat: string;
+  profiles: EstCatalogProfile[];
+  keyAlgorithms: EstCatalogKeyAlgo[];
+  maxValidityDays: number;
+  maxCcsaLen: number;
+  examples: string[];
+}
+
 /** Inventory certificate counts (dashboard). Own-scoped for Sponsors. */
 export interface CertificateStats {
   total: number;
@@ -378,6 +403,9 @@ export const portalApi = {
     ),
 
   caInfo: () => api.get<CaInfo>("/ca/api/v1/ca/info"),
+
+  /** EST enrollment catalog (label scheme + profile/key-algorithm tokens). */
+  estCatalog: () => api.get<EstCatalog>("/est/.well-known/est/catalog"),
 
   /** Mint an EST enrollment password (single- or multi-use). */
   mintToken: (identity: string, maxUses: number) =>

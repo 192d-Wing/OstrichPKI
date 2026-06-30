@@ -517,7 +517,11 @@ pub fn create_router(state: EstState) -> Router {
         .route("/.well-known/est/{label}/cacerts", get(get_ca_certs))
         // RFC 7030 §4.5: CSR attributes - optionally requires auth
         .route("/.well-known/est/csrattrs", get(get_csr_attrs))
-        .route("/.well-known/est/{label}/csrattrs", get(get_csr_attrs));
+        .route("/.well-known/est/{label}/csrattrs", get(get_csr_attrs))
+        // Enrollment catalog: the label scheme + valid profile/key-algorithm
+        // tokens, for the NPE-portal "EST / enrollment catalog" page. Public,
+        // non-sensitive discovery metadata (no certificate data).
+        .route("/.well-known/est/catalog", get(get_catalog));
 
     // Per-permission authorization, applied to each MethodRouter individually.
     //
@@ -733,6 +737,20 @@ async fn health_check() -> impl IntoResponse {
 /// Checks database connectivity.
 async fn readiness_check(State(state): State<EstState>) -> impl IntoResponse {
     ostrich_common::health::readiness_response_with_db("ostrich-est", &state.db_pool).await
+}
+
+/// EST enrollment catalog (profile types, key algorithms, label scheme).
+///
+/// Backs the NPE-portal "EST / enrollment catalog" page. The payload is derived
+/// from the label parser's own token sets (`crate::label::catalog`), so it can
+/// never advertise a token issuance would reject. Public, non-sensitive metadata
+/// (no certificate or key material), so no client authentication is required.
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 7030 §3.2.2 - profile-label scheme this catalog documents
+/// - NIST 800-53: AC-3 - read of non-sensitive configuration metadata
+async fn get_catalog() -> Json<crate::label::EstCatalog> {
+    Json(crate::label::catalog())
 }
 
 /// Get CA certificates (RFC 7030 S4.1)
