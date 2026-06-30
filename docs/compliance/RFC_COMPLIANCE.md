@@ -651,8 +651,12 @@ Key corrections in this phase:
   path now rejects a request whose nonce was unknown/expired/already used
   (`badNonce`). **Fixed:** previously the boolean result was ignored, so a
   replayed (already-consumed) nonce was accepted — a replay-protection bypass.
-
-**Enhancement Needed:** Phase 15 - Use FIPS-validated DRBG instead of UUID
+- ✅ **Method-specific status codes (RFC 8555 §7.2):** `get_new_nonce` now returns
+  **200 (OK)** for `HEAD` and **204 (No Content)** for `GET` (both with a fresh
+  `Replay-Nonce`). **Fixed:** previously it returned `204` for both; the §7.2
+  SHOULD-200 for HEAD was not honored, which strictly-conformant clients (e.g.
+  `instant-acme`) reject with "error response from newNonce resource". The route
+  remains GET/HEAD only — any other method is `405` (no POST tolerance).
 
 ---
 
