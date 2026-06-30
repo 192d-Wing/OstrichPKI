@@ -180,6 +180,16 @@ export interface ParsedCsrInfo {
   sans: string[];
 }
 
+/** Inventory certificate counts (dashboard). Own-scoped for Sponsors. */
+export interface CertificateStats {
+  total: number;
+  active: number;
+  revoked: number;
+  expired: number;
+  pending: number;
+  expiringSoon: number;
+}
+
 export const portalApi = {
   /**
    * Parse a pasted PKCS#10 CSR to preview its Common Name + Subject Alternative
@@ -187,6 +197,10 @@ export const portalApi = {
    */
   parseCsr: (csrPem: string) =>
     api.post<ParsedCsrInfo>("/v1/parse-csr", { csr_pem: csrPem }),
+
+  /** Inventory certificate counts for the dashboard (own-scoped for Sponsors). */
+  certificateStats: () =>
+    api.get<CertificateStats>("/ca/api/v1/certificates/stats"),
 
   /** Submit a certificate application (issuance) or rekey (renewal). */
   submitApplication: (
