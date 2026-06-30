@@ -18,6 +18,7 @@ const CERT_MGMT_SPONSOR: NavLink[] = [
   { text: "Submit Certificate Rekey", href: "/certificates/rekey" },
   { text: "View Certificate Application Status", href: "/certificates/status" },
   { text: "View My Certificate Applications", href: "/certificates/mine" },
+  { text: "View Expiring Certificates", href: "/certificates/expiring" },
   { text: "View Bulk Status", href: "/certificates/bulk-status" },
   { text: "View Certificate Authorities Details", href: "/certificates/ca-details" },
 ];

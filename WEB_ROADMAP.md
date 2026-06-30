@@ -20,23 +20,27 @@ CAA user / namespace / system-config, About/Preferences, ACME auto-cert.
 
 ## 🔑 Certificate lifecycle (highest impact)
 
-### 1. Expiry-notification emails — `Built (deploy pending)` · backend
-**Implemented as a decoupled subsystem** (`services/notify-server` +
+### 1. Expiry-notification emails — `Deployed (2026-06-30)` · backend
+**Decoupled subsystem live in `ostrich-pki`** (`services/notify-server` +
 `deploy/kubernetes/notify/` + CA producer):
 - CA producer (`NOTIFY_ENABLED`) scans expiring certs, resolves recipients from
   the approval request (requester + **ISSM** + **PM**), and publishes the agreed
   JSON schedule to NATS JetStream (`cert.expiry.notify`).
 - **notify-scheduler** stores schedules in its own Postgres, ticks on
-  day/time/frequency, publishes due emails to `email.send` (dedup per cert/day).
-- **notify-sender** delivers via SMTP (lettre; plain or STARTTLS).
+  day/time/frequency, publishes due emails to `email.send` (once per cadence
+  period — day/ISO-week/month — with crash-safe re-drive of unsent windows).
+- **notify-sender** delivers via SMTP (lettre; none/STARTTLS/implicit-TLS), with
+  bounded redelivery + poison-message drop.
 
-Remaining: deploy (NATS + notify Postgres + scheduler/sender), point at an SMTP
-relay, enable `NOTIFY_ENABLED` on the CA. Future: per-cert frequency/days/time on
-the submit form (producer uses defaults today).
+Future: per-cert frequency/days/time on the submit form (producer uses defaults
+today); audit events on send/publish; `docs/compliance/` sweep for the subsystem.
 
-### 2. Expiring-soon drill-down + one-click renew — `Proposed` · frontend
-The dashboard's "Expiring in 90 Days" card opens a filtered list; each row has a
-**Renew/Rekey** button that pre-fills the submit form.
+### 2. Expiring-soon drill-down + one-click renew — `Built` · frontend + backend
+The dashboard's "Expiring in 90 Days" card opens a filtered list
+(`/certificates/expiring`); each row has a **Renew/Rekey** button that opens the
+rekey form pre-filled with the certificate's current SANs. Backend: added an
+`expiringInDays` filter to `GET /api/v1/certificates` (own-scoped, mirrors the
+`expiring_soon` count exactly). Future: PEM/DER/PKCS#7 download from the row (#3).
 
 ### 3. Certificate detail + multi-format download — `Proposed` · frontend (CA data exists)
 Full cert view (subject, SANs, validity, serial, chain) with download as

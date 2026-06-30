@@ -57,6 +57,55 @@ export interface CertificateSummary {
   daysRemaining?: number | null;
 }
 
+// One row of the certificate inventory listing (GET /ca/api/v1/certificates).
+export interface CertificateRow {
+  id: string;
+  serialNumber: string;
+  subject: string;
+  issuer: string;
+  validFrom: string;
+  validTo: string;
+  status: string;
+  keyAlgorithm?: string | null;
+}
+
+export interface CertificateListResponse {
+  certificates: CertificateRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface CertificateSan {
+  nameType: string;
+  value: string;
+}
+
+// Subset of the CA's full certificate detail DTO that the renew flow needs.
+export interface CertificateDetail {
+  id: string;
+  serialNumber: string;
+  status: string;
+  subjectDn: string;
+  validTo: string;
+  daysRemaining?: number | null;
+  subjectAltNames: CertificateSan[];
+  keyUsage: string[];
+  extendedKeyUsage: string[];
+}
+
+// Filters for the certificate inventory listing.
+export interface ListCertificatesParams {
+  status?: string;
+  search?: string;
+  /** Active certs expiring within this many days (drill-down from the dashboard). */
+  expiringInDays?: number;
+  sort?: "serial" | "subject" | "issuer" | "expires";
+  order?: "asc" | "desc";
+  page?: number;
+  pageSize?: number;
+}
+
 // RFC 5280 §5.3.1 revocation reason codes, serialized as the RevocationReason
 // enum variant names the CA expects.
 export const REVOCATION_REASONS = [
@@ -239,9 +288,33 @@ export const portalApi = {
       { reason, justification },
     ),
 
+  /**
+   * List issued certificates (own-scoped for Sponsors). With `expiringInDays`
+   * this is the drill-down behind the dashboard's "Expiring in N Days" card and
+   * matches that count exactly.
+   */
+  listCertificates: (params: ListCertificatesParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set("status", params.status);
+    if (params.search) qs.set("search", params.search);
+    if (params.expiringInDays != null)
+      qs.set("expiringInDays", String(params.expiringInDays));
+    if (params.sort) qs.set("sort", params.sort);
+    if (params.order) qs.set("order", params.order);
+    if (params.page != null) qs.set("page", String(params.page));
+    if (params.pageSize != null) qs.set("pageSize", String(params.pageSize));
+    const query = qs.toString();
+    const suffix = query ? `?${query}` : "";
+    return api.get<CertificateListResponse>(`/ca/api/v1/certificates${suffix}`);
+  },
+
   /** Look up an issued certificate by id (for review before revoking). */
   getCertificate: (id: string) =>
     api.get<CertificateSummary>(`/ca/api/v1/certificates/${encodeURIComponent(id)}`),
+
+  /** Full certificate detail (SANs, key usage) — used to pre-fill a renewal. */
+  certificateDetail: (id: string) =>
+    api.get<CertificateDetail>(`/ca/api/v1/certificates/${encodeURIComponent(id)}`),
 
   /** Revoke an issued certificate. `reason` is an RFC 5280 reason-code name. */
   revokeCertificate: (id: string, reason: string, justification: string) =>

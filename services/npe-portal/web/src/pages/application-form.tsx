@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Alert,
@@ -63,6 +64,12 @@ const KEY_USAGE_OPTIONS: MultiselectProps.Options = [
   { label: "Decipher Only", value: "decipherOnly" },
 ];
 
+/** Common Name pulled from an RFC 4514 subject DN, falling back to the full DN. */
+function commonName(subjectDn: string): string {
+  const match = /CN=([^,]+)/i.exec(subjectDn);
+  return match ? match[1].trim() : subjectDn;
+}
+
 // Example placeholder for the SAN value input by kind (203.0.113.x is the RFC
 // 5737 documentation range, never a real host).
 function sanPlaceholder(type: string | undefined): string {
@@ -108,6 +115,21 @@ export function ApplicationForm({
   const [keyUsage, setKeyUsage] = useState<readonly MultiselectProps.Option[]>([]);
   const [eku, setEku] = useState<readonly MultiselectProps.Option[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // Renewal pre-fill: arriving from the Expiring Certificates list as
+  // /certificates/rekey?renewFrom=<id> loads that certificate and seeds the SAN
+  // list with its current names (plus optional ?profile= / ?email= overrides),
+  // so the requester only needs to paste a fresh CSR. Inert in issuance mode.
+  const [searchParams] = useSearchParams();
+  const renewFrom = searchParams.get("renewFrom");
+  const renewSource = useQuery({
+    queryKey: ["certificate-detail", renewFrom],
+    queryFn: () => portalApi.certificateDetail(renewFrom as string),
+    enabled: !!renewFrom,
+    staleTime: Infinity,
+    retry: false,
+  });
+  const renewData = renewSource.data;
 
   const isEfs = profile.efs ?? false;
 
@@ -167,6 +189,32 @@ export function ApplicationForm({
       return merged.length === prev.length ? prev : merged;
     });
   }, [parsedSans]);
+
+  // Seed SANs from the certificate being renewed (deduped, like the CSR path).
+  useEffect(() => {
+    const renewSans = renewData?.subjectAltNames;
+    if (!renewSans || renewSans.length === 0) return;
+    setSans((prev) => {
+      const merged = [...prev];
+      for (const san of renewSans) {
+        const token = `${san.nameType}:${san.value}`;
+        if (!merged.includes(token)) merged.push(token);
+      }
+      return merged.length === prev.length ? prev : merged;
+    });
+  }, [renewData]);
+
+  // Optional explicit overrides via query params (profile id, notification email).
+  useEffect(() => {
+    const profileParam = searchParams.get("profile");
+    const emailParam = searchParams.get("email");
+    if (profileParam) {
+      const list = config.certProfiles.length > 0 ? config.certProfiles : [FALLBACK_PROFILE];
+      const match = list.find((p) => p.value === profileParam);
+      if (match) setProfile(match);
+    }
+    if (emailParam) setEmail(emailParam);
+  }, [searchParams]);
 
   const pending = mutation.isPending || efsMutation.isPending;
   const canSubmit =
@@ -299,6 +347,13 @@ export function ApplicationForm({
         {error && (
           <Alert type="error" header="Submission failed">
             {error}
+          </Alert>
+        )}
+        {mode === "renewal" && renewData && (
+          <Alert type="info" header="Renewing an existing certificate">
+            Renewing <strong>{commonName(renewData.subjectDn)}</strong>. Its current Subject
+            Alternative Names have been pre-filled below — paste a fresh CSR (with a new key) to
+            complete the rekey.
           </Alert>
         )}
         {isServerAuth && (

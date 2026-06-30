@@ -554,6 +554,10 @@ struct ListCertificatesQuery {
     page_size: Option<u32>,
     status: Option<String>,
     search: Option<String>,
+    /// Restrict to active certificates expiring within this many days — the
+    /// drill-down behind the dashboard's "Expiring in N Days" card. Matches the
+    /// `expiring_soon` count definition exactly. Ignored when absent or <= 0.
+    expiring_in_days: Option<i64>,
     /// Column key to sort by (`serial` | `subject` | `issuer` | `expires`);
     /// unrecognized/absent falls back to newest-first (`created_at DESC`).
     sort: Option<String>,
@@ -863,11 +867,14 @@ async fn list_certificates(
         .order
         .as_deref()
         .is_some_and(|o| o.eq_ignore_ascii_case("asc"));
+    // Only a positive window is a real filter; <= 0 (or absent) means "no filter".
+    let expiring_in_days = query.expiring_in_days.filter(|&d| d > 0);
     let (rows, total) = repo
         .list_filtered(
             &status,
             search.as_deref(),
             certificate_requestor_scope(&user),
+            expiring_in_days,
             query.sort.as_deref(),
             descending,
             i64::from(page_size),
