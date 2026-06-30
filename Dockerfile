@@ -218,6 +218,28 @@ ENV OCSP_BIND_ADDRESS=0.0.0.0:8081
 ENTRYPOINT ["ostrich-ocsp-server"]
 
 # ==============================================================================
+# Stage: Notify Service (certificate-expiry notifications; NATS -> SMTP)
+# ==============================================================================
+FROM runtime-base AS notify-service
+
+LABEL org.opencontainers.image.title="OstrichPKI Notify Service"
+LABEL org.opencontainers.image.description="Certificate-expiry notification service (NATS JetStream -> SMTP)"
+LABEL org.opencontainers.image.vendor="OstrichPKI"
+
+COPY --from=builder /app/target/release/ostrich-notify-server /usr/local/bin/
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8090/health || exit 1
+
+USER ostrich
+EXPOSE 8090
+
+ENV RUST_LOG=info
+ENV NOTIFY_HEALTH_ADDRESS=0.0.0.0:8090
+
+ENTRYPOINT ["ostrich-notify-server"]
+
+# ==============================================================================
 # Stage 7: SCMS Service
 # ==============================================================================
 FROM runtime-base AS scms-service

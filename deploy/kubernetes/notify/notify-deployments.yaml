@@ -1,0 +1,107 @@
+# notify-service: two roles of the same image — scheduler and sender.
+#
+# Prerequisites (see README):
+#   - NATS + notify-postgres (this overlay) running
+#   - Secret notify-db-secret (key: database-url)
+#   - Sender: set SMTP_HOST/SMTP_FROM (and STARTTLS/creds if your relay needs them)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-scheduler
+  namespace: ostrich-pki
+  labels: { app: notify-scheduler, component: notify }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: notify-scheduler }
+  template:
+    metadata:
+      labels: { app: notify-scheduler, component: notify }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: notify-scheduler
+          image: ghcr.io/192d-wing/notify-service:latest
+          imagePullPolicy: Always
+          ports:
+            - { name: health, containerPort: 8090 }
+          env:
+            - { name: RUST_LOG, value: "info" }
+            - { name: NOTIFY_ROLE, value: "scheduler" }
+            - { name: NATS_URL, value: "nats://nats:4222" }
+            - { name: NOTIFY_TICK_SECONDS, value: "300" }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: notify-db-secret, key: database-url }
+          livenessProbe:
+            httpGet: { path: /health, port: health }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /ready, port: health }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          resources:
+            requests: { cpu: "25m", memory: "32Mi" }
+            limits: { cpu: "250m", memory: "128Mi" }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-sender
+  namespace: ostrich-pki
+  labels: { app: notify-sender, component: notify }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: notify-sender }
+  template:
+    metadata:
+      labels: { app: notify-sender, component: notify }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: notify-sender
+          image: ghcr.io/192d-wing/notify-service:latest
+          imagePullPolicy: Always
+          ports:
+            - { name: health, containerPort: 8090 }
+          env:
+            - { name: RUST_LOG, value: "info" }
+            - { name: NOTIFY_ROLE, value: "sender" }
+            - { name: NATS_URL, value: "nats://nats:4222" }
+            # --- SMTP relay (set these to your relay) ---
+            - { name: SMTP_HOST, value: "smtp.oopl.dev.mil" }
+            - { name: SMTP_PORT, value: "25" }
+            - { name: SMTP_FROM, value: "pki-notify@oopl.dev.mil" }
+            - { name: SMTP_STARTTLS, value: "false" }
+            # - name: SMTP_PASSWORD
+            #   valueFrom: { secretKeyRef: { name: notify-smtp-secret, key: password } }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: notify-db-secret, key: database-url }
+          livenessProbe:
+            httpGet: { path: /health, port: health }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /ready, port: health }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          resources:
+            requests: { cpu: "25m", memory: "32Mi" }
+            limits: { cpu: "250m", memory: "128Mi" }
