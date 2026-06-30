@@ -7,7 +7,7 @@ use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
-use crate::config::Config;
+use crate::config::{Config, SmtpSecurity};
 use crate::contract::{EmailJob, SUBJECT_EMAIL, STREAM_NAME};
 use crate::db::{self, Pool};
 
@@ -18,8 +18,11 @@ pub async fn run(pool: Pool, js: jetstream::Context, cfg: &Config) -> Result<()>
         bail!("SMTP_HOST is required for the sender role");
     }
     let mailer = build_mailer(cfg)?;
-    let active_port = if cfg.smtp_tls { cfg.smtp_tls_port } else { cfg.smtp_port };
-    tracing::info!(host = %cfg.smtp_host, port = active_port, tls = cfg.smtp_tls, "sender ready");
+    let active_port = match cfg.smtp_security {
+        SmtpSecurity::Tls => cfg.smtp_tls_port,
+        _ => cfg.smtp_port,
+    };
+    tracing::info!(host = %cfg.smtp_host, port = active_port, security = ?cfg.smtp_security, "sender ready");
 
     let stream = js.get_stream(STREAM_NAME).await?;
     let consumer = stream
@@ -62,18 +65,22 @@ pub async fn run(pool: Pool, js: jetstream::Context, cfg: &Config) -> Result<()>
 }
 
 fn build_mailer(cfg: &Config) -> Result<Mailer> {
-    let (builder0, port) = if cfg.smtp_tls {
-        // Forced implicit TLS (SMTPS) from connection start, on the TLS port.
-        (
-            AsyncSmtpTransport::<Tokio1Executor>::relay(&cfg.smtp_host)?,
-            cfg.smtp_tls_port,
-        )
-    } else {
-        // Plain SMTP to a trusted internal relay (no TLS), on the plaintext port.
-        (
+    let (builder0, port) = match cfg.smtp_security {
+        // Plaintext to a trusted internal relay.
+        SmtpSecurity::None => (
             AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&cfg.smtp_host),
             cfg.smtp_port,
-        )
+        ),
+        // STARTTLS: connect plaintext then upgrade (e.g. Office 365 on 587).
+        SmtpSecurity::Starttls => (
+            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&cfg.smtp_host)?,
+            cfg.smtp_port,
+        ),
+        // Implicit TLS (SMTPS) from connection start.
+        SmtpSecurity::Tls => (
+            AsyncSmtpTransport::<Tokio1Executor>::relay(&cfg.smtp_host)?,
+            cfg.smtp_tls_port,
+        ),
     };
     let mut builder = builder0.port(port);
 
