@@ -26,6 +26,7 @@ members = [
     "services/tamp-server",
     "services/web-ui",
     "services/npe-portal",
+    "services/notify-server",
     # Tools
     "tools/ostrich-cli",
     "tools/ostrich-init",
@@ -188,6 +189,18 @@ rand_core = "0.10"
 
 # HTTP client (for ACME challenge validation)
 reqwest = { version = "0.13", features = ["json"] }
+
+# Messaging + email (notify-service: NATS JetStream queue + SMTP delivery).
+async-nats = "0.38"
+# rustls TLS (STARTTLS) via the same provider story as the rest of the project;
+# the notify-sender installs the aws-lc-rs default CryptoProvider at startup.
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "builder",
+    "tokio1",
+    "tokio1-rustls-tls",
+    "pool",
+] }
 
 # DNS resolver (for ACME DNS-01 challenge)
 hickory-resolver = "0.26"
