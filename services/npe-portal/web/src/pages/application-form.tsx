@@ -8,6 +8,7 @@ import {
   Container,
   ContentLayout,
   CopyToClipboard,
+  ExpandableSection,
   FileUpload,
   Form,
   FormField,
@@ -23,7 +24,10 @@ import {
   TokenGroup,
 } from "@cloudscape-design/components";
 
-import { downloadBase64 } from "@/lib/download";
+import { downloadBase64, downloadText } from "@/lib/download";
+// `csr` pulls in pkijs/asn1js (~390 kB); import it lazily (see onGenerateCsr) so
+// it loads only when a requester actually generates a key in the browser.
+import type { CsrAlgorithm } from "@/lib/csr";
 import { config, type CertProfile } from "@/lib/config";
 import { portalApi } from "@/lib/portal-api";
 
@@ -41,6 +45,14 @@ const EFS_KEY_STRENGTHS = [{ label: "2048", value: "2048" }];
 
 const CSR_MARKER = "-----BEGIN CERTIFICATE REQUEST-----";
 const CSR_END_MARKER = "-----END CERTIFICATE REQUEST-----";
+
+// Algorithms offered by the in-browser CSR generator (Web Crypto + pkijs).
+const CSR_ALGORITHMS: SelectProps.Option[] = [
+  { label: "RSA 2048", value: "rsa-2048" },
+  { label: "RSA 3072", value: "rsa-3072" },
+  { label: "ECDSA P-256", value: "ecdsa-p256" },
+  { label: "ECDSA P-384", value: "ecdsa-p384" },
+];
 
 // Subject Alternative Name kinds (the prefix mirrors how the CA/x509 parser
 // renders SANs, e.g. "DNS:host.mil").
@@ -115,6 +127,14 @@ export function ApplicationForm({
   const [keyUsage, setKeyUsage] = useState<readonly MultiselectProps.Option[]>([]);
   const [eku, setEku] = useState<readonly MultiselectProps.Option[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // In-browser CSR generator state (Web Crypto). The private key is held only in
+  // component state until the requester downloads it; it is never submitted.
+  const [genCn, setGenCn] = useState("");
+  const [genAlgo, setGenAlgo] = useState<SelectProps.Option>(CSR_ALGORITHMS[0]);
+  const [genKeyPem, setGenKeyPem] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
 
   // Renewal pre-fill: arriving from the Expiring Certificates list as
   // /certificates/rekey?renewFrom=<id> loads that certificate and seeds the SAN
@@ -236,6 +256,41 @@ export function ApplicationForm({
     if (!sans.includes(token)) setSans([...sans, token]);
     setSanValue("");
     clearStale();
+  }
+
+  // Generate a key pair + CSR entirely in the browser, fill the request field,
+  // and hold the private key for the requester to download. The current SAN list
+  // is baked into the CSR.
+  async function onGenerateCsr() {
+    const cn = genCn.trim();
+    if (!cn) {
+      setGenError("Enter a Common Name (CN) for the certificate.");
+      return;
+    }
+    setGenerating(true);
+    setGenError(null);
+    try {
+      const { generateCsr } = await import("@/lib/csr");
+      const { csrPem, privateKeyPem } = await generateCsr(
+        { commonName: cn },
+        sans,
+        genAlgo.value as CsrAlgorithm,
+      );
+      clearStale();
+      setCsr(csrPem);
+      if (csrFiles.length > 0) setCsrFiles([]);
+      setGenKeyPem(privateKeyPem);
+    } catch (e) {
+      setGenError((e as Error).message);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function downloadKey() {
+    if (!genKeyPem) return;
+    const safe = genCn.trim().replace(/[^A-Za-z0-9._-]+/g, "_") || "private-key";
+    downloadText(genKeyPem, `${safe}.key`, "application/x-pem-file");
   }
 
   // A dropped/chosen CSR file populates the same textarea, so paste and file
@@ -496,6 +551,55 @@ export function ApplicationForm({
                 </>
               ) : (
                 <>
+                <ExpandableSection
+                  variant="container"
+                  headerText="Generate a key pair and CSR in your browser (optional)"
+                  headerDescription="No tooling required — keys are created locally with the Web Crypto API."
+                >
+                  <SpaceBetween size="m">
+                    <Alert type="info">
+                      Your key pair is generated locally; the <strong>private key never leaves your
+                      browser</strong>. Download and store it securely after generating — it cannot
+                      be recovered later. Any Subject Alternative Names added below are included in
+                      the request.
+                    </Alert>
+                    <FormField
+                      label="Common Name (CN)"
+                      description="The certificate's subject identity, e.g. host.example.mil."
+                    >
+                      <Input
+                        value={genCn}
+                        onChange={(e) => setGenCn(e.detail.value)}
+                        placeholder="host.example.mil"
+                      />
+                    </FormField>
+                    <FormField label="Key algorithm">
+                      <Select
+                        selectedOption={genAlgo}
+                        onChange={(e) => setGenAlgo(e.detail.selectedOption)}
+                        options={CSR_ALGORITHMS}
+                      />
+                    </FormField>
+                    {genError && <Alert type="error">{genError}</Alert>}
+                    <SpaceBetween direction="horizontal" size="xs">
+                      <Button onClick={onGenerateCsr} loading={generating} disabled={!genCn.trim()}>
+                        Generate key + CSR
+                      </Button>
+                      {genKeyPem && (
+                        <Button iconName="download" onClick={downloadKey}>
+                          Download private key (.key)
+                        </Button>
+                      )}
+                    </SpaceBetween>
+                    {genKeyPem && (
+                      <Alert type="success" header="Key pair generated">
+                        The CSR has been filled into the request field below.{" "}
+                        <strong>Download your private key now</strong> — it is held only in this
+                        browser session and is never sent to the server.
+                      </Alert>
+                    )}
+                  </SpaceBetween>
+                </ExpandableSection>
                 <FormField
                   label="Certificate request (PKCS #10 PEM)"
                   description="Paste the PEM-encoded CSR generated on the device. Its Common Name and Subject Alternative Names are shown below."
