@@ -405,6 +405,10 @@ pub fn permissions_for_role(role: Role) -> &'static [Permission] {
             Permission::RevokeCertificate,
             Permission::OverrideValidation,
             Permission::ViewCertificate,
+            // Audit review of the certificate-lifecycle trail (read-only) — an RA
+            // reviews issuance/revocation history as part of its duties.
+            // NIAP PP-CA: FAU_SAR.1 (Audit review). NIST 800-53: AU-6.
+            Permission::ReadAuditLog,
         ],
 
         // NPE Certificate Authority Admin: global config, namespace/wildcard
@@ -419,6 +423,9 @@ pub fn permissions_for_role(role: Role) -> &'static [Permission] {
             Permission::AssignRoles,
             Permission::ViewUsers,
             Permission::ManageNamespaces,
+            // Audit review + tamper-evidence verification (read-only) for CA
+            // administration oversight. NIAP PP-CA: FAU_SAR.1. NIST 800-53: AU-6.
+            Permission::ReadAuditLog,
         ],
     }
 }

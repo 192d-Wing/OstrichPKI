@@ -73,9 +73,13 @@ validates, so the catalog can never advertise a token issuance would reject.
 
 ## 📋 Compliance & visibility (RA / CAA)
 
-### 6. Audit log viewer — `Proposed` · frontend (CA `/api/v1/audit` exists)
-Surface the CA audit trail (with hash-chain / signature verification) for RA/CAA.
-Satisfies NIAP FAU_SAR.1.
+### 6. Audit log viewer — `Built` · frontend + backend (RBAC)
+New `/audit` page (RA + CAA): a filterable, paginated table over the CA's
+`GET /api/v1/audit` (actor / event-type / outcome filters, row → detail modal,
+per-record Signed/Chained integrity badge) plus a **Verify integrity** action
+backed by `GET /api/v1/audit/verify` (hash-chain + AU-10 signature check).
+Backend: granted `ReadAuditLog` to the NPE `RegistrationAuthority` and `CaaAdmin`
+roles (FAU_SAR.1 / AU-6) — requires a ca-server bump to take effect.
 
 ### 7. Search export (CSV / PDF) — `Proposed` · frontend
 Export search results for IA reporting (was in the original spec).

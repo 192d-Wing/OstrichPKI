@@ -33,6 +33,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     "revoke_certificate",
     "override_validation",
     "view_certificate",
+    "read_audit_log",
   ],
   caa_admin: [
     "modify_config",
@@ -43,6 +44,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     "assign_roles",
     "view_users",
     "manage_namespaces",
+    "read_audit_log",
   ],
 };
 
