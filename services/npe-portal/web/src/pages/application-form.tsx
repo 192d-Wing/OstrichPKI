@@ -8,13 +8,19 @@ import {
   Container,
   ContentLayout,
   CopyToClipboard,
+  FileUpload,
   Form,
   FormField,
+  Grid,
   Header,
   Input,
+  Multiselect,
+  type MultiselectProps,
   Select,
+  type SelectProps,
   SpaceBetween,
   Textarea,
+  TokenGroup,
 } from "@cloudscape-design/components";
 
 import { downloadBase64 } from "@/lib/download";
@@ -36,6 +42,100 @@ const EFS_KEY_STRENGTHS = [{ label: "2048", value: "2048" }];
 const CSR_MARKER = "-----BEGIN CERTIFICATE REQUEST-----";
 const CSR_END_MARKER = "-----END CERTIFICATE REQUEST-----";
 
+// Combatant Command / Service / Agency the certificate belongs to.
+const CCSA_OPTIONS: SelectProps.Options = [
+  {
+    label: "Military Services",
+    options: [
+      { label: "Air Force (USAF)", value: "USAF" },
+      { label: "Army (USA)", value: "USA" },
+      { label: "Navy (USN)", value: "USN" },
+      { label: "Marine Corps (USMC)", value: "USMC" },
+      { label: "Space Force (USSF)", value: "USSF" },
+      { label: "Coast Guard (USCG)", value: "USCG" },
+    ],
+  },
+  {
+    label: "Combatant Commands",
+    options: [
+      { label: "AFRICOM", value: "AFRICOM" },
+      { label: "CENTCOM", value: "CENTCOM" },
+      { label: "CYBERCOM", value: "CYBERCOM" },
+      { label: "EUCOM", value: "EUCOM" },
+      { label: "INDOPACOM", value: "INDOPACOM" },
+      { label: "NORTHCOM", value: "NORTHCOM" },
+      { label: "SOCOM", value: "SOCOM" },
+      { label: "SOUTHCOM", value: "SOUTHCOM" },
+      { label: "SPACECOM", value: "SPACECOM" },
+      { label: "STRATCOM", value: "STRATCOM" },
+      { label: "TRANSCOM", value: "TRANSCOM" },
+    ],
+  },
+  {
+    label: "Agencies & Field Activities",
+    options: [
+      { label: "DISA", value: "DISA" },
+      { label: "DLA", value: "DLA" },
+      { label: "DIA", value: "DIA" },
+      { label: "NSA", value: "NSA" },
+      { label: "NGA", value: "NGA" },
+      { label: "DCSA", value: "DCSA" },
+      { label: "DCMA", value: "DCMA" },
+      { label: "DFAS", value: "DFAS" },
+      { label: "DHA", value: "DHA" },
+      { label: "DTRA", value: "DTRA" },
+      { label: "MDA", value: "MDA" },
+      { label: "OSD / WHS", value: "OSD" },
+    ],
+  },
+];
+
+// Subject Alternative Name kinds (the prefix mirrors how the CA/x509 parser
+// renders SANs, e.g. "DNS:host.mil").
+const SAN_TYPES: SelectProps.Option[] = [
+  { label: "DNS", value: "DNS" },
+  { label: "IP Address", value: "IP" },
+  { label: "Email", value: "email" },
+  { label: "URI", value: "URI" },
+  { label: "UPN", value: "UPN" },
+];
+
+const KEY_USAGE_OPTIONS: MultiselectProps.Options = [
+  { label: "Digital Signature", value: "digitalSignature" },
+  { label: "Non-Repudiation", value: "nonRepudiation" },
+  { label: "Key Encipherment", value: "keyEncipherment" },
+  { label: "Data Encipherment", value: "dataEncipherment" },
+  { label: "Key Agreement", value: "keyAgreement" },
+  { label: "Certificate Signing", value: "keyCertSign" },
+  { label: "CRL Signing", value: "cRLSign" },
+  { label: "Encipher Only", value: "encipherOnly" },
+  { label: "Decipher Only", value: "decipherOnly" },
+];
+
+// Example placeholder for the SAN value input by kind (203.0.113.x is the RFC
+// 5737 documentation range, never a real host).
+function sanPlaceholder(type: string | undefined): string {
+  switch (type) {
+    case "IP":
+      return "203.0.113.10";
+    case "email":
+      return "user@example.mil";
+    default:
+      return "host.example.mil";
+  }
+}
+
+const EKU_OPTIONS: MultiselectProps.Options = [
+  { label: "TLS Server Authentication", value: "serverAuth" },
+  { label: "TLS Client Authentication", value: "clientAuth" },
+  { label: "Code Signing", value: "codeSigning" },
+  { label: "Email Protection", value: "emailProtection" },
+  { label: "Time Stamping", value: "timeStamping" },
+  { label: "OCSP Signing", value: "OCSPSigning" },
+  { label: "Smartcard Logon", value: "smartcardLogon" },
+  { label: "IPsec IKE", value: "ipsecIKE" },
+];
+
 // Profiles whose certificates carry the id-kp-serverAuth EKU (TLS server),
 // which Apple/iOS cap at 397 days. The CA enforces the cap; this drives the
 // advisory banner.
@@ -47,10 +147,17 @@ export function ApplicationForm({
   description,
 }: Readonly<{ mode: "issuance" | "renewal"; title: string; description: string }>) {
   const [csr, setCsr] = useState("");
+  const [csrFiles, setCsrFiles] = useState<File[]>([]);
   const [profile, setProfile] = useState(PROFILES[0]);
   const [email, setEmail] = useState("");
   const [algorithm, setAlgorithm] = useState(EFS_ALGORITHMS[0]);
   const [keyStrength, setKeyStrength] = useState(EFS_KEY_STRENGTHS[0]);
+  const [ccsa, setCcsa] = useState<SelectProps.Option | null>(null);
+  const [sanType, setSanType] = useState<SelectProps.Option>(SAN_TYPES[0]);
+  const [sanValue, setSanValue] = useState("");
+  const [sans, setSans] = useState<string[]>([]);
+  const [keyUsage, setKeyUsage] = useState<readonly MultiselectProps.Option[]>([]);
+  const [eku, setEku] = useState<readonly MultiselectProps.Option[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const isEfs = profile.value === "efs";
@@ -61,6 +168,10 @@ export function ApplicationForm({
         csr_pem: csr.trim(),
         profile: profile.value,
         notification_email: email.trim(),
+        ccsa: ccsa?.value ?? null,
+        subject_alt_names: sans,
+        key_usage: keyUsage.map((o) => o.value),
+        extended_key_usage: eku.map((o) => o.value),
       }),
     onSuccess: () => setError(null),
     onError: (e: Error) => setError(e.message),
@@ -96,6 +207,30 @@ export function ApplicationForm({
     if (mutation.data || mutation.isError) mutation.reset();
     if (efsMutation.data || efsMutation.isError) efsMutation.reset();
     if (error) setError(null);
+  }
+
+  function addSan() {
+    const value = sanValue.trim();
+    if (!value) return;
+    const token = `${sanType.value}:${value}`;
+    if (!sans.includes(token)) setSans([...sans, token]);
+    setSanValue("");
+    clearStale();
+  }
+
+  // A dropped/chosen CSR file populates the same textarea, so paste and file
+  // upload share one code path (preview, validation, submit).
+  async function onCsrFile(files: File[]) {
+    setCsrFiles(files);
+    const file = files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      clearStale();
+      setCsr(text);
+    } catch {
+      setError("Could not read the selected file.");
+    }
   }
 
   function onSubmit() {
@@ -251,6 +386,22 @@ export function ApplicationForm({
                   options={PROFILES}
                 />
               </FormField>
+              <FormField
+                label="CC/S/A"
+                description="Combatant Command, Service, or Agency this certificate belongs to."
+              >
+                <Select
+                  selectedOption={ccsa}
+                  onChange={(e) => {
+                    clearStale();
+                    setCcsa(e.detail.selectedOption);
+                  }}
+                  options={CCSA_OPTIONS}
+                  filteringType="auto"
+                  placeholder="Select CC/S/A"
+                  empty="No matches"
+                />
+              </FormField>
               {isEfs ? (
                 <>
                   <FormField
@@ -285,17 +436,35 @@ export function ApplicationForm({
                   </FormField>
                 </>
               ) : (
+                <>
                 <FormField
                   label="Certificate request (PKCS #10 PEM)"
                   description="Paste the PEM-encoded CSR generated on the device. Its Common Name and Subject Alternative Names are shown below."
                   errorText={csr && !csrValid ? "Not a PEM certificate request." : undefined}
                 >
                   <SpaceBetween size="s">
+                    <FileUpload
+                      value={csrFiles}
+                      onChange={({ detail }) => onCsrFile(detail.value)}
+                      accept=".csr,.pem,.req,.txt,application/x-pem-file"
+                      constraintText="Drop or choose a .csr, .pem, or .req file, or paste the PEM below."
+                      showFileSize
+                      showFileLastModified={false}
+                      i18nStrings={{
+                        uploadButtonText: () => "Choose CSR file",
+                        dropzoneText: () => "Drop CSR file to upload",
+                        removeFileAriaLabel: (i) => `Remove file ${i + 1}`,
+                        limitShowFewer: "Show fewer files",
+                        limitShowMore: "Show more files",
+                        errorIconAriaLabel: "Error",
+                      }}
+                    />
                     <Textarea
                       value={csr}
                       onChange={(e) => {
                         clearStale();
                         setCsr(e.detail.value);
+                        if (csrFiles.length > 0) setCsrFiles([]);
                       }}
                       rows={10}
                       placeholder={CSR_MARKER}
@@ -338,6 +507,71 @@ export function ApplicationForm({
                     )}
                   </SpaceBetween>
                 </FormField>
+                <FormField
+                  label="Subject Alternative Names"
+                  description="Add one or more SANs to request, in addition to any already in the CSR."
+                >
+                  <SpaceBetween size="xs">
+                    <Grid gridDefinition={[{ colspan: 3 }, { colspan: 7 }, { colspan: 2 }]}>
+                      <Select
+                        selectedOption={sanType}
+                        onChange={(e) => setSanType(e.detail.selectedOption)}
+                        options={SAN_TYPES}
+                        ariaLabel="SAN type"
+                      />
+                      <Input
+                        value={sanValue}
+                        onChange={(e) => setSanValue(e.detail.value)}
+                        onKeyDown={(e) => {
+                          if (e.detail.key === "Enter") {
+                            addSan();
+                          }
+                        }}
+                        placeholder={sanPlaceholder(sanType.value)}
+                      />
+                      <Button onClick={addSan} disabled={!sanValue.trim()}>
+                        Add
+                      </Button>
+                    </Grid>
+                    {sans.length > 0 && (
+                      <TokenGroup
+                        items={sans.map((s) => ({ label: s, dismissLabel: `Remove ${s}` }))}
+                        onDismiss={({ detail }) =>
+                          setSans(sans.filter((_, i) => i !== detail.itemIndex))
+                        }
+                      />
+                    )}
+                  </SpaceBetween>
+                </FormField>
+                <FormField
+                  label="Key usage"
+                  description="Key usages to request for the certificate."
+                >
+                  <Multiselect
+                    selectedOptions={keyUsage}
+                    onChange={(e) => {
+                      clearStale();
+                      setKeyUsage(e.detail.selectedOptions);
+                    }}
+                    options={KEY_USAGE_OPTIONS}
+                    placeholder="Select key usages"
+                  />
+                </FormField>
+                <FormField
+                  label="Extended key usage"
+                  description="Extended key usages (EKUs) to request for the certificate."
+                >
+                  <Multiselect
+                    selectedOptions={eku}
+                    onChange={(e) => {
+                      clearStale();
+                      setEku(e.detail.selectedOptions);
+                    }}
+                    options={EKU_OPTIONS}
+                    placeholder="Select extended key usages"
+                  />
+                </FormField>
+                </>
               )}
             </SpaceBetween>
           </Form>
