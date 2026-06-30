@@ -88,10 +88,18 @@ pub async fn create_router(config: NpePortalConfig) -> Result<Router> {
         .route("/auth/logout", post(logout))
         .with_state(state.clone());
 
+    // Portal-local API endpoints (handled here, not proxied to a backend) that
+    // still require an authenticated session. CSR parsing powers the submit
+    // form's CN/SAN preview.
+    let local_api_routes = Router::new()
+        .route("/v1/parse-csr", post(parse_csr))
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(state.clone(), require_session));
+
     // Allowlisted API proxy, gated by the session/consent middleware.
-    let api_routes = proxy::create_proxy_routes(state.clone()).layer(
-        middleware::from_fn_with_state(state.clone(), require_session),
-    );
+    let api_routes = proxy::create_proxy_routes(state.clone())
+        .layer(middleware::from_fn_with_state(state.clone(), require_session))
+        .merge(local_api_routes);
 
     let static_routes = Router::new().nest_service(
         &config.static_files.url_prefix,
@@ -332,6 +340,66 @@ async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse {
         "status": "ready",
         "sessions": state.session_manager.session_count().await,
     }))
+}
+
+#[derive(serde::Deserialize)]
+struct ParseCsrRequest {
+    csr_pem: String,
+}
+
+/// Parse a pasted PKCS#10 CSR and return its subject Common Name + Subject
+/// Alternative Names for the submit form's preview. Read-only and session-gated;
+/// the CA independently re-validates the CSR on submit, so this is a UX aid only.
+/// Reuses `ostrich_x509::parser` — the same parser the CA/EST services use.
+async fn parse_csr(
+    Extension(_session): Extension<SessionData>,
+    Json(req): Json<ParseCsrRequest>,
+) -> Response {
+    let der = match x509_parser::pem::Pem::read(std::io::Cursor::new(req.csr_pem.as_bytes())) {
+        Ok((pem, _)) if pem.label == "CERTIFICATE REQUEST" => pem.contents,
+        Ok((pem, _)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("expected a CERTIFICATE REQUEST PEM block, found {}", pem.label),
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("not a PEM certificate request: {e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    let parsed = match ostrich_x509::parser::parse_csr(&der) {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("invalid certificate request: {e}") })),
+            )
+                .into_response();
+        }
+    };
+    // Structured CN (the rendered subject_dn is RFC 4514 and awkward to split in
+    // the client); fall back to None if the subject has no CN.
+    let common_name = ostrich_x509::parser::parse_csr_subject_dn(&der)
+        .ok()
+        .and_then(|dn| dn.common_name);
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "commonName": common_name,
+            "subjectDn": parsed.subject_dn,
+            "sans": parsed.subject_alternative_names,
+        })),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

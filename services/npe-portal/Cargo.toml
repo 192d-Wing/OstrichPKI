@@ -25,6 +25,9 @@ url = { workspace = true }
 # Internal crates
 ostrich-common = { workspace = true }
 ostrich-audit = { workspace = true }
+# CSR parsing for the submit form's CN/SAN preview (reuses the same parser the
+# CA/EST services use).
+ostrich-x509 = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }

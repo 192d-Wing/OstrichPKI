@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Alert,
   Box,
   Button,
+  ColumnLayout,
   Container,
   ContentLayout,
   CopyToClipboard,
@@ -33,6 +34,7 @@ const EFS_ALGORITHMS = [{ label: "RSA", value: "rsa" }];
 const EFS_KEY_STRENGTHS = [{ label: "2048", value: "2048" }];
 
 const CSR_MARKER = "-----BEGIN CERTIFICATE REQUEST-----";
+const CSR_END_MARKER = "-----END CERTIFICATE REQUEST-----";
 
 // Profiles whose certificates carry the id-kp-serverAuth EKU (TLS server),
 // which Apple/iOS cap at 397 days. The CA enforces the cap; this drives the
@@ -73,6 +75,17 @@ export function ApplicationForm({
 
   const emailValid = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
   const csrValid = csr.trim().includes(CSR_MARKER);
+  // A complete PEM block (both markers) is worth parsing for the CN/SAN preview;
+  // an in-progress paste is not.
+  const csrComplete =
+    !isEfs && csr.includes(CSR_MARKER) && csr.includes(CSR_END_MARKER);
+  const csrPreview = useQuery({
+    queryKey: ["parse-csr", csr.trim()],
+    queryFn: () => portalApi.parseCsr(csr.trim()),
+    enabled: csrComplete,
+    retry: false,
+    staleTime: Infinity,
+  });
   const pending = mutation.isPending || efsMutation.isPending;
   const canSubmit = (isEfs ? emailValid : csrValid && emailValid) && !pending;
   const isServerAuth = SERVER_AUTH_PROFILES.has(profile.value);
@@ -274,18 +287,56 @@ export function ApplicationForm({
               ) : (
                 <FormField
                   label="Certificate request (PKCS #10 PEM)"
-                  description="Paste the PEM-encoded CSR generated on the device."
+                  description="Paste the PEM-encoded CSR generated on the device. Its Common Name and Subject Alternative Names are shown below."
                   errorText={csr && !csrValid ? "Not a PEM certificate request." : undefined}
                 >
-                  <Textarea
-                    value={csr}
-                    onChange={(e) => {
-                      clearStale();
-                      setCsr(e.detail.value);
-                    }}
-                    rows={10}
-                    placeholder={CSR_MARKER}
-                  />
+                  <SpaceBetween size="s">
+                    <Textarea
+                      value={csr}
+                      onChange={(e) => {
+                        clearStale();
+                        setCsr(e.detail.value);
+                      }}
+                      rows={10}
+                      placeholder={CSR_MARKER}
+                    />
+                    {csrComplete && (
+                      <Box>
+                        {csrPreview.isFetching && (
+                          <Box color="text-status-inactive">Reading request…</Box>
+                        )}
+                        {csrPreview.data && (
+                          <ColumnLayout columns={2} variant="text-grid">
+                            <div>
+                              <Box variant="awsui-key-label">Common Name (CN)</Box>
+                              <div>{csrPreview.data.commonName ?? "—"}</div>
+                            </div>
+                            <div>
+                              <Box variant="awsui-key-label">
+                                Subject Alternative Names
+                              </Box>
+                              <div>
+                                {csrPreview.data.sans.length > 0 ? (
+                                  <SpaceBetween size="xxs">
+                                    {csrPreview.data.sans.map((san) => (
+                                      <div key={san}>{san}</div>
+                                    ))}
+                                  </SpaceBetween>
+                                ) : (
+                                  "—"
+                                )}
+                              </div>
+                            </div>
+                          </ColumnLayout>
+                        )}
+                        {csrPreview.isError && (
+                          <Box color="text-status-warning">
+                            Could not read the CN/SANs from this request.
+                          </Box>
+                        )}
+                      </Box>
+                    )}
+                  </SpaceBetween>
                 </FormField>
               )}
             </SpaceBetween>
