@@ -53,9 +53,14 @@ Reachable from the Expiring Certificates list (CN link).
 
 ## 🧰 Self-service helpers
 
-### 4. In-browser CSR generator (WebCrypto) — `Proposed` · frontend
-Generate a keypair + CSR in the browser, download the private key, auto-fill the
-submit form. Removes the #1 enrollment blocker ("how do I make a CSR?").
+### 4. In-browser CSR generator (WebCrypto) — `Built` · frontend
+An optional "Generate a key pair and CSR in your browser" panel on the submit
+form (`lib/csr.ts`): Web Crypto generates the key (RSA-2048/3072, ECDSA
+P-256/P-384), pkijs assembles + signs the PKCS#10 (CN + the form's SAN list as an
+extensionRequest), the CSR auto-fills the request field, and the PKCS#8 private
+key is offered as a one-time download — it never leaves the browser. pkijs/asn1js
+are lazy-loaded (dynamic import) so they stay out of the main bundle. Verified:
+RSA + ECDSA CSRs round-trip parse with a valid signature and SANs intact.
 
 ### 5. EST / enrollment catalog — `Proposed` · frontend
 List available CAs, profiles, and `PTptval-…` EST labels with copy-paste
