@@ -56,7 +56,7 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{Path, State},
-    http::StatusCode,
+    http::{Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -486,7 +486,17 @@ async fn get_directory(State(state): State<AcmeState>) -> Response {
 }
 
 /// Get new nonce for replay protection (RFC 8555 §7.2)
-async fn get_new_nonce(State(state): State<AcmeState>) -> Response {
+///
+/// Per RFC 8555 §7.2 the response MUST carry a fresh `Replay-Nonce`, and the
+/// status code is method-dependent:
+/// - a **HEAD** request **SHOULD** return `200 (OK)`
+/// - a **GET** request **MUST** return `204 (No Content)`
+///
+/// Returning `204` for HEAD (as a single status for both) is rejected by
+/// strictly-conformant clients (e.g. `instant-acme`, which enforces the
+/// SHOULD-200), so the status is selected by request method. The route is GET
+/// only (axum dispatches HEAD to this handler); any other method is `405`.
+async fn get_new_nonce(State(state): State<AcmeState>, method: Method) -> Response {
     // Generate cryptographically secure nonce
     let nonce = Uuid::new_v4().to_string();
     let expires_at = Utc::now() + chrono::Duration::minutes(5);
@@ -498,8 +508,15 @@ async fn get_new_nonce(State(state): State<AcmeState>) -> Response {
         eprintln!("Failed to store nonce: {}", e);
     }
 
+    // RFC 8555 §7.2: HEAD -> 200 (OK), GET -> 204 (No Content).
+    let status = if method == Method::HEAD {
+        StatusCode::OK
+    } else {
+        StatusCode::NO_CONTENT
+    };
+
     (
-        StatusCode::NO_CONTENT,
+        status,
         [
             ("Replay-Nonce", nonce),
             ("Cache-Control", "no-store".to_string()),
