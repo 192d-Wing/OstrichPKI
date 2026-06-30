@@ -36,6 +36,7 @@ pub async fn serve_index(
         "apiBaseUrl": "/api",
         "appName": "OstrichPKI NPE Portal",
         "classificationBanner": state.config.classification_banner,
+        "classificationColor": state.config.classification_color,
         "version": env!("CARGO_PKG_VERSION"),
         "basename": "/",
     });

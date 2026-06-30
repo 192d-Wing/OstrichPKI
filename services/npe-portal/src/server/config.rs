@@ -22,9 +22,20 @@ pub struct NpePortalConfig {
     #[serde(default)]
     pub oid_mapping: super::oid::OidRoleMapping,
 
-    /// Classification banner shown across the portal (e.g. "CUI").
+    /// Classification banner text shown across the portal (e.g. "CUI",
+    /// "SECRET", "TOP SECRET//SCI"). The banner color is derived from this text
+    /// per the DoD/IC standard palette unless `classification_color` overrides
+    /// it.
     #[serde(default = "default_classification")]
     pub classification_banner: String,
+
+    /// Optional explicit banner background color (CSS color, e.g. "#502b85").
+    /// When unset, the color is derived from `classification_banner` using the
+    /// standard mapping (CUI=purple, Confidential=blue, Secret=red, Top
+    /// Secret=orange, Top Secret//SCI=yellow, Unclassified=green). Set this only
+    /// for a non-standard banner whose text the mapping cannot classify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classification_color: Option<String>,
 
     /// Content Security Policy nonce length in bytes.
     #[serde(default = "default_nonce_length")]
@@ -87,7 +98,7 @@ fn default_renew_before_days() -> i64 {
 }
 
 fn default_classification() -> String {
-    "UNCLASSIFIED//FOR OFFICIAL USE ONLY".to_string()
+    "CUI".to_string()
 }
 
 fn default_nonce_length() -> usize {
@@ -235,6 +246,7 @@ impl Default for NpePortalConfig {
             session: SessionConfig::default(),
             oid_mapping: super::oid::OidRoleMapping::default(),
             classification_banner: default_classification(),
+            classification_color: None,
             csp_nonce_length: default_nonce_length(),
             static_files: StaticFilesConfig::default(),
             acme: None,
