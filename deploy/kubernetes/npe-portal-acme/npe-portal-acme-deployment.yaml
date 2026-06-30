@@ -75,17 +75,21 @@ spec:
               readOnly: true
             - name: acme-cache
               mountPath: /app/acme-cache
+          # Probes target the ACME challenge responder (:8080), NOT the mTLS
+          # listener (:8443). The mTLS listener only comes up AFTER the initial
+          # ACME enrollment, and enrollment's HTTP-01 challenge is fetched through
+          # this Service on :8080 — so gating readiness on :8443 would leave the
+          # Service with no endpoints during enrollment, the challenge would 503,
+          # and enrollment could never complete (a deadlock). The responder binds
+          # at startup, so :8080 readiness lets the challenge through; the mTLS
+          # listener follows within seconds once the cert is issued.
           livenessProbe:
-            # The :8443 listener requires a client cert, so an HTTP GET probe
-            # can't complete the handshake; a TCP check confirms it is accepting.
-            tcpSocket: { port: https }
+            tcpSocket: { port: acme-http }
             initialDelaySeconds: 15
             periodSeconds: 20
           readinessProbe:
-            # The ACME responder on :8080 is plain HTTP; once it serves, the pod
-            # has bound its ports and (after enrollment) the mTLS listener is up.
-            tcpSocket: { port: https }
-            initialDelaySeconds: 10
+            tcpSocket: { port: acme-http }
+            initialDelaySeconds: 5
             periodSeconds: 10
           securityContext:
             allowPrivilegeEscalation: false
