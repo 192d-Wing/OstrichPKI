@@ -40,8 +40,12 @@ pub struct Config {
     /// SMTP relay host. Required for the sender role.
     #[arg(long, env = "SMTP_HOST", default_value = "")]
     pub smtp_host: String,
+    /// Port used when `SMTP_TLS=false` (plaintext relay).
     #[arg(long, env = "SMTP_PORT", default_value = "25")]
     pub smtp_port: u16,
+    /// Port used when `SMTP_TLS=true` (implicit TLS / SMTPS).
+    #[arg(long, env = "SMTP_TLS_PORT", default_value = "465")]
+    pub smtp_tls_port: u16,
     /// From address for outgoing mail.
     #[arg(long, env = "SMTP_FROM", default_value = "noreply@localhost")]
     pub smtp_from: String,

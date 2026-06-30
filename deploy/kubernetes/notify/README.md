@@ -28,7 +28,7 @@ CA (producer) ──cert.expiry.notify──▶ NATS JetStream ──▶ notify-
    ```
 2. **SMTP relay + config** — edit the git-controlled variable file
    [`notify.env`](notify.env) (`SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`,
-   `SMTP_TLS`, `NATS_URL`, `NOTIFY_TICK_SECONDS`). kustomize folds it into a
+   `SMTP_TLS`, `SMTP_TLS_PORT`, `NATS_URL`, `NOTIFY_TICK_SECONDS`). kustomize folds it into a
    hashed `notify-config` ConfigMap that both deployments read via `envFrom`, so
    editing it and re-applying rolls the pods automatically. The sender refuses to
    start without `SMTP_HOST`. If the relay needs auth, put the password in a
