@@ -18,7 +18,7 @@ pub async fn run(pool: Pool, js: jetstream::Context, cfg: &Config) -> Result<()>
         bail!("SMTP_HOST is required for the sender role");
     }
     let mailer = build_mailer(cfg)?;
-    tracing::info!(host = %cfg.smtp_host, port = cfg.smtp_port, starttls = cfg.smtp_starttls, "sender ready");
+    tracing::info!(host = %cfg.smtp_host, port = cfg.smtp_port, tls = cfg.smtp_tls, "sender ready");
 
     let stream = js.get_stream(STREAM_NAME).await?;
     let consumer = stream
@@ -61,8 +61,9 @@ pub async fn run(pool: Pool, js: jetstream::Context, cfg: &Config) -> Result<()>
 }
 
 fn build_mailer(cfg: &Config) -> Result<Mailer> {
-    let mut builder = if cfg.smtp_starttls {
-        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&cfg.smtp_host)?
+    let mut builder = if cfg.smtp_tls {
+        // Forced implicit TLS (SMTPS) from connection start.
+        AsyncSmtpTransport::<Tokio1Executor>::relay(&cfg.smtp_host)?
     } else {
         // Plain SMTP to a trusted internal relay (no TLS).
         AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&cfg.smtp_host)

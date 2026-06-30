@@ -49,9 +49,11 @@ pub struct Config {
     pub smtp_username: Option<String>,
     #[arg(long, env = "SMTP_PASSWORD")]
     pub smtp_password: Option<String>,
-    /// Use STARTTLS (rustls) for the SMTP connection.
-    #[arg(long, env = "SMTP_STARTTLS", default_value = "false")]
-    pub smtp_starttls: bool,
+    /// Force a TLS (SMTPS) connection from the start (rustls). When false, the
+    /// sender connects in plaintext (trusted internal relay). Implicit TLS is
+    /// typically served on port 465 — set `SMTP_PORT` accordingly.
+    #[arg(long, env = "SMTP_TLS", default_value = "false")]
+    pub smtp_tls: bool,
 
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     pub log_level: String,
