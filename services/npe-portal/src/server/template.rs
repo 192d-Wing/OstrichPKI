@@ -37,6 +37,9 @@ pub async fn serve_index(
         "appName": "OstrichPKI NPE Portal",
         "classificationBanner": state.config.classification_banner,
         "classificationColor": state.config.classification_color,
+        "dodMode": state.config.dod_mode,
+        "certProfiles": state.config.cert_profiles,
+        "ccsaOptions": state.config.ccsa_options,
         "version": env!("CARGO_PKG_VERSION"),
         "basename": "/",
     });

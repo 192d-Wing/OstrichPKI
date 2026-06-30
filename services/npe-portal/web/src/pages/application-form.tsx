@@ -23,14 +23,14 @@ import {
 } from "@cloudscape-design/components";
 
 import { downloadBase64 } from "@/lib/download";
+import { config, type CertProfile } from "@/lib/config";
 import { portalApi } from "@/lib/portal-api";
 
-const PROFILES = [
-  { label: "TLS Client", value: "tls_client" },
-  { label: "TLS Server", value: "tls_server" },
-  { label: "TLS Server + Client", value: "tls_server_client" },
-  { label: "EFS (File Encryption)", value: "efs" },
-];
+// Certificate profiles and CC/S/A options are deployment-configured (injected
+// via the server config), not hardcoded — see config.certProfiles /
+// config.ccsaOptions. A safe fallback profile keeps the form usable if the
+// configured list is somehow empty.
+const FALLBACK_PROFILE: CertProfile = { label: "TLS Client", value: "tls_client" };
 
 // EFS keys are generated server-side; the form only offers what the EFS profile
 // actually issues today (RSA-2048). Adding strengths here is the single change
@@ -40,54 +40,6 @@ const EFS_KEY_STRENGTHS = [{ label: "2048", value: "2048" }];
 
 const CSR_MARKER = "-----BEGIN CERTIFICATE REQUEST-----";
 const CSR_END_MARKER = "-----END CERTIFICATE REQUEST-----";
-
-// Combatant Command / Service / Agency the certificate belongs to.
-const CCSA_OPTIONS: SelectProps.Options = [
-  {
-    label: "Military Services",
-    options: [
-      { label: "Air Force (USAF)", value: "USAF" },
-      { label: "Army (USA)", value: "USA" },
-      { label: "Navy (USN)", value: "USN" },
-      { label: "Marine Corps (USMC)", value: "USMC" },
-      { label: "Space Force (USSF)", value: "USSF" },
-      { label: "Coast Guard (USCG)", value: "USCG" },
-    ],
-  },
-  {
-    label: "Combatant Commands",
-    options: [
-      { label: "AFRICOM", value: "AFRICOM" },
-      { label: "CENTCOM", value: "CENTCOM" },
-      { label: "CYBERCOM", value: "CYBERCOM" },
-      { label: "EUCOM", value: "EUCOM" },
-      { label: "INDOPACOM", value: "INDOPACOM" },
-      { label: "NORTHCOM", value: "NORTHCOM" },
-      { label: "SOCOM", value: "SOCOM" },
-      { label: "SOUTHCOM", value: "SOUTHCOM" },
-      { label: "SPACECOM", value: "SPACECOM" },
-      { label: "STRATCOM", value: "STRATCOM" },
-      { label: "TRANSCOM", value: "TRANSCOM" },
-    ],
-  },
-  {
-    label: "Agencies & Field Activities",
-    options: [
-      { label: "DISA", value: "DISA" },
-      { label: "DLA", value: "DLA" },
-      { label: "DIA", value: "DIA" },
-      { label: "NSA", value: "NSA" },
-      { label: "NGA", value: "NGA" },
-      { label: "DCSA", value: "DCSA" },
-      { label: "DCMA", value: "DCMA" },
-      { label: "DFAS", value: "DFAS" },
-      { label: "DHA", value: "DHA" },
-      { label: "DTRA", value: "DTRA" },
-      { label: "MDA", value: "MDA" },
-      { label: "OSD / WHS", value: "OSD" },
-    ],
-  },
-];
 
 // Subject Alternative Name kinds (the prefix mirrors how the CA/x509 parser
 // renders SANs, e.g. "DNS:host.mil").
@@ -135,19 +87,15 @@ const EKU_OPTIONS: MultiselectProps.Options = [
   { label: "IPsec IKE", value: "ipsecIKE" },
 ];
 
-// Profiles whose certificates carry the id-kp-serverAuth EKU (TLS server),
-// which Apple/iOS cap at 397 days. The CA enforces the cap; this drives the
-// advisory banner.
-const SERVER_AUTH_PROFILES = new Set(["tls_server", "tls_server_client"]);
-
 export function ApplicationForm({
   mode,
   title,
   description,
 }: Readonly<{ mode: "issuance" | "renewal"; title: string; description: string }>) {
+  const profiles = config.certProfiles.length > 0 ? config.certProfiles : [FALLBACK_PROFILE];
   const [csr, setCsr] = useState("");
   const [csrFiles, setCsrFiles] = useState<File[]>([]);
-  const [profile, setProfile] = useState(PROFILES[0]);
+  const [profile, setProfile] = useState<CertProfile>(profiles[0]);
   const [email, setEmail] = useState("");
   const [issmEmail, setIssmEmail] = useState("");
   const [pmEmail, setPmEmail] = useState("");
@@ -161,7 +109,7 @@ export function ApplicationForm({
   const [eku, setEku] = useState<readonly MultiselectProps.Option[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const isEfs = profile.value === "efs";
+  const isEfs = profile.efs ?? false;
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -223,7 +171,7 @@ export function ApplicationForm({
   const pending = mutation.isPending || efsMutation.isPending;
   const canSubmit =
     (isEfs ? emailValid : csrValid && emailValid) && issmValid && pmValid && !pending;
-  const isServerAuth = SERVER_AUTH_PROFILES.has(profile.value);
+  const isServerAuth = profile.serverAuth ?? false;
 
   // Editing any field after a submission clears the stale success/result banner
   // so it can never appear to describe the current (edited) input.
@@ -434,28 +382,30 @@ export function ApplicationForm({
                   onChange={(e) => {
                     clearStale();
                     setProfile(
-                      PROFILES.find((p) => p.value === e.detail.selectedOption.value) ?? PROFILES[0],
+                      profiles.find((p) => p.value === e.detail.selectedOption.value) ?? profiles[0],
                     );
                   }}
-                  options={PROFILES}
+                  options={profiles}
                 />
               </FormField>
-              <FormField
-                label="CC/S/A"
-                description="Combatant Command, Service, or Agency this certificate belongs to."
-              >
-                <Select
-                  selectedOption={ccsa}
-                  onChange={(e) => {
-                    clearStale();
-                    setCcsa(e.detail.selectedOption);
-                  }}
-                  options={CCSA_OPTIONS}
-                  filteringType="auto"
-                  placeholder="Select CC/S/A"
-                  empty="No matches"
-                />
-              </FormField>
+              {config.dodMode && (
+                <FormField
+                  label="CC/S/A"
+                  description="Combatant Command, Service, or Agency this certificate belongs to."
+                >
+                  <Select
+                    selectedOption={ccsa}
+                    onChange={(e) => {
+                      clearStale();
+                      setCcsa(e.detail.selectedOption);
+                    }}
+                    options={config.ccsaOptions}
+                    filteringType="auto"
+                    placeholder="Select CC/S/A"
+                    empty="No matches"
+                  />
+                </FormField>
+              )}
               {isEfs ? (
                 <>
                   <FormField
