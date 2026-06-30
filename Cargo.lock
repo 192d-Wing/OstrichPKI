@@ -3300,7 +3300,9 @@ name = "ostrich-ca-server"
 version = "0.15.0"
 dependencies = [
  "anyhow",
+ "async-nats",
  "axum",
+ "chrono",
  "clap",
  "config",
  "ostrich-audit",
@@ -3312,6 +3314,7 @@ dependencies = [
  "ostrich-x509",
  "serde",
  "serde_json",
+ "sqlx",
  "tokio",
  "tonic",
  "tower",

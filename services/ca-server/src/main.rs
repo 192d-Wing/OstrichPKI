@@ -6,6 +6,8 @@
 //! - NIST 800-53: AU-2 (Audit Events)
 //! - NIAP PP-CA: FCS_CKM.1 (Cryptographic Key Generation)
 
+mod expiry_producer;
+
 use anyhow::{Context, Result};
 use axum::{Json, Router, routing::get};
 use clap::Parser;
@@ -127,6 +129,29 @@ struct Args {
     /// Enable JSON logging format
     #[arg(long, env = "LOG_JSON", default_value = "false")]
     log_json: bool,
+
+    // --- Expiry-notification producer (publishes to the notify-service) ---
+    /// Enable the certificate-expiry notification producer.
+    #[arg(long, env = "NOTIFY_ENABLED", default_value = "false")]
+    notify_enabled: bool,
+    /// NATS server URL the producer publishes schedules to.
+    #[arg(long, env = "NATS_URL", default_value = "nats://nats:4222")]
+    nats_url: String,
+    /// Notify when a certificate is within this many days of expiry.
+    #[arg(long, env = "NOTIFY_DAYS_BEFORE", default_value = "90")]
+    notify_days_before: i64,
+    /// Hours between expiry scans.
+    #[arg(long, env = "NOTIFY_SCAN_INTERVAL_HOURS", default_value = "24")]
+    notify_scan_interval_hours: u64,
+    /// Default reminder frequency (daily | weekly | monthly).
+    #[arg(long, env = "NOTIFY_DEFAULT_FREQUENCY", default_value = "weekly")]
+    notify_default_frequency: String,
+    /// Default reminder time of day (UTC, "HH:MM:SS").
+    #[arg(long, env = "NOTIFY_DEFAULT_TIME", default_value = "09:00:00Z")]
+    notify_default_time: String,
+    /// Default reminder weekdays.
+    #[arg(long, env = "NOTIFY_DEFAULT_DAYS", value_delimiter = ',', default_value = "Monday")]
+    notify_default_days: Vec<String>,
 }
 
 #[tokio::main]
@@ -152,6 +177,22 @@ async fn main() -> Result<()> {
     // NIST 800-53: CM-3 - Configuration Change Control
     tracing::info!("Running database migrations");
     db_pool.migrate().await?;
+
+    // Certificate-expiry notification producer (opt-in): scans expiring certs and
+    // publishes schedules to the notify-service over NATS. Runs detached; failures
+    // never affect issuance.
+    if args.notify_enabled {
+        let producer_pool = db_pool.pool().clone();
+        let producer_cfg = expiry_producer::ProducerConfig {
+            nats_url: args.nats_url.clone(),
+            days_before: args.notify_days_before,
+            scan_interval_hours: args.notify_scan_interval_hours,
+            default_frequency: args.notify_default_frequency.clone(),
+            default_time: args.notify_default_time.clone(),
+            default_days: args.notify_default_days.clone(),
+        };
+        tokio::spawn(expiry_producer::run(producer_pool, producer_cfg));
+    }
 
     // Backfill the FQDN (SAN/CN) index for certificates issued before it existed.
     // Idempotent and cheap once populated (a single anti-join returning no rows);
