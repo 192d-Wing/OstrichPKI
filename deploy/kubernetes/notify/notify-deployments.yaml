@@ -28,11 +28,12 @@ spec:
           imagePullPolicy: Always
           ports:
             - { name: health, containerPort: 8090 }
+          envFrom:
+            # NATS_URL + NOTIFY_TICK_SECONDS come from the notify.env variable file.
+            - configMapRef: { name: notify-config }
           env:
             - { name: RUST_LOG, value: "info" }
             - { name: NOTIFY_ROLE, value: "scheduler" }
-            - { name: NATS_URL, value: "nats://nats:4222" }
-            - { name: NOTIFY_TICK_SECONDS, value: "300" }
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef: { name: notify-db-secret, key: database-url }
@@ -76,15 +77,14 @@ spec:
           imagePullPolicy: Always
           ports:
             - { name: health, containerPort: 8090 }
+          envFrom:
+            # NATS_URL + SMTP_HOST/PORT/FROM/STARTTLS come from the notify.env
+            # variable file (configMapGenerator -> notify-config).
+            - configMapRef: { name: notify-config }
           env:
             - { name: RUST_LOG, value: "info" }
             - { name: NOTIFY_ROLE, value: "sender" }
-            - { name: NATS_URL, value: "nats://nats:4222" }
-            # --- SMTP relay (set these to your relay) ---
-            - { name: SMTP_HOST, value: "smtp.oopl.dev.mil" }
-            - { name: SMTP_PORT, value: "25" }
-            - { name: SMTP_FROM, value: "pki-notify@oopl.dev.mil" }
-            - { name: SMTP_STARTTLS, value: "false" }
+            # If your relay requires auth, add the password from a secret:
             # - name: SMTP_PASSWORD
             #   valueFrom: { secretKeyRef: { name: notify-smtp-secret, key: password } }
             - name: DATABASE_URL

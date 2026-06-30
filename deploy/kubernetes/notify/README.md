@@ -26,9 +26,14 @@ CA (producer) ──cert.expiry.notify──▶ NATS JetStream ──▶ notify-
      --from-literal=password="$PW" \
      --from-literal=database-url="postgres://notify:${PW}@notify-postgres:5432/notify"
    ```
-2. **SMTP relay** — set `SMTP_HOST` / `SMTP_FROM` (and `SMTP_STARTTLS` + a
-   `notify-smtp-secret` for credentials) in `notify-deployments.yaml` to your
-   relay. The sender refuses to start without `SMTP_HOST`.
+2. **SMTP relay + config** — edit the git-controlled variable file
+   [`notify.env`](notify.env) (`SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`,
+   `SMTP_STARTTLS`, `NATS_URL`, `NOTIFY_TICK_SECONDS`). kustomize folds it into a
+   hashed `notify-config` ConfigMap that both deployments read via `envFrom`, so
+   editing it and re-applying rolls the pods automatically. The sender refuses to
+   start without `SMTP_HOST`. If the relay needs auth, put the password in a
+   `notify-smtp-secret` and uncomment `SMTP_PASSWORD` in `notify-deployments.yaml`
+   (secrets never go in `notify.env`).
 
 ## Deploy
 ```sh
