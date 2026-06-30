@@ -26,8 +26,11 @@ const DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.
 /// Encode DER-encoded certificates as a degenerate certs-only PKCS#7 (CMS
 /// `SignedData` with no content and no signers), returning DER bytes.
 ///
-/// Certificate order is preserved as given (leaf first, then chain). An empty
-/// input yields a valid `SignedData` with an absent `certificates` field.
+/// The `certificates` field is a CMS `CertificateSet` (ASN.1 `SET OF`), so DER
+/// encoding orders the entries canonically by their bytes — caller insertion
+/// order is NOT preserved. This is spec-compliant (RFC 5652 §5.1): consumers
+/// identify the leaf vs. issuers by subject/issuer/AKI, never by position. An
+/// empty input yields a valid `SignedData` with an absent `certificates` field.
 pub fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
     use cms::{content_info::ContentInfo, signed_data::SignedData};
 

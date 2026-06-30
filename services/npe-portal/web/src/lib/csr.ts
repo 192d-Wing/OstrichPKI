@@ -95,18 +95,58 @@ function ipv4ToBytes(value: string): Uint8Array | null {
   if (parts.length !== 4) return null;
   const bytes = new Uint8Array(4);
   for (let i = 0; i < 4; i++) {
+    if (!/^\d+$/.test(parts[i])) return null;
     const n = Number(parts[i]);
-    if (!Number.isInteger(n) || n < 0 || n > 255 || !/^\d+$/.test(parts[i])) return null;
+    if (n > 255) return null;
     bytes[i] = n;
   }
   return bytes;
 }
 
+/** Parse an IPv6 string into 16 octets (supports `::` compression), or null. */
+function ipv6ToBytes(value: string): Uint8Array | null {
+  const halves = value.split("::");
+  if (halves.length > 2) return null;
+  const toGroups = (s: string): number[] | null => {
+    if (s === "") return [];
+    const out: number[] = [];
+    for (const g of s.split(":")) {
+      if (!/^[0-9a-fA-F]{1,4}$/.test(g)) return null;
+      const n = Number.parseInt(g, 16);
+      out.push((n >> 8) & 0xff, n & 0xff);
+    }
+    return out;
+  };
+  const head = toGroups(halves[0]);
+  const tail = halves.length === 2 ? toGroups(halves[1]) : [];
+  if (head === null || tail === null) return null;
+  if (halves.length === 2) {
+    // `::` fills the gap with zero bytes; total must be < 16 to leave room.
+    if (head.length + tail.length >= 16) return null;
+    const gap = new Array<number>(16 - head.length - tail.length).fill(0);
+    return new Uint8Array([...head, ...gap, ...tail]);
+  }
+  return head.length === 16 ? new Uint8Array(head) : null;
+}
+
+/** Parse an IP SAN value (v4 or v6) into its network-order octets, or null. */
+function ipToBytes(value: string): Uint8Array | null {
+  return value.includes(":") ? ipv6ToBytes(value) : ipv4ToBytes(value);
+}
+
+interface MappedSans {
+  names: GeneralName[];
+  /** SAN tokens that could not be encoded (unsupported kind or bad value). */
+  unsupported: string[];
+}
+
 // Map "TYPE:value" SAN tokens (as the form emits them) to X.509 GeneralNames.
-// DNS/email/URI/IP are supported; unrecognized kinds (e.g. UPN otherName) are
-// skipped — the requester can add those to the form's SAN list instead.
-function sansToGeneralNames(sans: string[]): GeneralName[] {
+// DNS/email/URI/IP (v4 and v6) are supported. Anything else — UPN/otherName,
+// unknown kinds, or an unparseable IP — is returned in `unsupported` so the
+// caller can fail loudly rather than silently dropping a requested name.
+function sansToGeneralNames(sans: string[]): MappedSans {
   const names: GeneralName[] = [];
+  const unsupported: string[] = [];
   for (const raw of sans) {
     const idx = raw.indexOf(":");
     const kind = idx >= 0 ? raw.slice(0, idx) : "DNS";
@@ -122,7 +162,7 @@ function sansToGeneralNames(sans: string[]): GeneralName[] {
         names.push(new GeneralName({ type: 6, value }));
         break;
       case "IP": {
-        const bytes = ipv4ToBytes(value);
+        const bytes = ipToBytes(value);
         if (bytes) {
           names.push(
             new GeneralName({
@@ -130,14 +170,17 @@ function sansToGeneralNames(sans: string[]): GeneralName[] {
               value: new asn1js.OctetString({ valueHex: bytes.buffer as ArrayBuffer }),
             }),
           );
+        } else {
+          unsupported.push(raw);
         }
         break;
       }
       default:
+        unsupported.push(raw);
         break;
     }
   }
-  return names;
+  return { names, unsupported };
 }
 
 function addRdn(csr: CertificationRequest, type: string, value: string, printable = false) {
@@ -185,7 +228,16 @@ export async function generateCsr(
 
   await pkcs10.subjectPublicKeyInfo.importKey(keys.publicKey);
 
-  const generalNames = sansToGeneralNames(sans);
+  const { names: generalNames, unsupported } = sansToGeneralNames(sans);
+  if (unsupported.length > 0) {
+    // Fail loudly rather than issuing a CSR missing a requested name. UPN and
+    // other otherName SANs aren't supported by the in-browser generator.
+    throw new Error(
+      `These Subject Alternative Names can't be included by the in-browser generator: ${unsupported.join(
+        ", ",
+      )}. Remove them, or paste a CSR generated with full tooling instead.`,
+    );
+  }
   if (generalNames.length > 0) {
     const altNames = new GeneralNames({ names: generalNames });
     const extensions = new Extensions({

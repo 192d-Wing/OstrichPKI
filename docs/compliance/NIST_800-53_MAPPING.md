@@ -96,9 +96,12 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   - `crates/ostrich-ca/src/rest.rs` — IssueCertificate, RevokeCertificate, GenerateCrl,
     ApproveRequest, RejectRequest, SubmitRequest, ViewRequests, ViewConfig (profiles),
     ViewCertificate (GET `/api/v1/certificates` list + GET `/api/v1/certificates/{id}`
-    detail + GET `/api/v1/certificates/stats` inventory-wide status counts — read
-    access to the issued-certificate inventory, distinct from the IssueCertificate
-    POST on the same path),
+    detail + GET `/api/v1/certificates/{id}/pkcs7` certs-only `.p7b` download
+    (RFC 5652 §5; own-scoped, AU-2/AU-3 audited) + GET `/api/v1/certificates/stats`
+    inventory-wide status counts — read access to the issued-certificate
+    inventory, distinct from the IssueCertificate POST on the same path; the list
+    accepts an `expiringInDays` filter backing the dashboard "Expiring soon"
+    drill-down),
     ReadAuditLog (GET `/api/v1/audit` paginated/filtered audit review — AU-6 /
     FAU_SAR.1; GET `/api/v1/audit/verify` recomputes the hash chain and verifies
     each signed record against the CA public key — AU-9/AU-9(3)/AU-10, FAU_STG.1.2)

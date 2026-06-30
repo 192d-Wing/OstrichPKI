@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -16,23 +15,17 @@ import {
 } from "@cloudscape-design/components";
 
 import { StatusBadge } from "@/components/status-badge";
-import { downloadBase64, downloadPemAsDer, downloadText } from "@/lib/download";
+import { commonName } from "@/lib/dn";
+import { downloadBase64, downloadPemAsDer, downloadText, safeFileName } from "@/lib/download";
 import {
   portalApi,
   type CertificateDetail,
   type CertificateExtension,
 } from "@/lib/portal-api";
 
-/** Common Name from an RFC 4514 subject DN, falling back to the full DN. */
-function commonName(subjectDn: string): string {
-  const match = /CN=([^,]+)/i.exec(subjectDn);
-  return match ? match[1].trim() : subjectDn;
-}
-
 /** A filesystem-safe base name for the downloaded files. */
 function fileBase(cert: CertificateDetail): string {
-  const cn = commonName(cert.subjectDn).replace(/[^A-Za-z0-9._-]+/g, "_");
-  return cn || `cert-${cert.serialNumber}`;
+  return safeFileName(commonName(cert.subjectDn), `cert-${cert.serialNumber}`);
 }
 
 export function CertificateDetailPage() {
@@ -47,18 +40,15 @@ export function CertificateDetailPage() {
     retry: false,
   });
 
-  // The CA chain (for the "Full chain (PEM)" download). Best-effort: the leaf
-  // PEM alone still downloads if this fails.
+  // The CA chain, only needed for the "Full chain (PEM)" download. Fetched
+  // lazily (enabled:false) so opening a detail page doesn't hit /ca/info for the
+  // common case where the chain is never downloaded.
   const caInfo = useQuery({
     queryKey: ["ca-info"],
     queryFn: () => portalApi.caInfo(),
+    enabled: false,
     staleTime: 5 * 60_000,
   });
-
-  const sanItems = useMemo(
-    () => cert?.subjectAltNames.map((s) => `${s.nameType}:${s.value}`) ?? [],
-    [cert],
-  );
 
   if (!id) {
     return (
@@ -88,23 +78,31 @@ export function CertificateDetailPage() {
     );
   }
 
+  // `cert` is non-null past the guards above; bind it so the handlers don't need
+  // repeated non-null assertions.
+  const c = cert;
+  const sanItems = c.subjectAltNames.map((s) => `${s.nameType}:${s.value}`);
+  const base = fileBase(c);
+
   function downloadPem() {
-    downloadText(cert!.pem, `${fileBase(cert!)}.pem`, "application/x-pem-file");
+    downloadText(c.pem, `${base}.pem`, "application/x-pem-file");
   }
   function downloadDer() {
-    downloadPemAsDer(cert!.pem, `${fileBase(cert!)}.cer`);
+    downloadPemAsDer(c.pem, `${base}.cer`);
   }
-  function downloadChain() {
-    const chainPem = caInfo.data?.chain_pem ?? "";
-    const bundle = `${cert!.pem.trim()}\n${chainPem.trim()}\n`;
-    downloadText(bundle, `${fileBase(cert!)}-chain.pem`, "application/x-pem-file");
+  async function downloadChain() {
+    // Fetch the CA chain on demand (the query is otherwise disabled).
+    const data = caInfo.data ?? (await caInfo.refetch()).data;
+    const chainPem = data?.chain_pem ?? "";
+    const bundle = `${c.pem.trim()}\n${chainPem.trim()}\n`;
+    downloadText(bundle, `${base}-chain.pem`, "application/x-pem-file");
   }
   async function downloadPkcs7() {
-    const res = await portalApi.certificatePkcs7(cert!.id);
-    downloadBase64(res.pkcs7, `${fileBase(cert!)}.p7b`, "application/pkcs7-mime");
+    const res = await portalApi.certificatePkcs7(c.id);
+    downloadBase64(res.pkcs7, `${base}.p7b`, "application/pkcs7-mime");
   }
 
-  const isRevoked = cert.status.toLowerCase() === "revoked";
+  const isRevoked = c.status.toLowerCase() === "revoked";
 
   return (
     <ContentLayout
@@ -121,11 +119,7 @@ export function CertificateDetailPage() {
                 items={[
                   { id: "pem", text: "PEM (.pem)" },
                   { id: "der", text: "DER (.cer)" },
-                  {
-                    id: "chain",
-                    text: "Full chain (PEM)",
-                    disabled: !caInfo.data?.chain_pem,
-                  },
+                  { id: "chain", text: "Full chain (PEM)" },
                   { id: "p7b", text: "PKCS#7 (.p7b)" },
                 ]}
                 onItemClick={({ detail }) => {
@@ -173,7 +167,9 @@ export function CertificateDetailPage() {
               },
               {
                 label: "Key",
-                value: `${cert.keyAlgorithm}${cert.keySize ? ` ${cert.keySize}-bit` : ""}`,
+                value: cert.keySize
+                  ? `${cert.keyAlgorithm} ${cert.keySize}-bit`
+                  : cert.keyAlgorithm,
               },
               { label: "Signature algorithm", value: cert.signatureAlgorithm || "—" },
             ]}

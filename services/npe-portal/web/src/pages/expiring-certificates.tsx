@@ -12,22 +12,18 @@ import {
   Table,
 } from "@cloudscape-design/components";
 
+import { commonName } from "@/lib/dn";
 import { portalApi, type CertificateRow } from "@/lib/portal-api";
 
 // The dashboard "Expiring in 90 Days" card drills down to this list; keep the
 // window in lockstep with that card's definition.
 const EXPIRY_WINDOW_DAYS = 90;
 
-/** Whole days from now until `iso` (negative if already past). */
+/** Whole days from now until `iso` (negative if already past). Fallback only —
+ * the CA supplies `daysRemaining` so the list and detail view agree. */
 function daysUntil(iso: string): number {
   const ms = new Date(iso).getTime() - Date.now();
   return Math.ceil(ms / 86_400_000);
-}
-
-/** Common Name pulled from an RFC 4514 subject DN, falling back to the full DN. */
-function commonName(subjectDn: string): string {
-  const match = /CN=([^,]+)/i.exec(subjectDn);
-  return match ? match[1].trim() : subjectDn;
 }
 
 // <=30 days is the urgent band; <=60 is a heads-up; otherwise neutral.
@@ -108,7 +104,9 @@ export function ExpiringCertificatesPage() {
           {
             id: "remaining",
             header: "Time remaining",
-            cell: (c) => <ExpiryBadge days={daysUntil(c.validTo)} />,
+            // Prefer the CA's server-computed daysRemaining (matches the detail
+            // view); fall back to a client estimate only if it's absent.
+            cell: (c) => <ExpiryBadge days={c.daysRemaining ?? daysUntil(c.validTo)} />,
           },
           {
             id: "actions",
