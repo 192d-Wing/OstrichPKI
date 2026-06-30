@@ -13,6 +13,15 @@ resources:
   - notify-postgres.yaml
   - notify-deployments.yaml
 
+# Non-secret notify config (NATS URL, scheduler cadence, SMTP relay) is sourced
+# from the git-controlled variable file notify.env. kustomize hashes it into a
+# ConfigMap and rewrites the Deployments' envFrom ref, so editing notify.env and
+# re-applying rolls the pods automatically.
+configMapGenerator:
+  - name: notify-config
+    envs:
+      - notify.env
+
 # Pin to a built notify-service image (bump as new builds land).
 images:
   - name: ghcr.io/192d-wing/notify-service
