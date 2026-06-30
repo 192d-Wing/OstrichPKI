@@ -22,6 +22,15 @@ export function downloadText(text: string, filename: string, mimeType: string) {
 }
 
 /**
+ * Turn an arbitrary label (a CN, etc.) into a filesystem-safe base name,
+ * replacing runs of disallowed characters with `_` and falling back to
+ * `fallback` when nothing usable remains.
+ */
+export function safeFileName(label: string, fallback: string): string {
+  return label.trim().replace(/[^A-Za-z0-9._-]+/g, "_") || fallback;
+}
+
+/**
  * Save a PEM certificate's raw DER bytes as a binary download. Strips the PEM
  * armor (`-----BEGIN/END …-----`) and whitespace, leaving the base64 DER body.
  */

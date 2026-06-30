@@ -596,6 +596,9 @@ struct CertificateSummaryDto {
     valid_to: String,
     status: String,
     key_algorithm: Option<String>,
+    /// Whole days until expiry, clamped at 0 (so the list and the detail view
+    /// report the same figure instead of the client recomputing it).
+    days_remaining: Option<i64>,
 }
 
 /// Paginated response for the certificate inventory listing.
@@ -860,6 +863,7 @@ async fn list_certificates(
     // Map a stored row to its summary DTO (status derived before fields move).
     let to_summary = |c: Certificate| {
         let status = cert_status_str(&c, now).to_string();
+        let days_remaining = Some((c.not_after - now).num_days().max(0));
         CertificateSummaryDto {
             id: c.id.to_string(),
             serial_number: hex::encode(&c.serial_number),
@@ -869,6 +873,7 @@ async fn list_certificates(
             valid_to: c.not_after.to_rfc3339(),
             status,
             key_algorithm: None,
+            days_remaining,
         }
     };
 
@@ -1038,6 +1043,7 @@ async fn get_fqdn_record(
             valid_to: c.not_after.to_rfc3339(),
             status: cert_status_str(c, now).to_string(),
             key_algorithm: None,
+            days_remaining: Some((c.not_after - now).num_days().max(0)),
         })
         .collect();
 
@@ -1422,6 +1428,15 @@ async fn get_certificate(
 /// Download a certificate as a certs-only PKCS#7 (.p7b): the leaf plus its
 /// issuing CA certificate, base64-encoded DER. Backs the certificate detail
 /// view's "Download PKCS#7" option (PEM/DER/full-chain are derived client-side).
+///
+/// Chain depth: this bundles the leaf + the issuing CA certificate
+/// (`state.ca.certificate_der()`) — the same single cert `get_ca_info` exposes
+/// as `chain_pem`, so the PKCS#7 and the client-side "Full chain (PEM)" download
+/// are built from one source and stay consistent. When the issuing CA is itself
+/// an intermediate, neither carries the upper intermediates/root, because the CA
+/// service does not hold its own issuer chain.
+// POAM: when the CA gains access to its issuer chain, return the full ordered
+// chain here (and from get_ca_info) via a shared chain-resolution helper.
 ///
 /// # COMPLIANCE MAPPING
 /// - NIST 800-53: AC-3 - Access enforcement (Permission::ViewCertificate); own-scoped

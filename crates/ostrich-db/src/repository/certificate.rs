@@ -310,7 +310,11 @@ impl CertificateRepository {
                     NOT revoked
                     AND not_before <= NOW()
                     AND not_after >= NOW()
-                    AND not_after < NOW() + make_interval(days => $4)
+                    -- $4 is bound as bigint; make_interval's `days` is integer and
+                    -- Postgres has no implicit bigint->integer cast in function
+                    -- resolution, so the ::int cast is required (not just on the
+                    -- NULL guard above).
+                    AND not_after < NOW() + make_interval(days => $4::int)
                 )
             )
         "#;

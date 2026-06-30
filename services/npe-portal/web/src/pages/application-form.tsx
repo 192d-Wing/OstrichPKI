@@ -24,7 +24,8 @@ import {
   TokenGroup,
 } from "@cloudscape-design/components";
 
-import { downloadBase64, downloadText } from "@/lib/download";
+import { commonName } from "@/lib/dn";
+import { downloadBase64, downloadText, safeFileName } from "@/lib/download";
 // `csr` pulls in pkijs/asn1js (~390 kB); import it lazily (see onGenerateCsr) so
 // it loads only when a requester actually generates a key in the browser.
 import type { CsrAlgorithm } from "@/lib/csr";
@@ -75,12 +76,6 @@ const KEY_USAGE_OPTIONS: MultiselectProps.Options = [
   { label: "Encipher Only", value: "encipherOnly" },
   { label: "Decipher Only", value: "decipherOnly" },
 ];
-
-/** Common Name pulled from an RFC 4514 subject DN, falling back to the full DN. */
-function commonName(subjectDn: string): string {
-  const match = /CN=([^,]+)/i.exec(subjectDn);
-  return match ? match[1].trim() : subjectDn;
-}
 
 // Example placeholder for the SAN value input by kind (203.0.113.x is the RFC
 // 5737 documentation range, never a real host).
@@ -289,8 +284,7 @@ export function ApplicationForm({
 
   function downloadKey() {
     if (!genKeyPem) return;
-    const safe = genCn.trim().replace(/[^A-Za-z0-9._-]+/g, "_") || "private-key";
-    downloadText(genKeyPem, `${safe}.key`, "application/x-pem-file");
+    downloadText(genKeyPem, `${safeFileName(genCn, "private-key")}.key`, "application/x-pem-file");
   }
 
   // A dropped/chosen CSR file populates the same textarea, so paste and file

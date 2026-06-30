@@ -854,6 +854,17 @@ issued certificate (subject `CN=est-client.example.com`, issuer
 `CN=OstrichPKI EST Root`), which `openssl verify` accepts against the root.
 `/.well-known/est/cacerts` returns the CA certificate as PKCS#7.
 
+The certs-only PKCS#7 encoder (RFC 5652 §5 degenerate `SignedData`) is now a
+shared primitive, `ostrich_x509::pkcs7::encode_certs_only_pkcs7`
+(`crates/ostrich-x509/src/pkcs7.rs`), used by both the EST responses above and a
+management-API download endpoint `GET /api/v1/certificates/{id}/pkcs7`
+(`crates/ostrich-ca/src/rest.rs`), which returns the leaf plus its issuing CA
+certificate as a base64 `.p7b`. Per RFC 5652 §5.1 the `certificates` field is a
+`SET OF`, so certificate order is not positional. NPE-portal certificate detail
+offers PEM/DER/full-chain (derived client-side from the leaf PEM + CA chain) and
+this PKCS#7 form. (Chain depth is currently the single issuing CA; a full chain
+to the trust anchor is a POAM pending the CA holding its own issuer chain.)
+
 The enrollment handlers now call the CA gRPC service via `EstCaClient`
 (crates/ostrich-est/src/rest.rs, services/est-server/src/main.rs) instead of
 returning an empty 202 placeholder; they fail closed when CA integration is

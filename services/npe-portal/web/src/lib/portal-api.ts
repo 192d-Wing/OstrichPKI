@@ -67,6 +67,8 @@ export interface CertificateRow {
   validTo: string;
   status: string;
   keyAlgorithm?: string | null;
+  /** Whole days until expiry (server-computed), clamped at 0. */
+  daysRemaining?: number | null;
 }
 
 export interface CertificateListResponse {
