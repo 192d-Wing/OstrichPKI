@@ -1,0 +1,20 @@
+[package]
+name = "ostrich-notify-contract"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Shared NATS message contract for the OstrichPKI certificate-expiry notify pipeline (CA producer ↔ notify-service)"
+
+# Single source of truth for the wire types and subjects exchanged between the
+# CA expiry-notify producer and the notify-service scheduler/sender. Both sides
+# depend on this crate so any schema change is compiler-enforced on both ends
+# (no hand-duplicated JSON shapes).
+[dependencies]
+serde = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -16,6 +16,7 @@ members = [
     "crates/ostrich-acme",
     "crates/ostrich-est",
     "crates/ostrich-tamp",
+    "crates/ostrich-notify-contract",
     # Service binaries
     "services/ca-server",
     "services/acme-server",
@@ -54,6 +55,7 @@ ostrich-audit = { path = "crates/ostrich-audit" }
 ostrich-protocol = { path = "crates/ostrich-protocol" }
 ostrich-api = { path = "crates/ostrich-api" }
 ostrich-tamp = { path = "crates/ostrich-tamp" }
+ostrich-notify-contract = { path = "crates/ostrich-notify-contract" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }

@@ -33,12 +33,13 @@ async fn main() -> Result<()> {
     // NATS TLS. Idempotent. NIST 800-53: SC-13.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
-    // Health/readiness server for k8s probes.
-    tokio::spawn(health_server(cfg.health_address.clone()));
-
     let pool = db::connect(&cfg.database_url)
         .await
         .context("connecting to notify database")?;
+
+    // Health/readiness server for k8s probes. Readiness pings the DB so the pod
+    // only reports Ready when its database is actually reachable (NIST SI-17).
+    tokio::spawn(health_server(cfg.health_address.clone(), pool.clone()));
 
     let client = async_nats::connect(&cfg.nats_url)
         .await
@@ -63,10 +64,20 @@ async fn ensure_stream(js: &jetstream::Context) -> Result<()> {
     Ok(())
 }
 
-async fn health_server(addr: String) {
+async fn health_server(addr: String, pool: db::Pool) {
+    use ostrich_common::health;
     let app = Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .route("/ready", get(|| async { "ready" }));
+        .route(
+            "/health",
+            get(|| async { health::health_response("notify-server") }),
+        )
+        .route(
+            "/ready",
+            get(move || {
+                let pool = pool.clone();
+                async move { health::readiness_response_with_pg_pool("notify-server", &pool).await }
+            }),
+        );
     match tokio::net::TcpListener::bind(&addr).await {
         Ok(listener) => {
             tracing::info!(%addr, "health server listening");

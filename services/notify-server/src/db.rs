@@ -120,6 +120,54 @@ pub async fn try_claim_window(pool: &Pool, certificate: &str, window_key: &str) 
     Ok(res.rows_affected() == 1)
 }
 
+/// A claimed-but-undelivered window to re-drive (joined to its still-active
+/// schedule so the email job can be rebuilt without re-deriving it).
+pub struct UnsentWindow {
+    pub certificate: String,
+    pub window_key: String,
+    pub notification_emails: Vec<String>,
+    pub subject: String,
+    pub body: String,
+}
+
+/// Windows that were claimed but never marked sent — the scheduler crashed
+/// between claim and publish, or the sender exhausted its redelivery attempts.
+/// Returns only claims older than `min_age_secs` (give the original send a
+/// chance first) and newer than `max_age_secs` (don't resurrect an ancient
+/// backlog after a long outage). Re-publishing is at-least-once: a duplicate
+/// email beats a silently-dropped expiry notice, and `mark_sent` is idempotent.
+pub async fn list_stale_unsent(
+    pool: &Pool,
+    min_age_secs: i64,
+    max_age_secs: i64,
+) -> Result<Vec<UnsentWindow>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT sn.certificate, sn.window_key,
+               s.notification_emails, s.subject, s.body
+        FROM sent_notifications sn
+        JOIN schedules s ON s.certificate = sn.certificate AND s.active
+        WHERE sn.sent_at IS NULL
+          AND sn.queued_at <  now() - make_interval(secs => $1)
+          AND sn.queued_at >= now() - make_interval(secs => $2)
+        "#,
+    )
+    .bind(min_age_secs as f64)
+    .bind(max_age_secs as f64)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| UnsentWindow {
+            certificate: r.get("certificate"),
+            window_key: r.get("window_key"),
+            notification_emails: r.get("notification_emails"),
+            subject: r.get("subject"),
+            body: r.get("body"),
+        })
+        .collect())
+}
+
 /// Record that a claimed window was actually delivered.
 pub async fn mark_sent(pool: &Pool, certificate: &str, window_key: &str) -> Result<()> {
     sqlx::query(

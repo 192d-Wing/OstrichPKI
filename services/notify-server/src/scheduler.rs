@@ -8,8 +8,15 @@ use async_nats::jetstream;
 use chrono::{DateTime, Datelike, Utc, Weekday};
 use futures::StreamExt;
 
-use crate::contract::{EmailJob, NotifyMessage, SUBJECT_EMAIL, SUBJECT_NOTIFY, STREAM_NAME, send_weekdays};
+use crate::contract::{
+    EmailJob, NotifyMessage, STREAM_NAME, SUBJECT_EMAIL, SUBJECT_NOTIFY, period_key, send_weekdays,
+};
 use crate::db::{self, Pool, Schedule};
+
+/// Re-drive a claimed-but-unsent window only after the original send had this
+/// long to land, and stop re-driving once it is older than the max age.
+const REDRIVE_MIN_AGE_SECS: i64 = 600; // 10 min
+const REDRIVE_MAX_AGE_SECS: i64 = 2 * 24 * 3600; // 2 days
 
 pub async fn run(pool: Pool, js: jetstream::Context, tick_seconds: u64) -> Result<()> {
     // Ingest schedule messages in the background.
@@ -72,8 +79,8 @@ async fn consume_loop(js: &jetstream::Context, pool: &Pool) -> Result<()> {
 async fn evaluate(pool: &Pool, js: &jetstream::Context) -> Result<()> {
     let now = Utc::now();
     let weekday = now.weekday();
-    let window_key = now.date_naive().to_string(); // YYYY-MM-DD — one send/day
 
+    // 1. Newly-due schedules: claim the cadence window, then publish.
     for s in db::list_active(pool).await? {
         if !is_due(&s, now, weekday) {
             continue;
@@ -81,8 +88,10 @@ async fn evaluate(pool: &Pool, js: &jetstream::Context) -> Result<()> {
         if s.notification_emails.is_empty() {
             continue;
         }
-        // Claim the day's slot before publishing so a cert is emailed at most
-        // once per day even with multiple scheduler replicas.
+        // The window key is the cadence period (day / ISO-week / month), so a
+        // cert is emailed at most once per period even with multiple send-days
+        // configured or multiple scheduler replicas running.
+        let window_key = period_key(&s.frequency, now);
         if !db::try_claim_window(pool, &s.certificate, &window_key).await? {
             continue;
         }
@@ -91,14 +100,38 @@ async fn evaluate(pool: &Pool, js: &jetstream::Context) -> Result<()> {
             subject: s.subject.clone(),
             body: s.body.clone(),
             certificate: s.certificate.clone(),
-            window_key: window_key.clone(),
+            window_key,
         };
-        let payload = serde_json::to_vec(&job)?;
-        js.publish(SUBJECT_EMAIL.to_string(), payload.into())
-            .await?
-            .await?;
+        publish_job(js, &job).await?;
         tracing::info!(cert = %s.certificate, recipients = job.to.len(), "queued expiry email");
     }
+
+    // 2. Re-drive windows that were claimed but never delivered (scheduler
+    //    crashed after the claim, or the sender exhausted its retries). Without
+    //    this the claim permanently burns the period and the expiry notice is
+    //    silently lost — the worst failure for an expiry warning.
+    for u in db::list_stale_unsent(pool, REDRIVE_MIN_AGE_SECS, REDRIVE_MAX_AGE_SECS).await? {
+        let job = EmailJob {
+            to: u.notification_emails,
+            subject: u.subject,
+            body: u.body,
+            certificate: u.certificate.clone(),
+            window_key: u.window_key.clone(),
+        };
+        if job.to.is_empty() {
+            continue;
+        }
+        publish_job(js, &job).await?;
+        tracing::warn!(cert = %u.certificate, window = %u.window_key, "re-driving unsent expiry email");
+    }
+    Ok(())
+}
+
+async fn publish_job(js: &jetstream::Context, job: &EmailJob) -> Result<()> {
+    let payload = serde_json::to_vec(job)?;
+    js.publish(SUBJECT_EMAIL.to_string(), payload.into())
+        .await?
+        .await?;
     Ok(())
 }
 

@@ -14,9 +14,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use ostrich_notify_contract::{NotifyMessage, SUBJECT_NOTIFY};
 use sqlx::{PgPool, Row};
-
-const SUBJECT_NOTIFY: &str = "cert.expiry.notify";
 
 /// Producer configuration (sourced from CA env in `main`).
 pub struct ProducerConfig {
@@ -62,11 +61,14 @@ async fn scan_and_publish(
     cfg: &ProducerConfig,
 ) -> Result<(usize, usize)> {
     // Active certs entering the notify window, with their request's details.
+    // approval_requests links to certificates via approval_requests.certificate_id
+    // (FK → certificates.id); certificates.request_id is an unrelated traceability
+    // id (ACME order / EST enrollment), so the join must be on certificate_id.
     let rows = sqlx::query(
         r#"
         SELECT c.subject_dn, c.not_before, c.not_after, ar.request_details
         FROM certificates c
-        LEFT JOIN approval_requests ar ON ar.id = c.request_id
+        LEFT JOIN approval_requests ar ON ar.certificate_id = c.id
         WHERE NOT c.revoked
           AND c.not_before <= now() AND c.not_after >= now()
           AND c.not_after < now() + make_interval(days => $1)
@@ -90,18 +92,19 @@ async fn scan_and_publish(
             "The certificate '{subject}' expires on {}. Please renew it before then.",
             not_after.format("%Y-%m-%d")
         );
-        let msg = serde_json::json!({
-            "certificate": subject,
-            "valid_from": not_before,
-            "valid_to": not_after,
-            "notification_emails": emails,
-            "notification_frequency": cfg.default_frequency,
-            "notification_time": cfg.default_time,
-            "notification_days": cfg.default_days,
-            "notification_subject": "Certificate Expiration Notification",
-            "notification_body": body,
-            "notify_days_before_expiration": cfg.days_before,
-        });
+        let msg = NotifyMessage {
+            certificate: subject,
+            valid_from: not_before,
+            valid_to: not_after,
+            notification_emails: emails,
+            notification_frequency: cfg.default_frequency.clone(),
+            notification_time: cfg.default_time.clone(),
+            notification_days: cfg.default_days.clone(),
+            notification_subject: "Certificate Expiration Notification".to_string(),
+            notification_body: body,
+            notify_days_before_expiration: cfg.days_before,
+            tombstone: false,
+        };
         publish(js, &msg).await?;
         active += 1;
     }
@@ -123,20 +126,26 @@ async fn scan_and_publish(
         let subject: String = r.get("subject_dn");
         let not_before: DateTime<Utc> = r.get("not_before");
         let not_after: DateTime<Utc> = r.get("not_after");
-        let msg = serde_json::json!({
-            "certificate": subject,
-            "valid_from": not_before,
-            "valid_to": not_after,
-            "notification_subject": "Certificate Expiration Notification",
-            "tombstone": true,
-        });
+        let msg = NotifyMessage {
+            certificate: subject,
+            valid_from: not_before,
+            valid_to: not_after,
+            notification_emails: Vec::new(),
+            notification_frequency: cfg.default_frequency.clone(),
+            notification_time: cfg.default_time.clone(),
+            notification_days: cfg.default_days.clone(),
+            notification_subject: "Certificate Expiration Notification".to_string(),
+            notification_body: String::new(),
+            notify_days_before_expiration: cfg.days_before,
+            tombstone: true,
+        };
         publish(js, &msg).await?;
     }
 
     Ok((active, revoked.len()))
 }
 
-async fn publish(js: &async_nats::jetstream::Context, msg: &serde_json::Value) -> Result<()> {
+async fn publish(js: &async_nats::jetstream::Context, msg: &NotifyMessage) -> Result<()> {
     let payload = serde_json::to_vec(msg)?;
     js.publish(SUBJECT_NOTIFY.to_string(), payload.into())
         .await?
