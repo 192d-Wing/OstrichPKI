@@ -58,6 +58,19 @@ of the domain, as the protocol requires.
    it into the `npe-acme-ca-bundle` configmap below.
 3. **DNS** — `acme.oopl.dev.mil` is not in cluster DNS; the deployment pins it to
    the `.54` Traefik VIP via `hostAliases` (already in the manifest). No action.
+4. **acme-server SSRF toggle** — the portal validates via HTTP-01, and
+   `npe-portal.oopl.dev.mil` resolves to a **private** address. The acme-server
+   refuses to validate private addresses by default (SI-10 SSRF guard), so the
+   acme-server must run with `ACME_ALLOW_PRIVATE_IP_DOMAINS=true` for an internal
+   deployment. This is a deliberate security-posture decision (it disables the
+   SSRF guard for *all* ACME validation on that server) and is appropriate only
+   for an internal-only ACME server.
+
+> Note on probes: the deployment's liveness/readiness probes target the ACME
+> challenge responder (`:8080`), not the mTLS listener (`:8443`). The mTLS
+> listener only comes up after enrollment, and enrollment's HTTP-01 challenge is
+> fetched through this Service — gating readiness on `:8443` would deadlock
+> (no Service endpoints → challenge 503 → enrollment never completes).
 
 ## Apply (cutover)
 
