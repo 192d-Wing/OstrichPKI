@@ -16,3 +16,9 @@ resources:
   - npe-portal-acme-service.yaml
   - npe-portal-acme-deployment.yaml
   - npe-portal-acme-challenge-ingressroute.yaml
+
+# Pin to the first build containing the ACME serve path (feat-npe-portal HEAD).
+# Bump as new portal builds land.
+images:
+  - name: ghcr.io/192d-wing/npe-portal
+    newTag: sha-b5a8ef1
