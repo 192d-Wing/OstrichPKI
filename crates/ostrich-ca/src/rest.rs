@@ -573,6 +573,8 @@ struct CertificateStatsDto {
     revoked: u64,
     expired: u64,
     pending: u64,
+    /// Active certificates expiring within the next 90 days (subset of `active`).
+    expiring_soon: u64,
 }
 
 /// Query parameters for the audit-log listing (all optional filters).
@@ -796,6 +798,7 @@ async fn certificate_stats(
         revoked: counts.revoked.max(0) as u64,
         expired: counts.expired.max(0) as u64,
         pending: counts.pending.max(0) as u64,
+        expiring_soon: counts.expiring_soon.max(0) as u64,
     }))
 }
 

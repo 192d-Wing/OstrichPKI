@@ -19,6 +19,9 @@ pub struct CertificateStatusCounts {
     pub revoked: i64,
     pub expired: i64,
     pub pending: i64,
+    /// Active certificates whose `not_after` falls within the next 90 days
+    /// (a subset of `active`) — the dashboard's "expiring soon" figure.
+    pub expiring_soon: i64,
 }
 
 /// Repository for certificate operations
@@ -221,7 +224,11 @@ impl CertificateRepository {
                 COUNT(*) FILTER (WHERE NOT revoked AND not_after < NOW()) AS expired,
                 COUNT(*) FILTER (
                     WHERE NOT revoked AND not_after >= NOW() AND not_before > NOW()
-                ) AS pending
+                ) AS pending,
+                COUNT(*) FILTER (
+                    WHERE NOT revoked AND not_before <= NOW()
+                      AND not_after >= NOW() AND not_after < NOW() + INTERVAL '90 days'
+                ) AS expiring_soon
             FROM certificates
             "#,
         )
@@ -235,6 +242,7 @@ impl CertificateRepository {
             revoked: row.get("revoked"),
             expired: row.get("expired"),
             pending: row.get("pending"),
+            expiring_soon: row.get("expiring_soon"),
         })
     }
 
