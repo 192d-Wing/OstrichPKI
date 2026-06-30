@@ -9,6 +9,14 @@
 #  - acme block: the portal enrolls/renews its own server cert (RFC 8555 HTTP-01)
 #  - allowedIssuers MUST be set to the real operator issuing-CA subject DN(s)
 #    before cutover (placeholder below).
+#
+# Classification banner: set "classificationBanner" to the operating level; the
+# banner color is derived automatically from the text per the DoD/IC standard
+# palette (edit it here and re-apply to reconfigure):
+#   CUI -> purple   CONFIDENTIAL -> blue   SECRET -> red
+#   TOP SECRET -> orange   TOP SECRET//SCI -> yellow   UNCLASSIFIED -> green
+# To force a non-standard color, also set "classificationColor" to a CSS color
+# (e.g. "#502b85"); it overrides the derived one.
 apiVersion: v1
 kind: ConfigMap
 metadata:

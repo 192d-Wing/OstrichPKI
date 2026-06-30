@@ -4,6 +4,8 @@ export interface ClientConfig {
   apiBaseUrl: string;
   appName: string;
   classificationBanner: string;
+  /** Optional explicit banner background (CSS color); overrides the derived one. */
+  classificationColor?: string | null;
   version: string;
   basename: string;
 }
