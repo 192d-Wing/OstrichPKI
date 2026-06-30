@@ -72,11 +72,14 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["http1"
 # ACME client (RFC 8555): the portal auto-enrolls + renews its own TLS server
 # certificate from the OstrichPKI ACME server (HTTP-01).
 instant-acme = { workspace = true }
+# CSR construction for ACME finalize: we build a CSR carrying a subject CN (not
+# just SANs) so the issued cert has a populated subject — an empty subject with a
+# non-critical SAN violates RFC 5280 §4.1.2.6 and is rejected by strict clients.
+# Also used by the operator-cert generator example + TLS unit tests.
+rcgen = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
-# Self-signed cert/key generation for the ACME TLS-plumbing unit tests.
-rcgen = { workspace = true }
 
 [features]
 default = []
