@@ -1,0 +1,83 @@
+# Dedicated Postgres for the notify-service (its OWN database, separate from
+# ostrich_pki — no migration coupling with the CA stack).
+#
+# Prerequisite secret (operator-supplied; see README):
+#   notify-db-secret  keys: password, database-url
+#     database-url = postgres://notify:<password>@notify-postgres:5432/notify
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: notify-postgres-data
+  namespace: ostrich-pki
+  labels: { app: notify-postgres }
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-postgres
+  namespace: ostrich-pki
+  labels: { app: notify-postgres }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: notify-postgres }
+  template:
+    metadata:
+      labels: { app: notify-postgres }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - { name: pg, containerPort: 5432 }
+          env:
+            - { name: POSTGRES_DB, value: "notify" }
+            - { name: POSTGRES_USER, value: "notify" }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: notify-db-secret, key: password }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "notify", "-d", "notify"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "notify", "-d", "notify"] }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: notify-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notify-postgres
+  namespace: ostrich-pki
+  labels: { app: notify-postgres }
+spec:
+  type: ClusterIP
+  ports:
+    - { name: pg, port: 5432, targetPort: pg }
+  selector:
+    app: notify-postgres

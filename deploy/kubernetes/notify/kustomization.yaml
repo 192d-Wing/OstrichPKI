@@ -1,0 +1,19 @@
+# notify subsystem: NATS JetStream + dedicated Postgres + scheduler/sender.
+#   kubectl apply -k deploy/kubernetes/notify/
+#
+# Prerequisite (operator-supplied):
+#   kubectl -n ostrich-pki create secret generic notify-db-secret \
+#     --from-literal=password='<choose>' \
+#     --from-literal=database-url='postgres://notify:<choose>@notify-postgres:5432/notify'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ostrich-pki
+resources:
+  - nats.yaml
+  - notify-postgres.yaml
+  - notify-deployments.yaml
+
+# Pin to a built notify-service image (bump as new builds land).
+images:
+  - name: ghcr.io/192d-wing/notify-service
+    newTag: latest
