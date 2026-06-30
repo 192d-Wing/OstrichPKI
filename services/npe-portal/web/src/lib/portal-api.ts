@@ -289,6 +289,47 @@ export interface EstCatalog {
   examples: string[];
 }
 
+// --- Audit log (GET /ca/api/v1/audit, /audit/verify) — ReadAuditLog (RA/CAA) ---
+export interface AuditEvent {
+  id: string;
+  timestamp: string;
+  eventType: string;
+  actor: string;
+  target: string;
+  action: string;
+  outcome: string;
+  /** True if the record carries an AU-10 digital signature (vs. hash-chain only). */
+  signed: boolean;
+  ipAddress?: string | null;
+}
+
+export interface AuditListResponse {
+  events: AuditEvent[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface AuditVerifyResult {
+  /** True iff the hash chain recomputes AND every signed record verifies. */
+  intact: boolean;
+  totalRecords: number;
+  signedRecords: number;
+  verifiedAt: string;
+}
+
+export interface ListAuditParams {
+  page?: number;
+  pageSize?: number;
+  actor?: string;
+  eventType?: string;
+  outcome?: string;
+  start?: string;
+  end?: string;
+  sort?: string;
+  order?: "asc" | "desc";
+}
+
 /** Inventory certificate counts (dashboard). Own-scoped for Sponsors. */
 export interface CertificateStats {
   total: number;
@@ -407,6 +448,19 @@ export const portalApi = {
     ),
 
   caInfo: () => api.get<CaInfo>("/ca/api/v1/ca/info"),
+
+  /** Paginated, filtered audit-log review (ReadAuditLog — RA/CAA). FAU_SAR.1. */
+  listAuditEvents: (params: ListAuditParams = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v != null && v !== "") qs.set(k, String(v));
+    }
+    const suffix = qs.toString() ? `?${qs}` : "";
+    return api.get<AuditListResponse>(`/ca/api/v1/audit${suffix}`);
+  },
+
+  /** Recompute the audit hash chain + verify signatures (AU-9/AU-10). */
+  verifyAuditChain: () => api.get<AuditVerifyResult>("/ca/api/v1/audit/verify"),
 
   /** EST enrollment catalog (label scheme + profile/key-algorithm tokens). */
   estCatalog: () => api.get<EstCatalog>("/est/.well-known/est/catalog"),

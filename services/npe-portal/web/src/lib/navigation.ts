@@ -69,6 +69,7 @@ export function navGroupsForUser(user: UserInfo | null): NavGroup[] {
             { text: "Revoke Certificates", href: "/ra/revoke" },
           ],
         },
+        { text: "Compliance", items: [{ text: "Audit Log", href: "/audit" }] },
         SEARCH,
       ];
 
@@ -86,6 +87,7 @@ export function navGroupsForUser(user: UserInfo | null): NavGroup[] {
           text: "System Configuration",
           items: [{ text: "System Configuration", href: "/caa/config" }],
         },
+        { text: "Compliance", items: [{ text: "Audit Log", href: "/audit" }] },
         SEARCH,
       ];
 
