@@ -21,4 +21,4 @@ resources:
 # Bump as new portal builds land.
 images:
   - name: ghcr.io/192d-wing/npe-portal
-    newTag: sha-8336e62
+    newTag: sha-405709f
