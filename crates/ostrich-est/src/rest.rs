@@ -749,8 +749,21 @@ async fn readiness_check(State(state): State<EstState>) -> impl IntoResponse {
 /// COMPLIANCE MAPPING:
 /// - RFC 7030 §3.2.2 - profile-label scheme this catalog documents
 /// - NIST 800-53: AC-3 - read of non-sensitive configuration metadata
-async fn get_catalog() -> Json<crate::label::EstCatalog> {
-    Json(crate::label::catalog())
+async fn get_catalog(State(state): State<EstState>) -> Json<crate::label::EstCatalog> {
+    // Scope the catalog to what this deployment actually offers: the key
+    // algorithms with a configured backend, and whether labeled routing is on at
+    // all — so the page never advertises a label that select_backend() rejects.
+    let configured_algos: Vec<String> = state
+        .label_routing
+        .as_ref()
+        .map(|r| r.algo_backends.keys().cloned().collect())
+        .unwrap_or_default();
+    let labeled_enrollment = state.label_routing.is_some();
+    Json(crate::label::catalog(
+        &configured_algos,
+        labeled_enrollment,
+        &state.enroll_profile,
+    ))
 }
 
 /// Get CA certificates (RFC 7030 S4.1)

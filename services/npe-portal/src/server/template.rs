@@ -40,6 +40,7 @@ pub async fn serve_index(
         "dodMode": state.config.dod_mode,
         "certProfiles": state.config.cert_profiles,
         "ccsaOptions": state.config.ccsa_options,
+        "estBaseUrl": state.config.est_base_url,
         "version": env!("CARGO_PKG_VERSION"),
         "basename": "/",
     });

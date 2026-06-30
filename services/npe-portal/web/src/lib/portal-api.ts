@@ -278,6 +278,10 @@ export interface EstCatalogKeyAlgo {
 
 export interface EstCatalog {
   labelFormat: string;
+  /** Whether label-routed enrollment (/{label}/simpleenroll) is configured. */
+  labeledEnrollment: boolean;
+  /** Profile issued by the unlabeled /.well-known/est/simpleenroll path. */
+  defaultProfile: string;
   profiles: EstCatalogProfile[];
   keyAlgorithms: EstCatalogKeyAlgo[];
   maxValidityDays: number;

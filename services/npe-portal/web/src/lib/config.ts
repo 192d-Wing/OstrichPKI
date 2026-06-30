@@ -29,6 +29,9 @@ export interface ClientConfig {
   certProfiles: CertProfile[];
   /** CC/S/A option groups (shown only in DoD mode). */
   ccsaOptions: CcsaGroup[];
+  /** Public EST base URL (e.g. https://est.example.mil) for the catalog page's
+   * enrollment commands. When unset, the page guesses from the browser host. */
+  estBaseUrl?: string | null;
   version: string;
   basename: string;
 }
