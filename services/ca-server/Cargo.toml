@@ -21,6 +21,8 @@ ostrich-crypto = { path = "../../crates/ostrich-crypto" }
 ostrich-audit = { path = "../../crates/ostrich-audit" }
 ostrich-protocol = { path = "../../crates/ostrich-protocol" }
 ostrich-x509 = { path = "../../crates/ostrich-x509" }
+# Shared NATS message contract for the expiry-notify producer.
+ostrich-notify-contract = { workspace = true }
 
 # gRPC server (inter-service issuance API)
 tonic = { workspace = true }

@@ -16,7 +16,7 @@ CA (producer) ──cert.expiry.notify──▶ NATS JetStream ──▶ notify-
 | `nats` | JetStream broker (`NOTIFY` stream; subjects `cert.expiry.notify`, `email.send`) |
 | `notify-postgres` | Dedicated DB for the notify-service (schedules + send dedup) — independent of `ostrich_pki` |
 | `notify-scheduler` | Consumes schedules; ticks on day/time/frequency; publishes due emails |
-| `notify-sender` | Consumes emails; delivers via SMTP (plain or STARTTLS) |
+| `notify-sender` | Consumes emails; delivers via SMTP (`SMTP_SECURITY`: none/plain, STARTTLS, or implicit TLS) |
 
 ## Prerequisites
 1. **DB secret** (also used to build the connection string):

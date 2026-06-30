@@ -3,7 +3,8 @@
 # Prerequisites (see README):
 #   - NATS + notify-postgres (this overlay) running
 #   - Secret notify-db-secret (key: database-url)
-#   - Sender: set SMTP_HOST/SMTP_FROM (and STARTTLS/creds if your relay needs them)
+#   - Sender: set SMTP_HOST/SMTP_FROM (and SMTP_SECURITY=none|starttls|tls + creds
+#     if your relay needs them) in notify.env
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -78,7 +79,7 @@ spec:
           ports:
             - { name: health, containerPort: 8090 }
           envFrom:
-            # NATS_URL + SMTP_HOST/PORT/FROM/STARTTLS come from the notify.env
+            # NATS_URL + SMTP_HOST/PORT/FROM/SECURITY come from the notify.env
             # variable file (configMapGenerator -> notify-config).
             - configMapRef: { name: notify-config }
           env:

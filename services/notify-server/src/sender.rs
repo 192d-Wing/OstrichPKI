@@ -1,5 +1,7 @@
 //! Sender role: consume `email.send` and deliver via an SMTP relay.
 
+use std::time::Duration;
+
 use anyhow::{Result, anyhow, bail};
 use async_nats::jetstream;
 use futures::StreamExt;
@@ -8,10 +10,27 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
 use crate::config::{Config, SmtpSecurity};
-use crate::contract::{EmailJob, SUBJECT_EMAIL, STREAM_NAME};
+use crate::contract::{EmailJob, STREAM_NAME, SUBJECT_EMAIL};
 use crate::db::{self, Pool};
 
 type Mailer = AsyncSmtpTransport<Tokio1Executor>;
+
+/// JetStream redelivery bound: a transient SMTP failure is retried up to this
+/// many times before the message is dropped (so a relay outage doesn't loop
+/// forever). Deterministic ("poison") failures are dropped on first attempt.
+const MAX_DELIVER: i64 = 5;
+/// How long JetStream waits for an ack before treating a delivery as failed.
+const ACK_WAIT: Duration = Duration::from_secs(60);
+
+/// Why a send failed — decides whether JetStream should retry. A `Permanent`
+/// failure (unparseable From/recipients, body build) will fail identically on
+/// every redelivery, so it is acked-and-dropped instead of looping forever; a
+/// `Transient` failure (relay unreachable, temporary rejection) is NAK'd and
+/// retried up to `MAX_DELIVER` times.
+enum SendError {
+    Permanent(anyhow::Error),
+    Transient(anyhow::Error),
+}
 
 pub async fn run(pool: Pool, js: jetstream::Context, cfg: &Config) -> Result<()> {
     if cfg.smtp_host.trim().is_empty() {
@@ -32,6 +51,11 @@ pub async fn run(pool: Pool, js: jetstream::Context, cfg: &Config) -> Result<()>
                 durable_name: Some("sender".to_string()),
                 filter_subject: SUBJECT_EMAIL.to_string(),
                 ack_policy: jetstream::consumer::AckPolicy::Explicit,
+                // Bound redelivery so a poison message can't loop forever; the
+                // scheduler's re-drive (sent_at IS NULL) is the safety net for a
+                // genuinely transient outage that outlasts these retries.
+                max_deliver: MAX_DELIVER,
+                ack_wait: ACK_WAIT,
                 ..Default::default()
             },
         )
@@ -47,12 +71,16 @@ pub async fn run(pool: Pool, js: jetstream::Context, cfg: &Config) -> Result<()>
                     msg.ack().await.map_err(|e| anyhow!("ack failed: {e}"))?;
                     tracing::info!(cert = %job.certificate, recipients = job.to.len(), "expiry email sent");
                 }
-                Err(e) => {
-                    // Negative-ack → JetStream redelivers (transient SMTP failure).
+                // Deterministic failure: dropping it avoids an infinite redelivery
+                // loop. Ack so JetStream stops redelivering this poison message.
+                Err(SendError::Permanent(e)) => {
+                    tracing::error!(error = %e, cert = %job.certificate, "send failed permanently; dropping");
+                    msg.ack().await.map_err(|e| anyhow!("ack failed: {e}"))?;
+                }
+                // Transient failure: NAK → JetStream redelivers up to MAX_DELIVER.
+                Err(SendError::Transient(e)) => {
                     tracing::error!(error = %e, cert = %job.certificate, "send failed; will retry");
-                    let _ = msg
-                        .ack_with(jetstream::AckKind::Nak(None))
-                        .await;
+                    let _ = msg.ack_with(jetstream::AckKind::Nak(None)).await;
                 }
             },
             Err(e) => {
@@ -85,16 +113,20 @@ fn build_mailer(cfg: &Config) -> Result<Mailer> {
     let mut builder = builder0.port(port);
 
     if let (Some(user), Some(pass)) = (&cfg.smtp_username, &cfg.smtp_password) {
-        builder = builder.credentials(Credentials::new(user.clone(), pass.clone()));
+        // `pass` is a Zeroizing<String>; lettre copies it into its own Credentials,
+        // but our config copy is zeroized on drop (NIST 800-53 SI-12).
+        builder = builder.credentials(Credentials::new(user.clone(), pass.as_str().to_owned()));
     }
     Ok(builder.build())
 }
 
-async fn send(mailer: &Mailer, cfg: &Config, job: &EmailJob) -> Result<()> {
+async fn send(mailer: &Mailer, cfg: &Config, job: &EmailJob) -> Result<(), SendError> {
+    // From/recipient parse failures and body-build failures are deterministic:
+    // they fail identically on every redelivery, so they are Permanent.
     let from: Mailbox = cfg
         .smtp_from
         .parse()
-        .map_err(|e| anyhow!("invalid SMTP_FROM '{}': {e}", cfg.smtp_from))?;
+        .map_err(|e| SendError::Permanent(anyhow!("invalid SMTP_FROM '{}': {e}", cfg.smtp_from)))?;
 
     let mut builder = Message::builder().from(from).subject(&job.subject);
     let mut recipients = 0;
@@ -108,10 +140,20 @@ async fn send(mailer: &Mailer, cfg: &Config, job: &EmailJob) -> Result<()> {
         }
     }
     if recipients == 0 {
-        bail!("no valid recipients for certificate {}", job.certificate);
+        return Err(SendError::Permanent(anyhow!(
+            "no valid recipients for certificate {}",
+            job.certificate
+        )));
     }
 
-    let email = builder.body(job.body.clone())?;
-    mailer.send(email).await?;
+    let email = builder
+        .body(job.body.clone())
+        .map_err(|e| SendError::Permanent(anyhow!("building email: {e}")))?;
+    // The actual relay handoff can fail for transient reasons (relay down,
+    // greylisting, 4xx) — retry those.
+    mailer
+        .send(email)
+        .await
+        .map_err(|e| SendError::Transient(anyhow!("SMTP send: {e}")))?;
     Ok(())
 }

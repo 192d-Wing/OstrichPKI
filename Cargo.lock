@@ -3310,6 +3310,7 @@ dependencies = [
  "ostrich-common",
  "ostrich-crypto",
  "ostrich-db",
+ "ostrich-notify-contract",
  "ostrich-protocol",
  "ostrich-x509",
  "serde",
@@ -3588,6 +3589,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ostrich-notify-contract"
+version = "0.15.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ostrich-notify-server"
 version = "0.15.0"
 dependencies = [
@@ -3598,6 +3608,8 @@ dependencies = [
  "clap",
  "futures",
  "lettre",
+ "ostrich-common",
+ "ostrich-notify-contract",
  "rustls",
  "serde",
  "serde_json",
@@ -3606,6 +3618,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]

@@ -1,6 +1,12 @@
 //! notify-service configuration (CLI + env).
 
 use clap::{Parser, ValueEnum};
+use zeroize::Zeroizing;
+
+/// Wrap a secret value so it is zeroized on drop (NIST 800-53 SI-12).
+fn secret(s: &str) -> Result<Zeroizing<String>, std::convert::Infallible> {
+    Ok(Zeroizing::new(s.to_string()))
+}
 
 /// Which runtime role this process plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -62,8 +68,11 @@ pub struct Config {
     pub smtp_from: String,
     #[arg(long, env = "SMTP_USERNAME")]
     pub smtp_username: Option<String>,
-    #[arg(long, env = "SMTP_PASSWORD")]
-    pub smtp_password: Option<String>,
+    /// SMTP relay password — held in a `Zeroizing` buffer so it is wiped from
+    /// memory on drop (NIST 800-53 SI-12). Sourced from a k8s secret, never a
+    /// plaintext env file.
+    #[arg(long, env = "SMTP_PASSWORD", value_parser = secret)]
+    pub smtp_password: Option<Zeroizing<String>>,
     /// SMTP connection security: `none` | `starttls` | `tls`. `starttls` (the
     /// default) suits submission relays like Office 365 on 587; `tls` is implicit
     /// SMTPS on `SMTP_TLS_PORT`; `none` is plaintext on `SMTP_PORT`.
