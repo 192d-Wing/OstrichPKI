@@ -194,9 +194,33 @@ async fn serve_with_acme(
         }
     });
 
-    // Block on the initial enrollment so the listener only comes up once it can
-    // present a certificate.
-    let not_after = acquire_on_startup(&acme, &store, &resolver).await?;
+    // Acquire the initial certificate, RETRYING rather than exiting on failure.
+    //
+    // This must not crash the process: the HTTP-01 challenge is fetched by the
+    // ACME server through this pod's Service, whose endpoints only appear once
+    // the pod is Ready (its readiness probe targets the challenge responder on
+    // :8080). If we exited on the first failure the pod would crash-loop and
+    // never stay Ready long enough for the Service to route the challenge — a
+    // deadlock that 503s every validation. By staying alive and retrying, the
+    // responder keeps serving, the pod becomes Ready, its endpoint propagates,
+    // and a subsequent attempt's challenge validation succeeds. NIST 800-53:
+    // CP-10 (self-recovery).
+    let mut backoff = std::time::Duration::from_secs(10);
+    let max_backoff = std::time::Duration::from_secs(120);
+    let not_after = loop {
+        match acquire_on_startup(&acme, &store, &resolver).await {
+            Ok(na) => break na,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    retry_in_secs = backoff.as_secs(),
+                    "initial ACME enrollment attempt failed; retrying"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
+            }
+        }
+    };
 
     // Build the mTLS server config bound to the dynamic resolver, then spawn the
     // background renewal task (swaps the cert in place — no restart).
