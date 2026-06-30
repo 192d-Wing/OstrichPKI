@@ -44,6 +44,12 @@ clap = { workspace = true, features = ["derive", "env"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# Expiry-notification producer: scans expiring certs and publishes schedules to
+# the notify-service over NATS JetStream.
+async-nats = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
+
 # Logging
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
