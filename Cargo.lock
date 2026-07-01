@@ -1082,15 +1082,14 @@ dependencies = [
 
 [[package]]
 name = "cryptoki"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1988310baf84fc66da11d876b3c01d268cdc416b330158790318507f739bb72f"
+checksum = "ff765b99fc49f3116c9a908484486a2b92fd73c48da45c3a69716471c6cc56c6"
 dependencies = [
  "bitflags",
  "cryptoki-sys",
  "libloading",
  "log",
- "paste",
  "secrecy",
 ]
 
@@ -3719,12 +3718,6 @@ dependencies = [
  "rand_core 0.6.4",
  "subtle",
 ]
-
-[[package]]
-name = "paste"
-version = "1.0.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pathdiff"
