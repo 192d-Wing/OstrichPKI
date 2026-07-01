@@ -429,6 +429,16 @@ pub fn permissions_for_role(role: Role) -> &'static [Permission] {
             // administration oversight. NIAP PP-CA: FAU_SAR.1. NIST 800-53: AU-6.
             Permission::ReadAuditLog,
         ],
+
+        // NPE Auditor: a dedicated, read-only reviewer. Audit review + the
+        // read-only certificate/request views needed to make sense of it, and
+        // nothing that acts. NIAP PP-CA: FAU_SAR.1 / FMT_SMR.2. NIST 800-53:
+        // AU-6, AC-5 (separation of duties), AC-6 (least privilege).
+        Role::NpeAuditor => &[
+            Permission::ReadAuditLog,
+            Permission::ViewCertificate,
+            Permission::ViewRequests,
+        ],
     }
 }
 

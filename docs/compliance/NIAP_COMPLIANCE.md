@@ -132,11 +132,13 @@ This document tracks OstrichPKI's compliance with the NIAP Protection Profile fo
   route `/audit`) surfaces the paginated/filtered trail (actor / event-type /
   outcome) with a one-click hash-chain + signature integrity check
   (`GET /api/v1/audit/verify`). Read access is gated by `Permission::ReadAuditLog`,
-  granted to the NPE `RegistrationAuthority` and `CaaAdmin` roles
-  (`crates/ostrich-common/src/auth/permissions.rs`) in addition to the classic
-  `Auditor` role. NOTE (FMT_SMR / AU-6, AC-5): RA holds both certificate-lifecycle
-  authority and audit-read; this widens review access beyond a dedicated Auditor
-  and is a documented deployment policy decision (separation-of-duties trade-off).
+  held by a dedicated read-only NPE `Auditor` role (`NpeAuditor` — audit review
+  only, no issuance/approval/config authority) that provides separation of duties
+  (AC-5 / FMT_SMR.2), and additionally granted to the `RegistrationAuthority` and
+  `CaaAdmin` roles for operational review
+  (`crates/ostrich-common/src/auth/permissions.rs`). The dedicated Auditor is the
+  SoD-clean reviewer independent of those who act; RA/CAA audit-read is a
+  documented deployment policy choice layered on top of it.
 
 **NIAP Annotation:** `crates/ostrich-db/src/repository/audit.rs` lines 312-463;
 `crates/ostrich-ca/src/rest.rs` (`GET /api/v1/audit`, `/audit/verify`)
@@ -2245,8 +2247,12 @@ The `ostrich-npe-portal` service maps to the following SFRs:
 - **FIA_UAU.1 / FIA_X509_EXT.1 / FIA_X509_EXT.2:** mTLS client-certificate
   authentication; the role is derived from (issuer-scoped) certificate policy
   OIDs — `services/npe-portal/src/server/oid.rs`.
-- **FMT_SMR.2 (Security Roles):** four NPE roles — PKI Sponsor, Administrator,
-  Registration Authority, CA Admin — `crates/ostrich-common/src/auth/roles.rs`.
+- **FMT_SMR.2 (Security Roles):** five NPE roles — PKI Sponsor, Administrator,
+  Registration Authority, CA Admin, and a read-only **Auditor** (`NpeAuditor`:
+  audit review only, no issuance/approval/config authority) — the dedicated
+  reviewer that supports separation of duties (AC-5) for audit access —
+  `crates/ostrich-common/src/auth/roles.rs`. All five are OID-derived and
+  assignable by the CAA (`ASSIGNABLE_NPE_ROLES`).
 - **FTA_SSL.1 / FTA_SSL.3 (Session Locking / Termination):** 30-minute inactivity
   lock and session termination — `services/npe-portal/src/server/session.rs`.
 - **FAU_GEN.1 / FAU_GEN.2 (Audit Generation / Identity Association):**

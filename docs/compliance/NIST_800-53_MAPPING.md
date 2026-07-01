@@ -1816,8 +1816,9 @@ adds a self-service enrollment portal authenticated by mTLS client certificate.
 - **CM-6 (Secure Defaults / Fail Secure):** the service refuses to start without
   mandatory mTLS (server cert/key + client CA) unless `--allow-insecure` is set
   for development — `services/npe-portal/src/main.rs`.
-- **AC-3 / AC-6 (Access Enforcement / Least Privilege):** four OID-derived roles
-  (PkiSponsor, PkiSponsorAdmin, RegistrationAuthority, CaaAdmin) with a
+- **AC-3 / AC-6 / AC-5 (Access Enforcement / Least Privilege / SoD):** five
+  OID-derived roles (PkiSponsor, PkiSponsorAdmin, RegistrationAuthority, CaaAdmin,
+  and a read-only NpeAuditor for independent audit review) with a
   least-privilege permission map —
   `crates/ostrich-common/src/auth/{roles.rs,permissions.rs}`. The proxy forwards
   the authenticated identity (`X-Npe-*` headers, with inbound spoofs stripped)

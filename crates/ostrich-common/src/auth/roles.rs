@@ -153,6 +153,16 @@ pub enum Role {
     ///
     /// NIAP PP-CA: FMT_SMF.1 / FMT_SMR.2 - security management & roles
     CaaAdmin,
+
+    /// NPE Auditor
+    ///
+    /// A dedicated, read-only reviewer of the certificate-lifecycle audit trail
+    /// (portal Audit Log page + integrity verification). Holds no issuance,
+    /// approval, or configuration authority, so audit review can be assigned to a
+    /// principal independent of those who act — the separation-of-duties posture
+    /// (AU-6 / AC-5 / FMT_SMR.2) that an operational role holding audit-read
+    /// cannot provide on its own.
+    NpeAuditor,
 }
 
 impl Role {
@@ -186,6 +196,7 @@ impl Role {
             Role::PkiSponsorAdmin => &[],
             Role::RegistrationAuthority => &[],
             Role::CaaAdmin => &[],
+            Role::NpeAuditor => &[],
         }
     }
 
@@ -212,6 +223,7 @@ impl Role {
                 "NPE Registration Authority (approve/reject/override/revoke)"
             }
             Role::CaaAdmin => "NPE Certificate Authority Admin (config, namespaces, user roles)",
+            Role::NpeAuditor => "NPE Auditor (read-only audit review + integrity verification)",
         }
     }
 
@@ -229,6 +241,7 @@ impl Role {
             Role::PkiSponsorAdmin => "pki_sponsor_admin",
             Role::RegistrationAuthority => "registration_authority",
             Role::CaaAdmin => "caa_admin",
+            Role::NpeAuditor => "npe_auditor",
         }
     }
 
@@ -247,6 +260,7 @@ impl Role {
             "pki_sponsor_admin" | "sponsor_admin" => Some(Role::PkiSponsorAdmin),
             "registration_authority" | "npe_ra" => Some(Role::RegistrationAuthority),
             "caa_admin" | "caa" => Some(Role::CaaAdmin),
+            "npe_auditor" => Some(Role::NpeAuditor),
             _ => None,
         }
     }
@@ -263,6 +277,7 @@ impl Role {
             Role::PkiSponsorAdmin,
             Role::RegistrationAuthority,
             Role::CaaAdmin,
+            Role::NpeAuditor,
         ]
     }
 }
@@ -289,6 +304,7 @@ impl std::str::FromStr for Role {
             "pki_sponsor_admin" | "PkiSponsorAdmin" => Ok(Role::PkiSponsorAdmin),
             "registration_authority" | "RegistrationAuthority" => Ok(Role::RegistrationAuthority),
             "caa_admin" | "CaaAdmin" => Ok(Role::CaaAdmin),
+            "npe_auditor" | "NpeAuditor" => Ok(Role::NpeAuditor),
             _ => Err(format!("Unknown role: {}", s)),
         }
     }
