@@ -34,7 +34,19 @@ const SEARCH: NavGroup = {
   items: [{ text: "Search", href: "/search" }],
 };
 
+// Read-only utilities available to every authenticated role.
+const TOOLS: NavGroup = {
+  text: "Tools",
+  items: [{ text: "OCSP Status Check", href: "/ocsp" }],
+};
+
 export function navGroupsForUser(user: UserInfo | null): NavGroup[] {
+  const groups = baseNavGroups(user);
+  // Every role that has any menu also gets the shared Tools group.
+  return groups.length > 0 ? [...groups, TOOLS] : groups;
+}
+
+function baseNavGroups(user: UserInfo | null): NavGroup[] {
   const role = primaryRole(user);
 
   switch (role) {
