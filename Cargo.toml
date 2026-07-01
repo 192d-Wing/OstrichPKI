@@ -98,7 +98,7 @@ spki = "0.7"
 # 0.10 introduces a type-level split (ObjectIdentifier<39> vs the un-parameterized
 # 0.9 type) that propagates through every AttributeType / extn_id usage.
 const-oid = { version = "0.9", features = ["db"] }
-pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
+pkcs8 = { version = "0.11", features = ["encryption", "pem"] }
 pkcs1 = { version = "0.7", features = ["pem"] }
 cms = "0.2"
 pem-rfc7468 = { version = "1", features = ["alloc"] }
