@@ -501,6 +501,13 @@ Key corrections in this phase:
 - ✅ §2.1 - TBSRequest with version, requestorName, requestList
 - ✅ §2.1 - CertID with hashAlgorithm, issuerNameHash, issuerKeyHash, serialNumber
 - ✅ §2.2 - Request extensions support
+- ✅ **OCSP client** (NPE-portal status checker): a browser-side RFC 6960 client
+  (`services/npe-portal/web/src/lib/ocsp.ts`, page `/ocsp`) builds the SHA-1
+  CertID request, sends it via the BFF `/ocsp` proxy
+  (`services/npe-portal/src/server/proxy.rs`) to the responder, and — per
+  §3.2 — **verifies the signed response against the issuing CA's public key**
+  before trusting the status (Good / Revoked / Unknown, with revocation time +
+  RFC 5280 §5.3.1 reason). Accepts either a pasted certificate or a hex serial.
 
 **Code References:**
 

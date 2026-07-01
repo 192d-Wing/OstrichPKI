@@ -2,6 +2,8 @@
 // PKCS#12 bundle, etc.) uses one correct anchor-click + object-URL-revocation
 // implementation rather than re-deriving it per page.
 
+import { firstPemBlockToDer } from "@/lib/pem";
+
 /** Save a Blob to the user's machine via a synthetic anchor click. */
 export function triggerDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -30,16 +32,12 @@ export function safeFileName(label: string, fallback: string): string {
   return label.trim().replace(/[^A-Za-z0-9._-]+/g, "_") || fallback;
 }
 
-/**
- * Save a PEM certificate's raw DER bytes as a binary download. Strips the PEM
- * armor (`-----BEGIN/END …-----`) and whitespace, leaving the base64 DER body.
- */
+/** Save a PEM certificate's raw DER bytes as a binary download (first block). */
 export function downloadPemAsDer(pem: string, filename: string) {
-  const body = pem
-    .replace(/-----BEGIN[^-]+-----/g, "")
-    .replace(/-----END[^-]+-----/g, "")
-    .replace(/\s+/g, "");
-  downloadBase64(body, filename, "application/pkix-cert");
+  triggerDownload(
+    new Blob([firstPemBlockToDer(pem)], { type: "application/pkix-cert" }),
+    filename,
+  );
 }
 
 /** Decode standard base64 into bytes and save them as a binary download. */

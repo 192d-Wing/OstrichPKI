@@ -15,6 +15,8 @@ import {
   setEngine,
 } from "pkijs";
 
+import { derToPem } from "@/lib/pem";
+
 export type CsrAlgorithm = "rsa-2048" | "rsa-3072" | "ecdsa-p256" | "ecdsa-p384";
 
 export interface CsrSubject {
@@ -190,15 +192,6 @@ function addRdn(csr: CertificationRequest, type: string, value: string, printabl
         : new asn1js.Utf8String({ value }),
     }),
   );
-}
-
-function derToPem(der: ArrayBuffer, label: string): string {
-  const bytes = new Uint8Array(der);
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  const b64 = btoa(binary);
-  const wrapped = b64.match(/.{1,64}/g)?.join("\n") ?? b64;
-  return `-----BEGIN ${label}-----\n${wrapped}\n-----END ${label}-----\n`;
 }
 
 /**
