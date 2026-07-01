@@ -9,13 +9,15 @@ import {
   Form,
   FormField,
   Header,
+  Input,
   KeyValuePairs,
+  SegmentedControl,
   SpaceBetween,
   StatusIndicator,
   Textarea,
 } from "@cloudscape-design/components";
 
-import { checkOcsp, type OcspResult } from "@/lib/ocsp";
+import { checkOcsp, type OcspQuery, type OcspResult } from "@/lib/ocsp";
 import { portalApi } from "@/lib/portal-api";
 
 const CERT_MARKER = "-----BEGIN CERTIFICATE-----";
@@ -27,28 +29,38 @@ function OcspStatusBadge({ status }: Readonly<{ status: OcspResult["status"] }>)
 }
 
 export function OcspCheckerPage() {
+  const [mode, setMode] = useState<"cert" | "serial">("cert");
   const [pem, setPem] = useState("");
+  const [serial, setSerial] = useState("");
 
-  // The issuing CA certificate is needed to build the OCSP CertID.
+  // The issuing CA certificate is needed to build the OCSP CertID and to verify
+  // the response signature.
   const caInfo = useQuery({ queryKey: ["ca-info"], queryFn: portalApi.caInfo, staleTime: 5 * 60_000 });
 
   const check = useMutation({
     mutationFn: () => {
       const issuer = caInfo.data?.chain_pem;
       if (!issuer) throw new Error("The issuing CA certificate is unavailable; try again shortly.");
-      return checkOcsp(pem, issuer);
+      const query: OcspQuery = mode === "cert" ? { certPem: pem } : { serialHex: serial };
+      return checkOcsp(query, issuer);
     },
   });
 
-  const valid = pem.includes(CERT_MARKER);
+  const certValid = pem.includes(CERT_MARKER);
+  const serialValid = /[0-9a-fA-F]/.test(serial);
+  const inputValid = mode === "cert" ? certValid : serialValid;
   const result = check.data;
+
+  function reset() {
+    check.reset();
+  }
 
   return (
     <ContentLayout
       header={
         <Header
           variant="h1"
-          description="Check a certificate's live revocation status against the OCSP responder (RFC 6960)."
+          description="Check a certificate's live revocation status against the OCSP responder (RFC 6960). The signed response is verified against the issuing CA."
         >
           OCSP Status Check
         </Header>
@@ -61,28 +73,59 @@ export function OcspCheckerPage() {
               <Button
                 variant="primary"
                 loading={check.isPending}
-                disabled={!valid || !caInfo.data}
+                disabled={!inputValid || !caInfo.data}
                 onClick={() => check.mutate()}
               >
                 Check status
               </Button>
             }
           >
-            <FormField
-              label="Certificate (PEM)"
-              description="Paste the PEM-encoded certificate to check. It is checked in your browser against the issuing CA and the OCSP responder — it is not stored."
-              errorText={pem && !valid ? "Not a PEM certificate." : undefined}
-            >
-              <Textarea
-                value={pem}
+            <SpaceBetween size="m">
+              <SegmentedControl
+                selectedId={mode}
                 onChange={(e) => {
-                  check.reset();
-                  setPem(e.detail.value);
+                  reset();
+                  setMode(e.detail.selectedId as "cert" | "serial");
                 }}
-                rows={10}
-                placeholder={CERT_MARKER}
+                options={[
+                  { id: "cert", text: "Certificate (PEM)" },
+                  { id: "serial", text: "Serial number" },
+                ]}
               />
-            </FormField>
+
+              {mode === "cert" ? (
+                <FormField
+                  label="Certificate (PEM)"
+                  description="Paste the PEM-encoded certificate. It is checked in your browser — not stored."
+                  errorText={pem && !certValid ? "Not a PEM certificate." : undefined}
+                >
+                  <Textarea
+                    value={pem}
+                    onChange={(e) => {
+                      reset();
+                      setPem(e.detail.value);
+                    }}
+                    rows={10}
+                    placeholder={CERT_MARKER}
+                  />
+                </FormField>
+              ) : (
+                <FormField
+                  label="Serial number (hex)"
+                  description="The certificate serial in hex (e.g. from an audit record). Checked against the current issuing CA."
+                  errorText={serial && !serialValid ? "Enter a hex serial number." : undefined}
+                >
+                  <Input
+                    value={serial}
+                    onChange={(e) => {
+                      reset();
+                      setSerial(e.detail.value);
+                    }}
+                    placeholder="08e47691e954c1fc16cbdfe1173347d1d8a6274a"
+                  />
+                </FormField>
+              )}
+            </SpaceBetween>
           </Form>
         </Container>
 

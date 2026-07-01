@@ -285,7 +285,9 @@ fn default_est_url() -> String {
 }
 
 fn default_ocsp_url() -> String {
-    "http://localhost:8081".to_string()
+    // Distinct from the default ca_url (…:8081) so a local/default run does not
+    // silently proxy OCSP requests to the CA. Deployments set the real responder.
+    "http://localhost:8083".to_string()
 }
 
 /// Session management configuration.

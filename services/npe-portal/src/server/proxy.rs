@@ -1,14 +1,19 @@
 //! Allowlisted API proxy.
 //!
-//! The NPE portal proxies ONLY the CA and EST services — and only the routes the
-//! portal's menus need. This allowlist is the portal's security boundary: even
-//! with a valid session, a client cannot reach admin-only services (audit, KRA,
-//! user management beyond the CAA surface) through this proxy. The CA/EST
-//! services independently enforce RBAC on the session's mapped NPE role.
+//! The NPE portal proxies ONLY the CA and EST services (identity-forwarded, RBAC
+//! enforced by the backend) plus the public OCSP responder — and only the routes
+//! the portal's menus need. This allowlist is the portal's security boundary:
+//! even with a valid session, a client cannot reach admin-only services (audit,
+//! KRA, user management beyond the CAA surface) through this proxy. The CA/EST
+//! services independently enforce RBAC on the session's mapped NPE role; the OCSP
+//! path is a public RFC 6960 responder and carries no forwarded identity.
 //!
 //! COMPLIANCE MAPPING:
-//! - NIST 800-53: AC-3 (Access Enforcement), SC-7 (Boundary Protection)
+//! - NIST 800-53: AC-3 (Access Enforcement), SC-7 (Boundary Protection) - the
+//!   allowlist (CA, EST, OCSP) is the enumerated portal→backend boundary
+//! - NIST 800-53: AC-6 (Least Privilege) - the OCSP path forwards no NPE identity
 //! - NIST 800-53: AU-2 (Auditable Events) - proxied requests are logged
+//! - RFC 6960 - OCSP request/response passthrough to the responder
 
 use axum::{
     Router,
@@ -40,7 +45,7 @@ async fn proxy_ca(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.http_client, &state.config.backend.ca_url, &path, &session, request).await
+    proxy_to_service(&state.http_client, &state.config.backend.ca_url, &path, Some(&session), request).await
 }
 
 async fn proxy_est(
@@ -49,16 +54,18 @@ async fn proxy_est(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.http_client, &state.config.backend.est_url, &path, &session, request).await
+    proxy_to_service(&state.http_client, &state.config.backend.est_url, &path, Some(&session), request).await
 }
 
-/// Forward an OCSP request to the responder's root (RFC 6960 over HTTP).
+/// Forward an OCSP request to the responder's root (RFC 6960 over HTTP). The
+/// NPE identity is NOT forwarded: OCSP is a public, no-auth protocol that does
+/// not consume the X-Npe-* headers, so attaching the caller's CN/DN/roles would
+/// be needless disclosure (least privilege / AC-6).
 async fn proxy_ocsp(
     State(state): State<AppState>,
-    Extension(session): Extension<SessionData>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.http_client, &state.config.backend.ocsp_url, "", &session, request).await
+    proxy_to_service(&state.http_client, &state.config.backend.ocsp_url, "", None, request).await
 }
 
 /// Forward a request to a backend service, preserving the query string and
@@ -67,7 +74,7 @@ async fn proxy_to_service(
     client: &HttpClient,
     base_url: &str,
     path: &str,
-    session: &SessionData,
+    session: Option<&SessionData>,
     original_request: Request<Body>,
 ) -> Response {
     let base = base_url.trim_end_matches('/');
@@ -114,15 +121,18 @@ async fn proxy_to_service(
     // Attach the authenticated NPE identity so the backend can enforce per-role
     // and own-scope RBAC (NIST AC-3). These are trusted because the portal
     // stripped any inbound X-Npe-* above and the proxy is the only ingress.
-    // The backend MUST only accept these on the portal's mTLS channel.
-    use ostrich_common::auth::{
-        HEADER_NPE_ROLES, HEADER_NPE_SESSION, HEADER_NPE_SUBJECT, HEADER_NPE_USER,
-    };
-    proxy_request = proxy_request
-        .header(HEADER_NPE_USER, &session.common_name)
-        .header(HEADER_NPE_SUBJECT, &session.subject_dn)
-        .header(HEADER_NPE_ROLES, session.roles.join(","))
-        .header(HEADER_NPE_SESSION, &session.id);
+    // The backend MUST only accept these on the portal's mTLS channel. Omitted
+    // for identity-agnostic backends (e.g. the public OCSP responder).
+    if let Some(session) = session {
+        use ostrich_common::auth::{
+            HEADER_NPE_ROLES, HEADER_NPE_SESSION, HEADER_NPE_SUBJECT, HEADER_NPE_USER,
+        };
+        proxy_request = proxy_request
+            .header(HEADER_NPE_USER, &session.common_name)
+            .header(HEADER_NPE_SUBJECT, &session.subject_dn)
+            .header(HEADER_NPE_ROLES, session.roles.join(","))
+            .header(HEADER_NPE_SESSION, &session.id);
+    }
 
     let proxy_request = match proxy_request.body(body) {
         Ok(req) => req,
