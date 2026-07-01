@@ -2,6 +2,20 @@
 // proxy attaches the authenticated NPE identity; these calls carry no credential.
 import { api } from "@/lib/api";
 
+/**
+ * Build a `?a=1&b=2` query suffix from a params object, dropping null/undefined
+ * and empty-string values. Shared so every listing endpoint encodes filters the
+ * same way.
+ */
+function toQuery(params: Record<string, string | number | undefined | null>): string {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v != null && v !== "") qs.set(k, String(v));
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : "";
+}
+
 export interface ApplicationInfo {
   id: string;
   request_type: string;
@@ -394,20 +408,8 @@ export const portalApi = {
    * this is the drill-down behind the dashboard's "Expiring in N Days" card and
    * matches that count exactly.
    */
-  listCertificates: (params: ListCertificatesParams = {}) => {
-    const qs = new URLSearchParams();
-    if (params.status) qs.set("status", params.status);
-    if (params.search) qs.set("search", params.search);
-    if (params.expiringInDays != null)
-      qs.set("expiringInDays", String(params.expiringInDays));
-    if (params.sort) qs.set("sort", params.sort);
-    if (params.order) qs.set("order", params.order);
-    if (params.page != null) qs.set("page", String(params.page));
-    if (params.pageSize != null) qs.set("pageSize", String(params.pageSize));
-    const query = qs.toString();
-    const suffix = query ? `?${query}` : "";
-    return api.get<CertificateListResponse>(`/ca/api/v1/certificates${suffix}`);
-  },
+  listCertificates: (params: ListCertificatesParams = {}) =>
+    api.get<CertificateListResponse>(`/ca/api/v1/certificates${toQuery({ ...params })}`),
 
   /** Look up an issued certificate by id (for review before revoking). */
   getCertificate: (id: string) =>
@@ -450,14 +452,8 @@ export const portalApi = {
   caInfo: () => api.get<CaInfo>("/ca/api/v1/ca/info"),
 
   /** Paginated, filtered audit-log review (ReadAuditLog — RA/CAA). FAU_SAR.1. */
-  listAuditEvents: (params: ListAuditParams = {}) => {
-    const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) {
-      if (v != null && v !== "") qs.set(k, String(v));
-    }
-    const suffix = qs.toString() ? `?${qs}` : "";
-    return api.get<AuditListResponse>(`/ca/api/v1/audit${suffix}`);
-  },
+  listAuditEvents: (params: ListAuditParams = {}) =>
+    api.get<AuditListResponse>(`/ca/api/v1/audit${toQuery({ ...params })}`),
 
   /** Recompute the audit hash chain + verify signatures (AU-9/AU-10). */
   verifyAuditChain: () => api.get<AuditVerifyResult>("/ca/api/v1/audit/verify"),

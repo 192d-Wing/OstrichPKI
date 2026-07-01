@@ -18,6 +18,7 @@ import {
   type SelectProps,
   SpaceBetween,
   Table,
+  type TableProps,
 } from "@cloudscape-design/components";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -29,13 +30,53 @@ const OUTCOME_OPTIONS: SelectProps.Option[] = [
   { label: "All outcomes", value: "" },
   { label: "Success", value: "success" },
   { label: "Failure", value: "failure" },
+  { label: "Error", value: "error" },
+];
+
+// Canonical audit event-type tokens (mirrors the CA's AuditEventType set) so the
+// filter offers valid, discoverable values instead of free text.
+const EVENT_TYPE_OPTIONS: SelectProps.Option[] = [
+  { label: "All event types", value: "" },
+  { label: "Authentication", value: "authentication" },
+  { label: "Authorization", value: "authorization" },
+  { label: "Certificate Issuance", value: "certificate_issuance" },
+  { label: "Certificate Revocation", value: "certificate_revocation" },
+  { label: "CRL Generation", value: "crl_generation" },
+  { label: "Key Generation", value: "key_generation" },
+  { label: "Configuration Change", value: "configuration_change" },
+  { label: "Access Violation", value: "access_violation" },
+  { label: "Token Lifecycle", value: "token_lifecycle" },
+  { label: "EST Protocol", value: "est_protocol" },
+  { label: "ACME Protocol", value: "acme_protocol" },
+];
+
+/** Format an ISO timestamp for display, keeping a UTC marker so the wall-clock
+ *  reading is unambiguous (AU-3). */
+function formatTs(iso: string): string {
+  const body = iso.replace("T", " ").slice(0, 19);
+  return /([zZ]|[+-]\d\d:?\d\d)$/.test(iso) ? `${body} UTC` : body;
+}
+
+const COLUMNS: TableProps.ColumnDefinition<AuditEvent>[] = [
+  { id: "timestamp", header: "Timestamp", cell: (e) => formatTs(e.timestamp) },
+  { id: "eventType", header: "Event", cell: (e) => e.eventType },
+  { id: "actor", header: "Actor", cell: (e) => e.actor },
+  { id: "target", header: "Target", cell: (e) => e.target },
+  { id: "outcome", header: "Outcome", cell: (e) => <StatusBadge status={e.outcome} /> },
+  {
+    id: "signed",
+    header: "Integrity",
+    cell: (e) => (
+      <Badge color={e.signed ? "green" : "grey"}>{e.signed ? "Signed" : "Chained"}</Badge>
+    ),
+  },
 ];
 
 export function AuditLogPage() {
   // Filter inputs (typed) vs. applied filters (drive the query) — so we don't
   // fire a request on every keystroke.
   const [actorIn, setActorIn] = useState("");
-  const [eventTypeIn, setEventTypeIn] = useState("");
+  const [eventType, setEventType] = useState<SelectProps.Option>(EVENT_TYPE_OPTIONS[0]);
   const [outcome, setOutcome] = useState<SelectProps.Option>(OUTCOME_OPTIONS[0]);
   const [applied, setApplied] = useState<ListAuditParams>({});
   const [page, setPage] = useState(1);
@@ -66,13 +107,13 @@ export function AuditLogPage() {
     setPage(1);
     setApplied({
       actor: actorIn.trim() || undefined,
-      eventType: eventTypeIn.trim() || undefined,
+      eventType: eventType.value || undefined,
       outcome: outcome.value || undefined,
     });
   }
   function clearFilters() {
     setActorIn("");
-    setEventTypeIn("");
+    setEventType(EVENT_TYPE_OPTIONS[0]);
     setOutcome(OUTCOME_OPTIONS[0]);
     setPage(1);
     setApplied({});
@@ -90,13 +131,18 @@ export function AuditLogPage() {
           description="Tamper-evident certificate-lifecycle audit trail (hash-chained, signed). NIAP FAU_SAR.1."
           counter={data ? `(${total})` : undefined}
           actions={
-            <Button
-              iconName="security"
-              loading={verify.isFetching}
-              onClick={() => verify.refetch()}
-            >
-              Verify integrity
-            </Button>
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button iconName="refresh" loading={isFetching} onClick={() => refetch()}>
+                Refresh
+              </Button>
+              <Button
+                iconName="security"
+                loading={verify.isFetching}
+                onClick={() => verify.refetch()}
+              >
+                Verify integrity
+              </Button>
+            </SpaceBetween>
           }
         >
           Audit Log
@@ -114,7 +160,7 @@ export function AuditLogPage() {
             }
           >
             {verify.data.intact
-              ? `The hash chain recomputes and all ${verify.data.signedRecords} signed records verify (${verify.data.totalRecords} records, checked ${verify.data.verifiedAt.slice(0, 19)}Z).`
+              ? `The hash chain recomputes and all ${verify.data.signedRecords} signed records verify (${verify.data.totalRecords} records, checked ${formatTs(verify.data.verifiedAt)}).`
               : "The hash chain or a signature did not verify — the audit trail may have been tampered with. Escalate immediately."}
           </Alert>
         )}
@@ -135,11 +181,10 @@ export function AuditLogPage() {
               />
             </FormField>
             <FormField label="Event type">
-              <Input
-                value={eventTypeIn}
-                onChange={(e) => setEventTypeIn(e.detail.value)}
-                onKeyDown={(e) => e.detail.key === "Enter" && applyFilters()}
-                placeholder="e.g. certificate_issued"
+              <Select
+                selectedOption={eventType}
+                onChange={(e) => setEventType(e.detail.selectedOption)}
+                options={EVENT_TYPE_OPTIONS}
               />
             </FormField>
             <FormField label="Outcome">
@@ -171,18 +216,7 @@ export function AuditLogPage() {
           items={events}
           variant="container"
           onRowClick={({ detail }) => setSelected(detail.item)}
-          columnDefinitions={[
-            { id: "timestamp", header: "Timestamp", cell: (e) => e.timestamp.replace("T", " ").slice(0, 19) },
-            { id: "eventType", header: "Event", cell: (e) => e.eventType },
-            { id: "actor", header: "Actor", cell: (e) => e.actor },
-            { id: "target", header: "Target", cell: (e) => e.target },
-            { id: "outcome", header: "Outcome", cell: (e) => <StatusBadge status={e.outcome} /> },
-            {
-              id: "signed",
-              header: "Integrity",
-              cell: (e) => <Badge color={e.signed ? "green" : "grey"}>{e.signed ? "Signed" : "Chained"}</Badge>,
-            },
-          ]}
+          columnDefinitions={COLUMNS}
           empty={
             <Box textAlign="center" color="inherit">
               <SpaceBetween size="xs">
@@ -194,21 +228,12 @@ export function AuditLogPage() {
           footer={
             <Box textAlign="center">
               <Pagination
-                currentPageIndex={page}
+                currentPageIndex={Math.min(page, pagesCount)}
                 pagesCount={pagesCount}
                 onChange={({ detail }) => setPage(detail.currentPageIndex)}
                 disabled={isFetching}
               />
             </Box>
-          }
-          header={
-            <Header counter={`(${total})`} actions={
-              <Button iconName="refresh" loading={isFetching} onClick={() => refetch()}>
-                Refresh
-              </Button>
-            }>
-              Events
-            </Header>
           }
         />
       </SpaceBetween>

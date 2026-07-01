@@ -128,8 +128,18 @@ This document tracks OstrichPKI's compliance with the NIAP Protection Profile fo
 - ✅ `AuditRepository::find_security_events()` - Query security-relevant events
 - ✅ Auditor role defined in ADMIN_GUIDE.md (read-only access to audit logs)
 - ✅ Records returned in human-readable format (JSON serialization)
+- ✅ NPE-portal Audit Log page (`services/npe-portal/web/src/pages/audit-log.tsx`,
+  route `/audit`) surfaces the paginated/filtered trail (actor / event-type /
+  outcome) with a one-click hash-chain + signature integrity check
+  (`GET /api/v1/audit/verify`). Read access is gated by `Permission::ReadAuditLog`,
+  granted to the NPE `RegistrationAuthority` and `CaaAdmin` roles
+  (`crates/ostrich-common/src/auth/permissions.rs`) in addition to the classic
+  `Auditor` role. NOTE (FMT_SMR / AU-6, AC-5): RA holds both certificate-lifecycle
+  authority and audit-read; this widens review access beyond a dedicated Auditor
+  and is a documented deployment policy decision (separation-of-duties trade-off).
 
-**NIAP Annotation:** `crates/ostrich-db/src/repository/audit.rs` lines 312-463
+**NIAP Annotation:** `crates/ostrich-db/src/repository/audit.rs` lines 312-463;
+`crates/ostrich-ca/src/rest.rs` (`GET /api/v1/audit`, `/audit/verify`)
 
 **Related NIST 800-53:** AU-6 (Audit Review, Analysis, and Reporting)
 
