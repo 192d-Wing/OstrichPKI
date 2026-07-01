@@ -260,6 +260,12 @@ pub struct BackendConfig {
     #[serde(default = "default_est_url")]
     pub est_url: String,
 
+    /// OCSP responder URL (RFC 6960) for the certificate revocation-status
+    /// checker. The responder is public (no auth); the proxy just forwards the
+    /// DER OCSP request/response.
+    #[serde(default = "default_ocsp_url")]
+    pub ocsp_url: String,
+
     /// Client certificate (PEM) the portal presents to the CA/EST backends so
     /// they can verify it and trust the forwarded X-Npe-* identity (the identity
     /// bridge). When set with `mtls_client_key` + `mtls_ca_cert`, the proxy dials
@@ -276,6 +282,10 @@ pub struct BackendConfig {
 
 fn default_est_url() -> String {
     "http://localhost:8087".to_string()
+}
+
+fn default_ocsp_url() -> String {
+    "http://localhost:8081".to_string()
 }
 
 /// Session management configuration.
@@ -383,6 +393,7 @@ impl Default for NpePortalConfig {
             backend: BackendConfig {
                 ca_url: "http://localhost:8081".to_string(),
                 est_url: default_est_url(),
+                ocsp_url: default_ocsp_url(),
                 mtls_client_cert: None,
                 mtls_client_key: None,
                 mtls_ca_cert: None,

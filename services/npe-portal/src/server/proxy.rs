@@ -23,11 +23,14 @@ use serde_json::json;
 use super::router::{AppState, HttpClient};
 use super::session::SessionData;
 
-/// Create the allowlisted API proxy router (CA + EST only).
+/// Create the allowlisted API proxy router (CA + EST + public OCSP).
 pub fn create_proxy_routes(state: AppState) -> Router {
     Router::new()
         .route("/ca/{*path}", any(proxy_ca))
         .route("/est/{*path}", any(proxy_est))
+        // OCSP revocation-status checker (RFC 6960). The responder listens at its
+        // root and is public; `/ocsp` forwards there. Read-only status data only.
+        .route("/ocsp", any(proxy_ocsp))
         .with_state(state)
 }
 
@@ -47,6 +50,15 @@ async fn proxy_est(
     request: Request<Body>,
 ) -> impl IntoResponse {
     proxy_to_service(&state.http_client, &state.config.backend.est_url, &path, &session, request).await
+}
+
+/// Forward an OCSP request to the responder's root (RFC 6960 over HTTP).
+async fn proxy_ocsp(
+    State(state): State<AppState>,
+    Extension(session): Extension<SessionData>,
+    request: Request<Body>,
+) -> impl IntoResponse {
+    proxy_to_service(&state.http_client, &state.config.backend.ocsp_url, "", &session, request).await
 }
 
 /// Forward a request to a backend service, preserving the query string and

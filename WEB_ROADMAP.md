@@ -99,5 +99,12 @@ doesn't silently extend the session while the warning is open.
 The **User Guide** dropdown item points at `/user-guide`, which 404s today.
 Add in-app help content.
 
-### 10. OCSP / revocation status checker — `Proposed` · frontend (calls OCSP)
-Paste a serial or cert, get live revocation status from the OCSP responder.
+### 10. OCSP / revocation status checker — `Built` · frontend + backend
+New `/ocsp` page (Tools): paste a PEM certificate and get its **live** revocation
+status via a real RFC 6960 round-trip. `lib/ocsp.ts` (pkijs, lazy) builds the
+OCSP request (SHA-1 CertID from the cert + the issuing CA cert from `/ca/info`),
+POSTs it through the BFF to the responder, and parses the signed response —
+Good / Revoked / Unknown with producedAt / this-/next-update and, when revoked,
+the revocation time + reason. Backend: the BFF proxy gains a `/ocsp` route to the
+(public) responder (`backend.ocspUrl`). Verified end-to-end against the live
+responder (a revoked cert returns REVOKED with its revocation time).

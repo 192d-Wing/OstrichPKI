@@ -29,7 +29,8 @@ data:
     {
       "backend": {
         "caUrl": "http://ca-service:8080",
-        "estUrl": "http://est-service:8443"
+        "estUrl": "http://est-service:8443",
+        "ocspUrl": "http://ocsp-service:8081"
       },
       "session": {
         "cookieName": "ostrich_npe_session",
