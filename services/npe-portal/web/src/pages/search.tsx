@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Box,
+  ButtonDropdown,
   ContentLayout,
   Header,
   Link,
@@ -11,7 +12,17 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import { StatusBadge } from "@/components/status-badge";
+import { exportCsv, exportPdf, type ExportColumn } from "@/lib/export";
 import { portalApi, type ApplicationInfo } from "@/lib/portal-api";
+
+// Columns for CSV/PDF export (plain-text values, independent of the table cells).
+const EXPORT_COLUMNS: ExportColumn<ApplicationInfo>[] = [
+  { header: "Request ID", value: (i) => i.id },
+  { header: "Type", value: (i) => i.request_type },
+  { header: "Status", value: (i) => i.status },
+  { header: "Requestor", value: (i) => i.requestor_username },
+  { header: "Submitted", value: (i) => i.created_at },
+];
 
 export function SearchPage() {
   const navigate = useNavigate();
@@ -35,10 +46,36 @@ export function SearchPage() {
     );
   }, [data, filter]);
 
+  const stamp = new Date().toISOString().slice(0, 10);
+  function onExport(id: string) {
+    if (items.length === 0) return;
+    if (id === "csv") {
+      exportCsv(`applications-${stamp}.csv`, EXPORT_COLUMNS, items);
+    } else if (id === "pdf") {
+      void exportPdf(`applications-${stamp}.pdf`, "Certificate Applications", EXPORT_COLUMNS, items);
+    }
+  }
+
   return (
     <ContentLayout
       header={
-        <Header variant="h1" description="Search your certificate applications.">
+        <Header
+          variant="h1"
+          description="Search your certificate applications."
+          counter={`(${items.length})`}
+          actions={
+            <ButtonDropdown
+              disabled={items.length === 0}
+              items={[
+                { id: "csv", text: "Export as CSV" },
+                { id: "pdf", text: "Export as PDF" },
+              ]}
+              onItemClick={({ detail }) => onExport(detail.id)}
+            >
+              Export
+            </ButtonDropdown>
+          }
+        >
           Search
         </Header>
       }
