@@ -301,7 +301,9 @@ pub fn permissions_for_role(role: Role) -> &'static [Permission] {
         ],
 
         Role::Auditor => &[
-            // Audit operations (exclusive to Auditor)
+            // Full audit operations. NOTE: ReadAuditLog (review only) is also
+            // granted to the NPE RegistrationAuthority and CaaAdmin roles for the
+            // portal Audit Log page; Export/Search remain exclusive to Auditor.
             Permission::ReadAuditLog,
             Permission::ExportAuditLog,
             Permission::SearchAuditLog,

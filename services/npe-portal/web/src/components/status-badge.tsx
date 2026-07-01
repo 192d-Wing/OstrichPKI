@@ -6,9 +6,13 @@ export function StatusBadge({ status }: Readonly<{ status: string }>) {
     case "approved":
     case "completed":
     case "issued":
+    case "success": // audit-log outcome
       return <StatusIndicator type="success">{status}</StatusIndicator>;
     case "rejected":
     case "expired":
+    case "revoked":
+    case "failure": // audit-log outcomes: a failed/errored event must read red,
+    case "error": //  not neutral, so an auditor can spot it at a glance.
       return <StatusIndicator type="error">{status}</StatusIndicator>;
     case "pending":
       return <StatusIndicator type="pending">{status}</StatusIndicator>;
