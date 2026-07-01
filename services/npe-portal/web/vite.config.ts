@@ -18,11 +18,11 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       output: {
-        manualChunks: {
-          cloudscape: [
-            "@cloudscape-design/components",
-            "@cloudscape-design/global-styles",
-          ],
+        // Function form (Vite 8 / Rolldown compatible): keep the large Cloudscape
+        // vendor in its own chunk so the app bundle stays small.
+        manualChunks(id) {
+          if (id.includes("@cloudscape-design")) return "cloudscape";
+          return undefined;
         },
       },
     },

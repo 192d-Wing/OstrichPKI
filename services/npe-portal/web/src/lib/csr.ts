@@ -8,7 +8,6 @@ import {
   Attribute,
   AttributeTypeAndValue,
   CertificationRequest,
-  CryptoEngine,
   Extension,
   Extensions,
   GeneralName,
@@ -48,10 +47,9 @@ function ensureEngine() {
   if (!webcrypto?.subtle) {
     throw new Error("Web Crypto API is unavailable (a secure context / HTTPS is required).");
   }
-  setEngine(
-    "webcrypto",
-    new CryptoEngine({ name: "webcrypto", crypto: webcrypto, subtle: webcrypto.subtle }),
-  );
+  // pkijs 3.x: the legacy 3-arg form wraps crypto/subtle into its engine. Passing
+  // the Web Crypto objects directly avoids the CryptoEngine/ICryptoEngine typing.
+  setEngine("webcrypto", webcrypto, webcrypto.subtle);
   engineReady = true;
 }
 
