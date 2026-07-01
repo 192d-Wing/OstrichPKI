@@ -81,14 +81,19 @@ backed by `GET /api/v1/audit/verify` (hash-chain + AU-10 signature check).
 Backend: granted `ReadAuditLog` to the NPE `RegistrationAuthority` and `CaaAdmin`
 roles (FAU_SAR.1 / AU-6) — requires a ca-server bump to take effect.
 
-### 7. Search export (CSV / PDF) — `Proposed` · frontend
-Export search results for IA reporting (was in the original spec).
+### 7. Search export (CSV / PDF) — `Built` · frontend
+The Search page has an **Export** dropdown (CSV / PDF) over the current results.
+Shared `lib/export.ts` helper: CSV is dependency-free (UTF-8 + BOM); PDF lazily
+imports jsPDF + autotable (kept out of the main bundle, fetched only on export).
 
 ## ✨ UX / polish
 
-### 8. Session-timeout warning modal — `Proposed` · frontend
-"You'll be logged out in 2 min" prompt before the 30-min inactivity logout;
-avoids losing a half-filled form.
+### 8. Session-timeout warning modal — `Built` · frontend
+`components/session-timeout.tsx` tracks user inactivity and, ~2 min before the
+server's idle timeout (`sessionIdleSeconds`, injected from the portal config),
+shows a modal with a live countdown. **Stay signed in** pings `/auth/login` to
+refresh the server session; ignoring it signs the user out. Passive activity
+doesn't silently extend the session while the warning is open.
 
 ### 9. Real User Guide / Help pages — `Proposed` · frontend
 The **User Guide** dropdown item points at `/user-guide`, which 404s today.
