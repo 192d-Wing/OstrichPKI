@@ -4,6 +4,7 @@ import { Box, Spinner } from "@cloudscape-design/components";
 import { ClassificationBanner } from "@/components/classification-banner";
 import { ConsentModal } from "@/components/consent-modal";
 import { PortalLayout } from "@/components/portal-layout";
+import { SessionTimeout } from "@/components/session-timeout";
 import { useAuth } from "@/lib/auth-context";
 import { HomePage } from "@/pages/home";
 import { SubmitApplicationPage } from "@/pages/submit-application";
@@ -65,6 +66,7 @@ export default function App() {
   return (
     <PortalLayout>
       {consentRequired && <ConsentModal />}
+      {!consentRequired && <SessionTimeout />}
       <Routes>
         <Route path="/" element={<HomePage />} />
         {/* Certificate Management (Sponsor / Administrator) */}

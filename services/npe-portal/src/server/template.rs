@@ -41,6 +41,7 @@ pub async fn serve_index(
         "certProfiles": state.config.cert_profiles,
         "ccsaOptions": state.config.ccsa_options,
         "estBaseUrl": state.config.est_base_url,
+        "sessionIdleSeconds": state.config.session.inactivity_timeout_secs,
         "version": env!("CARGO_PKG_VERSION"),
         "basename": "/",
     });

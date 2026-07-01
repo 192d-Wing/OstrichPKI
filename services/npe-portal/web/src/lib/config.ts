@@ -32,6 +32,8 @@ export interface ClientConfig {
   /** Public EST base URL (e.g. https://est.example.mil) for the catalog page's
    * enrollment commands. When unset, the page guesses from the browser host. */
   estBaseUrl?: string | null;
+  /** Server inactivity timeout (seconds); drives the pre-logout warning modal. */
+  sessionIdleSeconds: number;
   version: string;
   basename: string;
 }
@@ -54,6 +56,7 @@ const defaults: ClientConfig = {
     { label: "EFS (File Encryption)", value: "efs", efs: true },
   ],
   ccsaOptions: [],
+  sessionIdleSeconds: 1800,
   version: "dev",
   basename: "/",
 };
