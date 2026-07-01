@@ -216,6 +216,7 @@ export const ASSIGNABLE_ROLES = [
   { label: "PKI Sponsor (Admin)", value: "pki_sponsor_admin" },
   { label: "Registration Authority", value: "registration_authority" },
   { label: "CA Admin (CAA)", value: "caa_admin" },
+  { label: "Auditor (read-only)", value: "npe_auditor" },
 ] as const;
 
 export interface Namespace {

@@ -2387,15 +2387,17 @@ async fn get_bulk_job(
 // ===========================================================================
 
 /// Roles the CAA may assign through the portal. This is a privilege ceiling
-/// (AC-6): the CAA manages NPE portal accounts, so it may grant only the four
-/// NPE roles — never a legacy CA super-role (e.g. `Administrator`, `Auditor`).
-const ASSIGNABLE_NPE_ROLES: [ostrich_common::auth::Role; 4] = {
+/// (AC-6): the CAA manages NPE portal accounts, so it may grant only the NPE
+/// roles — never a legacy CA super-role (e.g. `Administrator`, the legacy
+/// `Auditor` with export/search). `NpeAuditor` is the read-only portal auditor.
+const ASSIGNABLE_NPE_ROLES: [ostrich_common::auth::Role; 5] = {
     use ostrich_common::auth::Role;
     [
         Role::PkiSponsor,
         Role::PkiSponsorAdmin,
         Role::RegistrationAuthority,
         Role::CaaAdmin,
+        Role::NpeAuditor,
     ]
 };
 

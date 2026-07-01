@@ -46,6 +46,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     "manage_namespaces",
     "read_audit_log",
   ],
+  npe_auditor: ["read_audit_log", "view_certificate", "view_requests"],
 };
 
 export function hasPermission(user: UserInfo | null, permission: string): boolean {
@@ -68,6 +69,8 @@ export function roleLabel(role: string | null): string {
       return "Registration Authority";
     case "caa_admin":
       return "Certificate Authority Admin";
+    case "npe_auditor":
+      return "Auditor";
     default:
       return "Unknown";
   }

@@ -91,6 +91,12 @@ export function navGroupsForUser(user: UserInfo | null): NavGroup[] {
         SEARCH,
       ];
 
+    case "npe_auditor":
+      return [
+        { text: "Compliance", items: [{ text: "Audit Log", href: "/audit" }] },
+        SEARCH,
+      ];
+
     default:
       return [];
   }

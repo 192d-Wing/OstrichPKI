@@ -41,6 +41,10 @@ pub struct OidRoleMapping {
     #[serde(default)]
     pub caa_oids: Vec<String>,
 
+    /// Policy OIDs that identify a read-only NPE Auditor (audit review only).
+    #[serde(default)]
+    pub auditor_oids: Vec<String>,
+
     /// Optional issuer scoping. When non-empty, the client certificate's issuer
     /// DN (RFC 4514) MUST exactly match one of these values for any role to be
     /// granted. This prevents a lower-assurance CA in the trusted client-CA
@@ -64,6 +68,7 @@ impl Default for OidRoleMapping {
             admin_oid: Some("1.3.6.1.4.1.99999.1.2".to_string()),
             ra_oids: vec!["1.3.6.1.4.1.99999.1.3".to_string()],
             caa_oids: vec!["1.3.6.1.4.1.99999.1.4".to_string()],
+            auditor_oids: vec!["1.3.6.1.4.1.99999.1.5".to_string()],
             // No issuer constraint by default; production deployments SHOULD set
             // this to the authorized issuing CA DN(s) (see field docs).
             allowed_issuers: Vec::new(),
@@ -81,6 +86,12 @@ impl OidRoleMapping {
 
         if has_any(&self.caa_oids) {
             return Some(Role::CaaAdmin);
+        }
+        // Auditor is read-only; resolve it before the acting roles so a cert
+        // carrying an auditor OID can never be elevated to an approval/revoke
+        // role (fail-safe toward least privilege, AC-6).
+        if has_any(&self.auditor_oids) {
+            return Some(Role::NpeAuditor);
         }
         if has_any(&self.ra_oids) {
             return Some(Role::RegistrationAuthority);
@@ -224,6 +235,7 @@ mod tests {
             admin_oid: Some("1.2.3.2".to_string()),
             ra_oids: vec!["1.2.3.3".to_string()],
             caa_oids: vec!["1.2.3.4".to_string()],
+            auditor_oids: vec!["1.2.3.5".to_string()],
             allowed_issuers: Vec::new(),
         }
     }
@@ -250,6 +262,20 @@ mod tests {
         assert_eq!(
             mapping().resolve(&oids(&["1.2.3.1", "1.2.3.3"])),
             Some(Role::RegistrationAuthority)
+        );
+    }
+
+    #[test]
+    fn auditor_oid_resolves_to_auditor() {
+        assert_eq!(mapping().resolve(&oids(&["1.2.3.5"])), Some(Role::NpeAuditor));
+    }
+
+    #[test]
+    fn auditor_oid_never_elevates_to_acting_role() {
+        // A cert carrying both an auditor and an RA OID stays read-only (AC-6).
+        assert_eq!(
+            mapping().resolve(&oids(&["1.2.3.5", "1.2.3.3"])),
+            Some(Role::NpeAuditor)
         );
     }
 
