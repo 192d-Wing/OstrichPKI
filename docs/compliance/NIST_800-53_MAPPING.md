@@ -1091,6 +1091,15 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 **Web console transport-integrity hardening (SC-8 / SC-18 / SI-10):**
 
+- ✅ **web-ui → CA internal hop is TLS 1.3** (not just edge TLS). The BFF reaches
+  the CA's REST API over `https://ca-service:8080` through a pooled `hyper-rustls`
+  client (aws-lc-rs/FIPS provider) built once with the CA's issuing certificate as
+  a trust anchor (`services/web-ui/src/server/backend_client.rs`, wired via
+  `AppState.ca_client`); the `/api/*` proxy and the internal login/logout-all
+  calls all use it. Config: `backend.tlsCaCert` (+ optional `tlsClientCert`/
+  `tlsClientKey` for a CA that mandates mTLS). This closed a gap where the BFF
+  dialed the CA over plaintext `http://` after the CA REST endpoint moved to
+  TLS 1.3 (optional mTLS), which had broken all admin authentication.
 - ✅ Per-request Content-Security-Policy with a fresh cryptographic nonce
   (`services/web-ui/src/server/middleware/csp.rs`): `script-src` is nonce-strict
   (+ `'wasm-unsafe-eval'` for the Yew WASM client); `default-src`, `connect-src`,
