@@ -23,6 +23,8 @@ export interface ApplicationInfo {
   status: string;
   created_at: string;
   expires_at: string;
+  /** Set once the approved request is issued (Completed): the issued cert id. */
+  certificate_id?: string | null;
 }
 
 export interface ApplicationDetail {

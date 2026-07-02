@@ -1782,6 +1782,56 @@ async fn ensure_principal_provisioned(
     Ok(())
 }
 
+/// Issue the certificate for a just-approved request from the CSR the requestor
+/// submitted, so the request moves Approved → Completed and the requestor can
+/// download the certificate. The issued certificate is owned by the ORIGINAL
+/// requestor (not the approving RA), so own-scope view/download works for the
+/// sponsor. Returns the new certificate id.
+///
+/// COMPLIANCE MAPPING:
+/// - NIAP PP-CA: FDP_CER_EXT.2/.3 - issuance is linked to the approved request
+///   (`approval_request_id`); requestor ≠ approver was enforced at approval time
+async fn issue_from_approved_request(
+    state: &ApiState,
+    request: &ApprovalRequest,
+) -> Result<uuid::Uuid> {
+    let details = &request.request_details;
+    let csr_pem = details
+        .get("csr_pem")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            Error::InvalidRequest("approved request has no csr_pem to issue from".to_string())
+        })?;
+    let profile = details
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            Error::InvalidRequest("approved request has no profile to issue against".to_string())
+        })?;
+
+    let (_label, csr_der) = pem_rfc7468::decode_vec(csr_pem.as_bytes())
+        .map_err(|e| Error::InvalidRequest(format!("invalid CSR PEM: {e}")))?;
+
+    let parsed = ostrich_x509::parser::parse_csr(&csr_der)
+        .map_err(|e| Error::InvalidRequest(format!("invalid CSR: {e}")))?;
+    let subject = ostrich_x509::parser::parse_csr_subject_dn(&csr_der)
+        .map_err(|e| Error::InvalidRequest(format!("invalid CSR subject: {e}")))?;
+
+    let issuance_req = IssuanceRequest {
+        profile_name: profile.to_string(),
+        subject,
+        subject_alt_names: sans_from_strings(&parsed.subject_alternative_names),
+        public_key: parsed.public_key,
+        requestor: request.requestor_username.clone(),
+        metadata: None,
+        csr_der: Some(csr_der),
+        approval_request_id: Some(request.id),
+        request_id: None,
+    };
+    let issued = state.ca.issuer().issue(issuance_req).await?;
+    Ok(issued.certificate_id)
+}
+
 async fn submit_approval_request(
     State(state): State<Arc<ApiState>>,
     AuthUser(user): AuthUser,
@@ -2077,9 +2127,35 @@ async fn approve_request(
         )
         .await?;
 
+    // Auto-issue on approval so the requestor can download the certificate
+    // (Approved → Completed). Only issuance/renewal requests carry a CSR to
+    // issue from; revocation approvals do not. If issuance fails the request
+    // stays Approved (the decision is already recorded) and the error surfaces
+    // to the approver.
+    let mut updated_status = request.status.to_string();
+    if request.certificate_id.is_none()
+        && matches!(
+            request.request_type,
+            crate::approval::RequestType::Issuance | crate::approval::RequestType::Renewal
+        )
+    {
+        let certificate_id = issue_from_approved_request(&state, &request).await?;
+        state
+            .approval_repo
+            .mark_request_completed(&request_id, certificate_id)
+            .await?;
+        updated_status = "completed".to_string();
+        tracing::info!(
+            request_id = %request_id,
+            certificate_id = %certificate_id,
+            approver = %user.username,
+            "approved request issued and marked completed"
+        );
+    }
+
     Ok(Json(ApprovalDecisionResponse {
         decision: ApprovalDecisionInfo::from(decision_record),
-        updated_status: request.status.to_string(),
+        updated_status,
     }))
 }
 
@@ -3357,6 +3433,10 @@ pub struct ApprovalRequestInfo {
     pub status: String,
     pub created_at: String,
     pub expires_at: String,
+    /// Set once the approved request has been issued (Completed): the id of the
+    /// issued certificate, so the requestor can view/download it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate_id: Option<String>,
 }
 
 impl From<ostrich_db::models::ApprovalRequestRecord> for ApprovalRequestInfo {
@@ -3368,6 +3448,7 @@ impl From<ostrich_db::models::ApprovalRequestRecord> for ApprovalRequestInfo {
             status: record.status,
             created_at: record.created_at.to_rfc3339(),
             expires_at: record.expires_at.to_rfc3339(),
+            certificate_id: record.certificate_id.map(|c| c.to_string()),
         }
     }
 }

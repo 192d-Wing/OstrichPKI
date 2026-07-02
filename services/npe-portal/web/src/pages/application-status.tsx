@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import {
   Alert,
@@ -17,6 +17,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { portalApi, type ApplicationDetail } from "@/lib/portal-api";
 
 export function ApplicationStatusPage() {
+  const navigate = useNavigate();
   const [params] = useSearchParams();
   const [id, setId] = useState(params.get("id") ?? "");
   const [error, setError] = useState<string | null>(null);
@@ -67,7 +68,30 @@ export function ApplicationStatusPage() {
         )}
 
         {detail && (
-          <Container header={<Header variant="h2">Application {detail.request.id}</Header>}>
+          <Container
+            header={
+              <Header
+                variant="h2"
+                actions={
+                  detail.request.certificate_id ? (
+                    <Button
+                      variant="primary"
+                      iconName="download"
+                      onClick={() =>
+                        navigate(
+                          `/certificates/view?id=${encodeURIComponent(detail.request.certificate_id!)}`,
+                        )
+                      }
+                    >
+                      View / download certificate
+                    </Button>
+                  ) : undefined
+                }
+              >
+                Application {detail.request.id}
+              </Header>
+            }
+          >
             <SpaceBetween size="l">
               <KeyValuePairs
                 columns={3}
