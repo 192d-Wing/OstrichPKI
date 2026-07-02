@@ -71,9 +71,9 @@ sha2 = { workspace = true }
 # NIST 800-53: SC-8 (transmission confidentiality), SC-13 (FIPS crypto).
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
-# `pem` feature: CertificateDer::pem_file_iter / PrivateKeyDer::from_pem_file
-# used by backend_client to load the CA trust anchor (and any client cert/key).
-rustls-pki-types = { workspace = true, features = ["pem"] }
+# PEM loaders (CertificateDer::pem_file_iter / PrivateKeyDer::from_pem_file) used
+# by backend_client are available under the default (alloc) features.
+rustls-pki-types = { workspace = true }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1"] }
 
 [dev-dependencies]
