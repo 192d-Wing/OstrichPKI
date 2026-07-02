@@ -65,10 +65,24 @@ export default function App() {
     );
   }
 
+  // Until the USG consent banner is acknowledged, render ONLY the consent modal.
+  // Mounting the routed pages early lets their data queries fire against the
+  // proxy before the session/consent is established — those requests are
+  // rejected (401 invalid_session / 403 consent_required) and React Query does
+  // not refetch them after consent is accepted, leaving a stale error on the
+  // page (e.g. "Could not load namespaces — Request failed (401)"). Gating the
+  // routes on consent ensures pages mount fresh, and fetch, only once allowed.
+  if (consentRequired) {
+    return (
+      <PortalLayout>
+        <ConsentModal />
+      </PortalLayout>
+    );
+  }
+
   return (
     <PortalLayout>
-      {consentRequired && <ConsentModal />}
-      {!consentRequired && <SessionTimeout />}
+      <SessionTimeout />
       <Routes>
         <Route path="/" element={<HomePage />} />
         {/* Certificate Management (Sponsor / Administrator) */}
