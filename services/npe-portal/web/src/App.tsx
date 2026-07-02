@@ -18,6 +18,7 @@ import { CaDetailsPage } from "@/pages/ca-details";
 import { EstEnrollmentCatalogPage } from "@/pages/est-enrollment-catalog";
 import { PasswordManagementPage } from "@/pages/password-management";
 import { ManageApplicationsPage } from "@/pages/manage-applications";
+import { ManageApplicationDetailPage } from "@/pages/manage-application-detail";
 import { RevokeCertificatesPage } from "@/pages/revoke-certificates";
 import { AuditLogPage } from "@/pages/audit-log";
 import { SubmitBulkPage } from "@/pages/submit-bulk";
@@ -101,6 +102,7 @@ export default function App() {
         <Route path="/passwords/multi-use" element={<PasswordManagementPage multi />} />
         {/* Registration Authority */}
         <Route path="/ra/applications" element={<ManageApplicationsPage />} />
+        <Route path="/ra/applications/view" element={<ManageApplicationDetailPage />} />
         <Route path="/ra/revoke" element={<RevokeCertificatesPage />} />
         <Route path="/audit" element={<AuditLogPage />} />
         {/* Certificate Authority Admin (CAA) */}
