@@ -342,20 +342,27 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **Implementation:**
 
 - REST and gRPC endpoints support TLS for remote access
-- mTLS planned for inter-service communication
+- **NPE portal → CA identity bridge over mTLS (deployed):** the ca-server REST
+  listener serves TLS 1.3 with optional client authentication
+  (`TLS_CERT_FILE`/`TLS_KEY_FILE`/`TLS_CLIENT_CA_FILE`); the portal presents a
+  client certificate (`CN=npe-portal`, issued by the OstrichPKI Intermediate CA)
+  and the CA accepts its forwarded `X-Npe-*` identity ONLY for the configured
+  trusted-proxy subject (`CA_TRUSTED_PROXY_SUBJECTS=CN=npe-portal`). Bearer/admin
+  clients present no certificate and still connect (client auth is optional).
 
 **Evidence:**
 
 - ✅ TLS support in frameworks (axum, tonic)
-- 🔴 TLS not configured in application code
+- ✅ [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs) - `TLS_CLIENT_CA_FILE` + `CA_TRUSTED_PROXY_SUBJECTS`, `with_optional_client_auth(trusted_proxy.is_some())`
+- ✅ [crates/ostrich-common/src/auth/middleware.rs](../../crates/ostrich-common/src/auth/middleware.rs) - `TrustedProxyAuthLayer` bridges identity only when the peer cert subject is allow-listed; `is_bridgeable_role` caps bridged roles to NPE roles (AC-6 defense in depth)
+- ✅ [services/npe-portal/src/server/backend_client.rs](../../services/npe-portal/src/server/backend_client.rs) - portal presents its client certificate to the CA (mTLS)
+- ✅ Live verification: client cert + `caa_admin` → 200; no client cert → 401; client cert + `pki_sponsor` → 403 (see [docs/runbooks/npe-portal-ca-mtls-bridge.md](../runbooks/npe-portal-ca-mtls-bridge.md))
 
 **Gaps:**
 
-- TLS configuration delegated to deployment
-- No enforcement of TLS 1.3 minimum
-- mTLS not enforced for administrative access
-
-**Remediation:** Phase 16 - Configure TLS 1.3+ in application, enforce mTLS for admin endpoints
+- Enforcement of a TLS 1.3 minimum is delegated to the rustls builder defaults
+- Bearer/admin REST access is not yet mTLS-required (client auth is optional so
+  the identity bridge and bearer clients can share the listener)
 
 ---
 
@@ -887,6 +894,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   token on `GET /api/v1/profiles` → 200 (ViewConfig); same token on
   `POST /api/v1/certificates` → 403 (AC-5 separation of duties); 5 bad
   passwords → locked (403, timed); logout → token invalid (401)
+- **NPE operator identity via the trusted-proxy bridge**: NPE operators
+  authenticate to the portal with their mTLS client certificate; the portal
+  resolves the role from the cert's policy OIDs and forwards the identity to the
+  CA over its own mTLS channel (`TrustedProxyAuthLayer`). The CA honours the
+  forwarded identity ONLY from the allow-listed portal subject and only for
+  bridgeable NPE roles. Live: portal cert + `caa_admin` → 200; no portal cert
+  → 401; portal cert + `pki_sponsor` on a CAA route → 403
 
 **Gaps:**
 
@@ -1044,6 +1058,11 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - ✅ TLS 1.2/1.3 support in libraries
 - ✅ mTLS implemented for inter-service communication (Phase 12)
 - ✅ GrpcClientConfig with certificate-based authentication
+- ✅ **NPE portal → CA REST over mTLS (deployed):** the portal's forwarded
+  `X-Npe-*` identity is carried over a TLS 1.3 mTLS channel, not plaintext HTTP.
+  The portal dials `https://ca-service:8080` presenting its client certificate;
+  the ca-server serves REST with TLS + optional client auth. See AC-17 and
+  [docs/runbooks/npe-portal-ca-mtls-bridge.md](../runbooks/npe-portal-ca-mtls-bridge.md).
 
 **Code References:**
 

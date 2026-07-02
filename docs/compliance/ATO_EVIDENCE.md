@@ -8,6 +8,46 @@
 
 ---
 
+## NPE Portal → CA Identity Bridge over mTLS (AC-17 / SC-8 / IA-2 / AC-3)
+
+The NPE portal forwards each operator's identity to the CA as `X-Npe-*` headers.
+This is only trustworthy over a mutually-authenticated channel: the portal
+presents a client certificate the CA can verify, and the CA honours the
+forwarded identity only from that allow-listed proxy subject. Wired and verified
+in the live cluster 2026-07-02.
+
+| Control / SFR | Framework   | Evidence |
+|---------------|-------------|----------|
+| AC-17         | NIST 800-53 | ca-server REST serves TLS 1.3 with optional client auth (`TLS_CERT_FILE`/`TLS_KEY_FILE`/`TLS_CLIENT_CA_FILE`); `CA_TRUSTED_PROXY_SUBJECTS=CN=npe-portal`. Startup log: "Identity bridge enabled … subjects=[CN=npe-portal]", "Serving HTTPS (TLS 1.3) … mtls=true". |
+| SC-8          | NIST 800-53 | The forwarded identity travels over mTLS, not plaintext HTTP. Portal dials `https://ca-service:8080` presenting its client cert (`backend_client.rs` → "Backend proxy: mTLS enabled"). |
+| IA-2 / AC-3   | NIST 800-53 | `TrustedProxyAuthLayer` accepts `X-Npe-*` only when the peer cert subject is allow-listed; the CA then enforces RBAC on the bridged NPE role. `is_bridgeable_role` caps bridged roles to NPE roles (AC-6). |
+| FTP_ITC.1     | NIAP PP-CA  | Inter-service trusted channel between portal and CA is mutually authenticated (both present certificates issued by the OstrichPKI Intermediate CA). |
+
+Live verification (replaying the portal's exact request to the CA):
+
+```
+client cert (CN=npe-portal) + X-Npe-Roles: caa_admin   → HTTP 200  (namespaces)
+no client cert (spoofed header only)                   → HTTP 401  (bridge refuses)
+client cert + X-Npe-Roles: pki_sponsor                 → HTTP 403  (lacks ManageNamespaces)
+```
+
+Certificates are issued from the running OstrichPKI Intermediate CA (dogfood),
+not a standalone CA. Full reproduction (issuance, secrets, deployment, probes) is
+documented in [docs/runbooks/npe-portal-ca-mtls-bridge.md](../runbooks/npe-portal-ca-mtls-bridge.md).
+
+Code path summary:
+
+- [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs) — TLS + `CA_TRUSTED_PROXY_SUBJECTS`, `with_optional_client_auth`
+- [crates/ostrich-common/src/auth/middleware.rs](../../crates/ostrich-common/src/auth/middleware.rs) — `TrustedProxyAuthLayer`, `is_bridgeable_role`, `build_trusted_proxy_user`
+- [services/npe-portal/src/server/backend_client.rs](../../services/npe-portal/src/server/backend_client.rs) — portal presents client cert to backends
+- [services/npe-portal/src/server/proxy.rs](../../services/npe-portal/src/server/proxy.rs) — strips inbound `X-Npe-*` (anti-spoofing) and re-attaches the authenticated identity
+
+Note: the ca-server overlay (`deploy/cluster/ostrich-test-ca.yaml`) and the
+`ca-mtls` / `npe-backend-mtls` secrets are cluster-local (gitignored / not in
+source control); the runbook is the source of truth for re-provisioning them.
+
+---
+
 ## Phase 1c Gap-Closure Evidence (SCMS Schema + Repository)
 
 The data layer for SCMS now matches the service-model surface. Migration
