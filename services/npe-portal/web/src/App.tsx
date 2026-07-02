@@ -26,6 +26,7 @@ import { CaaNamespacesPage } from "@/pages/caa-namespaces";
 import { CaaConfigPage } from "@/pages/caa-config";
 import { SearchPage } from "@/pages/search";
 import { OcspCheckerPage } from "@/pages/ocsp-checker";
+import { UserGuidePage } from "@/pages/user-guide";
 
 function FullPageNotice({ title, body }: Readonly<{ title: string; body: string }>) {
   return (
@@ -95,6 +96,7 @@ export default function App() {
         {/* Search */}
         <Route path="/search" element={<SearchPage />} />
         <Route path="/ocsp" element={<OcspCheckerPage />} />
+        <Route path="/user-guide" element={<UserGuidePage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </PortalLayout>

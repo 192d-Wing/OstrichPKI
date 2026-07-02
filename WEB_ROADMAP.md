@@ -95,9 +95,13 @@ shows a modal with a live countdown. **Stay signed in** pings `/auth/login` to
 refresh the server session; ignoring it signs the user out. Passive activity
 doesn't silently extend the session while the warning is open.
 
-### 9. Real User Guide / Help pages — `Proposed` · frontend
-The **User Guide** dropdown item points at `/user-guide`, which 404s today.
-Add in-app help content.
+### 9. Real User Guide / Help pages — `Built` · frontend
+New `/user-guide` page (`pages/user-guide.tsx`): an in-app reference with a
+table of contents and anchored sections covering getting started, submit /
+rekey, tracking, downloads, EST enrollment, bulk, RA, CAA, audit log, and the
+OCSP tool. Section ids (e.g. `#submit-application`) let the header dropdown and
+form `?` help deep-link. Fixes the previously-404ing dropdown link (SPA fallback
+serves it).
 
 ### 10. OCSP / revocation status checker — `Built` · frontend + backend
 New `/ocsp` page (Tools): paste a PEM certificate and get its **live** revocation
