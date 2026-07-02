@@ -75,6 +75,12 @@ spec:
               readOnly: true
             - name: acme-cache
               mountPath: /app/acme-cache
+            # Backend mTLS material: the portal presents portal-client.crt
+            # (CN=npe-portal, issued by the OstrichPKI Intermediate CA) to the CA
+            # so it trusts the forwarded X-Npe-* identity (the identity bridge).
+            - name: backend-mtls
+              mountPath: /etc/ostrich/npe
+              readOnly: true
           # Probes target the ACME challenge responder (:8080), NOT the mTLS
           # listener (:8443). The mTLS listener only comes up AFTER the initial
           # ACME enrollment, and enrollment's HTTP-01 challenge is fetched through
@@ -105,6 +111,9 @@ spec:
         - name: operator-client-ca
           secret:
             secretName: npe-operator-client-ca
+        - name: backend-mtls
+          secret:
+            secretName: npe-backend-mtls
         - name: acme-ca-bundle
           configMap:
             name: npe-acme-ca-bundle
