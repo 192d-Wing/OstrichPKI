@@ -24,7 +24,8 @@ use std::sync::Arc;
 use tower_http::services::ServeDir;
 
 use super::{
-    auth,
+    auth, backend_client,
+    backend_client::HttpClient,
     config::{AuthMode, WebUiConfig},
     middleware::{audit_middleware, csp_middleware, require_session},
     proxy, template,
@@ -46,6 +47,14 @@ pub struct AppState {
     /// - NIST 800-53: IA-2 - server-validated authentication state
     /// - NIAP PP-CA: FTA_SSL.1/FTA_SSL.3 - inactivity + absolute timeouts
     pub session_manager: Arc<auth::SessionManager>,
+    /// Pooled HTTP(S) client for reaching the backend services. Built with the
+    /// CA trust anchor so it can dial the CA's TLS 1.3 REST API; also used by
+    /// the auth handlers for the CA login/logout calls. Shared (connection
+    /// pooling) rather than constructed per request.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: SC-8 (transmission confidentiality)
+    pub ca_client: HttpClient,
 }
 
 /// Create the main router with all routes
@@ -77,10 +86,17 @@ pub async fn create_router(config: WebUiConfig) -> Result<Router> {
         config.session.absolute_timeout_secs,
     ));
 
+    // Pooled HTTP(S) client for the backends. Built once with the CA trust
+    // anchor (config.backend.tls_ca_cert) so it can verify the CA's internal
+    // TLS certificate; a failure here is fatal (the console cannot function
+    // without a working CA channel).
+    let ca_client = backend_client::build(&config.backend)?;
+
     let state = AppState {
         config: config.clone(),
         oidc_client,
         session_manager,
+        ca_client,
     };
 
     // Health check routes (no auth, no CSP)

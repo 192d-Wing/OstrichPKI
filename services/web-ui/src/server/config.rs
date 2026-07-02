@@ -111,6 +111,29 @@ pub struct BackendConfig {
     /// EST service URL (RFC 7030 enrollment server)
     #[serde(default = "default_est_url")]
     pub est_url: String,
+
+    /// CA bundle (PEM) used to verify the backend server certificates when a
+    /// backend URL is `https://`. The CA's REST API serves an internal-CA
+    /// certificate that the public web-PKI roots would reject, so its issuing
+    /// (intermediate) CA must be supplied here as a trust anchor. When unset,
+    /// only the platform roots are trusted (adequate for plain-`http://` dev).
+    ///
+    /// NIST 800-53: SC-8 (transmission confidentiality)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ca_cert: Option<String>,
+
+    /// Optional client certificate (PEM) presented to the backends for mTLS.
+    /// web-ui authenticates admins with a session-bound bearer token, so a
+    /// client certificate is not required against an `optional_mtls` CA; supply
+    /// this (with `tls_client_key`) only for a CA that mandates client certs.
+    ///
+    /// NIST 800-53: AC-17 (mTLS remote access)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_client_cert: Option<String>,
+    /// Client private key (PEM) for the backend mTLS channel. Required iff
+    /// `tls_client_cert` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_client_key: Option<String>,
 }
 
 fn default_est_url() -> String {
@@ -265,6 +288,9 @@ impl Default for WebUiConfig {
                 kra_url: "http://localhost:8085".to_string(),
                 audit_url: "http://localhost:8086".to_string(),
                 est_url: default_est_url(),
+                tls_ca_cert: None,
+                tls_client_cert: None,
+                tls_client_key: None,
             },
             session: SessionConfig {
                 cookie_name: default_cookie_name(),

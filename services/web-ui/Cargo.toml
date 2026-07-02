@@ -36,7 +36,9 @@ axum-extra = { workspace = true, features = ["typed-header", "cookie"] }
 tower = { workspace = true }
 tower-http = { workspace = true, features = ["fs", "set-header"] }
 hyper = { workspace = true }
-hyper-util = { workspace = true }
+# client-legacy + http1: the pooled hyper client used by the proxy and the auth
+# handlers to reach the backends (see server/backend_client.rs).
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
 
 # OIDC/OAuth
 openidconnect = { workspace = true }
@@ -62,9 +64,17 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
 
-# TLS
+# TLS — HTTPS client to the CA backend. The CA's REST API serves TLS 1.3
+# (optionally mTLS); web-ui must trust the CA's internal server certificate to
+# reach it. hyper-rustls wires the rustls client config (aws-lc-rs/FIPS
+# provider) into the pooled hyper client used by the proxy and auth handlers.
+# NIST 800-53: SC-8 (transmission confidentiality), SC-13 (FIPS crypto).
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
+# `pem` feature: CertificateDer::pem_file_iter / PrivateKeyDer::from_pem_file
+# used by backend_client to load the CA trust anchor (and any client cert/key).
+rustls-pki-types = { workspace = true, features = ["pem"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1"] }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
