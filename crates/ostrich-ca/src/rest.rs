@@ -1758,12 +1758,40 @@ async fn list_profiles(State(_state): State<Arc<ApiState>>) -> Result<Json<ListP
 /// - NIAP PP-CA: FIA_UAU.1 - Authenticated user required
 /// - NIST 800-53: AC-3 - Access enforcement
 /// - NIST 800-53: AU-2 - Auditable event
+/// Ensure a bridged NPE identity (authenticated via the portal's mTLS identity
+/// bridge, not a local `users` account) has a row in `users`, so approval FKs
+/// (`approval_requests.requestor_id`, `approval_decisions.approver_id`) resolve.
+/// No-op for principals that already have a row — password/admin users carry no
+/// `certificate_subject`, so they are skipped and their existing row is left
+/// untouched.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: IA-2 (persist the bridged principal's unique identity),
+///   AC-3 (referential integrity of approval authorization records)
+async fn ensure_principal_provisioned(
+    state: &ApiState,
+    user: &ostrich_common::auth::user::AuthenticatedUser,
+) -> Result<()> {
+    let Some(subject) = user.certificate_subject.as_deref() else {
+        return Ok(());
+    };
+    ostrich_db::repository::DbUserRepository::new(state.db_pool.clone())
+        .ensure_user(*user.id.as_uuid(), &user.username, subject, &user.roles)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to provision requestor identity: {e}")))?;
+    Ok(())
+}
+
 async fn submit_approval_request(
     State(state): State<Arc<ApiState>>,
     AuthUser(user): AuthUser,
     Json(req): Json<SubmitApprovalRequest>,
 ) -> Result<Json<ApprovalRequestResponse>> {
     use ostrich_common::auth::user::AuthMethod;
+
+    // A bridged NPE requestor has no local users row; provision it so the
+    // approval_requests.requestor_id FK resolves (idempotent).
+    ensure_principal_provisioned(&state, &user).await?;
 
     // Create authenticated user from auth context
     let auth_user = ostrich_common::auth::user::AuthenticatedUser::new(
@@ -1950,6 +1978,10 @@ async fn approve_request(
     let request_id = uuid::Uuid::parse_str(&id)
         .map_err(|_| Error::InvalidRequest("Invalid request ID".to_string()))?;
 
+    // A bridged NPE approver has no local users row; provision it so the
+    // approval_decisions.approver_id FK resolves (idempotent).
+    ensure_principal_provisioned(&state, &user).await?;
+
     // AC-3 - approving despite validation advisories is a distinct, higher
     // privilege than ordinary approval: require OverrideValidation on top of the
     // route's ApproveRequest guard. Fail closed (403) if the approver lacks it.
@@ -2066,6 +2098,10 @@ async fn reject_request(
 
     let request_id = uuid::Uuid::parse_str(&id)
         .map_err(|_| Error::InvalidRequest("Invalid request ID".to_string()))?;
+
+    // A bridged NPE approver has no local users row; provision it so the
+    // approval_decisions.approver_id FK resolves (idempotent).
+    ensure_principal_provisioned(&state, &user).await?;
 
     // Get request from database
     let request_record = state
@@ -2290,6 +2326,10 @@ async fn bulk_enroll(
             "archive contains no .csr/.pem/.req/.der certificate requests".to_string(),
         ));
     }
+
+    // A bridged NPE submitter has no local users row; provision it so the
+    // per-CSR approval_requests.requestor_id FK resolves (idempotent).
+    ensure_principal_provisioned(&state, &user).await?;
 
     let bulk_repo = BulkEnrollmentRepository::new(state.db_pool.as_ref().clone());
 

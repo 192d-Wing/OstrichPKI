@@ -199,6 +199,45 @@ impl DbUserRepository {
         Ok(row.get("id"))
     }
 
+    /// Idempotently provision a shadow account for a bridged (trusted-proxy /
+    /// certificate) identity, keyed on the caller-supplied `id` (the
+    /// deterministic v5 UUID derived from the certificate subject DN). NPE
+    /// operators authenticate through the portal's mTLS identity bridge and never
+    /// go through `create_*_user`, so without this they have no `users` row and
+    /// cannot satisfy FKs such as `approval_requests.requestor_id` /
+    /// `approval_decisions.approver_id`. Re-running refreshes username + roles so
+    /// a changed certificate (e.g. new role OID) stays in sync.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: IA-2 (unique identity persisted for the bridged principal),
+    ///   AC-3 (referential integrity for approval authorization records)
+    pub async fn ensure_user(
+        &self,
+        id: Uuid,
+        username: &str,
+        certificate_subject: &str,
+        roles: &[Role],
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO users (id, username, certificate_subject, roles, status)
+            VALUES ($1, $2, $3, $4, 'active')
+            ON CONFLICT (id) DO UPDATE
+                SET username = EXCLUDED.username,
+                    certificate_subject = EXCLUDED.certificate_subject,
+                    roles = EXCLUDED.roles,
+                    updated_at = now()
+            "#,
+        )
+        .bind(id)
+        .bind(username)
+        .bind(certificate_subject)
+        .bind(role_strings(roles))
+        .execute(self.pool.pool())
+        .await?;
+        Ok(())
+    }
+
     /// Replace a user's assigned roles. Returns false if no such user.
     pub async fn set_user_roles(&self, id: Uuid, roles: &[Role]) -> Result<bool> {
         let result = sqlx::query(
