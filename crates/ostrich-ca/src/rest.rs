@@ -60,6 +60,10 @@ pub struct ApiState {
     /// Database pool, used to serve the latest persisted CRL at the public
     /// distribution point (RFC 5280 §5).
     db_pool: DatabasePool,
+    /// Rate-limit cache for the audit-chain integrity verification: a recent
+    /// result is reused within a short TTL so repeated/scripted calls can't force
+    /// an unbounded full-table O(n) rehash (a self-inflicted DoS). SC-5.
+    audit_verify_cache: Arc<std::sync::Mutex<Option<(std::time::Instant, AuditVerifyResponseDto)>>>,
 }
 
 impl ApiState {
@@ -79,6 +83,7 @@ impl ApiState {
             approval_engine,
             approval_repo,
             db_pool,
+            audit_verify_cache: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -761,7 +766,7 @@ struct AuditListResponseDto {
 }
 
 /// Result of an audit-trail integrity verification (AU-9/AU-10).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuditVerifyResponseDto {
     /// True iff the hash chain recomputes AND every signed record verifies.
@@ -1200,6 +1205,38 @@ async fn set_fqdn_notification(
     }))
 }
 
+/// Record that the audit trail itself was accessed — reviewing or verifying
+/// audit records is a security-relevant access to TSF data that must appear in
+/// the tamper-evident chain, not only the ephemeral tracing stream.
+///
+/// Best-effort: a failure to write the access record must never fail the read
+/// the auditor requested. Hash-chained (AU-9) via `DatabaseAuditSink`.
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AU-2 (Auditable Events), AU-6 (Audit Review), AU-9 (Protection)
+/// - NIAP PP-CA: FAU_GEN.1 (Audit generation for audit-access)
+async fn record_audit_access(
+    db_pool: &DatabasePool,
+    actor: &str,
+    action: &str,
+    details: serde_json::Value,
+) {
+    use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
+    let sink = ostrich_audit::sink::DatabaseAuditSink::new(db_pool.clone());
+    let mut event = AuditEventBuilder::new(
+        EventType::Authorization,
+        actor.to_string(),
+        "audit_log",
+        action,
+        EventOutcome::Success,
+    )
+    .with_details(details)
+    .build();
+    if let Err(e) = sink.record(&mut event).await {
+        tracing::warn!(error = %e, actor, action, "failed to record audit-log access event");
+    }
+}
+
 /// List audit records, paginated and filterable (GET /api/v1/audit).
 ///
 /// # COMPLIANCE MAPPING
@@ -1267,6 +1304,15 @@ async fn list_audit_events(
         .collect();
 
     tracing::info!(actor = %user.username, resource = "audit", page, total, "audit log listed");
+    // AU-6: record who reviewed the audit trail (and with which filters) in the
+    // tamper-evident chain, not only the tracing stream.
+    record_audit_access(
+        &state.db_pool,
+        &user.username,
+        "audit.review",
+        serde_json::json!({ "page": page, "pageSize": page_size, "actor": actor, "eventType": event_type, "outcome": outcome }),
+    )
+    .await;
     Ok(Json(AuditListResponseDto {
         events,
         total: total.max(0) as u64,
@@ -1283,15 +1329,46 @@ async fn list_audit_events(
 ///
 /// # COMPLIANCE MAPPING
 /// - NIST 800-53: AU-9 (Protection of audit info), AU-9(3), AU-10 (non-repudiation)
+/// - NIST 800-53: SC-5 (DoS protection) - the full-table recompute is rate-limited
 /// - NIAP PP-CA: FAU_STG.1.2, FAU_STG.4
 async fn verify_audit_chain(
     State(state): State<Arc<ApiState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Json<AuditVerifyResponseDto>> {
-    let intact = state.ca.verify_audit_chain().await?;
+    // Reuse a recent verification within the TTL so repeated / scripted calls
+    // can't force an unbounded full-table O(n) rehash + signature check (SC-5).
+    const TTL: std::time::Duration = std::time::Duration::from_secs(30);
+    let cached = {
+        let guard = state.audit_verify_cache.lock().expect("audit-verify cache poisoned");
+        guard
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < TTL)
+            .map(|(_, dto)| dto.clone())
+    };
+    if let Some(dto) = cached {
+        record_audit_access(
+            &state.db_pool,
+            &user.username,
+            "audit.verify",
+            serde_json::json!({ "cached": true, "intact": dto.intact }),
+        )
+        .await;
+        return Ok(Json(dto));
+    }
 
+    let intact = state.ca.verify_audit_chain().await?;
     let repo = AuditRepository::new(state.db_pool.clone());
     let (total, signed) = repo.signed_counts().await?;
+    let dto = AuditVerifyResponseDto {
+        intact,
+        total_records: total.max(0) as u64,
+        signed_records: signed.max(0) as u64,
+        verified_at: chrono::Utc::now().to_rfc3339(),
+    };
+    {
+        let mut guard = state.audit_verify_cache.lock().expect("audit-verify cache poisoned");
+        *guard = Some((std::time::Instant::now(), dto.clone()));
+    }
 
     tracing::info!(
         actor = %user.username,
@@ -1301,12 +1378,14 @@ async fn verify_audit_chain(
         signed,
         "audit trail integrity verified"
     );
-    Ok(Json(AuditVerifyResponseDto {
-        intact,
-        total_records: total.max(0) as u64,
-        signed_records: signed.max(0) as u64,
-        verified_at: chrono::Utc::now().to_rfc3339(),
-    }))
+    record_audit_access(
+        &state.db_pool,
+        &user.username,
+        "audit.verify",
+        serde_json::json!({ "cached": false, "intact": intact, "total": total, "signed": signed }),
+    )
+    .await;
+    Ok(Json(dto))
 }
 
 /// Get a single certificate by id, with parsed X.509 detail.
