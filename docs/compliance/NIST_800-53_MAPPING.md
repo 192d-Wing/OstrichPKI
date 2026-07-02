@@ -105,9 +105,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
     ReadAuditLog (GET `/api/v1/audit` paginated/filtered audit review — AU-6 /
     FAU_SAR.1; GET `/api/v1/audit/verify` recomputes the hash chain and verifies
     each signed record against the CA public key — AU-9/AU-9(3)/AU-10, FAU_STG.1.2)
-    — granted to the NPE `RegistrationAuthority` and `CaaAdmin` roles
-    (`crates/ostrich-common/src/auth/permissions.rs`) and surfaced as the
-    NPE-portal Audit Log page (`/audit`) with a one-click integrity-verify action
+    — granted to the NPE `RegistrationAuthority`, `CaaAdmin`, and the dedicated
+    read-only `NpeAuditor` roles (`crates/ostrich-common/src/auth/permissions.rs`)
+    and surfaced as the NPE-portal Audit Log page (`/audit`). Audit-log ACCESS is
+    itself audited — both `audit.review` (list) and `audit.verify` append a
+    hash-chained record (`record_audit_access`, AU-2/AU-6/AU-9) — and the
+    integrity-verify recompute is rate-limited (30 s result cache) so it cannot be
+    abused as a full-table-rehash DoS (SC-5)
   - `crates/ostrich-est/src/rest.rs` — SubmitRequest, RenewCertificate,
     GenerateEstToken (mint/list/revoke device enrollment tokens — POST/GET
     `/api/v1/est/enrollment-tokens`, DELETE `…/{id}`; single-use, time-limited;
