@@ -462,9 +462,35 @@ pub fn parse_csr(der: &[u8]) -> Result<ParsedCsr> {
         return Err(Error::Parse("Empty CSR data".to_string()));
     }
 
-    // Parse CSR using x509-parser
-    let (_, csr) = x509_parser::certification_request::X509CertificationRequest::from_der(der)
-        .map_err(|e| Error::Parse(format!("Failed to parse PKCS#10 CSR: {}", e)))?;
+    // Parse CSR using x509-parser.
+    //
+    // x509-parser eagerly *deep-parses* PKCS#10 attributes and rejects the
+    // whole request when it cannot interpret a known attribute's value - most
+    // notably a `challengePassword` (RFC 2985 §5.4.1) encoded as an IA5String,
+    // or as a PrintableString containing characters outside the PrintableString
+    // repertoire (e.g. '!', '_', '@'). Many device / NPE enrollment clients
+    // (BouncyCastle, SCEP-style tooling) emit exactly these encodings, so an
+    // otherwise-valid CSR fails with `InvalidAttributes`. When the strict parse
+    // fails we fall back to a der-based parse that treats attribute values as
+    // opaque. The fallback only runs on inputs x509-parser already rejects, so
+    // it can never change the result for a request that parses today.
+    //
+    // COMPLIANCE MAPPING:
+    // - RFC 2986 §4: PKCS#10 CertificationRequest structure
+    // - RFC 2985 §5.4.1: challengePassword attribute (DirectoryString/IA5String)
+    // - NIST 800-53 SI-10: Information input validation (accept well-formed input)
+    let (_, csr) = match x509_parser::certification_request::X509CertificationRequest::from_der(der)
+    {
+        Ok(parsed) => parsed,
+        Err(primary_err) => {
+            return parse_csr_der_fallback(der).map_err(|fallback_err| {
+                Error::Parse(format!(
+                    "Failed to parse PKCS#10 CSR: {} (der fallback also failed: {})",
+                    primary_err, fallback_err
+                ))
+            });
+        }
+    };
 
     // Extract subject DN
     let subject_dn = csr.certification_request_info.subject.to_string();
@@ -503,6 +529,193 @@ pub fn parse_csr(der: &[u8]) -> Result<ParsedCsr> {
     })
 }
 
+/// DER-based PKCS#10 fallback parser for CSRs that x509-parser rejects.
+///
+/// Uses the RustCrypto `der`/`x509-cert` decoder, which models attribute values
+/// as opaque `Any` and therefore does not reject unusual (but validly encoded)
+/// `challengePassword` string types or other attribute encodings that
+/// x509-parser deep-parses and rejects with `InvalidAttributes`. Every field of
+/// the returned [`ParsedCsr`] is derived structurally without interpreting
+/// attribute *values*, except for the `extensionRequest` attribute, from which
+/// SANs are extracted with the same shared routine used by the primary path.
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 2986 §4: PKCS#10 CertificationRequest / CertificationRequestInfo
+/// - RFC 5280 §4.1.2.7 / §4.2.1.6: SubjectPublicKeyInfo, SubjectAltName
+/// - NIST 800-53 SI-10: Accept well-formed input; still verified for PoP later
+fn parse_csr_der_fallback(der: &[u8]) -> Result<ParsedCsr> {
+    use der::{Decode, Encode};
+
+    let req = x509_cert::request::CertReq::from_der(der)
+        .map_err(|e| Error::Parse(format!("der CertReq decode failed: {}", e)))?;
+    let info = &req.info;
+
+    // Subject DN as an RFC 4514 string (informational; the security-critical
+    // identity binding uses the structured `parse_csr_subject_dn`).
+    let subject_dn = info.subject.to_string();
+
+    // SubjectPublicKeyInfo, re-encoded to DER (canonical for DER input).
+    let public_key = info
+        .public_key
+        .to_der()
+        .map_err(|e| Error::Parse(format!("re-encode SubjectPublicKeyInfo: {}", e)))?;
+
+    let signature_algorithm = req.algorithm.oid.to_string();
+
+    // Signatures are octet-aligned BIT STRINGs (0 unused bits).
+    let signature = req
+        .signature
+        .as_bytes()
+        .ok_or_else(|| Error::Parse("CSR signature BIT STRING is not octet-aligned".to_string()))?
+        .to_vec();
+
+    // Attributes: keep the raw `SET OF` DER of each attribute value so callers
+    // see the same shape as the primary path, and pull SANs from
+    // extensionRequest (OID 1.2.840.113549.1.9.14).
+    let mut attributes = Vec::new();
+    let mut sans = Vec::new();
+    for attr in info.attributes.iter() {
+        let oid = attr.oid.to_string();
+        let value = attr
+            .values
+            .to_der()
+            .map_err(|e| Error::Parse(format!("re-encode attribute values: {}", e)))?;
+        if oid == "1.2.840.113549.1.9.14" {
+            // Best-effort: a malformed extensionRequest must not sink an
+            // otherwise-valid request. SANs are re-validated during issuance.
+            if let Ok(extracted) = extract_sans_from_extension_request(&value) {
+                sans.extend(extracted);
+            }
+        }
+        attributes.push((oid, value));
+    }
+
+    Ok(ParsedCsr {
+        subject_dn,
+        subject_alternative_names: sans,
+        public_key,
+        attributes,
+        signature_algorithm,
+        signature,
+        der_encoded: der.to_vec(),
+    })
+}
+
+/// Return the raw DER of the `CertificationRequestInfo` (the signed TBS) from a
+/// PKCS#10 CSR without deep-parsing its attributes.
+///
+/// This is the exact byte range over which the CSR self-signature is computed
+/// (RFC 2986 §4.2), extracted by structural TLV slicing so proof-of-possession
+/// verification does not depend on x509-parser accepting the attributes.
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 2986 §4.2: CertificationRequest signature is over CertificationRequestInfo
+/// - NIST 800-53 SI-10 / SC-8(1): Input validation, proof of possession
+fn extract_cert_req_info_tbs(der: &[u8]) -> Result<Vec<u8>> {
+    // CertificationRequest ::= SEQUENCE { CertificationRequestInfo, ... }
+    let (outer_value, _outer_end) = der_tlv(der, 0, 0x30)?;
+    // The first element is CertificationRequestInfo, itself a SEQUENCE.
+    let (_ci_value, ci_end) = der_tlv(der, outer_value, 0x30)?;
+    Ok(der[outer_value..ci_end].to_vec())
+}
+
+/// Minimal DER TLV walker: given a buffer and an offset, verify the tag and
+/// return `(value_offset, end_offset)` where `end_offset` is one past the whole
+/// tag-length-value triple. Rejects truncated inputs and lengths exceeding the
+/// buffer. Only definite-form lengths up to 4 length octets are supported, which
+/// covers any real CSR.
+fn der_tlv(buf: &[u8], off: usize, expected_tag: u8) -> Result<(usize, usize)> {
+    let rest = buf
+        .get(off..)
+        .ok_or_else(|| Error::Parse("CSR truncated (offset past end)".to_string()))?;
+    if rest.len() < 2 {
+        return Err(Error::Parse("CSR truncated (no tag/length)".to_string()));
+    }
+    if rest[0] != expected_tag {
+        return Err(Error::Parse(format!(
+            "expected DER tag {:#04x} at offset {}, found {:#04x}",
+            expected_tag, off, rest[0]
+        )));
+    }
+    let len_octet = rest[1];
+    let (header_len, length) = if len_octet & 0x80 == 0 {
+        (2usize, len_octet as usize)
+    } else {
+        let n = (len_octet & 0x7f) as usize;
+        if n == 0 || n > 4 {
+            return Err(Error::Parse("unsupported DER length encoding".to_string()));
+        }
+        let mut length = 0usize;
+        for i in 0..n {
+            let b = *rest
+                .get(2 + i)
+                .ok_or_else(|| Error::Parse("CSR truncated (length octets)".to_string()))?;
+            length = (length << 8) | b as usize;
+        }
+        (2 + n, length)
+    };
+    let value_offset = off
+        .checked_add(header_len)
+        .ok_or_else(|| Error::Parse("DER offset overflow".to_string()))?;
+    let end_offset = value_offset
+        .checked_add(length)
+        .ok_or_else(|| Error::Parse("DER length overflow".to_string()))?;
+    if end_offset > buf.len() {
+        return Err(Error::Parse("DER length exceeds buffer".to_string()));
+    }
+    Ok((value_offset, end_offset))
+}
+
+/// Map a decoded x509-cert `Name` to the structured [`DistinguishedName`] used
+/// across the codebase. Mirrors [`parse_distinguished_name`] for the der-based
+/// fallback path so identity binding works for CSRs x509-parser cannot parse.
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 5280 §4.1.2.4 / RFC 4514: Subject DN representation
+/// - NIST 800-53 SI-10: Input validation (DN attribute extraction)
+fn distinguished_name_from_x509cert(
+    name: &x509_cert::name::Name,
+) -> Result<ostrich_common::types::DistinguishedName> {
+    let mut common_name = None;
+    let mut country = None;
+    let mut state_or_province = None;
+    let mut locality = None;
+    let mut organization = None;
+    let mut organizational_unit = None;
+    let mut serial_number = None;
+
+    // Name = RDNSequence; each RDN is a SET OF AttributeTypeAndValue.
+    for rdn in name.0.iter() {
+        for atav in rdn.0.iter() {
+            let oid = atav.oid.to_string();
+            // Directory-string values (Printable/UTF8/IA5/...) carry UTF-8-
+            // compatible content bytes; decode leniently for the string forms
+            // used in practice.
+            let value = String::from_utf8_lossy(atav.value.value()).to_string();
+            match oid.as_str() {
+                "2.5.4.3" => common_name = Some(value),
+                "2.5.4.6" => country = Some(value),
+                "2.5.4.8" => state_or_province = Some(value),
+                "2.5.4.7" => locality = Some(value),
+                "2.5.4.10" => organization = Some(value),
+                "2.5.4.11" => organizational_unit = Some(value),
+                "2.5.4.5" => serial_number = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    Ok(ostrich_common::types::DistinguishedName {
+        common_name,
+        country,
+        state_or_province,
+        locality,
+        organization,
+        organizational_unit,
+        serial_number,
+    })
+}
+
 /// Parse X.509 Distinguished Name to structured format
 ///
 /// Parse the subject DN of a DER-encoded certificate into a structured DN.
@@ -531,9 +744,23 @@ pub fn parse_subject_dn(der: &[u8]) -> Result<ostrich_common::types::Distinguish
 /// - RFC 5280 §4.1.2.4 / RFC 4514 - Subject DN representation
 /// - NIST 800-53: SI-10 - Information input validation
 pub fn parse_csr_subject_dn(der: &[u8]) -> Result<ostrich_common::types::DistinguishedName> {
-    let (_, csr) = x509_parser::certification_request::X509CertificationRequest::from_der(der)
-        .map_err(|e| Error::Parse(format!("Failed to parse PKCS#10 CSR: {}", e)))?;
-    parse_distinguished_name(&csr.certification_request_info.subject)
+    // Primary: x509-parser. Fall back to the der-based decoder for CSRs whose
+    // attributes x509-parser rejects (see `parse_csr`) so identity binding still
+    // works for those requests. The fallback only runs when the strict parse
+    // fails, so it cannot alter results for CSRs that parse today.
+    match x509_parser::certification_request::X509CertificationRequest::from_der(der) {
+        Ok((_, csr)) => parse_distinguished_name(&csr.certification_request_info.subject),
+        Err(primary_err) => {
+            use der::Decode;
+            let req = x509_cert::request::CertReq::from_der(der).map_err(|fallback_err| {
+                Error::Parse(format!(
+                    "Failed to parse PKCS#10 CSR: {} (der fallback also failed: {})",
+                    primary_err, fallback_err
+                ))
+            })?;
+            distinguished_name_from_x509cert(&req.info.subject)
+        }
+    }
 }
 
 /// RFC 5280 §4.1.2.4 - Issuer and Subject fields
@@ -629,183 +856,188 @@ pub fn parse_distinguished_name(
 fn extract_sans_from_csr(
     csr: &x509_parser::certification_request::X509CertificationRequest,
 ) -> Result<Vec<String>> {
-    use x509_parser::der_parser::asn1_rs::{FromDer, Sequence};
-    use x509_parser::extensions::GeneralName;
-
     let mut sans = Vec::new();
 
     // Look for extensionRequest attribute (OID 1.2.840.113549.1.9.14)
     for attr in csr.certification_request_info.attributes() {
         if attr.oid.to_id_string() == "1.2.840.113549.1.9.14" {
-            // extensionRequest contains a SET of Extensions
-            // RFC 2986: attribute value is a SET containing a SEQUENCE of Extensions
-            let extensions_der = attr.value;
+            // attr.value is the raw `SET OF` DER wrapping the Extensions SEQUENCE.
+            sans.extend(extract_sans_from_extension_request(attr.value)?);
+        }
+    }
 
-            // The value is a SET containing a SEQUENCE of Extensions
-            // First parse the SET
-            use x509_parser::der_parser::asn1_rs::Set;
-            let (_, extensions_set) = Set::from_der(extensions_der).map_err(|e| {
-                Error::Parse(format!("Failed to parse extensionRequest SET: {}", e))
-            })?;
+    Ok(sans)
+}
 
-            // The SET contains raw content that is a SEQUENCE of Extensions
-            // Access the SET's content directly
-            let extensions_seq_der = extensions_set.content.as_ref();
+/// Extract SAN strings from the raw DER of an `extensionRequest` attribute value.
+///
+/// `set_der` is the `SET OF` TLV (RFC 2986 §4.1 attribute value) that wraps a
+/// single `SEQUENCE OF Extension` (RFC 5272 §3.1 `ExtensionReq`). Factored out
+/// so the primary x509-parser path and the der-based fallback in [`parse_csr`]
+/// produce identically-formatted SAN entries.
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 2986 §4.1: PKCS#10 extensionRequest attribute
+/// - RFC 5280 §4.2.1.6: SubjectAltName extension
+/// - NIST 800-53 SI-10: Input validation
+fn extract_sans_from_extension_request(set_der: &[u8]) -> Result<Vec<String>> {
+    use x509_parser::der_parser::asn1_rs::{FromDer, Sequence};
+    use x509_parser::extensions::GeneralName;
 
-            // Now parse the SEQUENCE of Extensions
-            let (_, extensions_seq) = Sequence::from_der(extensions_seq_der)
-                .map_err(|e| Error::Parse(format!("Failed to parse Extensions SEQUENCE: {}", e)))?;
+    let mut sans = Vec::new();
 
-            // Each extension in the SEQUENCE is itself a SEQUENCE { extnID, [critical], extnValue }
-            // We need to manually parse each extension from the content
-            let mut remaining = extensions_seq.content.as_ref();
-            while !remaining.is_empty() {
-                // Parse one extension SEQUENCE
-                let (rest, extension_seq) = Sequence::from_der(remaining).map_err(|e| {
-                    Error::Parse(format!("Failed to parse extension SEQUENCE: {}", e))
-                })?;
-                remaining = rest;
+    // The extensionRequest value is a SET wrapping a SEQUENCE of Extensions.
+    use x509_parser::der_parser::asn1_rs::Set;
+    let (_, extensions_set) = Set::from_der(set_der)
+        .map_err(|e| Error::Parse(format!("Failed to parse extensionRequest SET: {}", e)))?;
 
-                // Parse the extension SEQUENCE content: OID, [BOOLEAN], OCTET STRING
-                // Use manual parsing from the content bytes
-                let mut ext_remaining = extension_seq.content.as_ref();
+    // The SET contains raw content that is a SEQUENCE of Extensions
+    // Access the SET's content directly
+    let extensions_seq_der = extensions_set.content.as_ref();
 
-                // First element: OID
-                let (rest, ext_oid) = x509_parser::der_parser::asn1_rs::Oid::from_der(
-                    ext_remaining,
-                )
-                .map_err(|e| Error::Parse(format!("Failed to parse extension OID: {}", e)))?;
+    // Now parse the SEQUENCE of Extensions
+    let (_, extensions_seq) = Sequence::from_der(extensions_seq_der)
+        .map_err(|e| Error::Parse(format!("Failed to parse Extensions SEQUENCE: {}", e)))?;
+
+    // Each extension in the SEQUENCE is itself a SEQUENCE { extnID, [critical], extnValue }
+    // We need to manually parse each extension from the content
+    let mut remaining = extensions_seq.content.as_ref();
+    while !remaining.is_empty() {
+        // Parse one extension SEQUENCE
+        let (rest, extension_seq) = Sequence::from_der(remaining)
+            .map_err(|e| Error::Parse(format!("Failed to parse extension SEQUENCE: {}", e)))?;
+        remaining = rest;
+
+        // Parse the extension SEQUENCE content: OID, [BOOLEAN], OCTET STRING
+        // Use manual parsing from the content bytes
+        let mut ext_remaining = extension_seq.content.as_ref();
+
+        // First element: OID
+        let (rest, ext_oid) = x509_parser::der_parser::asn1_rs::Oid::from_der(ext_remaining)
+            .map_err(|e| Error::Parse(format!("Failed to parse extension OID: {}", e)))?;
+        ext_remaining = rest;
+
+        // Check if this is SubjectAltName (2.5.29.17)
+        if ext_oid.to_id_string() == "2.5.29.17" {
+            // Check for optional BOOLEAN (critical flag)
+            // BOOLEAN tag is 0x01
+            if ext_remaining.starts_with(&[0x01]) {
+                // Skip the BOOLEAN
+                use x509_parser::der_parser::asn1_rs::Boolean;
+                let (rest, _critical) = Boolean::from_der(ext_remaining)
+                    .map_err(|e| Error::Parse(format!("Failed to parse critical flag: {}", e)))?;
                 ext_remaining = rest;
+            }
 
-                // Check if this is SubjectAltName (2.5.29.17)
-                if ext_oid.to_id_string() == "2.5.29.17" {
-                    // Check for optional BOOLEAN (critical flag)
-                    // BOOLEAN tag is 0x01
-                    if ext_remaining.starts_with(&[0x01]) {
-                        // Skip the BOOLEAN
-                        use x509_parser::der_parser::asn1_rs::Boolean;
-                        let (rest, _critical) = Boolean::from_der(ext_remaining).map_err(|e| {
-                            Error::Parse(format!("Failed to parse critical flag: {}", e))
-                        })?;
-                        ext_remaining = rest;
-                    }
+            // Now get the OCTET STRING containing the extension value
+            let extn_value_der = ext_remaining;
 
-                    // Now get the OCTET STRING containing the extension value
-                    let extn_value_der = ext_remaining;
+            // extnValue is an OCTET STRING containing the DER-encoded extension value
+            let (_, octet_string) = x509_parser::der_parser::asn1_rs::OctetString::from_der(
+                extn_value_der,
+            )
+            .map_err(|e| Error::Parse(format!("Failed to parse extnValue OCTET STRING: {}", e)))?;
 
-                    // extnValue is an OCTET STRING containing the DER-encoded extension value
-                    let (_, octet_string) =
-                        x509_parser::der_parser::asn1_rs::OctetString::from_der(extn_value_der)
-                            .map_err(|e| {
-                                Error::Parse(format!(
-                                    "Failed to parse extnValue OCTET STRING: {}",
-                                    e
-                                ))
-                            })?;
+            // The OCTET STRING contains a SEQUENCE of GeneralName
+            let (_, san_seq) = Sequence::from_der(octet_string.as_ref())
+                .map_err(|e| Error::Parse(format!("Failed to parse SAN SEQUENCE: {}", e)))?;
 
-                    // The OCTET STRING contains a SEQUENCE of GeneralName
-                    let (_, san_seq) = Sequence::from_der(octet_string.as_ref()).map_err(|e| {
-                        Error::Parse(format!("Failed to parse SAN SEQUENCE: {}", e))
-                    })?;
-
-                    // Parse each GeneralName from the SEQUENCE content
-                    // GeneralNames are context-specific tagged, so we parse manually
-                    let mut san_remaining = san_seq.content.as_ref();
-                    while !san_remaining.is_empty() {
-                        // Try to parse as GeneralName
-                        match GeneralName::from_der(san_remaining) {
-                            Ok((rest, gn)) => {
-                                san_remaining = rest;
-                                match gn {
-                                    GeneralName::DNSName(dns) => {
-                                        sans.push(format!("DNS:{}", dns));
-                                    }
-                                    GeneralName::RFC822Name(email) => {
-                                        sans.push(format!("email:{}", email));
-                                    }
-                                    GeneralName::URI(uri) => {
-                                        sans.push(format!("URI:{}", uri));
-                                    }
-                                    GeneralName::IPAddress(ip) => {
-                                        // IP address is encoded as raw octets
-                                        let ip_str = if ip.len() == 4 {
-                                            // IPv4
-                                            format!("IP:{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
-                                        } else if ip.len() == 16 {
-                                            // IPv6 - simplified formatting
-                                            format!(
-                                                "IP:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
-                                                ip[0],
-                                                ip[1],
-                                                ip[2],
-                                                ip[3],
-                                                ip[4],
-                                                ip[5],
-                                                ip[6],
-                                                ip[7],
-                                                ip[8],
-                                                ip[9],
-                                                ip[10],
-                                                ip[11],
-                                                ip[12],
-                                                ip[13],
-                                                ip[14],
-                                                ip[15]
-                                            )
-                                        } else {
-                                            continue; // Invalid IP address length
-                                        };
-                                        sans.push(ip_str);
-                                    }
-                                    GeneralName::DirectoryName(dn) => {
-                                        sans.push(format!("DirName:{}", dn));
-                                    }
-                                    GeneralName::OtherName(oid, value) => {
-                                        // RFC 5280 §4.2.1.6 - otherName: { type-id, [0] EXPLICIT value }
-                                        // Format: otherName:OID:hex-encoded-value
-                                        let hex_value = hex::encode(value);
-                                        sans.push(format!(
-                                            "otherName:{}:{}",
-                                            oid.to_id_string(),
-                                            hex_value
-                                        ));
-                                    }
-                                    GeneralName::RegisteredID(oid) => {
-                                        // RFC 5280 §4.2.1.6 - registeredID: OBJECT IDENTIFIER
-                                        sans.push(format!("registeredID:{}", oid.to_id_string()));
-                                    }
-                                    GeneralName::X400Address(addr) => {
-                                        // RFC 5280 §4.2.1.6 - x400Address: ORAddress
-                                        // X.400 address is complex ASN.1 structure, encode as hex
-                                        let hex_value = hex::encode(addr.as_bytes());
-                                        sans.push(format!("x400Address:{}", hex_value));
-                                    }
-                                    GeneralName::EDIPartyName(edi) => {
-                                        // RFC 5280 §4.2.1.6 - ediPartyName: { nameAssigner, partyName }
-                                        // EDI party name is complex structure, encode as hex
-                                        let hex_value = hex::encode(edi.as_bytes());
-                                        sans.push(format!("ediPartyName:{}", hex_value));
-                                    }
-                                    GeneralName::Invalid(tag, raw) => {
-                                        // x509-parser 0.18 added the Invalid variant to surface
-                                        // entries it could not decode. RFC 5280 §4.2.1.6 does not
-                                        // permit unknown forms; we record the raw bytes and tag in
-                                        // the SAN list so downstream profile-validation can flag
-                                        // the certificate, but we do not reject the parse here.
-                                        let hex_value = hex::encode(raw);
-                                        tracing::warn!(
-                                            tag = ?tag,
-                                            "Encountered invalid GeneralName variant in SAN extension"
-                                        );
-                                        sans.push(format!("invalid:tag={:?}:{}", tag, hex_value));
-                                    }
-                                }
+            // Parse each GeneralName from the SEQUENCE content
+            // GeneralNames are context-specific tagged, so we parse manually
+            let mut san_remaining = san_seq.content.as_ref();
+            while !san_remaining.is_empty() {
+                // Try to parse as GeneralName
+                match GeneralName::from_der(san_remaining) {
+                    Ok((rest, gn)) => {
+                        san_remaining = rest;
+                        match gn {
+                            GeneralName::DNSName(dns) => {
+                                sans.push(format!("DNS:{}", dns));
                             }
-                            Err(_) => {
-                                // Failed to parse GeneralName, skip this entry
-                                break;
+                            GeneralName::RFC822Name(email) => {
+                                sans.push(format!("email:{}", email));
+                            }
+                            GeneralName::URI(uri) => {
+                                sans.push(format!("URI:{}", uri));
+                            }
+                            GeneralName::IPAddress(ip) => {
+                                // IP address is encoded as raw octets
+                                let ip_str = if ip.len() == 4 {
+                                    // IPv4
+                                    format!("IP:{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
+                                } else if ip.len() == 16 {
+                                    // IPv6 - simplified formatting
+                                    format!(
+                                        "IP:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
+                                        ip[0],
+                                        ip[1],
+                                        ip[2],
+                                        ip[3],
+                                        ip[4],
+                                        ip[5],
+                                        ip[6],
+                                        ip[7],
+                                        ip[8],
+                                        ip[9],
+                                        ip[10],
+                                        ip[11],
+                                        ip[12],
+                                        ip[13],
+                                        ip[14],
+                                        ip[15]
+                                    )
+                                } else {
+                                    continue; // Invalid IP address length
+                                };
+                                sans.push(ip_str);
+                            }
+                            GeneralName::DirectoryName(dn) => {
+                                sans.push(format!("DirName:{}", dn));
+                            }
+                            GeneralName::OtherName(oid, value) => {
+                                // RFC 5280 §4.2.1.6 - otherName: { type-id, [0] EXPLICIT value }
+                                // Format: otherName:OID:hex-encoded-value
+                                let hex_value = hex::encode(value);
+                                sans.push(format!(
+                                    "otherName:{}:{}",
+                                    oid.to_id_string(),
+                                    hex_value
+                                ));
+                            }
+                            GeneralName::RegisteredID(oid) => {
+                                // RFC 5280 §4.2.1.6 - registeredID: OBJECT IDENTIFIER
+                                sans.push(format!("registeredID:{}", oid.to_id_string()));
+                            }
+                            GeneralName::X400Address(addr) => {
+                                // RFC 5280 §4.2.1.6 - x400Address: ORAddress
+                                // X.400 address is complex ASN.1 structure, encode as hex
+                                let hex_value = hex::encode(addr.as_bytes());
+                                sans.push(format!("x400Address:{}", hex_value));
+                            }
+                            GeneralName::EDIPartyName(edi) => {
+                                // RFC 5280 §4.2.1.6 - ediPartyName: { nameAssigner, partyName }
+                                // EDI party name is complex structure, encode as hex
+                                let hex_value = hex::encode(edi.as_bytes());
+                                sans.push(format!("ediPartyName:{}", hex_value));
+                            }
+                            GeneralName::Invalid(tag, raw) => {
+                                // x509-parser 0.18 added the Invalid variant to surface
+                                // entries it could not decode. RFC 5280 §4.2.1.6 does not
+                                // permit unknown forms; we record the raw bytes and tag in
+                                // the SAN list so downstream profile-validation can flag
+                                // the certificate, but we do not reject the parse here.
+                                let hex_value = hex::encode(raw);
+                                tracing::warn!(
+                                    tag = ?tag,
+                                    "Encountered invalid GeneralName variant in SAN extension"
+                                );
+                                sans.push(format!("invalid:tag={:?}:{}", tag, hex_value));
                             }
                         }
+                    }
+                    Err(_) => {
+                        // Failed to parse GeneralName, skip this entry
+                        break;
                     }
                 }
             }
@@ -823,13 +1055,17 @@ pub async fn verify_csr_signature(
     csr: &ParsedCsr,
     _crypto_provider: &Arc<dyn CryptoProvider>,
 ) -> Result<bool> {
-    // Re-parse the CSR to get the TBS (To Be Signed) portion
-    let (_, parsed_csr) =
-        x509_parser::certification_request::X509CertificationRequest::from_der(&csr.der_encoded)
-            .map_err(|e| Error::Parse(format!("Failed to re-parse CSR: {}", e)))?;
-
-    // The TBS portion is the CertificationRequestInfo, which is already in raw form
-    let tbs_der = parsed_csr.certification_request_info.raw.to_vec();
+    // Re-parse the CSR to get the TBS (To Be Signed) portion. The signature is
+    // computed over the raw CertificationRequestInfo (RFC 2986 §4.2). Prefer
+    // x509-parser's byte-exact `raw`; if it rejects the attributes (see
+    // `parse_csr`), slice the same TBS range structurally so proof-of-possession
+    // still holds for those CSRs.
+    let tbs_der = match x509_parser::certification_request::X509CertificationRequest::from_der(
+        &csr.der_encoded,
+    ) {
+        Ok((_, parsed_csr)) => parsed_csr.certification_request_info.raw.to_vec(),
+        Err(_) => extract_cert_req_info_tbs(&csr.der_encoded)?,
+    };
 
     // Map signature algorithm to our Algorithm enum
     let algorithm = map_signature_algorithm_oid(&csr.signature_algorithm)?;

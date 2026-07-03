@@ -250,3 +250,91 @@ fn test_dn_parsing_with_missing_fields() {
     assert_eq!(dn.organizational_unit, None);
     assert_eq!(dn.serial_number, None);
 }
+
+// ---------------------------------------------------------------------------
+// Regression: CSRs whose `challengePassword` attribute (RFC 2985 §5.4.1) uses a
+// string type x509-parser refuses to deep-parse must still be accepted.
+//
+// x509-parser 0.18 only decodes challengePassword as UTF8/Printable/Universal/
+// BMP/T61String and otherwise fails the WHOLE request with `InvalidAttributes`.
+// Device / NPE enrollment clients routinely emit an IA5String challengePassword,
+// or a PrintableString carrying characters outside the PrintableString
+// repertoire (e.g. '!'), which triggered:
+//   "invalid CSR: Certificate parsing error: Failed to parse PKCS#10 CSR:
+//    Parsing Error: InvalidAttributes"
+// `parse_csr` now falls back to a der-based decode for these requests.
+//
+// The two fixtures below are a real EC P-256 CSR
+//   CN=device01.npe.example.mil, O=Example
+//   SAN: DNS:device01.npe.example.mil, DNS:alt.npe.example.mil
+//   challengePassword: "S3cr3tPassw0rd!"
+// with only the challengePassword value's DER string tag changed (0x0C -> 0x16
+// IA5String / 0x13 PrintableString). Because that tag sits inside the signed
+// CertificationRequestInfo, the self-signature no longer matches the mutated
+// bytes, so PoP is expected to be *rejected* here; the point of these tests is
+// that parsing/attribute handling succeeds rather than erroring out.
+
+/// challengePassword encoded as IA5String (0x16).
+const CSR_IA5_CHALLENGE_PW: &str = "3082015b3082010202010030353121301f06035504030c1864657669636530312e6e70652e6578616d706c652e6d696c3110300e060355040a0c074578616d706c653059301306072a8648ce3d020106082a8648ce3d03010703420004564d9eab414dbd06c7d4df2c5c9a1adc0f2ca02d7f1d4d205f3d823fc4456bbce9fb41c5df303598255329f7bb68a80ffbf0650e43006e6945e914e05d619cf4a06b301e06092a864886f70d0109073111160f533363723374506173737730726421304906092a864886f70d01090e313c303a30380603551d110431302f821864657669636530312e6e70652e6578616d706c652e6d696c8213616c742e6e70652e6578616d706c652e6d696c300a06082a8648ce3d04030203470030440220331838e1bcdf53cddd1c31ed2b2358dd4f00380cd98f68c42f2365d01398b83902207ddfc070c0c38a8af28e9c2dc0c4b583530b0aaa1d9d69b09d22af05b64c0776";
+
+/// challengePassword encoded as PrintableString (0x13) containing '!' (outside
+/// the PrintableString repertoire), which der-parser also rejects.
+const CSR_PRINTABLE_CHALLENGE_PW: &str = "3082015b3082010202010030353121301f06035504030c1864657669636530312e6e70652e6578616d706c652e6d696c3110300e060355040a0c074578616d706c653059301306072a8648ce3d020106082a8648ce3d03010703420004564d9eab414dbd06c7d4df2c5c9a1adc0f2ca02d7f1d4d205f3d823fc4456bbce9fb41c5df303598255329f7bb68a80ffbf0650e43006e6945e914e05d619cf4a06b301e06092a864886f70d0109073111130f533363723374506173737730726421304906092a864886f70d01090e313c303a30380603551d110431302f821864657669636530312e6e70652e6578616d706c652e6d696c8213616c742e6e70652e6578616d706c652e6d696c300a06082a8648ce3d04030203470030440220331838e1bcdf53cddd1c31ed2b2358dd4f00380cd98f68c42f2365d01398b83902207ddfc070c0c38a8af28e9c2dc0c4b583530b0aaa1d9d69b09d22af05b64c0776";
+
+fn assert_csr_fallback_ok(hex_der: &str) {
+    let csr_der = hex::decode(hex_der).expect("Failed to decode hex");
+
+    // Sanity: the strict x509-parser path must still reject this input, so we
+    // know the fallback is actually what makes the test pass.
+    assert!(
+        X509CertificationRequest::from_der(&csr_der).is_err(),
+        "x509-parser was expected to reject this attribute encoding"
+    );
+
+    // parse_csr must now succeed via the der fallback.
+    let parsed = parse_csr(&csr_der).expect("parse_csr must accept the CSR via der fallback");
+    assert!(
+        parsed
+            .subject_alternative_names
+            .contains(&"DNS:device01.npe.example.mil".to_string()),
+        "primary SAN must be extracted; got {:?}",
+        parsed.subject_alternative_names
+    );
+    assert!(
+        parsed
+            .subject_alternative_names
+            .contains(&"DNS:alt.npe.example.mil".to_string()),
+        "secondary SAN must be extracted; got {:?}",
+        parsed.subject_alternative_names
+    );
+
+    // Structured subject DN must resolve for the identity-binding check.
+    let dn =
+        ostrich_x509::parser::parse_csr_subject_dn(&csr_der).expect("subject DN must be parseable");
+    assert_eq!(dn.common_name, Some("device01.npe.example.mil".to_string()));
+    assert_eq!(dn.organization, Some("Example".to_string()));
+}
+
+/// IA5String challengePassword: parse + SAN + structured DN must all succeed.
+#[tokio::test]
+async fn test_parse_csr_ia5_challenge_password_fallback() {
+    assert_csr_fallback_ok(CSR_IA5_CHALLENGE_PW);
+
+    // PoP verification must at least *run* (no InvalidAttributes error) even
+    // though the tampered fixture's signature no longer matches its TBS.
+    let csr_der = hex::decode(CSR_IA5_CHALLENGE_PW).unwrap();
+    let parsed = parse_csr(&csr_der).unwrap();
+    let crypto = Arc::new(SoftwareProvider::new()) as Arc<dyn CryptoProvider>;
+    let result = verify_csr_signature(&parsed, &crypto).await;
+    assert!(
+        result.is_ok(),
+        "PoP verification must complete without a parse error, got {:?}",
+        result.err()
+    );
+}
+
+/// PrintableString-with-'!' challengePassword: fallback must accept it too.
+#[test]
+fn test_parse_csr_printable_challenge_password_fallback() {
+    assert_csr_fallback_ok(CSR_PRINTABLE_CHALLENGE_PW);
+}
