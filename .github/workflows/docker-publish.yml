@@ -14,16 +14,15 @@
 # recompiles the FIPS crypto module), so they run as two PARALLEL jobs — the
 # slower of the two now sets the wall-clock instead of their sum.
 #
-# Built on a native linux/arm64 runner (`ubuntu-24.04-arm`); the runtime images
-# are published as a multi-arch manifest (linux/amd64 + linux/arm64). arm64 builds
-# natively; amd64 builds under QEMU emulation on the same runner. The runtime base
-# is the DoD Iron Bank hardened UBI 10 image (registry1.dso.mil), pulled with the
-# REPO_USER / REPO org secrets.
+# The service images are published as a multi-arch manifest (linux/amd64 +
+# linux/arm64). Each platform is built on its OWN NATIVE runner — amd64 on
+# ubuntu-24.04, arm64 on ubuntu-24.04-arm — because rustc segfaults under QEMU
+# user-mode emulation, so amd64 cannot be cross-built on an arm64 host. The
+# per-arch `build-services` matrix pushes each image by digest, and
+# `merge-services` combines the two digests into one manifest with `imagetools`.
 #
-# NOTE: emulated amd64 compilation of the aws-lc-fips C/asm module is slow; the
-# registry-backed cargo-chef cache keeps it warm across runs. If amd64 build time
-# becomes a problem, split into a native per-arch runner matrix + `imagetools`
-# manifest merge.
+# The runtime base is the DoD Iron Bank hardened UBI 10 image (registry1.dso.mil),
+# pulled with the REPO1_USER (username) / REPO1 (password) org secrets.
 #
 # COMPLIANCE MAPPING:
 # - NIST 800-53: SA-10 (Developer Configuration Management) - reproducible image build
@@ -46,17 +45,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ---- Service images (share one cached `builder` stage) ----
-  services:
-    runs-on: ubuntu-24.04-arm
+  # ---- Service images: build each arch on a NATIVE runner, then merge ----
+  # rustc segfaults under QEMU user-mode emulation, so amd64 cannot be
+  # cross-built on the arm64 runner. Instead each platform builds on its own
+  # native runner (amd64 -> ubuntu-24.04, arm64 -> ubuntu-24.04-arm), pushes each
+  # image BY DIGEST (untagged), and the `merge-services` job stitches the two
+  # per-arch digests into one multi-arch manifest per service+tag.
+  build-services:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      # Emulate linux/amd64 on the native arm64 runner so buildx can produce a
-      # multi-arch (amd64 + arm64) manifest from one job.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
@@ -77,12 +84,78 @@ jobs:
           username: ${{ secrets.REPO1_USER }}
           password: ${{ secrets.REPO1 }}
 
-      - name: Build and push service images
+      - name: Build service images (${{ matrix.arch }}) and push by digest
         shell: bash
         run: |
           set -euo pipefail
 
           owner="${GITHUB_REPOSITORY_OWNER,,}"   # GHCR requires a lowercase path
+
+          # Registry-backed build cache, per-arch (layers differ by platform).
+          # cache-to is written once (first service produces the builder layer),
+          # every build reads cache-from.
+          cache_ref="ghcr.io/${owner}/build-cache-services-${{ matrix.arch }}"
+
+          mkdir -p /tmp/digests
+          i=0
+          for svc in ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal; do
+            cache_args=( --cache-from "type=registry,ref=${cache_ref}" )
+            if [ "${i}" -eq 0 ]; then
+              cache_args+=( --cache-to "type=registry,ref=${cache_ref},mode=max" )
+            fi
+
+            echo "::group::build ${svc} (${{ matrix.arch }})"
+            docker buildx build \
+              --platform "linux/${{ matrix.arch }}" \
+              --target "${svc}" \
+              "${cache_args[@]}" \
+              --output "type=image,name=ghcr.io/${owner}/${svc},push-by-digest=true,name-canonical=true,push=true" \
+              --metadata-file "/tmp/metadata-${svc}.json" \
+              .
+            digest="$(jq -r '."containerimage.digest"' "/tmp/metadata-${svc}.json")"
+            echo "${digest}" > "/tmp/digests/${svc}"
+            echo "::endgroup::"
+            i=$((i + 1))
+          done
+
+      - name: Upload ${{ matrix.arch }} digests
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-services:
+    needs: build-services
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Each arch's digests land in a subdir named after its artifact
+      # (digests-amd64/, digests-arm64/).
+      - name: Download per-arch digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+
+      - name: Create and push multi-arch manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           sha="${GITHUB_SHA::7}"
 
@@ -96,40 +169,25 @@ jobs:
             extra_tags+=( "${GITHUB_REF_NAME#v}" )
           fi
 
-          # Registry-backed build cache (GHCR). The GitHub Actions cache
-          # (type=gha) caps at ~10 GB and evicts the multi-GB cargo-chef
-          # dependency layer between runs, so it never persists; a registry
-          # cache has no such limit and keeps the cooked-dependency layer warm
-          # across runs. All service targets share the same `builder` stage, so
-          # one cache ref covers them: cache-to is written once (the first build
-          # produces the builder layer), and every build reads cache-from.
-          cache_ref="ghcr.io/${owner}/build-cache-services"
-
-          i=0
           for svc in ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal; do
-            tags=( --tag "ghcr.io/${owner}/${svc}:sha-${sha}" )
+            img="ghcr.io/${owner}/${svc}"
+            amd64_digest="$(cat "/tmp/digests/digests-amd64/${svc}")"
+            arm64_digest="$(cat "/tmp/digests/digests-arm64/${svc}")"
+
+            tag_args=( -t "${img}:sha-${sha}" )
             for t in "${extra_tags[@]}"; do
-              tags+=( --tag "ghcr.io/${owner}/${svc}:${t}" )
+              tag_args+=( -t "${img}:${t}" )
             done
 
-            cache_args=( --cache-from "type=registry,ref=${cache_ref}" )
-            if [ "${i}" -eq 0 ]; then
-              cache_args+=( --cache-to "type=registry,ref=${cache_ref},mode=max" )
-            fi
-
-            echo "::group::build ${svc} (${tags[*]})"
-            docker buildx build \
-              --platform linux/amd64,linux/arm64 \
-              --target "${svc}" \
-              "${tags[@]}" \
-              "${cache_args[@]}" \
-              --push \
-              .
+            echo "::group::manifest ${svc} (amd64=${amd64_digest} arm64=${arm64_digest})"
+            docker buildx imagetools create "${tag_args[@]}" \
+              "${img}@${amd64_digest}" \
+              "${img}@${arm64_digest}"
+            docker buildx imagetools inspect "${img}:sha-${sha}" | grep -E 'Name|Platform'
             echo "::endgroup::"
-            i=$((i + 1))
           done
 
-          echo "Published service images: ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal"
+          echo "Published multi-arch (amd64+arm64) service images: ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal"
 
   # ---- Web UI (independent Dockerfile + build graph) ----
   web-ui:
