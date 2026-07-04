@@ -465,6 +465,42 @@ fn sans_from_strings(sans: &[String]) -> Vec<SubjectAltName> {
         .collect()
 }
 
+/// Resolve the SANs to place in a certificate issued from an approved request.
+///
+/// The requester's explicitly-submitted SANs (prefixed strings stored in
+/// `request_details.subject_alt_names`, e.g. `"DNS:host.example"`) take
+/// precedence; the CSR's embedded SANs are used only when the form supplied
+/// none. This mirrors the precedence in `issue_certificate` (explicit request
+/// over CSR), so the approval-issuance path and the direct-issue path agree.
+///
+/// Without this, a requester who pastes a CN-only CSR — or generates the
+/// in-browser CSR before adding a SAN — has their requested SANs silently
+/// dropped, and a SAN-required profile (e.g. `tls_server`) then rejects issuance
+/// even though the SAN was supplied. The resolved names are still subject to the
+/// same profile / namespace validation in `issue()`, and proof-of-possession is
+/// still verified over the CSR.
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 5280 §4.2.1.6: Subject Alternative Name
+/// - NIST 800-53 SI-10: Information input validation (requested names revalidated)
+fn resolve_approval_sans(details: &serde_json::Value, csr_sans: &[String]) -> Vec<SubjectAltName> {
+    let requested: Vec<String> = details
+        .get("subject_alt_names")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if requested.is_empty() {
+        sans_from_strings(csr_sans)
+    } else {
+        sans_from_strings(&requested)
+    }
+}
+
 async fn issue_certificate(
     State(state): State<Arc<ApiState>>,
     AuthUser(user): AuthUser,
@@ -1827,10 +1863,14 @@ async fn issue_from_approved_request(
     let subject = ostrich_x509::parser::parse_csr_subject_dn(&csr_der)
         .map_err(|e| Error::InvalidRequest(format!("invalid CSR subject: {e}")))?;
 
+    // Honor the SANs the requester explicitly submitted on the application form,
+    // falling back to the CSR's embedded SANs (see `resolve_approval_sans`).
+    let subject_alt_names = resolve_approval_sans(details, &parsed.subject_alternative_names);
+
     let issuance_req = IssuanceRequest {
         profile_name: profile.to_string(),
         subject,
-        subject_alt_names: sans_from_strings(&parsed.subject_alternative_names),
+        subject_alt_names,
         public_key: parsed.public_key,
         requestor: request.requestor_username.clone(),
         metadata: None,
@@ -3630,6 +3670,40 @@ mod tests {
         assert!(validate_config_value("require_approval_for_issuance", "false").is_ok());
         assert!(validate_config_value("require_approval_for_issuance", "maybe").is_err());
         assert!(validate_config_value("default_certificate_validity_days", "397").is_ok());
+    }
+
+    /// Approval-issuance SAN resolution: the requester's explicitly-submitted
+    /// `subject_alt_names` win over the CSR's; the CSR is the fallback only when
+    /// the form supplied none. Regression for a SAN-required profile rejecting an
+    /// application whose SAN was entered on the form but absent from the CSR
+    /// (CN-only paste, or in-browser CSR generated before the SAN was added).
+    #[test]
+    fn resolve_approval_sans_prefers_form_over_csr() {
+        use serde_json::json;
+
+        // Explicit form SANs take precedence over whatever the CSR carried.
+        let details = json!({ "subject_alt_names": ["DNS:deploy.oopl.dev.mil"] });
+        assert_eq!(
+            resolve_approval_sans(&details, &["DNS:stale.example".to_string()]),
+            vec![SubjectAltName::dns("deploy.oopl.dev.mil")],
+        );
+
+        // Empty form list → fall back to the CSR's embedded SANs.
+        let empty = json!({ "subject_alt_names": [] });
+        assert_eq!(
+            resolve_approval_sans(&empty, &["DNS:from-csr.example".to_string()]),
+            vec![SubjectAltName::dns("from-csr.example")],
+        );
+
+        // Missing field entirely → CSR fallback (older payloads / EST paths).
+        let absent = json!({ "profile": "tls_server" });
+        assert_eq!(
+            resolve_approval_sans(&absent, &["email:admin@example.mil".to_string()]),
+            vec![SubjectAltName::email("admin@example.mil")],
+        );
+
+        // Neither source has a SAN → empty (issue() then enforces profile policy).
+        assert!(resolve_approval_sans(&json!({}), &[]).is_empty());
     }
 
     /// Namespace patterns are validated (SI-10): normal DNS names and a single

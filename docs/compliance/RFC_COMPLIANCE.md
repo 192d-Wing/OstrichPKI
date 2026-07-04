@@ -115,6 +115,15 @@ This document tracks OstrichPKI's compliance with core PKI and protocol RFCs as 
 - ✅ §4.2.1.6 - **Subject Alternative Name**: Complete RFC 5280 GeneralName support
   - **CSR SAN Parsing**: Extracts SANs from CSR extension requests (OID 2.5.29.17)
   - ✅ Parses SANs from CSR attributes for certificate issuance
+  - ✅ **Requested-SAN precedence (NPE approval flow):** for a certificate issued
+    from an approved application, the requester's explicitly-submitted
+    `subject_alt_names` take precedence over the CSR's embedded SANs, with the CSR
+    as fallback — `resolve_approval_sans` in `crates/ostrich-ca/src/rest.rs`,
+    mirroring `issue_certificate`. This keeps the approval-issuance and direct-issue
+    paths consistent so a SAN-required profile (e.g. `tls_server`) does not reject
+    an application whose SAN was supplied on the form but absent from a CN-only CSR.
+    Resolved names are still profile/namespace-validated in `issue()` (SI-10) and
+    PoP is verified over the CSR. Test: `resolve_approval_sans_prefers_form_over_csr`.
   - ✅ **COMPLETE RFC 5280 SUPPORT: All 9 GeneralName types implemented**:
     - ✅ otherName: Custom identifiers (e.g., UPN) - Format: `otherName:OID:hex-value`
     - ✅ rfc822Name: Email addresses - Format: `email:user@example.com`
