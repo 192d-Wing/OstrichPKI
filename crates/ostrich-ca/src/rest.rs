@@ -1993,8 +1993,16 @@ async fn get_approval_request(
         });
     }
 
+    // Attach the submitted details so an approver can review exactly what was
+    // requested (CN via the CSR, requested SANs, key usage / EKU, profile,
+    // CC/S/A, contact emails) before recording a decision. Only on this detail
+    // endpoint, and only reachable by the owner or an approver (checked above).
+    let details = request.request_details.clone();
+    let mut info = ApprovalRequestInfo::from(request);
+    info.request_details = Some(details);
+
     Ok(Json(ApprovalRequestDetailResponse {
-        request: ApprovalRequestInfo::from(request),
+        request: info,
         decisions: decisions
             .into_iter()
             .map(ApprovalDecisionInfo::from)
@@ -3498,6 +3506,14 @@ pub struct ApprovalRequestInfo {
     /// issued certificate, so the requestor can view/download it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certificate_id: Option<String>,
+    /// The details the requester submitted (CSR PEM, profile, requested SANs,
+    /// key usage / EKU, CC/S/A, contact emails). Populated ONLY on the
+    /// single-request detail endpoint (so a Registration Authority can review
+    /// exactly what was requested before approving — NIAP PP-CA FDP_CER_EXT.3);
+    /// omitted from list responses to keep the queue lean. Access to the detail
+    /// endpoint is already restricted to the request owner or an approver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_details: Option<serde_json::Value>,
 }
 
 impl From<ostrich_db::models::ApprovalRequestRecord> for ApprovalRequestInfo {
@@ -3510,6 +3526,8 @@ impl From<ostrich_db::models::ApprovalRequestRecord> for ApprovalRequestInfo {
             created_at: record.created_at.to_rfc3339(),
             expires_at: record.expires_at.to_rfc3339(),
             certificate_id: record.certificate_id.map(|c| c.to_string()),
+            // Summary view: omitted here; the detail endpoint attaches it.
+            request_details: None,
         }
     }
 }

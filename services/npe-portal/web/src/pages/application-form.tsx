@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -101,6 +101,29 @@ const EKU_OPTIONS: MultiselectProps.Options = [
   { label: "IPsec IKE", value: "ipsecIKE" },
 ];
 
+// Default Key Usage / EKU per certificate profile, mirroring the CA's
+// code-defined profiles (services/ca-server/src/main.rs `default_profiles` →
+// crates/ostrich-x509/src/profile.rs). The CA enforces the selected profile's
+// KU/EKU at issuance regardless of what the form sends, so these auto-fill when
+// a profile is chosen to show the requester what that profile will actually
+// issue. A profile with no entry here (e.g. a custom deployment profile) leaves
+// the current selection untouched rather than clearing it.
+const PROFILE_KU_EKU: Record<string, { keyUsage: string[]; eku: string[] }> = {
+  tls_server: { keyUsage: ["digitalSignature", "keyEncipherment"], eku: ["serverAuth"] },
+  tls_client: { keyUsage: ["digitalSignature"], eku: ["clientAuth"] },
+  tls_server_client: {
+    keyUsage: ["digitalSignature", "keyEncipherment"],
+    eku: ["serverAuth", "clientAuth"],
+  },
+};
+
+/** Pick the flat multiselect options whose `value` is in `values` (order-stable). */
+function pickOptions(all: MultiselectProps.Options, values: string[]): MultiselectProps.Option[] {
+  return (all as MultiselectProps.Option[]).filter(
+    (o) => o.value !== undefined && values.includes(o.value),
+  );
+}
+
 export function ApplicationForm({
   mode,
   title,
@@ -119,8 +142,21 @@ export function ApplicationForm({
   const [sanType, setSanType] = useState<SelectProps.Option>(SAN_TYPES[0]);
   const [sanValue, setSanValue] = useState("");
   const [sans, setSans] = useState<string[]>([]);
-  const [keyUsage, setKeyUsage] = useState<readonly MultiselectProps.Option[]>([]);
-  const [eku, setEku] = useState<readonly MultiselectProps.Option[]>([]);
+  const [keyUsage, setKeyUsage] = useState<readonly MultiselectProps.Option[]>(() =>
+    pickOptions(KEY_USAGE_OPTIONS, PROFILE_KU_EKU[profiles[0].value]?.keyUsage ?? []),
+  );
+  const [eku, setEku] = useState<readonly MultiselectProps.Option[]>(() =>
+    pickOptions(EKU_OPTIONS, PROFILE_KU_EKU[profiles[0].value]?.eku ?? []),
+  );
+
+  // Auto-fill Key Usage / EKU from the selected profile's CA-defined defaults.
+  // No-op for profiles absent from PROFILE_KU_EKU (keeps any manual selection).
+  const applyProfileKuEku = useCallback((profileValue: string) => {
+    const d = PROFILE_KU_EKU[profileValue];
+    if (!d) return;
+    setKeyUsage(pickOptions(KEY_USAGE_OPTIONS, d.keyUsage));
+    setEku(pickOptions(EKU_OPTIONS, d.eku));
+  }, []);
   const [error, setError] = useState<string | null>(null);
 
   // In-browser CSR generator state (Web Crypto). The private key is held only in
@@ -226,10 +262,13 @@ export function ApplicationForm({
     if (profileParam) {
       const list = config.certProfiles.length > 0 ? config.certProfiles : [FALLBACK_PROFILE];
       const match = list.find((p) => p.value === profileParam);
-      if (match) setProfile(match);
+      if (match) {
+        setProfile(match);
+        applyProfileKuEku(match.value);
+      }
     }
     if (emailParam) setEmail(emailParam);
-  }, [searchParams]);
+  }, [searchParams, applyProfileKuEku]);
 
   const pending = mutation.isPending || efsMutation.isPending;
   const canSubmit =
@@ -485,9 +524,10 @@ export function ApplicationForm({
                   selectedOption={profile}
                   onChange={(e) => {
                     clearStale();
-                    setProfile(
-                      profiles.find((p) => p.value === e.detail.selectedOption.value) ?? profiles[0],
-                    );
+                    const next =
+                      profiles.find((p) => p.value === e.detail.selectedOption.value) ?? profiles[0];
+                    setProfile(next);
+                    applyProfileKuEku(next.value);
                   }}
                   options={profiles}
                 />
