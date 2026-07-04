@@ -25,6 +25,23 @@ export interface ApplicationInfo {
   expires_at: string;
   /** Set once the approved request is issued (Completed): the issued cert id. */
   certificate_id?: string | null;
+  /** What the requester submitted — CSR PEM, profile, requested SANs, key
+   * usage / EKU, CC/S/A, contact emails. Present only on the single-request
+   * detail response (getApplication), so an RA can review before approving. */
+  request_details?: SubmittedApplicationDetails | null;
+}
+
+/** Shape of `ApplicationInfo.request_details` (the submit form's payload). */
+export interface SubmittedApplicationDetails {
+  csr_pem?: string;
+  profile?: string;
+  subject_alt_names?: string[];
+  key_usage?: string[];
+  extended_key_usage?: string[];
+  ccsa?: string | null;
+  notification_email?: string;
+  issm_email?: string | null;
+  pm_email?: string | null;
 }
 
 export interface ApplicationDetail {

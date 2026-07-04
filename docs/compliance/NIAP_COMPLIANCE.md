@@ -752,6 +752,14 @@ CSR Submission → Approval Request Created (csr_id set)
 - [crates/ostrich-ca/src/issuance.rs:186-263](../../crates/ostrich-ca/src/issuance.rs#L186-L263) - Approval verification in issuance flow
 - [crates/ostrich-ca/src/rest.rs:512-705](../../crates/ostrich-ca/src/rest.rs#L512-L705) - Approval REST API endpoints
 - [crates/ostrich-db/src/repository/approval.rs](../../crates/ostrich-db/src/repository/approval.rs) - Approval persistence
+- **Informed-decision review:** the single-request detail endpoint
+  (`get_approval_request`) returns the requester's submitted `request_details`
+  (CSR/CN, requested SANs, key usage / EKU, profile, CC/S/A, contact emails) so
+  the approver reviews exactly what was requested before recording a decision;
+  the NPE portal RA view renders them
+  ([manage-application-detail.tsx](../../services/npe-portal/web/src/pages/manage-application-detail.tsx)).
+  The field is attached only on the owner-or-approver-gated detail endpoint,
+  never in the list response.
 
 **Evidence:**
 
