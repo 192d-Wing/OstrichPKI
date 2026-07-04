@@ -107,6 +107,23 @@ struct Args {
     #[arg(long, env = "TLS_CA_CERT_FILE")]
     tls_ca_cert: Option<String>,
 
+    /// Client CA bundle (PEM) for the NPE portal's service certificate, used to
+    /// verify the portal at the TLS layer for the identity bridge. Kept separate
+    /// from --tls-ca-cert so enabling the bridge does NOT flip enrollment to mTLS
+    /// mode: a bearer-enrollment deployment can still verify the portal cert.
+    /// Used only when --trusted-proxy-subjects is set, and only if --tls-ca-cert
+    /// is not already configured.
+    #[arg(long, env = "EST_PORTAL_CLIENT_CA")]
+    portal_client_ca: Option<String>,
+
+    /// Comma-separated RFC 4514 subject DNs of trusted reverse proxies (the NPE
+    /// portal service certificate). When set (bearer enrollment mode), EST's
+    /// token-management endpoints accept the portal's mTLS-forwarded X-Npe-*
+    /// identity in addition to operator bearer sessions (the identity bridge).
+    /// NIST 800-53: IA-2 / AC-3 / AC-17
+    #[arg(long, env = "EST_TRUSTED_PROXY_SUBJECTS", value_delimiter = ',')]
+    trusted_proxy_subjects: Vec<String>,
+
     /// Accept HTTP Basic authentication (RFC 7030 §3.2.3) as a fallback when a
     /// client does not present a TLS client certificate. Intended for bootstrap
     /// enrollment. Requires --tls-ca-cert (mTLS); Basic is rejected otherwise
@@ -139,9 +156,14 @@ struct Settings {
     tls_cert: Option<String>,
     tls_key: Option<String>,
     tls_ca_cert: Option<String>,
+    portal_client_ca: Option<String>,
+    trusted_proxy_subjects: Vec<String>,
     allow_basic_auth: bool,
     allow_bearer_auth: bool,
     mtls_token_bootstrap: bool,
+    /// Named CA backends + label routing for RFC 7030 §3.2.2 (config-file only).
+    ca_backends: Vec<config::CaBackendFileConfig>,
+    label_routing: Option<config::LabelRoutingFileConfig>,
     log_level: String,
     log_json: bool,
 }
@@ -179,6 +201,9 @@ impl Settings {
             tls_cert: args.tls_cert.or(file.tls_cert),
             tls_key: args.tls_key.or(file.tls_key),
             tls_ca_cert: args.tls_ca_cert.or(file.tls_ca_cert),
+            // Identity-bridge config is CLI/env only (not in the JSON config file).
+            portal_client_ca: args.portal_client_ca,
+            trusted_proxy_subjects: args.trusted_proxy_subjects,
             allow_basic_auth: args
                 .allow_basic_auth
                 .or(file.allow_basic_auth)
@@ -191,6 +216,9 @@ impl Settings {
                 .mtls_token_bootstrap
                 .or(file.mtls_token_bootstrap)
                 .unwrap_or(false),
+            // Multi-CA label routing is config-file only (nested structure).
+            ca_backends: file.ca_backends.unwrap_or_default(),
+            label_routing: file.label_routing,
             log_level: args
                 .log_level
                 .or(file.log_level)
@@ -300,6 +328,35 @@ async fn main() -> Result<()> {
             (true, false) => EstAuthMode::Mtls,
             (false, _) => EstAuthMode::BearerToken,
         }
+    };
+
+    // Identity bridge (NPE portal -> EST token management). Active only in
+    // bearer-token enrollment mode; the portal certificate is verified at the
+    // TLS layer against --portal-client-ca (or --tls-ca-cert).
+    let trusted_proxy = if settings.trusted_proxy_subjects.is_empty() {
+        None
+    } else if auth_mode != EstAuthMode::BearerToken {
+        tracing::warn!(
+            ?auth_mode,
+            "EST identity bridge requires bearer-token enrollment mode; \
+             --trusted-proxy-subjects is ignored under the current auth mode"
+        );
+        None
+    } else if settings.tls_ca_cert.is_none() && settings.portal_client_ca.is_none() {
+        anyhow::bail!(
+            "EST_TRUSTED_PROXY_SUBJECTS is set but no portal client CA is configured to verify \
+             the portal certificate; set --portal-client-ca (or --tls-ca-cert) \
+             (NIST 800-53: IA-2)"
+        );
+    } else {
+        tracing::info!(
+            subjects = ?settings.trusted_proxy_subjects,
+            "EST identity bridge enabled: trusting NPE portal mTLS-forwarded identity on \
+             token-management endpoints"
+        );
+        Some(Arc::new(ostrich_common::auth::TrustedProxyConfig::new(
+            settings.trusted_proxy_subjects.clone(),
+        )))
     };
 
     let user_repo = Arc::new(ostrich_db::repository::DbUserRepository::new(
@@ -473,6 +530,106 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Named CA backends for RFC 7030 §3.2.2 label routing (e.g. an EC CA and an
+    // RSA CA). Built before EstState so each client gets its own db_pool clone.
+    let mut ca_backends: Vec<(
+        String,
+        Arc<ostrich_est::ca_integration::EstCaClient>,
+        Option<Vec<u8>>,
+    )> = Vec::new();
+    let mut backend_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for backend in &settings.ca_backends {
+        if !backend_names.insert(backend.name.clone()) {
+            anyhow::bail!("duplicate caBackends name '{}'", backend.name);
+        }
+        // mTLS to the backend gRPC channel is all-or-nothing (SC-8 / AC-17).
+        let client_cert_pem = read_optional_pem(&backend.client_cert)?;
+        let client_key_pem = read_optional_pem(&backend.client_key)?;
+        let ca_cert_pem = read_optional_pem(&backend.ca_cert)?;
+        let any =
+            !client_cert_pem.is_empty() || !client_key_pem.is_empty() || !ca_cert_pem.is_empty();
+        let all =
+            !client_cert_pem.is_empty() && !client_key_pem.is_empty() && !ca_cert_pem.is_empty();
+        if any && !all {
+            anyhow::bail!(
+                "caBackends['{}'] mTLS requires all of clientCert, clientKey, caCert",
+                backend.name
+            );
+        }
+        let config = ostrich_common::GrpcClientConfig {
+            endpoint: backend.grpc_url.clone(),
+            client_cert_pem,
+            client_key_pem,
+            ca_cert_pem,
+            ..Default::default()
+        };
+        // NOTE: ca_insecure is a single GLOBAL dev escape hatch — it applies to
+        // the default CA client AND every named backend. EstCaClient::new still
+        // fails closed on a non-loopback plaintext endpoint unless it is set.
+        let client = ostrich_est::ca_integration::EstCaClient::new(
+            config,
+            db_pool.clone(),
+            settings.ca_insecure,
+        )
+        .await?;
+        // This backend's issuing CA certificate, served by /{label}/cacerts.
+        // A configured id that resolves to no row is a misconfiguration (the
+        // operator explicitly named a cert) and fails fast (CM-6).
+        let cert_der = match &backend.ca_certificate_id {
+            Some(id) => {
+                let uuid = uuid::Uuid::parse_str(id).map_err(|e| {
+                    anyhow::anyhow!(
+                        "caBackends['{}'].caCertificateId invalid: {e}",
+                        backend.name
+                    )
+                })?;
+                let cert = ca_repo.find_ca_certificate(uuid).await?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "caBackends['{}'].caCertificateId {uuid} matches no registered CA certificate",
+                        backend.name
+                    )
+                })?;
+                Some(cert.der_encoded)
+            }
+            None => None,
+        };
+        tracing::info!(name = %backend.name, url = %backend.grpc_url, "Registered EST CA backend");
+        ca_backends.push((backend.name.clone(), Arc::new(client), cert_der));
+    }
+
+    // Validate label routing references real backends and known key-algorithm
+    // tokens (fail fast, CM-6).
+    if let Some(lr) = &settings.label_routing {
+        if !backend_names.contains(&lr.default_backend) {
+            anyhow::bail!(
+                "labelRouting.defaultBackend '{}' is not a configured caBackend",
+                lr.default_backend
+            );
+        }
+        for (algo, name) in &lr.algo_backends {
+            // The key-algorithm token must be one the label parser can emit, or
+            // the mapping is permanently unreachable dead config.
+            if ostrich_est::label::KeyAlgo::from_token(algo).is_none() {
+                anyhow::bail!(
+                    "labelRouting.algoBackends key '{algo}' is not a valid key-algorithm token \
+                     (expected one of 2048, P384)"
+                );
+            }
+            if !backend_names.contains(name) {
+                anyhow::bail!(
+                    "labelRouting.algoBackends['{algo}'] -> '{name}' is not a configured caBackend"
+                );
+            }
+        }
+    } else if !ca_backends.is_empty() {
+        // Backends were built (gRPC channels opened) but no labeled path serves
+        // them — surface the inert config rather than silently ignoring it.
+        tracing::warn!(
+            "caBackends are configured but labelRouting is absent; the labeled \
+             /.well-known/est/{{label}}/... paths are disabled and these backends are unreachable"
+        );
+    }
+
     let mut state = ostrich_est::rest::EstState::new_with_auth(
         db_pool,
         Arc::new(crypto_provider),
@@ -488,6 +645,7 @@ async fn main() -> Result<()> {
         EstAuthMode::MtlsWithTokenBootstrap => state.with_mtls_token_bootstrap(),
         EstAuthMode::BearerToken => state,
     };
+    state = state.with_trusted_proxy(trusted_proxy.clone());
 
     // H1 - certificate identity authorization policy.
     let identity_policy = match settings
@@ -504,6 +662,21 @@ async fn main() -> Result<()> {
     tracing::info!(?identity_policy, "EST certificate identity policy");
     state = state.with_identity_policy(identity_policy);
 
+    // Register the named CA backends + label routing (RFC 7030 §3.2.2).
+    for (name, client, cert_der) in ca_backends {
+        state = state.with_ca_backend(name, client, cert_der);
+    }
+    if let Some(lr) = &settings.label_routing {
+        tracing::info!(
+            default_backend = %lr.default_backend,
+            "EST label routing enabled (RFC 7030 §3.2.2)"
+        );
+        state = state.with_label_routing(ostrich_est::rest::LabelRoutingConfig {
+            algo_backends: lr.algo_backends.clone(),
+            default_backend: lr.default_backend.clone(),
+        });
+    }
+
     // Create router and mount the shared session API (login/logout).
     // Public by necessity; brute-force is mitigated by lockout (AC-7 / FIA_AFL.1).
     let app = ostrich_est::rest::create_router(state)
@@ -512,11 +685,29 @@ async fn main() -> Result<()> {
     // Parse primary bind address.
     let addr: SocketAddr = settings.bind_address.parse().expect("Invalid bind address");
 
+    // Client CA for the TLS listener: the enrollment mTLS CA if set, otherwise
+    // the portal client CA when the bridge is enabled — so the portal cert is
+    // verified without flipping enrollment to mTLS mode.
+    let tls_client_ca = settings.tls_ca_cert.clone().or_else(|| {
+        trusted_proxy
+            .as_ref()
+            .and(settings.portal_client_ca.clone())
+    });
     let tls = ostrich_common::tls::TlsSettings::from_options(
         settings.tls_cert,
         settings.tls_key,
-        settings.tls_ca_cert,
-    )?;
+        tls_client_ca,
+    )?
+    // With the bridge on, request (but do not require) a client certificate: the
+    // portal presents one and takes the trusted-proxy path, while in-cluster
+    // bearer clients without a certificate still complete the handshake.
+    .map(|s| {
+        if trusted_proxy.is_some() {
+            s.with_optional_client_auth(true)
+        } else {
+            s
+        }
+    });
 
     if auth_mode == EstAuthMode::MtlsWithTokenBootstrap {
         // Two-port deployment. The primary --bind-address stays plain HTTP for
@@ -577,6 +768,15 @@ async fn main() -> Result<()> {
 
     tracing::info!("EST Server shutdown complete");
     Ok(())
+}
+
+/// Read a PEM file into a string, returning an empty string when the path is
+/// absent (mirrors the default-backend mTLS material handling).
+fn read_optional_pem(path: &Option<String>) -> Result<String> {
+    match path {
+        Some(p) => Ok(std::fs::read_to_string(p)?),
+        None => Ok(String::new()),
+    }
 }
 
 fn init_logging(level: &str, json: bool) -> Result<()> {

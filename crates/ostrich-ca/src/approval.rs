@@ -41,7 +41,7 @@ use uuid::Uuid;
 
 use crate::{Error, Result};
 use ostrich_common::auth::{
-    Role,
+    Permission, Role, any_role_has_permission,
     user::{AuthenticatedUser, UserId},
 };
 
@@ -319,7 +319,7 @@ impl ApprovalRequest {
     ///
     /// # Segregation of Duties
     /// - Requestor CANNOT approve their own request
-    /// - User must have RaStaff or Aor role
+    /// - User must hold the `ApproveRequest` permission
     ///
     /// # Arguments
     /// * `user` - User attempting to approve
@@ -334,10 +334,14 @@ impl ApprovalRequest {
             return Err(Error::SelfApprovalProhibited);
         }
 
-        // Check user has RA Staff or AOR role
-        if !user.has_any_role(&[Role::RaStaff, Role::Aor]) {
+        // The approver must hold the ApproveRequest permission. Gating on the
+        // permission (not a hardcoded RaStaff/Aor role set) keeps the engine in
+        // lockstep with the REST authorization layer and admits every approver
+        // role — RaStaff, Aor, and the NPE RegistrationAuthority alike. (Without
+        // this, an NPE RA passed the route guard but was rejected here.)
+        if !any_role_has_permission(&user.roles, Permission::ApproveRequest) {
             return Err(Error::InsufficientRole {
-                required: "RaStaff or Aor".to_string(),
+                required: "approval permission (ApproveRequest)".to_string(),
             });
         }
 
@@ -356,6 +360,36 @@ impl ApprovalRequest {
             });
         }
 
+        Ok(())
+    }
+
+    /// Check if user can reject this request (FDP_SEPP.1).
+    ///
+    /// Same segregation-of-duties + state checks as [`can_approve`], but gated on
+    /// the `RejectRequest` permission so the engine agrees with the reject route's
+    /// authorization (which requires `RejectRequest`). Every approver role holds
+    /// both permissions, so this does not narrow any current role.
+    pub fn can_reject(&self, user: &AuthenticatedUser) -> Result<()> {
+        // FDP_SEPP.1: requestor cannot decide their own request.
+        if self.requestor_id == user.id {
+            return Err(Error::SelfApprovalProhibited);
+        }
+        if !any_role_has_permission(&user.roles, Permission::RejectRequest) {
+            return Err(Error::InsufficientRole {
+                required: "rejection permission (RejectRequest)".to_string(),
+            });
+        }
+        if self.status != ApprovalStatus::Pending {
+            return Err(Error::InvalidApprovalState {
+                current: format!("{:?}", self.status),
+                expected: "Pending".to_string(),
+            });
+        }
+        if self.is_expired() {
+            return Err(Error::ApprovalRequestExpired {
+                expired_at: self.expires_at,
+            });
+        }
         Ok(())
     }
 
@@ -569,8 +603,8 @@ impl ApprovalEngine {
         reason: String,
         justification: String,
     ) -> Result<ApprovalDecision> {
-        // Verify user can approve (same permission for reject)
-        request.can_approve(approver)?;
+        // Verify the user may reject (RejectRequest), matching the reject route.
+        request.can_reject(approver)?;
 
         // Create decision record
         let decision = ApprovalDecision {

@@ -6,6 +6,8 @@
 //! - NIST 800-53: AU-2 (Audit Events)
 //! - NIAP PP-CA: FCS_CKM.1 (Cryptographic Key Generation)
 
+mod expiry_producer;
+
 use anyhow::{Context, Result};
 use axum::{Json, Router, routing::get};
 use clap::Parser;
@@ -110,6 +112,16 @@ struct Args {
     #[arg(long, env = "TLS_CLIENT_CA_FILE")]
     tls_client_ca: Option<String>,
 
+    /// Comma-separated RFC 4514 subject DNs of trusted reverse proxies (the NPE
+    /// portal's service certificate). When set, the CA accepts the proxy's
+    /// mTLS-forwarded X-Npe-* identity headers in addition to bearer tokens (the
+    /// identity bridge), and the client-cert verifier is set to optional so
+    /// bearer clients without a certificate still connect. Requires
+    /// --tls-client-ca to be the CA that issues the portal's certificate.
+    /// NIST 800-53: IA-2 / AC-3 / AC-17
+    #[arg(long, env = "CA_TRUSTED_PROXY_SUBJECTS", value_delimiter = ',')]
+    trusted_proxy_subjects: Vec<String>,
+
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     log_level: String,
@@ -117,6 +129,50 @@ struct Args {
     /// Enable JSON logging format
     #[arg(long, env = "LOG_JSON", default_value = "false")]
     log_json: bool,
+
+    // --- Expiry-notification producer (publishes to the notify-service) ---
+    /// Enable the certificate-expiry notification producer.
+    #[arg(long, env = "NOTIFY_ENABLED", default_value = "false")]
+    notify_enabled: bool,
+    /// NATS server URL the producer publishes schedules to.
+    #[arg(long, env = "NATS_URL", default_value = "nats://nats:4222")]
+    nats_url: String,
+    /// PEM file of the CA that signed the NATS server certificate. When set, the
+    /// producer requires TLS and verifies the server against this root (SC-8/SC-13).
+    #[arg(long, env = "NATS_CA_FILE")]
+    nats_ca_file: Option<std::path::PathBuf>,
+    /// NATS username for password authentication (AC-3 / IA-2). Optional.
+    #[arg(long, env = "NATS_USER")]
+    nats_user: Option<String>,
+    /// NATS password — `Zeroizing` (SI-12), sourced from a k8s secret.
+    #[arg(long, env = "NATS_PASSWORD", value_parser = nats_secret)]
+    nats_password: Option<zeroize::Zeroizing<String>>,
+    /// Notify when a certificate is within this many days of expiry.
+    #[arg(long, env = "NOTIFY_DAYS_BEFORE", default_value = "90")]
+    notify_days_before: i64,
+    /// Hours between expiry scans.
+    #[arg(long, env = "NOTIFY_SCAN_INTERVAL_HOURS", default_value = "24")]
+    notify_scan_interval_hours: u64,
+    /// Default reminder frequency (daily | weekly | monthly).
+    #[arg(long, env = "NOTIFY_DEFAULT_FREQUENCY", default_value = "weekly")]
+    notify_default_frequency: String,
+    /// Default reminder time of day (UTC, "HH:MM:SS").
+    #[arg(long, env = "NOTIFY_DEFAULT_TIME", default_value = "09:00:00Z")]
+    notify_default_time: String,
+    /// Default reminder weekdays.
+    #[arg(
+        long,
+        env = "NOTIFY_DEFAULT_DAYS",
+        value_delimiter = ',',
+        default_value = "Monday"
+    )]
+    notify_default_days: Vec<String>,
+}
+
+/// clap value parser: wrap the NATS password in `Zeroizing` so it is wiped from
+/// memory on drop (NIST 800-53 SI-12).
+fn nats_secret(s: &str) -> Result<zeroize::Zeroizing<String>, std::convert::Infallible> {
+    Ok(zeroize::Zeroizing::new(s.to_string()))
 }
 
 #[tokio::main]
@@ -127,6 +183,11 @@ async fn main() -> Result<()> {
     // Initialize logging
     // NIST 800-53: AU-2 - Audit Events
     init_logging(&args.log_level, args.log_json)?;
+
+    // Install the process-wide rustls CryptoProvider (aws-lc-rs / FIPS) so the
+    // NATS producer's optional TLS connection can build a client config. Idempotent
+    // and harmless if another component already installed one. NIST 800-53: SC-13.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -142,6 +203,25 @@ async fn main() -> Result<()> {
     // NIST 800-53: CM-3 - Configuration Change Control
     tracing::info!("Running database migrations");
     db_pool.migrate().await?;
+
+    // Certificate-expiry notification producer (opt-in): scans expiring certs and
+    // publishes schedules to the notify-service over NATS. Runs detached; failures
+    // never affect issuance.
+    if args.notify_enabled {
+        let producer_pool = db_pool.pool().clone();
+        let producer_cfg = expiry_producer::ProducerConfig {
+            nats_url: args.nats_url.clone(),
+            nats_ca_file: args.nats_ca_file.clone(),
+            nats_user: args.nats_user.clone(),
+            nats_password: args.nats_password.as_ref().map(|p| p.as_str().to_owned()),
+            days_before: args.notify_days_before,
+            scan_interval_hours: args.notify_scan_interval_hours,
+            default_frequency: args.notify_default_frequency.clone(),
+            default_time: args.notify_default_time.clone(),
+            default_days: args.notify_default_days.clone(),
+        };
+        tokio::spawn(expiry_producer::run(producer_pool, producer_cfg));
+    }
 
     // Backfill the FQDN (SAN/CN) index for certificates issued before it existed.
     // Idempotent and cheap once populated (a single anti-join returning no rows);
@@ -219,6 +299,27 @@ async fn main() -> Result<()> {
         )))),
     );
 
+    // Identity bridge: if trusted-proxy subjects are configured, the CA accepts
+    // the NPE portal's mTLS-forwarded identity. Requires a client CA so the
+    // handshake can verify the portal certificate.
+    let trusted_proxy = if args.trusted_proxy_subjects.is_empty() {
+        None
+    } else {
+        if args.tls_client_ca.is_none() {
+            anyhow::bail!(
+                "CA_TRUSTED_PROXY_SUBJECTS is set but no --tls-client-ca is configured; \
+                 the portal certificate cannot be verified (NIST 800-53: IA-2)"
+            );
+        }
+        tracing::info!(
+            subjects = ?args.trusted_proxy_subjects,
+            "Identity bridge enabled: trusting NPE portal mTLS-forwarded identity"
+        );
+        Some(Arc::new(ostrich_common::auth::TrustedProxyConfig::new(
+            args.trusted_proxy_subjects.clone(),
+        )))
+    };
+
     let app = match &ca {
         Some(ca) => {
             let rbac_policy = Arc::new(ostrich_common::auth::RbacPolicy::new());
@@ -261,6 +362,7 @@ async fn main() -> Result<()> {
                 approval_engine,
                 approval_repo,
                 db_pool.clone(),
+                trusted_proxy.clone(),
             )
         }
         None => {
@@ -293,7 +395,11 @@ async fn main() -> Result<()> {
         args.tls_cert,
         args.tls_key,
         args.tls_client_ca,
-    )?;
+    )?
+    // With the identity bridge on, request (but don't require) a client cert:
+    // the portal presents one and takes the trusted-proxy path, while bearer
+    // clients (admin console) present none and still complete the handshake.
+    .map(|s| s.with_optional_client_auth(trusted_proxy.is_some()));
     ostrich_common::tls::serve(rest_addr, app, tls.as_ref(), shutdown_signal()).await?;
 
     tracing::info!("CA Server shutdown complete");
@@ -559,6 +665,12 @@ fn default_profiles() -> Vec<ostrich_x509::CertificateProfile> {
     acme_default.name = "acme-default".to_string();
     acme_default.description = Some("ACME-issued TLS server certificates (RFC 8555)".to_string());
 
+    // EFS (Encrypting File System): server-side key generation delivered as an
+    // encrypted PKCS#12. RSA, Microsoft EFS EKU (1.3.6.1.4.1.311.10.3.4).
+    let mut efs = CertificateProfile::efs(730);
+    efs.name = "efs".to_string();
+    efs.description = Some("Microsoft EFS, server-side key generation".to_string());
+
     // Subordinate (intermediate) CA issuance via gRPC: CA=true, keyCertSign +
     // cRLSign, pathLenConstraint 0 (RFC 5280 §4.2.1.9), ~5 year validity.
     // NIAP PP-CA: FMT_SMF.1 - CA hierarchy management.
@@ -572,6 +684,7 @@ fn default_profiles() -> Vec<ostrich_x509::CertificateProfile> {
         tls_client,
         tls_server_client,
         acme_default,
+        efs,
         intermediate_ca,
     ]
 }

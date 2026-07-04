@@ -19,6 +19,9 @@ pub struct CertificateStatusCounts {
     pub revoked: i64,
     pub expired: i64,
     pub pending: i64,
+    /// Active certificates whose `not_after` falls within the next 90 days
+    /// (a subset of `active`) — the dashboard's "expiring soon" figure.
+    pub expiring_soon: i64,
 }
 
 /// Repository for certificate operations
@@ -209,7 +212,10 @@ impl CertificateRepository {
     ///
     /// Inventory-wide (independent of any list filter/pagination), so the UI can
     /// show true totals while the table shows a filtered subset.
-    pub async fn count_by_status(&self) -> Result<CertificateStatusCounts> {
+    pub async fn count_by_status(
+        &self,
+        requestor: Option<&str>,
+    ) -> Result<CertificateStatusCounts> {
         let row = sqlx::query(
             r#"
             SELECT
@@ -221,10 +227,16 @@ impl CertificateRepository {
                 COUNT(*) FILTER (WHERE NOT revoked AND not_after < NOW()) AS expired,
                 COUNT(*) FILTER (
                     WHERE NOT revoked AND not_after >= NOW() AND not_before > NOW()
-                ) AS pending
+                ) AS pending,
+                COUNT(*) FILTER (
+                    WHERE NOT revoked AND not_before <= NOW()
+                      AND not_after >= NOW() AND not_after < NOW() + INTERVAL '90 days'
+                ) AS expiring_soon
             FROM certificates
+            WHERE ($1::text IS NULL OR requestor = $1)
             "#,
         )
+        .bind(requestor)
         .fetch_one(self.pool.pool())
         .await
         .map_err(|e| Error::Query(e.to_string()))?;
@@ -235,6 +247,7 @@ impl CertificateRepository {
             revoked: row.get("revoked"),
             expired: row.get("expired"),
             pending: row.get("pending"),
+            expiring_soon: row.get("expiring_soon"),
         })
     }
 
@@ -255,10 +268,16 @@ impl CertificateRepository {
     /// - `descending`: direction for a recognized `sort` (ignored by the default).
     ///
     /// Returns `(page rows, total matching count)`.
+    // Independent query parameters (status/search/requestor scope/sort/paging);
+    // a struct would not read more clearly than the named args. Consistent with
+    // the other repository query methods.
+    #[allow(clippy::too_many_arguments)]
     pub async fn list_filtered(
         &self,
         status: &str,
         search: Option<&str>,
+        requestor: Option<&str>,
+        expiring_in_days: Option<i64>,
         sort: Option<&str>,
         descending: bool,
         limit: i64,
@@ -266,6 +285,11 @@ impl CertificateRepository {
     ) -> Result<(Vec<Certificate>, i64)> {
         // No user input is interpolated here — only bind placeholders — so the
         // shared predicate is safe to splice into both queries.
+        //
+        // The `expiring_in_days` ($4) clause mirrors `count_by_status`'s
+        // `expiring_soon` definition exactly (active subset: not revoked, already
+        // valid, not yet expired, expiring within the window) so the drill-down
+        // list and the dashboard card count always agree.
         const PREDICATE: &str = r#"
             (
                 $1 = 'all'
@@ -278,6 +302,20 @@ impl CertificateRepository {
                 $2::text IS NULL
                 OR POSITION(LOWER($2) IN LOWER(subject_dn)) > 0
                 OR POSITION(LOWER($2) IN encode(serial_number, 'hex')) > 0
+            )
+            AND ($3::text IS NULL OR requestor = $3)
+            AND (
+                $4::int IS NULL
+                OR (
+                    NOT revoked
+                    AND not_before <= NOW()
+                    AND not_after >= NOW()
+                    -- $4 is bound as bigint; make_interval's `days` is integer and
+                    -- Postgres has no implicit bigint->integer cast in function
+                    -- resolution, so the ::int cast is required (not just on the
+                    -- NULL guard above).
+                    AND not_after < NOW() + make_interval(days => $4::int)
+                )
             )
         "#;
 
@@ -296,10 +334,12 @@ impl CertificateRepository {
         // SI-10: PREDICATE is a fixed fragment with $N placeholders; status/search
         // are bound, not interpolated. AssertSqlSafe (sqlx 0.9) marks it audited.
         let rows = sqlx::query_as::<_, Certificate>(sqlx::AssertSqlSafe(format!(
-            "SELECT * FROM certificates WHERE {PREDICATE} ORDER BY {order_by}, id LIMIT $3 OFFSET $4"
+            "SELECT * FROM certificates WHERE {PREDICATE} ORDER BY {order_by}, id LIMIT $5 OFFSET $6"
         )))
         .bind(status)
         .bind(search)
+        .bind(requestor)
+        .bind(expiring_in_days)
         .bind(limit)
         .bind(offset)
         .fetch_all(self.pool.pool())
@@ -311,6 +351,8 @@ impl CertificateRepository {
         )))
         .bind(status)
         .bind(search)
+        .bind(requestor)
+        .bind(expiring_in_days)
         .fetch_one(self.pool.pool())
         .await
         .map_err(|e| Error::Query(e.to_string()))?;

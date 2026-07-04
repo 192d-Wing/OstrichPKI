@@ -256,13 +256,6 @@ pub async fn serve(
     tls: Option<&TlsSettings>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    let handle = axum_server::Handle::new();
-    let shutdown_handle = handle.clone();
-    tokio::spawn(async move {
-        shutdown.await;
-        shutdown_handle.graceful_shutdown(Some(GRACEFUL_SHUTDOWN_TIMEOUT));
-    });
-
     match tls {
         Some(settings) => {
             let config = settings.load()?;
@@ -273,17 +266,7 @@ pub async fn serve(
                 optional_mtls = settings.optional_client_auth,
                 "Serving HTTPS (TLS 1.3)"
             );
-            // Custom acceptor surfaces the verified client certificate to
-            // handlers via the PeerCertificate request extension (mTLS auth).
-            let acceptor = MtlsAcceptor(axum_server::tls_rustls::RustlsAcceptor::new(
-                axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(config)),
-            ));
-            axum_server::bind(addr)
-                .handle(handle)
-                .acceptor(acceptor)
-                .serve(app.into_make_service())
-                .await
-                .map_err(|e| Error::Config(format!("HTTPS server error: {e}")))
+            serve_with_config(addr, app, Arc::new(config), shutdown).await
         }
         None => {
             // NIST 800-53: SC-8 - plain HTTP violates transmission
@@ -294,6 +277,12 @@ pub async fn serve(
                 "TLS NOT CONFIGURED - serving plain HTTP. Set TLS_CERT_FILE and \
                  TLS_KEY_FILE for production use (NIST 800-53: SC-8)."
             );
+            let handle = axum_server::Handle::new();
+            let shutdown_handle = handle.clone();
+            tokio::spawn(async move {
+                shutdown.await;
+                shutdown_handle.graceful_shutdown(Some(GRACEFUL_SHUTDOWN_TIMEOUT));
+            });
             axum_server::bind(addr)
                 .handle(handle)
                 .serve(app.into_make_service())
@@ -301,6 +290,40 @@ pub async fn serve(
                 .map_err(|e| Error::Config(format!("HTTP server error: {e}")))
         }
     }
+}
+
+/// Serve `app` over HTTPS (TLS 1.3) with a pre-built rustls [`ServerConfig`],
+/// surfacing the verified client certificate to handlers via the
+/// [`PeerCertificate`] extension (the same mTLS acceptor [`serve`] uses).
+///
+/// The config may use a dynamic certificate resolver (`with_cert_resolver`): the
+/// resolver is consulted per TLS handshake, so a caller that swaps the resolved
+/// certificate (e.g. ACME auto-renewal) takes effect on new connections without
+/// a restart. NIST 800-53: SC-8.
+pub async fn serve_with_config(
+    addr: SocketAddr,
+    app: axum::Router,
+    config: Arc<ServerConfig>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    let handle = axum_server::Handle::new();
+    let shutdown_handle = handle.clone();
+    tokio::spawn(async move {
+        shutdown.await;
+        shutdown_handle.graceful_shutdown(Some(GRACEFUL_SHUTDOWN_TIMEOUT));
+    });
+
+    // Custom acceptor surfaces the verified client certificate to handlers via
+    // the PeerCertificate request extension (mTLS auth).
+    let acceptor = MtlsAcceptor(axum_server::tls_rustls::RustlsAcceptor::new(
+        axum_server::tls_rustls::RustlsConfig::from_config(config),
+    ));
+    axum_server::bind(addr)
+        .handle(handle)
+        .acceptor(acceptor)
+        .serve(app.into_make_service())
+        .await
+        .map_err(|e| Error::Config(format!("HTTPS server error: {e}")))
 }
 
 fn tls_err(action: &str, path: &std::path::Path, err: impl std::fmt::Display) -> Error {

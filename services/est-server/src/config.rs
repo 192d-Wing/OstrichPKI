@@ -50,8 +50,42 @@ pub struct FileConfig {
     pub allow_bearer_auth: Option<bool>,
     pub mtls_token_bootstrap: Option<bool>,
 
+    /// Named CA backends for RFC 7030 §3.2.2 label-routed enrollment.
+    pub ca_backends: Option<Vec<CaBackendFileConfig>>,
+    /// Label -> CA-backend routing. Enables the `/{label}/...` paths.
+    pub label_routing: Option<LabelRoutingFileConfig>,
+
     pub log_level: Option<String>,
     pub log_json: Option<bool>,
+}
+
+/// One named CA backend for label-routed enrollment.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaBackendFileConfig {
+    /// Backend name, referenced by `labelRouting`.
+    pub name: String,
+    /// CA gRPC endpoint for this backend.
+    pub grpc_url: String,
+    /// mTLS client certificate (PEM path) for this backend's gRPC channel.
+    pub client_cert: Option<String>,
+    /// mTLS client private key (PEM path).
+    pub client_key: Option<String>,
+    /// CA certificate (PEM path) verifying this backend's gRPC server.
+    pub ca_cert: Option<String>,
+    /// UUID of this backend's issuing CA certificate, served by `/{label}/cacerts`.
+    pub ca_certificate_id: Option<String>,
+}
+
+/// Label -> CA-backend routing.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LabelRoutingFileConfig {
+    /// Key-algorithm token (`2048`, `P384`) -> backend name.
+    #[serde(default)]
+    pub algo_backends: std::collections::HashMap<String, String>,
+    /// Backend used when a label carries no key-algorithm token.
+    pub default_backend: String,
 }
 
 impl FileConfig {
@@ -126,6 +160,41 @@ mod tests {
     #[test]
     fn rejects_wrong_type() {
         let err = FileConfig::from_json(r#"{ "allowBasicAuth": "yes" }"#).unwrap_err();
+        assert!(format!("{err:#}").contains("schema validation"));
+    }
+
+    #[test]
+    fn parses_multi_ca_backends_and_label_routing() {
+        let cfg = FileConfig::from_json(
+            r#"{
+                "databaseUrl": "postgres://x/y",
+                "caBackends": [
+                    { "name": "ec",  "grpcUrl": "https://ca-ec:50051" },
+                    { "name": "rsa", "grpcUrl": "https://ca-rsa:50051", "caCertificateId": "00000000-0000-0000-0000-000000000001" }
+                ],
+                "labelRouting": {
+                    "algoBackends": { "P384": "ec", "2048": "rsa" },
+                    "defaultBackend": "ec"
+                }
+            }"#,
+        )
+        .unwrap();
+        let backends = cfg.ca_backends.unwrap();
+        assert_eq!(backends.len(), 2);
+        assert_eq!(backends[0].name, "ec");
+        let lr = cfg.label_routing.unwrap();
+        assert_eq!(lr.default_backend, "ec");
+        assert_eq!(
+            lr.algo_backends.get("2048").map(String::as_str),
+            Some("rsa")
+        );
+    }
+
+    #[test]
+    fn rejects_ca_backend_missing_name() {
+        let err =
+            FileConfig::from_json(r#"{ "caBackends": [ { "grpcUrl": "https://ca:50051" } ] }"#)
+                .unwrap_err();
         assert!(format!("{err:#}").contains("schema validation"));
     }
 

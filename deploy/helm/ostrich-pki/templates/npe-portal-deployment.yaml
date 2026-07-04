@@ -1,0 +1,126 @@
+{{/*
+OstrichPKI NPE Portal Deployment
+
+COMPLIANCE MAPPING:
+- NIST 800-53: IA-2 (mTLS identification), AC-3 (OID->role + proxy allowlist)
+- NIST 800-53: SC-8 (Transmission Confidentiality - mTLS), AC-12 (session timeout)
+*/}}
+{{- if .Values.npePortal.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-npe-portal
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: npe-portal
+spec:
+  # Active-active behind the load balancer (IL5 posture).
+  replicas: {{ .Values.npePortal.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ostrich-pki.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: npe-portal
+  template:
+    metadata:
+      labels:
+        {{- include "ostrich-pki.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: npe-portal
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/npe-portal-configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "ostrich-pki.serviceAccountName" . }}
+      securityContext:
+        {{- include "ostrich-pki.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: npe-portal
+          securityContext:
+            {{- include "ostrich-pki.securityContext" . | nindent 12 }}
+          image: {{ include "ostrich-pki.image" (dict "service" "npe-portal" "repository" .Values.npePortal.image.repository "tag" .Values.npePortal.image.tag "root" .) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.logging.level | quote }}
+            - name: NPE_BIND_ADDRESS
+              value: "0.0.0.0:8443"
+            {{- if .Values.npePortal.allowInsecure }}
+            - name: NPE_ALLOW_INSECURE
+              value: "true"
+            {{- end }}
+            {{- /* Only point at the cert files when the secret that provides them
+                   is actually mounted (below). Without a secret the portal gets no
+                   TLS args and fails closed with a clear "mandatory mTLS" message,
+                   rather than crashlooping on a missing file. */}}
+            {{- if .Values.npePortal.tls.existingSecret }}
+            - name: TLS_CERT_FILE
+              value: {{ .Values.npePortal.tls.certFile | quote }}
+            - name: TLS_KEY_FILE
+              value: {{ .Values.npePortal.tls.keyFile | quote }}
+            - name: TLS_CLIENT_CA_FILE
+              value: {{ .Values.npePortal.tls.clientCaFile | quote }}
+            {{- end }}
+            {{- with .Values.npePortal.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # The portal requires a client certificate at the TLS handshake, so an
+          # HTTP probe cannot complete without one; probe the TCP listener.
+          livenessProbe:
+            tcpSocket:
+              port: https
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: https
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.npePortal.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /app/config/npe-portal.json
+              subPath: npe-portal.json
+              readOnly: true
+            {{- if .Values.npePortal.tls.existingSecret }}
+            - name: npe-portal-certs
+              mountPath: /app/certs
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ .Values.npePortal.existingConfigMap | default (printf "%s-npe-portal" (include "ostrich-pki.fullname" .)) }}
+        {{- if .Values.npePortal.tls.existingSecret }}
+        - name: npe-portal-certs
+          secret:
+            secretName: {{ .Values.npePortal.tls.existingSecret }}
+        {{- end }}
+      {{- with .Values.npePortal.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.npePortal.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.npePortal.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

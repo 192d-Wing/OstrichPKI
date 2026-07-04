@@ -1,6 +1,6 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 1.6
+**Document Version:** 1.9
 **Date:** 2026-01-04
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Excellent (85%)
@@ -522,6 +522,13 @@ Key corrections in this phase:
 - ✅ §2.1 - TBSRequest with version, requestorName, requestList
 - ✅ §2.1 - CertID with hashAlgorithm, issuerNameHash, issuerKeyHash, serialNumber
 - ✅ §2.2 - Request extensions support
+- ✅ **OCSP client** (NPE-portal status checker): a browser-side RFC 6960 client
+  (`services/npe-portal/web/src/lib/ocsp.ts`, page `/ocsp`) builds the SHA-1
+  CertID request, sends it via the BFF `/ocsp` proxy
+  (`services/npe-portal/src/server/proxy.rs`) to the responder, and — per
+  §3.2 — **verifies the signed response against the issuing CA's public key**
+  before trusting the status (Good / Revoked / Unknown, with revocation time +
+  RFC 5280 §5.3.1 reason). Accepts either a pasted certificate or a hex serial.
 
 **Code References:**
 
@@ -626,6 +633,22 @@ Key corrections in this phase:
 
 **Status:** 🟢 **Good** (85% compliant)
 
+**ACME client (NPE portal, HTTP-01):** In addition to the OstrichPKI ACME
+*server* below, the NPE portal embeds an ACME *client* (`instant-acme`, FIPS /
+aws-lc-rs backend) so it auto-enrolls and auto-renews **its own TLS server
+certificate** from an ACME directory using the HTTP-01 challenge (§8.3):
+
+- [services/npe-portal/src/server/acme.rs](../../services/npe-portal/src/server/acme.rs) -
+  account creation (§7.1.2), order + authorization handling (§7.1.3/§7.1.4),
+  HTTP-01 key-authorization responder at `/.well-known/acme-challenge/{token}`
+  (§8.1/§8.3), `finalize` + certificate download (§7.4), and a background
+  renewal loop. Served challenge tokens are removed after every order (success
+  or failure); terminal (non-pending) authorizations are not re-answered.
+- The issued cert is swapped into the live rustls listener via a dynamic
+  `ResolvesServerCert` resolver — renewal takes effect without a restart.
+- The directory's own private-CA HTTPS endpoint is trusted via a configured CA
+  bundle (`acme.caBundle`), not the public web-PKI roots.
+
 **Sections:**
 
 #### §7.1: Resources
@@ -672,8 +695,12 @@ Key corrections in this phase:
   path now rejects a request whose nonce was unknown/expired/already used
   (`badNonce`). **Fixed:** previously the boolean result was ignored, so a
   replayed (already-consumed) nonce was accepted — a replay-protection bypass.
-
-**Enhancement Needed:** Phase 15 - Use FIPS-validated DRBG instead of UUID
+- ✅ **Method-specific status codes (RFC 8555 §7.2):** `get_new_nonce` now returns
+  **200 (OK)** for `HEAD` and **204 (No Content)** for `GET` (both with a fresh
+  `Replay-Nonce`). **Fixed:** previously it returned `204` for both; the §7.2
+  SHOULD-200 for HEAD was not honored, which strictly-conformant clients (e.g.
+  `instant-acme`) reject with "error response from newNonce resource". The route
+  remains GET/HEAD only — any other method is `405` (no POST tolerance).
 
 ---
 
@@ -855,6 +882,25 @@ issued certificate (subject `CN=est-client.example.com`, issuer
 `CN=OstrichPKI EST Root`), which `openssl verify` accepts against the root.
 `/.well-known/est/cacerts` returns the CA certificate as PKCS#7.
 
+A public `GET /.well-known/est/catalog` endpoint
+(`crates/ostrich-est/src/rest.rs`) publishes the profile-label scheme
+(RFC 7030 §3.2.2) as discovery metadata — the valid `PT`/`AK` tokens, validity
+and CC/S/A bounds, and example labels — sourced from `ostrich_est::label::catalog`
+so it stays in lockstep with what `parse_label` accepts (SI-10). It backs the
+NPE-portal "EST / enrollment catalog" page; it carries no certificate or key
+material and requires no authentication.
+
+The certs-only PKCS#7 encoder (RFC 5652 §5 degenerate `SignedData`) is now a
+shared primitive, `ostrich_x509::pkcs7::encode_certs_only_pkcs7`
+(`crates/ostrich-x509/src/pkcs7.rs`), used by both the EST responses above and a
+management-API download endpoint `GET /api/v1/certificates/{id}/pkcs7`
+(`crates/ostrich-ca/src/rest.rs`), which returns the leaf plus its issuing CA
+certificate as a base64 `.p7b`. Per RFC 5652 §5.1 the `certificates` field is a
+`SET OF`, so certificate order is not positional. NPE-portal certificate detail
+offers PEM/DER/full-chain (derived client-side from the leaf PEM + CA chain) and
+this PKCS#7 form. (Chain depth is currently the single issuing CA; a full chain
+to the trust anchor is a POAM pending the CA holding its own issuer chain.)
+
 The enrollment handlers now call the CA gRPC service via `EstCaClient`
 (crates/ostrich-est/src/rest.rs, services/est-server/src/main.rs) instead of
 returning an empty 202 placeholder; they fail closed when CA integration is
@@ -872,6 +918,12 @@ token, the §3.x identity binding (H1) forces the CSR CN/SAN to equal that
 identity, and the token is consumed on first successful issuance (single-use).
 Only the token's SHA-256 is stored. See `crates/ostrich-est/src/enrollment_token.rs`
 and `migrations/00013_est_enrollment_tokens.sql`.
+
+Token-management metadata endpoints (`GET/DELETE /api/v1/est/enrollment-tokens`)
+are outside RFC 7030 but support the bootstrap extension operationally. NPE
+Sponsor callers are scoped to tokens they created (`created_by`), while legacy CA
+operator/admin token managers retain global review/revocation. This preserves the
+RFC enrollment behavior while enforcing AC-3/AC-6 on the management API.
 
 **Certificate-profile selection (§4.2):** when minting a token the operator may
 pin the issuance profile the enrolled certificate is cut under, chosen from an
@@ -904,6 +956,29 @@ RFC 5958) and the certificate (`application/pkcs7-mime`, certs-only). The
 private key is exported via `CryptoProvider::export_private_key` (software
 provider only) and zeroized after the response is built.
 
+**EFS delivery variant (RFC 7292 PKCS#12):** when the resolved profile is `efs`
+(Microsoft Encrypting File System), `/serverkeygen` generates an RSA-2048 key
+(Windows EFS requires RSA), and instead of the `multipart/mixed` PKCS#8 + PKCS#7
+response it wraps the key and the issued certificate in an encrypted PKCS#12
+(RFC 7292) built by `ostrich_x509::pkcs12::build_encrypted_pkcs12` — PBES2
+(PBKDF2-HMAC-SHA256 + AES-256-CBC) shrouded key bag, HMAC-SHA256 integrity MAC,
+matching `localKeyId` on both bags. The PKCS#12 is protected by a freshly
+generated, CSPRNG-derived one-time password (~144 bits) returned exactly once in
+the JSON response (`{format, certificateId, pkcs12, password}`) and never stored
+server side (SC-12 key management, SI-12 sensitive-output handling). Builder
+implementation: [crates/ostrich-x509/src/pkcs12.rs](../../crates/ostrich-x509/src/pkcs12.rs);
+delivery path: [crates/ostrich-est/src/rest.rs](../../crates/ostrich-est/src/rest.rs)
+`server_key_gen`.
+
+For the portal EFS flow the request MAY instead be an `application/json` body
+(`{sans, keyStrength}`) with no PKCS#10 CSR: the subject is taken from the
+mTLS-authenticated identity rather than a client-supplied CSR, so no untrusted
+ASN.1 is parsed and no throwaway client key is generated (attack-surface
+reduction; SI-10 input validation — requested SANs are still checked against the
+caller's allowlist). The RFC 7030 §4.4.1 base64-CSR input remains supported for
+standard EST clients. The EFS profile is reached via the `PTEFS` label
+(`ParsedLabel::profile_name`).
+
 **Live full-stack proof:** [tests/integration/est_serverkeygen_e2e.rs](../../tests/integration/est_serverkeygen_e2e.rs)
 spins up the CA gRPC service (SoftHSM-backed) and the EST HTTP server in-process,
 POSTs a CSR to `/.well-known/est/serverkeygen` over real HTTP, and verifies with
@@ -920,7 +995,7 @@ plus a CA-issued certificate for it, end to end.
 - ✅ §3.2.2 - CA Certificates (/cacerts)
 - ✅ §3.3.1 - Simple Enrollment (/simpleenroll)
 - ✅ §3.3.2 - Simple Re-enrollment (/simplereenroll)
-- ✅ §3.4 - Server-Side Key Generation (/serverkeygen) - implemented (ECDSA P-256; CSR-based PoP; PKCS#8 + PKCS#7 multipart per §4.4.2)
+- ✅ §3.4 - Server-Side Key Generation (/serverkeygen) - implemented (ECDSA P-256; CSR-based PoP; PKCS#8 + PKCS#7 multipart per §4.4.2; EFS profile → RSA-2048 delivered as an encrypted PKCS#12 (RFC 7292) with a one-time password)
 
 **Implementation:**
 
@@ -1434,6 +1509,9 @@ consumed by the TAMP messages above.
 | 1.0 | 2026-01-03 | OstrichPKI Team | Initial RFC compliance assessment based on v0.10.0 codebase |
 | 1.2 | 2026-01-04 | OstrichPKI Team | Added RFC 4514 DN parsing implementation, documented SAN parsing from CSR extensions, updated compliance to 70% |
 | 1.7 | 2026-06-23 | OstrichPKI Team | Added RFC 5934 (TAMP manager role) and RFC 5914 (Trust Anchor Format) implementation in the `ostrich-tamp` crate and `ostrich-tamp-server` |
+| 1.8 | 2026-06-26 | OstrichPKI Team | NPE Portal (`ostrich-npe-portal`): RFC 8446 (TLS 1.3) + RFC 9325 (TLS client authentication / mTLS) for operator auth; RFC 5280 §4.2.1.4 certificate-policy OIDs consumed for role mapping. (RFC 7030 §3.2.2 EST label routing is planned for a later milestone.) |
+| 1.9 | 2026-06-26 | OstrichPKI Team | RFC 7030 §3.2.2: EST arbitrary-label routing implemented in `ostrich-est` — `/.well-known/est/{label}/...` with the `PTptval[-AKakval][-VPvpval][-CCccval]` scheme; the label selects the certificate profile and (by key algorithm) the issuing CA backend, enabling one EST instance to front multiple CAs (e.g. EC and RSA). |
+| 2.0 | 2026-06-29 | OstrichPKI Team | RFC 7030 §4.4 + RFC 7292: EFS server-side key generation delivers the key + certificate as an encrypted PKCS#12 (PBES2 PBKDF2-HMAC-SHA256 / AES-256-CBC + HMAC-SHA256 MAC) under a one-time password — `crates/ostrich-x509/src/pkcs12.rs`. The EFS portal flow uses a CSR-free JSON `/serverkeygen` input (subject from the mTLS identity; no untrusted PKCS#10 parsed) alongside the standard §4.4.1 CSR path. RFC 5754 (SHA-2 AlgorithmIdentifiers omit NULL params) observed in the PKCS#12 structure. |
 
 ---
 

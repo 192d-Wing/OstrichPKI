@@ -9,6 +9,7 @@
 //! - Template rendering with CSP nonce injection
 
 pub mod auth;
+pub mod backend_client;
 pub mod config;
 pub mod middleware;
 pub mod proxy;

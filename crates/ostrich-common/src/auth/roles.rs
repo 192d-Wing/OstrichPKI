@@ -109,6 +109,59 @@ pub enum Role {
     ///
     /// NIAP PP-CA: FDP_CER_EXT.1 - certificate enrollment; AC-6 - least privilege
     EstDevice,
+
+    // ===== NPE Portal roles (Non-Person Entity portal) =====
+    //
+    // These roles are derived from client-certificate OIDs at the NPE portal's
+    // mTLS handshake (not stored on accounts the way the CA roles are), but they
+    // must exist in the shared RBAC model because the CA service is the
+    // enforcement point for every action the portal proxies.
+    /// NPE PKI Sponsor (standard requester)
+    ///
+    /// Submits certificate applications and rekeys, views the status of *its own*
+    /// applications, and generates EST enrollment passwords (tokens) for initial
+    /// device enrollment. Own-scope: a Sponsor never sees another requester's
+    /// applications or certificates (enforced in the CA handlers).
+    ///
+    /// NIAP PP-CA: FDP_CER_EXT.1 - certificate enrollment; NIST 800-53: AC-6
+    PkiSponsor,
+
+    /// NPE PKI Sponsor authenticated with an Administrator certificate
+    ///
+    /// All Sponsor privileges plus bulk enrollment (submit a ZIP of CSRs). The
+    /// elevation is driven by the presence of the Admin OID in the client
+    /// certificate at handshake time.
+    ///
+    /// NIAP PP-CA: FMT_SMF.1 - management functions; NIST 800-53: AC-6
+    PkiSponsorAdmin,
+
+    /// NPE Registration Authority
+    ///
+    /// Approves, rejects, overrides, or cancels certificate applications and
+    /// revokes issued certificates. The override capability lets an RA push an
+    /// application past validation blocks straight to the CA (audited).
+    ///
+    /// NIAP PP-CA: FDP_CER_EXT.3 - request approval; FDP_CER_EXT.4 - revocation
+    RegistrationAuthority,
+
+    /// NPE Certificate Authority Admin (CAA)
+    ///
+    /// Configures global settings, manages namespaces/wildcards, and manages
+    /// CAA/RA user roles. A self-action block prevents a CAA from disabling or
+    /// modifying its own account (enforced in the user-management handler).
+    ///
+    /// NIAP PP-CA: FMT_SMF.1 / FMT_SMR.2 - security management & roles
+    CaaAdmin,
+
+    /// NPE Auditor
+    ///
+    /// A dedicated, read-only reviewer of the certificate-lifecycle audit trail
+    /// (portal Audit Log page + integrity verification). Holds no issuance,
+    /// approval, or configuration authority, so audit review can be assigned to a
+    /// principal independent of those who act — the separation-of-duties posture
+    /// (AU-6 / AC-5 / FMT_SMR.2) that an operational role holding audit-read
+    /// cannot provide on its own.
+    NpeAuditor,
 }
 
 impl Role {
@@ -136,6 +189,13 @@ impl Role {
             Role::EstEnrollee => &[],
             // Machine-only re-enrollment principal; never combined with human roles.
             Role::EstDevice => &[],
+            // NPE portal roles: OID-derived, single-role-per-certificate by
+            // design, so no in-set incompatibilities are defined here.
+            Role::PkiSponsor => &[],
+            Role::PkiSponsorAdmin => &[],
+            Role::RegistrationAuthority => &[],
+            Role::CaaAdmin => &[],
+            Role::NpeAuditor => &[],
         }
     }
 
@@ -156,6 +216,15 @@ impl Role {
             Role::Aor => "Certificate request approval (Authorized Organization Representative)",
             Role::EstEnrollee => "EST enrollment token principal (single-use, machine identity)",
             Role::EstDevice => "EST device principal (re-enrollment by existing certificate)",
+            Role::PkiSponsor => "NPE PKI Sponsor (submit/rekey applications, own-scope)",
+            Role::PkiSponsorAdmin => {
+                "NPE PKI Sponsor with admin certificate (adds bulk enrollment)"
+            }
+            Role::RegistrationAuthority => {
+                "NPE Registration Authority (approve/reject/override/revoke)"
+            }
+            Role::CaaAdmin => "NPE Certificate Authority Admin (config, namespaces, user roles)",
+            Role::NpeAuditor => "NPE Auditor (read-only audit review + integrity verification)",
         }
     }
 
@@ -169,6 +238,11 @@ impl Role {
             Role::Aor => "aor",
             Role::EstEnrollee => "est_enrollee",
             Role::EstDevice => "est_device",
+            Role::PkiSponsor => "pki_sponsor",
+            Role::PkiSponsorAdmin => "pki_sponsor_admin",
+            Role::RegistrationAuthority => "registration_authority",
+            Role::CaaAdmin => "caa_admin",
+            Role::NpeAuditor => "npe_auditor",
         }
     }
 
@@ -178,10 +252,16 @@ impl Role {
             "administrator" | "admin" => Some(Role::Administrator),
             "auditor" => Some(Role::Auditor),
             "operations_staff" | "operations" | "operator" => Some(Role::OperationsStaff),
-            "ra_staff" | "ra" | "registration_authority" => Some(Role::RaStaff),
+            "ra_staff" | "ra" => Some(Role::RaStaff),
             "aor" | "authorized_org_rep" => Some(Role::Aor),
             "est_enrollee" => Some(Role::EstEnrollee),
             "est_device" => Some(Role::EstDevice),
+            // NPE portal roles
+            "pki_sponsor" | "sponsor" => Some(Role::PkiSponsor),
+            "pki_sponsor_admin" | "sponsor_admin" => Some(Role::PkiSponsorAdmin),
+            "registration_authority" | "npe_ra" => Some(Role::RegistrationAuthority),
+            "caa_admin" | "caa" => Some(Role::CaaAdmin),
+            "npe_auditor" => Some(Role::NpeAuditor),
             _ => None,
         }
     }
@@ -194,6 +274,11 @@ impl Role {
             Role::OperationsStaff,
             Role::RaStaff,
             Role::Aor,
+            Role::PkiSponsor,
+            Role::PkiSponsorAdmin,
+            Role::RegistrationAuthority,
+            Role::CaaAdmin,
+            Role::NpeAuditor,
         ]
     }
 }
@@ -216,6 +301,11 @@ impl std::str::FromStr for Role {
             "aor" | "Aor" | "AOR" => Ok(Role::Aor),
             "est_enrollee" | "EstEnrollee" => Ok(Role::EstEnrollee),
             "est_device" | "EstDevice" => Ok(Role::EstDevice),
+            "pki_sponsor" | "PkiSponsor" => Ok(Role::PkiSponsor),
+            "pki_sponsor_admin" | "PkiSponsorAdmin" => Ok(Role::PkiSponsorAdmin),
+            "registration_authority" | "RegistrationAuthority" => Ok(Role::RegistrationAuthority),
+            "caa_admin" | "CaaAdmin" => Ok(Role::CaaAdmin),
+            "npe_auditor" | "NpeAuditor" => Ok(Role::NpeAuditor),
             _ => Err(format!("Unknown role: {}", s)),
         }
     }

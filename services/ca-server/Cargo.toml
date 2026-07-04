@@ -21,6 +21,8 @@ ostrich-crypto = { path = "../../crates/ostrich-crypto" }
 ostrich-audit = { path = "../../crates/ostrich-audit" }
 ostrich-protocol = { path = "../../crates/ostrich-protocol" }
 ostrich-x509 = { path = "../../crates/ostrich-x509" }
+# Shared NATS message contract for the expiry-notify producer.
+ostrich-notify-contract = { workspace = true }
 
 # gRPC server (inter-service issuance API)
 tonic = { workspace = true }
@@ -43,6 +45,16 @@ clap = { workspace = true, features = ["derive", "env"] }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# Expiry-notification producer: scans expiring certs and publishes schedules to
+# the notify-service over NATS JetStream (optionally TLS + password auth).
+async-nats = { workspace = true }
+# NATS TLS needs a process-wide rustls CryptoProvider; install aws-lc-rs (FIPS).
+rustls = { workspace = true }
+# Zeroize the NATS password in memory after use (NIST 800-53 SI-12).
+zeroize = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
 
 # Logging
 tracing = { workspace = true }

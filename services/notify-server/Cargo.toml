@@ -1,0 +1,58 @@
+[package]
+name = "ostrich-notify-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OstrichPKI certificate-expiry notification service (NATS JetStream → SMTP)"
+
+[[bin]]
+name = "ostrich-notify-server"
+path = "src/main.rs"
+
+# A standalone notification microservice with two runtime roles (--role):
+#   scheduler — consumes cert.expiry.notify, stores schedules in its OWN database,
+#               and publishes ready-to-send emails to email.send on the configured
+#               days/time/frequency.
+#   sender    — consumes email.send and delivers via an SMTP relay.
+# Decoupled from issuance: an email/SMTP outage never blocks the CA.
+[dependencies]
+# Internal crates
+ostrich-common = { workspace = true }            # shared health/readiness probes
+ostrich-notify-contract = { workspace = true }   # shared NATS message contract
+
+# Messaging + email
+async-nats = { workspace = true }
+lettre = { workspace = true }
+
+# Own database (separate from ostrich_pki — no migration coupling)
+sqlx = { workspace = true }
+
+# Async runtime + web (health probes)
+tokio = { workspace = true }
+axum = { workspace = true }
+
+# Config
+clap = { workspace = true, features = ["derive", "env"] }
+
+# Serialization + time
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+# TLS provider install (for lettre STARTTLS / NATS TLS)
+rustls = { workspace = true }
+
+# Zeroize SMTP relay credentials in memory (NIST 800-53 SI-12)
+zeroize = { workspace = true }
+
+# Logging + errors
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

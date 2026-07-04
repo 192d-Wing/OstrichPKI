@@ -1,10 +1,50 @@
 # Authority to Operate (ATO) Evidence Collection Guide
 
-**Document Version:** 1.1
+**Document Version:** 1.2
 **Generated:** 2026-01-04
 **OstrichPKI Version:** 0.15.0
 **Framework:** NIST Risk Management Framework (RMF)
 **Compliance Standards:** NIST 800-53 Rev 5, NIAP PP-CA v2.1, FIPS 140-2/140-3
+
+---
+
+## NPE Portal → CA Identity Bridge over mTLS (AC-17 / SC-8 / IA-2 / AC-3)
+
+The NPE portal forwards each operator's identity to the CA as `X-Npe-*` headers.
+This is only trustworthy over a mutually-authenticated channel: the portal
+presents a client certificate the CA can verify, and the CA honours the
+forwarded identity only from that allow-listed proxy subject. Wired and verified
+in the live cluster 2026-07-02.
+
+| Control / SFR | Framework   | Evidence |
+|---------------|-------------|----------|
+| AC-17         | NIST 800-53 | ca-server REST serves TLS 1.3 with optional client auth (`TLS_CERT_FILE`/`TLS_KEY_FILE`/`TLS_CLIENT_CA_FILE`); `CA_TRUSTED_PROXY_SUBJECTS=CN=npe-portal`. Startup log: "Identity bridge enabled … subjects=[CN=npe-portal]", "Serving HTTPS (TLS 1.3) … mtls=true". |
+| SC-8          | NIST 800-53 | The forwarded identity travels over mTLS, not plaintext HTTP. Portal dials `https://ca-service:8080` presenting its client cert (`backend_client.rs` → "Backend proxy: mTLS enabled"). |
+| IA-2 / AC-3   | NIST 800-53 | `TrustedProxyAuthLayer` accepts `X-Npe-*` only when the peer cert subject is allow-listed; the CA then enforces RBAC on the bridged NPE role. `is_bridgeable_role` caps bridged roles to NPE roles (AC-6). |
+| FTP_ITC.1     | NIAP PP-CA  | Inter-service trusted channel between portal and CA is mutually authenticated (both present certificates issued by the OstrichPKI Intermediate CA). |
+
+Live verification (replaying the portal's exact request to the CA):
+
+```
+client cert (CN=npe-portal) + X-Npe-Roles: caa_admin   → HTTP 200  (namespaces)
+no client cert (spoofed header only)                   → HTTP 401  (bridge refuses)
+client cert + X-Npe-Roles: pki_sponsor                 → HTTP 403  (lacks ManageNamespaces)
+```
+
+Certificates are issued from the running OstrichPKI Intermediate CA (dogfood),
+not a standalone CA. Full reproduction (issuance, secrets, deployment, probes) is
+documented in [docs/runbooks/npe-portal-ca-mtls-bridge.md](../runbooks/npe-portal-ca-mtls-bridge.md).
+
+Code path summary:
+
+- [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs) — TLS + `CA_TRUSTED_PROXY_SUBJECTS`, `with_optional_client_auth`
+- [crates/ostrich-common/src/auth/middleware.rs](../../crates/ostrich-common/src/auth/middleware.rs) — `TrustedProxyAuthLayer`, `is_bridgeable_role`, `build_trusted_proxy_user`
+- [services/npe-portal/src/server/backend_client.rs](../../services/npe-portal/src/server/backend_client.rs) — portal presents client cert to backends
+- [services/npe-portal/src/server/proxy.rs](../../services/npe-portal/src/server/proxy.rs) — strips inbound `X-Npe-*` (anti-spoofing) and re-attaches the authenticated identity
+
+Note: the ca-server overlay (`deploy/cluster/ostrich-test-ca.yaml`) and the
+`ca-mtls` / `npe-backend-mtls` secrets are cluster-local (gitignored / not in
+source control); the runbook is the source of truth for re-provisioning them.
 
 ---
 
@@ -1622,6 +1662,41 @@ surfaced through the web-ui proxy.
 Note: the renewal-notification contact is **storage + display only** — no mail is
 sent (no mailer exists yet); see the FQDNs section of
 `services/web-ui/web/ROADMAP.md` for the deferred notification-delivery work.
+
+---
+
+## NPE Portal Evidence (`ostrich-npe-portal`)
+
+A standalone Non-Person Entity enrollment portal (Axum BFF + React/Cloudscape
+SPA) authenticated by mTLS client certificate, with OID-derived roles.
+
+| Control / SFR | Framework | Evidence |
+|---------------|-----------|----------|
+| IA-2 / IA-5(2), FIA_X509_EXT.1/.2 | NIST / NIAP | mTLS client-cert auth; verified leaf → role from certificate-policy OIDs. `services/npe-portal/src/server/oid.rs` (`authenticate`), `crates/ostrich-common/src/tls.rs` (`PeerCertificate`). |
+| CM-6 | NIST 800-53 | Fail-closed: refuses to start without mandatory mTLS unless `--allow-insecure`. `services/npe-portal/src/main.rs`. |
+| AC-3 / AC-6, FMT_SMR.2 | NIST / NIAP | Four least-privilege NPE roles + permission map; identity-forwarding proxy allowlisted to CA/EST. `crates/ostrich-common/src/auth/{roles.rs,permissions.rs}`, `services/npe-portal/src/server/proxy.rs`. |
+| AC-8 | NIST 800-53 | Mandatory USG consent gate before any API call. `services/npe-portal/src/server/middleware.rs`, `web/src/components/consent-modal.tsx`. |
+| AC-12 / SC-23, FTA_SSL.1/.3 | NIST / NIAP | 30-minute inactivity lock (refreshed only on real activity); sessions bound to certificate fingerprint and re-checked on `/api/*`, `/auth/userinfo`, and `/auth/consent`. `services/npe-portal/src/server/session.rs`, `services/npe-portal/src/server/router.rs`. |
+| AU-2 / AU-3 / AU-12, FAU_GEN.1/.2 | NIST / NIAP | Structured `Authentication` audit records for login/consent/logout. `services/npe-portal/src/server/audit.rs`. POA&M: attach `DatabaseAuditSink` (AU-9(3)/AU-10) when the portal is provisioned with the audit store. |
+| AC-3 / AU-2, FDP_CER_EXT.3 / FDP_SEPP.1 | NIST / NIAP | RA approval queue (approve/reject/override) gated on `ApproveRequest` at the REST layer AND the approval engine's `can_approve` (requestor ≠ approver); override requires `OverrideValidation`, recorded on the decision. `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-ca/src/approval.rs`. |
+| AC-3 / AC-6, FMT_MTD.1 / FDP_ACC.1 | NIST / NIAP | Sponsor/NPE Administrator certificate inventory, FQDN history, and EST token metadata are owner-scoped in SQL; EST token list/revoke is scoped to `created_by` for NPE sponsors. `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-est/src/rest.rs`, `crates/ostrich-db/src/repository/{certificate,fqdn,est}.rs`. |
+| AC-2 / AC-5, FMT_SMR.2 / FMT_MTD.1 | NIST / NIAP | CAA user management with self-action block (no self modify/disable/delete) and a role-assignment ceiling (NPE roles only). `crates/ostrich-ca/src/rest.rs` (`load_target_user_guarded`, `parse_roles`). |
+| CM-3, FMT_SMF.1 / FDP_ACF.1 | NIST / NIAP | CAA wildcard/namespace policy + system-config management, attributed + audited; config writes are known-key + type-validated. `crates/ostrich-ca/src/rest.rs`, migrations `00019`/`00020`. |
+| SC-12 / SI-12, FCS_CKM.1 / FCS_COP.1 | NIST / NIAP | EFS server-side keygen → encrypted PKCS#12 (RFC 7292) under a one-time password (verified against openssl 3.5). `crates/ostrich-x509/src/pkcs12.rs`, `crates/ostrich-est/src/rest.rs`. |
+| AC-3 / SI-10, FDP_CER_EXT.2 | NIST / NIAP | Administrator bulk enrollment (ZIP of CSRs): per-CSR validation + queued requests + durable per-CSR outcome; entry/size caps (anti zip-bomb). `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-db/src/repository/bulk_enrollment.rs`. |
+| SA-10 / SI-7, SC-8 | NIST 800-53 | Reproducible container image (`Dockerfile` `npe-portal` target, CI-published) + Helm chart (2-replica active-active, mTLS, per-network ssl-passthrough ingress). `deploy/helm/ostrich-pki/`. |
+
+Test evidence:
+
+```
+cargo clippy -p ostrich-npe-portal -p ostrich-ca -p ostrich-x509 -p ostrich-est -- -D warnings  # Clean
+cargo test  -p ostrich-ca       # passed (incl. override serde, parse_roles, namespace/config validation)
+cargo test  -p ostrich-x509     # passed (incl. encrypted PKCS#12 round-trip)
+cargo test  -p ostrich-est      # passed (incl. EFS serverkeygen, label routing)
+cargo test  -p ostrich-common auth::   # passed (incl. NPE role perms + RA ceiling)
+tsc --noEmit + vite build (services/npe-portal/web)    # exit 0
+helm template ... npe-portal-*                          # renders (deployment/service/configmap/ingress)
+```
 
 ---
 

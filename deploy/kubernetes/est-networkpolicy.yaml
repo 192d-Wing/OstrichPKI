@@ -1,0 +1,46 @@
+# NetworkPolicy for the EST server's in-cluster CLEARTEXT port (8443).
+#
+# est-service:8443 is intentionally plain HTTP for in-cluster consumers, but the
+# namespace had no NetworkPolicies, so ANY pod could reach it — and when the NPE
+# portal identity bridge (EST_TRUSTED_PROXY_SUBJECTS) is enabled, the portal
+# forwards the operator identity (X-Npe-*) to EST over this cleartext hop. This
+# restricts 8443 to the only two in-cluster consumers (the npe-portal and web-ui
+# proxies), a SC-7 compensating control for the non-TLS port until the internal
+# hop is moved to mTLS. Kubelet health probes come from the host and are allowed
+# by Cilium's default host policy. The external mTLS enrollment port (8444, also
+# the Prometheus scrape target) is left open — it is TLS/mTLS-protected.
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: AC-3, SC-7 (Boundary Protection), SC-8 (compensating control for
+#   the cleartext in-cluster hop), AC-17
+# - NIAP PP-CA: FDP_IFC.1 / FDP_IFF.1
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: est-restrict-cleartext-port
+  namespace: ostrich-pki
+  labels:
+    app.kubernetes.io/part-of: ostrich-pki
+spec:
+  podSelector:
+    matchLabels:
+      app: est-server
+  policyTypes:
+    - Ingress
+  ingress:
+    # 8443 (in-cluster PLAINTEXT): only the npe-portal and web-ui proxies.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: npe-portal
+        - podSelector:
+            matchLabels:
+              app: web-ui
+      ports:
+        - protocol: TCP
+          port: 8443
+    # 8444 (external HTTPS + mTLS enrollment via ingress; Prometheus scrape):
+    # TLS/mTLS-protected, leave reachable.
+    - ports:
+        - protocol: TCP
+          port: 8444

@@ -1,0 +1,94 @@
+# NATS with JetStream — the queue between the CA producer and the notify-service.
+# Single-node with a persistent store (v1); a production deployment would run a
+# clustered StatefulSet.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nats-data
+  namespace: ostrich-pki
+  labels: { app: nats }
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  namespace: ostrich-pki
+  labels: { app: nats }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: nats }
+  template:
+    metadata:
+      labels: { app: nats }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: nats
+          image: nats:2.10-alpine
+          # JetStream + server-side TLS + single-user password auth, all via flags.
+          # The credentials are expanded from the nats-auth secret env by the shell
+          # (config-file `$VAR` expansion proved unreliable for the password, giving
+          # "Authorization Violation"); shell expansion into --user/--pass is robust.
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              exec nats-server -js -sd /data -m 8222
+              --tls --tlscert /etc/nats/tls/tls.crt --tlskey /etc/nats/tls/tls.key
+              --user "$NATS_USER" --pass "$NATS_PASSWORD"
+          env:
+            - name: NATS_USER
+              valueFrom: { secretKeyRef: { name: nats-auth, key: NATS_USER } }
+            - name: NATS_PASSWORD
+              valueFrom: { secretKeyRef: { name: nats-auth, key: NATS_PASSWORD } }
+          ports:
+            - { name: client, containerPort: 4222 }
+            - { name: monitor, containerPort: 8222 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: nats-tls, mountPath: /etc/nats/tls, readOnly: true }
+          livenessProbe:
+            httpGet: { path: /healthz, port: monitor }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /healthz, port: monitor }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: nats-data
+        - name: nats-tls
+          secret:
+            secretName: nats-server-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: ostrich-pki
+  labels: { app: nats }
+spec:
+  type: ClusterIP
+  ports:
+    - { name: client, port: 4222, targetPort: client }
+  selector:
+    app: nats

@@ -1,0 +1,24 @@
+# ACME production overlay for the NPE portal. Apply deliberately (cutover):
+#   kubectl apply -k deploy/kubernetes/npe-portal-acme/
+#
+# Prerequisites (operator-supplied; see README.md):
+#   - Secret    npe-operator-client-ca (key ca.pem)
+#   - ConfigMap npe-acme-ca-bundle     (key acme-ca-bundle.pem)
+#
+# The main external mTLS route (npe-portal-ingressroute.yaml, TLS passthrough on
+# :443) is shared with the smoke deploy and is NOT duplicated here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ostrich-pki
+resources:
+  - npe-portal-acme-pvc.yaml
+  - npe-portal-acme-configmap.yaml
+  - npe-portal-acme-service.yaml
+  - npe-portal-acme-deployment.yaml
+  - npe-portal-acme-challenge-ingressroute.yaml
+
+# Pin to the first build containing the ACME serve path (feat-npe-portal HEAD).
+# Bump as new portal builds land.
+images:
+  - name: ghcr.io/192d-wing/npe-portal
+    newTag: sha-0f9965b

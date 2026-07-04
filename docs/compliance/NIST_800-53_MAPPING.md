@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 1.6
+**Document Version:** 1.8
 **Date:** 2026-01-07
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -96,12 +96,22 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   - `crates/ostrich-ca/src/rest.rs` — IssueCertificate, RevokeCertificate, GenerateCrl,
     ApproveRequest, RejectRequest, SubmitRequest, ViewRequests, ViewConfig (profiles),
     ViewCertificate (GET `/api/v1/certificates` list + GET `/api/v1/certificates/{id}`
-    detail + GET `/api/v1/certificates/stats` inventory-wide status counts — read
-    access to the issued-certificate inventory, distinct from the IssueCertificate
-    POST on the same path),
+    detail + GET `/api/v1/certificates/{id}/pkcs7` certs-only `.p7b` download
+    (RFC 5652 §5; own-scoped, AU-2/AU-3 audited) + GET `/api/v1/certificates/stats`
+    inventory-wide status counts — read access to the issued-certificate
+    inventory, distinct from the IssueCertificate POST on the same path; the list
+    accepts an `expiringInDays` filter backing the dashboard "Expiring soon"
+    drill-down),
     ReadAuditLog (GET `/api/v1/audit` paginated/filtered audit review — AU-6 /
     FAU_SAR.1; GET `/api/v1/audit/verify` recomputes the hash chain and verifies
     each signed record against the CA public key — AU-9/AU-9(3)/AU-10, FAU_STG.1.2)
+    — granted to the NPE `RegistrationAuthority`, `CaaAdmin`, and the dedicated
+    read-only `NpeAuditor` roles (`crates/ostrich-common/src/auth/permissions.rs`)
+    and surfaced as the NPE-portal Audit Log page (`/audit`). Audit-log ACCESS is
+    itself audited — both `audit.review` (list) and `audit.verify` append a
+    hash-chained record (`record_audit_access`, AU-2/AU-6/AU-9) — and the
+    integrity-verify recompute is rate-limited (30 s result cache) so it cannot be
+    abused as a full-table-rehash DoS (SC-5)
   - `crates/ostrich-est/src/rest.rs` — SubmitRequest, RenewCertificate,
     GenerateEstToken (mint/list/revoke device enrollment tokens — POST/GET
     `/api/v1/est/enrollment-tokens`, DELETE `…/{id}`; single-use, time-limited;
@@ -332,20 +342,27 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **Implementation:**
 
 - REST and gRPC endpoints support TLS for remote access
-- mTLS planned for inter-service communication
+- **NPE portal → CA identity bridge over mTLS (deployed):** the ca-server REST
+  listener serves TLS 1.3 with optional client authentication
+  (`TLS_CERT_FILE`/`TLS_KEY_FILE`/`TLS_CLIENT_CA_FILE`); the portal presents a
+  client certificate (`CN=npe-portal`, issued by the OstrichPKI Intermediate CA)
+  and the CA accepts its forwarded `X-Npe-*` identity ONLY for the configured
+  trusted-proxy subject (`CA_TRUSTED_PROXY_SUBJECTS=CN=npe-portal`). Bearer/admin
+  clients present no certificate and still connect (client auth is optional).
 
 **Evidence:**
 
 - ✅ TLS support in frameworks (axum, tonic)
-- 🔴 TLS not configured in application code
+- ✅ [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs) - `TLS_CLIENT_CA_FILE` + `CA_TRUSTED_PROXY_SUBJECTS`, `with_optional_client_auth(trusted_proxy.is_some())`
+- ✅ [crates/ostrich-common/src/auth/middleware.rs](../../crates/ostrich-common/src/auth/middleware.rs) - `TrustedProxyAuthLayer` bridges identity only when the peer cert subject is allow-listed; `is_bridgeable_role` caps bridged roles to NPE roles (AC-6 defense in depth)
+- ✅ [services/npe-portal/src/server/backend_client.rs](../../services/npe-portal/src/server/backend_client.rs) - portal presents its client certificate to the CA (mTLS)
+- ✅ Live verification: client cert + `caa_admin` → 200; no client cert → 401; client cert + `pki_sponsor` → 403 (see [docs/runbooks/npe-portal-ca-mtls-bridge.md](../runbooks/npe-portal-ca-mtls-bridge.md))
 
 **Gaps:**
 
-- TLS configuration delegated to deployment
-- No enforcement of TLS 1.3 minimum
-- mTLS not enforced for administrative access
-
-**Remediation:** Phase 16 - Configure TLS 1.3+ in application, enforce mTLS for admin endpoints
+- Enforcement of a TLS 1.3 minimum is delegated to the rustls builder defaults
+- Bearer/admin REST access is not yet mTLS-required (client auth is optional so
+  the identity bridge and bearer clients can share the listener)
 
 ---
 
@@ -877,6 +894,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   token on `GET /api/v1/profiles` → 200 (ViewConfig); same token on
   `POST /api/v1/certificates` → 403 (AC-5 separation of duties); 5 bad
   passwords → locked (403, timed); logout → token invalid (401)
+- **NPE operator identity via the trusted-proxy bridge**: NPE operators
+  authenticate to the portal with their mTLS client certificate; the portal
+  resolves the role from the cert's policy OIDs and forwards the identity to the
+  CA over its own mTLS channel (`TrustedProxyAuthLayer`). The CA honours the
+  forwarded identity ONLY from the allow-listed portal subject and only for
+  bridgeable NPE roles. Live: portal cert + `caa_admin` → 200; no portal cert
+  → 401; portal cert + `pki_sponsor` on a CAA route → 403
 
 **Gaps:**
 
@@ -1034,6 +1058,11 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - ✅ TLS 1.2/1.3 support in libraries
 - ✅ mTLS implemented for inter-service communication (Phase 12)
 - ✅ GrpcClientConfig with certificate-based authentication
+- ✅ **NPE portal → CA REST over mTLS (deployed):** the portal's forwarded
+  `X-Npe-*` identity is carried over a TLS 1.3 mTLS channel, not plaintext HTTP.
+  The portal dials `https://ca-service:8080` presenting its client certificate;
+  the ca-server serves REST with TLS + optional client auth. See AC-17 and
+  [docs/runbooks/npe-portal-ca-mtls-bridge.md](../runbooks/npe-portal-ca-mtls-bridge.md).
 
 **Code References:**
 
@@ -1062,6 +1091,15 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 **Web console transport-integrity hardening (SC-8 / SC-18 / SI-10):**
 
+- ✅ **web-ui → CA internal hop is TLS 1.3** (not just edge TLS). The BFF reaches
+  the CA's REST API over `https://ca-service:8080` through a pooled `hyper-rustls`
+  client (aws-lc-rs/FIPS provider) built once with the CA's issuing certificate as
+  a trust anchor (`services/web-ui/src/server/backend_client.rs`, wired via
+  `AppState.ca_client`); the `/api/*` proxy and the internal login/logout-all
+  calls all use it. Config: `backend.tlsCaCert` (+ optional `tlsClientCert`/
+  `tlsClientKey` for a CA that mandates mTLS). This closed a gap where the BFF
+  dialed the CA over plaintext `http://` after the CA REST endpoint moved to
+  TLS 1.3 (optional mTLS), which had broken all admin authentication.
 - ✅ Per-request Content-Security-Policy with a fresh cryptographic nonce
   (`services/web-ui/src/server/middleware/csp.rs`): `script-src` is nonce-strict
   (+ `'wasm-unsafe-eval'` for the Yew WASM client); `default-src`, `connect-src`,
@@ -1117,6 +1155,9 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - [crates/ostrich-crypto/src/pkcs11/mod.rs:890-1111](../../crates/ostrich-crypto/src/pkcs11/mod.rs#L890-L1111) - Key wrapping/unwrapping for KRA
 - [crates/ostrich-crypto/tests/pkcs11_integration_test.rs](../../crates/ostrich-crypto/tests/pkcs11_integration_test.rs) - Comprehensive key management tests
 - [crates/ostrich-kra/](../../crates/ostrich-kra/) - Key Recovery Authority
+- [crates/ostrich-x509/src/pkcs12.rs](../../crates/ostrich-x509/src/pkcs12.rs) - Encrypted PKCS#12 (RFC 7292) builder for EFS key delivery: PBES2 (PBKDF2-HMAC-SHA256 + AES-256-CBC) shrouded key bag + HMAC-SHA256 MAC
+- [crates/ostrich-est/src/rest.rs](../../crates/ostrich-est/src/rest.rs) `server_key_gen` - EFS server-side keygen wraps the escrowed RSA key in a PKCS#12 protected by a CSPRNG-derived one-time password returned exactly once and never persisted (SC-12, SI-12)
+- [services/npe-portal/src/server/acme.rs](../../services/npe-portal/src/server/acme.rs) - NPE portal TLS server-certificate lifecycle is fully automated (SC-8/SC-12): the portal enrolls its own cert via ACME (RFC 8555 HTTP-01) on a FIPS/aws-lc-rs backend, caches the cert+key as a single atomic, owner-only (0600) PEM bundle, and a background task renews ahead of expiry, hot-swapping the new key/cert into the live rustls listener (`ResolvesServerCert`) with no restart and no operator action (also CP-10 self-recovery)
 
 **Evidence:**
 
@@ -1794,6 +1835,106 @@ implement the following controls:
 
 ---
 
+## NPE Portal (Non-Person Entity enrollment)
+
+The `ostrich-npe-portal` service (standalone Axum BFF + React/Cloudscape SPA)
+adds a self-service enrollment portal authenticated by mTLS client certificate.
+
+- **IA-2 / IA-5(2) (Identification & PKI-Based Authentication):** operators
+  authenticate passwordlessly by client certificate; the verified leaf is
+  surfaced via `ostrich_common::tls::PeerCertificate` and mapped to an NPE role
+  from its certificate-policy OIDs — `services/npe-portal/src/server/oid.rs`
+  (`authenticate`).
+- **CM-6 (Secure Defaults / Fail Secure):** the service refuses to start without
+  mandatory mTLS (server cert/key + client CA) unless `--allow-insecure` is set
+  for development — `services/npe-portal/src/main.rs`.
+- **AC-3 / AC-6 / AC-5 (Access Enforcement / Least Privilege / SoD):** five
+  OID-derived roles (PkiSponsor, PkiSponsorAdmin, RegistrationAuthority, CaaAdmin,
+  and a read-only NpeAuditor for independent audit review) with a
+  least-privilege permission map —
+  `crates/ostrich-common/src/auth/{roles.rs,permissions.rs}`. The proxy forwards
+  the authenticated identity (`X-Npe-*` headers, with inbound spoofs stripped)
+  and is allowlisted to CA/EST only — `services/npe-portal/src/server/proxy.rs`.
+  Issuer scoping (`allowed_issuers`) prevents a role-granting OID asserted by an
+  unauthorized CA in the trusted bundle from conferring privilege. The approval
+  queue handlers gate "see all pending / view any request" on the `ApproveRequest`
+  permission (not a hardcoded role set), so every approver role — including the
+  NPE `RegistrationAuthority` — sees the queue it is authorized to act on
+  (`crates/ostrich-ca/src/rest.rs` `list_approval_requests` / `get_approval_request` /
+  `bulk_approval_status`). The approval engine's segregation-of-duties check
+  (`ApprovalRequest::can_approve`, used by both approve and reject) likewise gates
+  on the `ApproveRequest` permission, so the REST and engine layers agree.
+  Sponsor self-service inventory views are explicitly scoped to the authenticated
+  requestor: certificate list/detail/stats, FQDN history, and EST token metadata
+  use repository-level owner predicates (`crates/ostrich-ca/src/rest.rs`,
+  `crates/ostrich-db/src/repository/{certificate,fqdn,est}.rs`). Token list and
+  revoke in EST are likewise scoped to `created_by` for NPE sponsors while legacy
+  CA operator/admin token managers retain global visibility (`crates/ostrich-est/src/rest.rs`).
+- **AC-3 / AU-2 (Override of validation):** approving despite validation advisories
+  (`POST /api/v1/approvals/{id}/approve?override=true`) requires the distinct
+  `OverrideValidation` permission on top of `ApproveRequest`; the override is
+  recorded on the decision (`metadata.validation_overridden`, annotated
+  justification) and emitted as a high-signal audit log line —
+  `crates/ostrich-ca/src/rest.rs` `approve_request`.
+- **AC-2 / AC-5 (Account Management / Separation of Duties):** the CAA user
+  management API (`crates/ostrich-ca/src/rest.rs` `list_users` / `create_user` /
+  `set_user_roles` / `set_user_status` / `delete_user`) is gated per-verb by the
+  `ViewUsers` / `CreateUser` / `AssignRoles` / `ModifyUser` / `DeleteUser`
+  permissions, and enforces a self-action block: a CAA may never modify, disable,
+  or delete their own account (`load_target_user_guarded`), so a privileged admin
+  cannot remove the controls on themselves. Unknown role names are rejected
+  (SI-10) rather than silently dropped.
+- **AC-8 (System Use Notification):** mandatory USG consent gate before any
+  proxied API call — `services/npe-portal/src/server/{router.rs,middleware.rs}`
+  and `web/src/components/consent-modal.tsx`.
+- **AC-12 (Session Termination):** 30-minute inactivity lock; the timer is
+  refreshed only on genuine API activity, not passive session probes —
+  `services/npe-portal/src/server/session.rs`.
+- **SC-23 (Session Authenticity):** sessions are bound to the SHA-256 fingerprint
+  of the authenticating certificate and re-verified on every API and authenticated
+  session endpoint (`/auth/userinfo`, `/auth/consent`), so a copied cookie cannot
+  read session metadata or acknowledge consent without the same client certificate.
+- **SC-8 (Transmission Confidentiality):** TLS 1.3 / mTLS via `ostrich_common::tls`.
+- **AU-2 / AU-3 / AU-12 (Audit):** login success/failure, USG consent, and logout
+  emit structured `EventType::Authentication` records with actor/outcome/IP/
+  session — `services/npe-portal/src/server/audit.rs`. POAM: records are emitted
+  to the audit pipeline via the `ostrich_audit` tracing target; attach a
+  `DatabaseAuditSink` (AU-9(3)/AU-10 hash chain + signing) once the portal is
+  provisioned with the audit store.
+
+### Identity bridge (portal → CA/EST)
+
+The portal proxies an allow-listed set of CA/EST routes; the backends consume the
+forwarded identity so they enforce RBAC as the actual NPE operator.
+
+- **IA-2 / AC-17 / SC-8 (mTLS-gated trust):** the portal dials the backends over
+  mTLS, presenting its service client certificate
+  (`services/npe-portal/src/server/backend_client.rs`). The CA/EST trust the
+  forwarded `X-Npe-*` identity ONLY when the verified TLS peer-certificate subject
+  is in a configured allow-list —
+  `crates/ostrich-common/src/auth/middleware.rs` (`TrustedProxyAuthLayer`,
+  `TrustedProxyConfig`). A composite layer accepts the portal identity OR a bearer
+  token, so the admin console keeps working on the same listener.
+- **AC-3 / AC-6 (Access Enforcement / Least Privilege):** the proxied request is
+  authenticated as a synthetic `AuthenticatedUser` whose roles come from the
+  forwarded role names and whose id is a stable UUIDv5 of the subject DN
+  (`AuthenticatedUser::from_trusted_proxy`), so own-scope checks (e.g. "my
+  applications") resolve consistently across requests. The portal strips any
+  inbound `X-Npe-*` headers so the identity cannot be spoofed.
+- **CM-6 (Fail Secure):** `ca-server` refuses to start when
+  `CA_TRUSTED_PROXY_SUBJECTS` is set without a client CA; `est-server` refuses to
+  start when `EST_TRUSTED_PROXY_SUBJECTS` is set without a portal/enrollment
+  client CA. The trusted-proxy path is disabled entirely when the allow-list is
+  empty.
+- **EST token management:** `est-server` wires the bridge on the
+  token-management endpoints in bearer-enrollment mode via
+  `EST_TRUSTED_PROXY_SUBJECTS` + `EST_PORTAL_CLIENT_CA` (a portal client CA kept
+  separate from the EST enrollment client CA so enabling the bridge does not flip
+  enrollment to mTLS mode). The portal's "Generate Single/Multi-Use Token" pages
+  thus authenticate as the requesting NPE operator.
+
+---
+
 ## Document Change History
 
 | Version | Date | Author | Changes |
@@ -1802,6 +1943,8 @@ implement the following controls:
 | 1.5 | 2026-01-04 | OstrichPKI Team | HSM enforcement and 98% NIAP compliance |
 | 1.6 | 2026-01-07 | OstrichPKI Team | Web UI: AC-2 partial (OIDC), AC-12 implemented (sessions), SC-23 implemented (CSP nonces, PKCE) |
 | 1.7 | 2026-06-23 | OstrichPKI Team | TAMP (RFC 5934) manager: SC-12/SC-13/SC-23/SI-10/SI-12/AU-2/AU-3/AU-12/IA-7/AC-3 evidence (`ostrich-tamp`) |
+| 1.8 | 2026-06-26 | OstrichPKI Team | NPE Portal (`ostrich-npe-portal`): IA-2/IA-5(2) mTLS OID→role auth, CM-6 fail-closed mTLS, AC-3/AC-6 four NPE roles + identity-forwarding allowlisted proxy, AC-8 USG consent, AC-12 30-min inactivity, SC-23 cert-bound sessions, AU-2/AU-3/AU-12 auth audit |
+| 1.9 | 2026-06-26 | OstrichPKI Team | CM-6 secure config: serverAuth (TLS server) certificate profiles capped at 397 days in `ostrich-x509` secure-defaults validation (Apple/iOS / CA-Browser Forum); NPE portal surfaces the advisory 397-day warning. |
 
 ---
 

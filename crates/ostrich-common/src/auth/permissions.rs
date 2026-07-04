@@ -72,6 +72,22 @@ pub enum Permission {
     /// NIAP PP-CA: FMT_SMF.1 - management of enrollment credentials
     GenerateEstToken,
 
+    /// Submit a bulk enrollment (a ZIP of CSRs) for asynchronous processing.
+    /// Distinct from SubmitRequest so the NPE Administrator role can be granted
+    /// bulk submission without widening the standard Sponsor's single-request
+    /// scope. NIAP PP-CA: FMT_SMF.1; NIST 800-53: AC-6
+    BulkEnroll,
+
+    /// Override certificate-application validation blocks (RA function): push an
+    /// application that failed validation rules directly to the CA. Always
+    /// audited (AU-2). NIAP PP-CA: FDP_CER_EXT.3
+    OverrideValidation,
+
+    /// Manage certificate namespaces and wildcard policy (CAA function): the
+    /// allow/deny scopes consulted during CSR validation.
+    /// NIAP PP-CA: FMT_MTD.1; NIST 800-53: CM-3, AC-3
+    ManageNamespaces,
+
     // ===== Audit Operations =====
     /// Read audit logs
     /// NIAP PP-CA: FAU_SAR.1 - Audit review
@@ -169,6 +185,9 @@ impl Permission {
             Permission::RejectRequest => "reject_request",
             Permission::ViewRequests => "view_requests",
             Permission::GenerateEstToken => "generate_est_token",
+            Permission::BulkEnroll => "bulk_enroll",
+            Permission::OverrideValidation => "override_validation",
+            Permission::ManageNamespaces => "manage_namespaces",
             Permission::ReadAuditLog => "read_audit_log",
             Permission::ExportAuditLog => "export_audit_log",
             Permission::SearchAuditLog => "search_audit_log",
@@ -208,6 +227,9 @@ impl Permission {
             Permission::RejectRequest => "Reject certificate requests",
             Permission::ViewRequests => "View pending requests",
             Permission::GenerateEstToken => "Generate EST enrollment tokens",
+            Permission::BulkEnroll => "Submit bulk certificate enrollments",
+            Permission::OverrideValidation => "Override certificate-application validation rules",
+            Permission::ManageNamespaces => "Manage certificate namespaces and wildcard policy",
             Permission::ReadAuditLog => "Read audit logs",
             Permission::ExportAuditLog => "Export audit logs",
             Permission::SearchAuditLog => "Search audit logs",
@@ -279,7 +301,9 @@ pub fn permissions_for_role(role: Role) -> &'static [Permission] {
         ],
 
         Role::Auditor => &[
-            // Audit operations (exclusive to Auditor)
+            // Full audit operations. NOTE: ReadAuditLog (review only) is also
+            // granted to the NPE RegistrationAuthority and CaaAdmin roles for the
+            // portal Audit Log page; Export/Search remain exclusive to Auditor.
             Permission::ReadAuditLog,
             Permission::ExportAuditLog,
             Permission::SearchAuditLog,
@@ -351,6 +375,70 @@ pub fn permissions_for_role(role: Role) -> &'static [Permission] {
         // further binds the CSR identity to a certificate previously issued to
         // the same client. NIST 800-53: AC-6 (least privilege).
         Role::EstDevice => &[Permission::RenewCertificate],
+
+        // ===== NPE Portal roles =====
+        // PKI Sponsor: self-service requester. Own-scope viewing is enforced in
+        // the CA handlers (the permission grants the capability; the handler
+        // limits the result set to the authenticated requester).
+        Role::PkiSponsor => &[
+            Permission::SubmitRequest,
+            Permission::RenewCertificate,
+            Permission::ViewRequests,
+            Permission::ViewCertificate,
+            Permission::GenerateEstToken,
+        ],
+
+        // NPE Administrator: Sponsor + bulk enrollment (admin certificate).
+        Role::PkiSponsorAdmin => &[
+            Permission::SubmitRequest,
+            Permission::RenewCertificate,
+            Permission::ViewRequests,
+            Permission::ViewCertificate,
+            Permission::GenerateEstToken,
+            Permission::BulkEnroll,
+        ],
+
+        // NPE Registration Authority: approve/reject/override applications and
+        // revoke issued certificates.
+        Role::RegistrationAuthority => &[
+            Permission::ApproveRequest,
+            Permission::RejectRequest,
+            Permission::ViewRequests,
+            Permission::RevokeCertificate,
+            Permission::OverrideValidation,
+            Permission::ViewCertificate,
+            // Audit review of the certificate-lifecycle trail (read-only) — an RA
+            // reviews issuance/revocation history as part of its duties.
+            // NIAP PP-CA: FAU_SAR.1 (Audit review). NIST 800-53: AU-6.
+            Permission::ReadAuditLog,
+        ],
+
+        // NPE Certificate Authority Admin: global config, namespace/wildcard
+        // policy, and CAA/RA user-role management. The user-management handler
+        // enforces the self-action block (a CAA cannot modify its own account).
+        Role::CaaAdmin => &[
+            Permission::ModifyConfig,
+            Permission::ViewConfig,
+            Permission::CreateUser,
+            Permission::ModifyUser,
+            Permission::DeleteUser,
+            Permission::AssignRoles,
+            Permission::ViewUsers,
+            Permission::ManageNamespaces,
+            // Audit review + tamper-evidence verification (read-only) for CA
+            // administration oversight. NIAP PP-CA: FAU_SAR.1. NIST 800-53: AU-6.
+            Permission::ReadAuditLog,
+        ],
+
+        // NPE Auditor: a dedicated, read-only reviewer. Audit review + the
+        // read-only certificate/request views needed to make sense of it, and
+        // nothing that acts. NIAP PP-CA: FAU_SAR.1 / FMT_SMR.2. NIST 800-53:
+        // AU-6, AC-5 (separation of duties), AC-6 (least privilege).
+        Role::NpeAuditor => &[
+            Permission::ReadAuditLog,
+            Permission::ViewCertificate,
+            Permission::ViewRequests,
+        ],
     }
 }
 
@@ -496,6 +584,95 @@ mod tests {
         assert!(!role_has_permission(
             Role::EstDevice,
             Permission::RevokeCertificate
+        ));
+    }
+
+    #[test]
+    fn test_npe_sponsor_permissions() {
+        // Sponsor can submit/rekey/view-own and mint EST tokens...
+        assert!(role_has_permission(
+            Role::PkiSponsor,
+            Permission::SubmitRequest
+        ));
+        assert!(role_has_permission(
+            Role::PkiSponsor,
+            Permission::GenerateEstToken
+        ));
+        // ...but never approve, revoke, bulk-enroll, or touch config.
+        assert!(!role_has_permission(
+            Role::PkiSponsor,
+            Permission::ApproveRequest
+        ));
+        assert!(!role_has_permission(
+            Role::PkiSponsor,
+            Permission::BulkEnroll
+        ));
+        assert!(!role_has_permission(
+            Role::PkiSponsor,
+            Permission::RevokeCertificate
+        ));
+    }
+
+    #[test]
+    fn test_npe_administrator_adds_bulk_enroll() {
+        // The NPE Administrator is a Sponsor plus bulk enrollment.
+        assert!(role_has_permission(
+            Role::PkiSponsorAdmin,
+            Permission::BulkEnroll
+        ));
+        assert!(role_has_permission(
+            Role::PkiSponsorAdmin,
+            Permission::SubmitRequest
+        ));
+        assert!(!role_has_permission(
+            Role::PkiSponsor,
+            Permission::BulkEnroll
+        ));
+    }
+
+    #[test]
+    fn test_npe_ra_can_override_and_revoke() {
+        // The CA approval handlers gate "see the whole queue" and "approve" on
+        // these two permissions (not a hardcoded RaStaff/Aor role set), so an NPE
+        // RegistrationAuthority MUST hold them to work the queue it can act on.
+        assert!(role_has_permission(
+            Role::RegistrationAuthority,
+            Permission::ViewRequests
+        ));
+        assert!(role_has_permission(
+            Role::RegistrationAuthority,
+            Permission::ApproveRequest
+        ));
+        assert!(role_has_permission(
+            Role::RegistrationAuthority,
+            Permission::OverrideValidation
+        ));
+        assert!(role_has_permission(
+            Role::RegistrationAuthority,
+            Permission::RevokeCertificate
+        ));
+        // RA does not manage namespaces (that is the CAA).
+        assert!(!role_has_permission(
+            Role::RegistrationAuthority,
+            Permission::ManageNamespaces
+        ));
+    }
+
+    #[test]
+    fn test_npe_caa_manages_namespaces_and_users() {
+        assert!(role_has_permission(
+            Role::CaaAdmin,
+            Permission::ManageNamespaces
+        ));
+        assert!(role_has_permission(Role::CaaAdmin, Permission::AssignRoles));
+        // CAA is a management role, not an issuing/approving one.
+        assert!(!role_has_permission(
+            Role::CaaAdmin,
+            Permission::ApproveRequest
+        ));
+        assert!(!role_has_permission(
+            Role::CaaAdmin,
+            Permission::IssueCertificate
         ));
     }
 

@@ -166,6 +166,9 @@ impl EstCaClient {
         csr_der: &[u8],
         client_id: &str,
         profile_name: &str,
+        // Extra issuance metadata (e.g. label-derived CC/S/A, requested
+        // validity) recorded with the certificate for audit/provenance.
+        extra_metadata: &[(String, String)],
     ) -> Result<Uuid> {
         // Parse CSR to extract subject and public key
         let csr = CertReq::from_der(csr_der)
@@ -198,6 +201,10 @@ impl EstCaClient {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("est_enrollment_id".to_string(), enrollment_id.to_string());
         metadata.insert("est_client_id".to_string(), client_id.to_string());
+        // Label-derived issuance metadata (CC/S/A, requested validity, ...).
+        for (k, v) in extra_metadata {
+            metadata.insert(k.clone(), v.clone());
+        }
 
         // Create gRPC request
         let request = IssueCertificateRequest {

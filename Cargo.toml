@@ -16,6 +16,7 @@ members = [
     "crates/ostrich-acme",
     "crates/ostrich-est",
     "crates/ostrich-tamp",
+    "crates/ostrich-notify-contract",
     # Service binaries
     "services/ca-server",
     "services/acme-server",
@@ -25,6 +26,8 @@ members = [
     "services/kra-server",
     "services/tamp-server",
     "services/web-ui",
+    "services/npe-portal",
+    "services/notify-server",
     # Tools
     "tools/ostrich-cli",
     "tools/ostrich-init",
@@ -52,6 +55,7 @@ ostrich-audit = { path = "crates/ostrich-audit" }
 ostrich-protocol = { path = "crates/ostrich-protocol" }
 ostrich-api = { path = "crates/ostrich-api" }
 ostrich-tamp = { path = "crates/ostrich-tamp" }
+ostrich-notify-contract = { path = "crates/ostrich-notify-contract" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
@@ -100,9 +104,27 @@ spki = "0.7"
 const-oid = { version = "0.9", features = ["db"] }
 pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
 pkcs1 = { version = "0.7", features = ["pem"] }
+# PKCS#12 (RFC 7292) for EFS server-side key delivery (matches der 0.7 / cms 0.2).
+# `kdf` enables the RFC 7292 Appendix B key-derivation used for the PKCS#12 MAC.
+pkcs12 = { version = "0.1", features = ["kdf"] }
+# PBES2 params for encrypting the PKCS#12 shrouded key bag (matches pkcs8 0.10).
+pkcs5 = { version = "0.7", features = ["pbes2", "alloc"] }
 cms = "0.2"
 pem-rfc7468 = { version = "1", features = ["alloc"] }
 webpki-roots = "1.0"
+# ZIP reading for bulk certificate enrollment (Administrator "Submit Bulk").
+# Read-only + deflate is all the bulk-enroll handler needs.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# ACME client (RFC 8555) so the NPE portal auto-enrolls + renews its own TLS
+# server certificate. `fips` selects the aws-lc-rs FIPS crypto backend (matching
+# the rest of the project), `hyper-rustls` gives the default client + the
+# custom-root-CA builder (the OstrichPKI ACME server uses a private-CA cert), and
+# `rcgen` lets `Order::finalize()` generate the keypair + CSR.
+instant-acme = { version = "0.8", default-features = false, features = [
+    "fips",
+    "hyper-rustls",
+    "rcgen",
+] }
 
 # Cryptographic primitives
 ring = "0.17"
@@ -169,6 +191,18 @@ rand_core = "0.10"
 
 # HTTP client (for ACME challenge validation)
 reqwest = { version = "0.13", features = ["json"] }
+
+# Messaging + email (notify-service: NATS JetStream queue + SMTP delivery).
+async-nats = "0.38"
+# rustls TLS (STARTTLS) via the same provider story as the rest of the project;
+# the notify-sender installs the aws-lc-rs default CryptoProvider at startup.
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "builder",
+    "tokio1",
+    "tokio1-rustls-tls",
+    "pool",
+] }
 
 # DNS resolver (for ACME DNS-01 challenge)
 hickory-resolver = "0.26"

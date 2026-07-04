@@ -29,28 +29,34 @@
 pub mod acme;
 pub mod approval;
 pub mod audit;
+pub mod bulk_enrollment;
 pub mod ca;
 pub mod certificate;
 pub mod crl;
 pub mod est;
 pub mod fqdn;
 pub mod kra;
+pub mod namespace;
 pub mod scms;
 pub mod session;
+pub mod system_config;
 pub mod tamp;
 pub mod users;
 
 pub use acme::AcmeRepository;
 pub use approval::ApprovalRepository;
 pub use audit::AuditRepository;
+pub use bulk_enrollment::BulkEnrollmentRepository;
 pub use ca::CaRepository;
 pub use certificate::{CertificateRepository, CertificateStatusCounts};
 pub use crl::CrlRepository;
 pub use est::{EstEnrollmentTokenRow, EstRepository};
 pub use fqdn::{FqdnNotification, FqdnRepository, FqdnSummary};
 pub use kra::KraRepository;
+pub use namespace::NamespaceRepository;
 pub use scms::ScmsRepository;
 pub use session::DbSessionStore;
+pub use system_config::SystemConfigRepository;
 pub use tamp::{TampRepository, TampTargetRow, TampTrustAnchorRow, TrustAnchorWrite};
 pub use users::DbUserRepository;
 

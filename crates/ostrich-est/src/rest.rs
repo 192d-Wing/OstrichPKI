@@ -56,7 +56,9 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use ostrich_audit::AuditSink;
 use ostrich_common::auth::provider::AuthProvider;
-use ostrich_common::auth::{AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy};
+use ostrich_common::auth::{
+    AuthLayer, AuthUser, AuthzLayer, Permission, RbacPolicy, Role, any_role_has_permission,
+};
 use ostrich_crypto::CryptoProvider;
 use ostrich_db::DatabasePool;
 use std::sync::Arc;
@@ -101,6 +103,57 @@ pub enum EstIdentityPolicy {
     AccountAllowList,
 }
 
+/// A named CA backend for label-routed enrollment (RFC 7030 §3.2.2). Multiple
+/// backends let one EST instance issue from, e.g., an EC CA and an RSA CA,
+/// selected by the label's key-algorithm token.
+#[derive(Clone)]
+pub struct CaBackend {
+    /// gRPC client to this CA backend.
+    pub client: Arc<crate::ca_integration::EstCaClient>,
+    /// This backend's CA certificate DER, served by `/{label}/cacerts`.
+    pub certificate_der: Option<Vec<u8>>,
+}
+
+/// Maps a parsed label to a named CA backend. Backend selection is by the
+/// label's key-algorithm token (`2048` -> RSA CA, `P384` -> EC CA, etc.).
+#[derive(Clone, Default)]
+pub struct LabelRoutingConfig {
+    /// Key-algorithm token (`2048`, `P384`) -> backend name.
+    pub algo_backends: std::collections::HashMap<String, String>,
+    /// Backend used when the label specifies no key algorithm.
+    pub default_backend: String,
+}
+
+/// A resolved enrollment target: which CA backend issues, under which profile,
+/// plus any label-derived constraints to forward as issuance metadata.
+struct ResolvedEnrollment<'a> {
+    client: &'a Arc<crate::ca_integration::EstCaClient>,
+    profile: String,
+    /// Key algorithm requested by the label, if any. For client-CSR enrollment
+    /// the client already chose the key; for server-side key generation the
+    /// server must honor (or reject) this.
+    key_algo: Option<crate::label::KeyAlgo>,
+    validity_days: Option<u32>,
+    ccsa: Option<String>,
+}
+
+impl ResolvedEnrollment<'_> {
+    /// Label-derived issuance metadata (CC/S/A, requested validity), forwarded to
+    /// the CA for audit/provenance. Empty for the unlabeled path. NOTE: the CA
+    /// honoring `requested_validity_days` is a follow-up; today it is advisory
+    /// metadata recorded with the issuance, not an enforced override.
+    fn label_metadata(&self) -> Vec<(String, String)> {
+        let mut m = Vec::new();
+        if let Some(cc) = &self.ccsa {
+            m.push(("ccsa".to_string(), cc.clone()));
+        }
+        if let Some(v) = self.validity_days {
+            m.push(("requested_validity_days".to_string(), v.to_string()));
+        }
+        m
+    }
+}
+
 /// EST service state
 #[derive(Clone)]
 pub struct EstState {
@@ -129,6 +182,16 @@ pub struct EstState {
     /// How the requested certificate identity is authorized against the
     /// authenticated principal (H1). Defaults to `MatchUsername`.
     pub identity_policy: EstIdentityPolicy,
+    /// Trusted reverse-proxy (NPE portal) identity bridge. When set, the
+    /// token-management endpoints additionally accept the portal's
+    /// mTLS-forwarded X-Npe-* identity. `None` keeps the configured auth mode
+    /// only. NIST 800-53: IA-2 / AC-3.
+    pub trusted_proxy: Option<Arc<ostrich_common::auth::TrustedProxyConfig>>,
+    /// Named CA backends for label-routed enrollment (RFC 7030 §3.2.2). Empty
+    /// when only the unlabeled (single-CA) path is used.
+    pub ca_backends: std::collections::HashMap<String, CaBackend>,
+    /// Label -> backend routing. `None` disables labeled enrollment.
+    pub label_routing: Option<LabelRoutingConfig>,
 }
 
 impl EstState {
@@ -217,6 +280,9 @@ impl EstState {
             enroll_profile: "tls_client".to_string(),
             auth_mode: EstAuthMode::BearerToken,
             identity_policy: EstIdentityPolicy::MatchUsername,
+            trusted_proxy: None,
+            ca_backends: std::collections::HashMap::new(),
+            label_routing: None,
         }
     }
 
@@ -239,7 +305,21 @@ impl EstState {
             enroll_profile: "tls_client".to_string(),
             auth_mode: EstAuthMode::BearerToken,
             identity_policy: EstIdentityPolicy::MatchUsername,
+            trusted_proxy: None,
+            ca_backends: std::collections::HashMap::new(),
+            label_routing: None,
         }
+    }
+
+    /// Enable the NPE portal identity bridge for token-management endpoints.
+    ///
+    /// NIST 800-53: IA-2 / AC-3 - accept the portal's mTLS-forwarded identity.
+    pub fn with_trusted_proxy(
+        mut self,
+        trusted_proxy: Option<Arc<ostrich_common::auth::TrustedProxyConfig>>,
+    ) -> Self {
+        self.trusted_proxy = trusted_proxy;
+        self
     }
 
     /// Attach the CA gRPC client and CA certificate used for issuance.
@@ -256,12 +336,128 @@ impl EstState {
         self
     }
 
+    /// Register a named CA backend for label-routed enrollment (RFC 7030 §3.2.2).
+    pub fn with_ca_backend(
+        mut self,
+        name: impl Into<String>,
+        client: Arc<crate::ca_integration::EstCaClient>,
+        certificate_der: Option<Vec<u8>>,
+    ) -> Self {
+        self.ca_backends.insert(
+            name.into(),
+            CaBackend {
+                client,
+                certificate_der,
+            },
+        );
+        self
+    }
+
+    /// Configure label -> CA-backend routing. Enables the `/{label}/...` paths.
+    pub fn with_label_routing(mut self, routing: LabelRoutingConfig) -> Self {
+        self.label_routing = Some(routing);
+        self
+    }
+
     /// Override the certificate profile used for enrollment.
     ///
     /// NIST 800-53: CM-6 - Configuration settings (secure default "tls_client").
     pub fn with_profile(mut self, profile_name: impl Into<String>) -> Self {
         self.enroll_profile = profile_name.into();
         self
+    }
+
+    /// Resolve a request to a CA backend + certificate profile.
+    ///
+    /// `label = None` is the unlabeled (single-CA) path: it uses the configured
+    /// default `ca_client` and the operator/token-resolved profile (unchanged
+    /// legacy behavior). `label = Some(raw)` parses the RFC 7030 §3.2.2 label and
+    /// selects the CA backend by key algorithm and the profile by profile type.
+    ///
+    /// NIST 800-53: AC-3 (the resolved profile/backend gates issuance), SI-10.
+    async fn resolve_enrollment(
+        &self,
+        label: Option<&str>,
+        user: &ostrich_common::auth::AuthenticatedUser,
+    ) -> Result<ResolvedEnrollment<'_>> {
+        match label {
+            None => {
+                let client = self.ca_client.as_ref().ok_or_else(|| {
+                    Error::Internal("EST CA integration not configured".to_string())
+                })?;
+                Ok(ResolvedEnrollment {
+                    client,
+                    profile: resolve_enroll_profile(self, user).await,
+                    key_algo: None,
+                    validity_days: None,
+                    ccsa: None,
+                })
+            }
+            Some(raw) => {
+                let parsed = crate::label::parse_label(raw)
+                    .map_err(|e| Error::BadRequest(format!("invalid EST label: {e}")))?;
+                let profile = parsed
+                    .profile_name()
+                    .map_err(|e| Error::BadRequest(e.to_string()))?
+                    .to_string();
+                // AC-6: a token principal may not use the client-controlled label
+                // to widen past the operator-pinned profile. The unlabeled path
+                // takes the pin directly; here we must reject a label whose profile
+                // differs from the token's pin (a token pinned to `tls_client`
+                // could otherwise obtain `tls_server` via the label).
+                enforce_token_profile_pin(self, user, &profile).await?;
+                let backend = self.select_backend(&parsed)?;
+                Ok(ResolvedEnrollment {
+                    client: &backend.client,
+                    profile,
+                    key_algo: parsed.key_algo,
+                    validity_days: parsed.validity_days,
+                    ccsa: parsed.ccsa,
+                })
+            }
+        }
+    }
+
+    /// Select the CA backend for a parsed label by its key-algorithm token
+    /// (e.g. `P384` -> EC CA, `2048` -> RSA CA); falls back to the routing
+    /// default when the label carries no key algorithm.
+    fn select_backend(&self, parsed: &crate::label::ParsedLabel) -> Result<&CaBackend> {
+        let routing = self.label_routing.as_ref().ok_or_else(|| {
+            Error::BadRequest("labeled EST enrollment is not configured".to_string())
+        })?;
+        // Fail closed: an explicit key-algorithm token with no mapping is an
+        // error, NOT a silent fallback to the default backend (that would issue
+        // under the wrong algorithm). Only a label without an AK token uses the
+        // routing default.
+        let backend_name = match parsed.key_algo {
+            Some(algo) => routing
+                .algo_backends
+                .get(algo.token())
+                .cloned()
+                .ok_or_else(|| {
+                    Error::BadRequest(format!(
+                        "no CA backend is configured for key algorithm '{}'",
+                        algo.token()
+                    ))
+                })?,
+            None => routing.default_backend.clone(),
+        };
+        self.ca_backends.get(&backend_name).ok_or_else(|| {
+            Error::Internal(format!("no CA backend configured for '{backend_name}'"))
+        })
+    }
+
+    /// Resolve the CA certificate to serve from `/cacerts` (label = None) or
+    /// `/{label}/cacerts`. No auth needed (it is public trust-anchor data).
+    fn resolve_ca_certificate(&self, label: Option<&str>) -> Result<Option<&[u8]>> {
+        match label {
+            None => Ok(self.ca_certificate_der.as_deref()),
+            Some(raw) => {
+                let parsed = crate::label::parse_label(raw)
+                    .map_err(|e| Error::BadRequest(format!("invalid EST label: {e}")))?;
+                Ok(self.select_backend(&parsed)?.certificate_der.as_deref())
+            }
+        }
     }
 
     /// Authenticate protected endpoints by the TLS client certificate (mTLS,
@@ -327,8 +523,15 @@ pub fn create_router(state: EstState) -> Router {
         .route("/ready", get(readiness_check))
         // RFC 7030 §4.1: CA certificates - no client auth required
         .route("/.well-known/est/cacerts", get(get_ca_certs))
+        // RFC 7030 §3.2.2: labeled variant selects the backend CA certificate.
+        .route("/.well-known/est/{label}/cacerts", get(get_ca_certs))
         // RFC 7030 §4.5: CSR attributes - optionally requires auth
-        .route("/.well-known/est/csrattrs", get(get_csr_attrs));
+        .route("/.well-known/est/csrattrs", get(get_csr_attrs))
+        .route("/.well-known/est/{label}/csrattrs", get(get_csr_attrs))
+        // Enrollment catalog: the label scheme + valid profile/key-algorithm
+        // tokens, for the NPE-portal "EST / enrollment catalog" page. Public,
+        // non-sensitive discovery metadata (no certificate data).
+        .route("/.well-known/est/catalog", get(get_catalog));
 
     // Per-permission authorization, applied to each MethodRouter individually.
     //
@@ -364,6 +567,20 @@ pub fn create_router(state: EstState) -> Router {
         // RFC 7030 §4.4: Server-side key generation - Permission::SubmitRequest
         .route(
             "/.well-known/est/serverkeygen",
+            post(server_key_gen).route_layer(authz(Permission::SubmitRequest, "est-serverkeygen")),
+        )
+        // RFC 7030 §3.2.2: labeled variants route to the resolved CA backend.
+        .route(
+            "/.well-known/est/{label}/simpleenroll",
+            post(simple_enroll).route_layer(authz(Permission::SubmitRequest, "est-enrollment")),
+        )
+        .route(
+            "/.well-known/est/{label}/simplereenroll",
+            post(simple_reenroll)
+                .route_layer(authz(Permission::RenewCertificate, "est-reenrollment")),
+        )
+        .route(
+            "/.well-known/est/{label}/serverkeygen",
             post(server_key_gen).route_layer(authz(Permission::SubmitRequest, "est-serverkeygen")),
         )
         // L1 - cap the request body. CSRs are a few KB; an explicit 64 KiB limit
@@ -464,26 +681,42 @@ pub fn create_router(state: EstState) -> Router {
             "/api/v1/est/enrollment-tokens/{id}",
             axum::routing::delete(revoke_enrollment_token),
         );
-    let admin_routes = match state.auth_mode {
-        EstAuthMode::Mtls => admin_routes.layer(middleware::from_fn_with_state(
-            admin_auth_provider,
-            ostrich_common::auth::MtlsAuthLayer::authenticate,
-        )),
-        EstAuthMode::MtlsWithBasicFallback => admin_routes.layer(middleware::from_fn_with_state(
-            admin_auth_provider,
-            ostrich_common::auth::MtlsOrBasicAuthLayer::authenticate,
-        )),
-        EstAuthMode::BearerToken => admin_routes.layer(middleware::from_fn_with_state(
-            admin_auth_provider,
-            AuthLayer::authenticate,
-        )),
-        // Operator authenticates by client certificate or session bearer token.
-        // Uses the raw provider (NOT the enrollment-token wrapper), so a device
-        // enrollment token can never mint/list/revoke tokens (AC-6).
-        EstAuthMode::MtlsWithTokenBootstrap => admin_routes.layer(middleware::from_fn_with_state(
-            admin_auth_provider,
-            ostrich_common::auth::MtlsOrBearerAuthLayer::authenticate,
-        )),
+    let admin_routes = match (&state.trusted_proxy, state.auth_mode) {
+        // Identity bridge (bearer-mode deployments only): the NPE portal's
+        // mTLS-forwarded identity OR an operator bearer session may manage
+        // tokens. Restricted to BearerToken mode so the bridge never displaces
+        // operator mTLS admin auth in the cert-based modes.
+        (Some(cfg), EstAuthMode::BearerToken) => {
+            admin_routes.layer(middleware::from_fn_with_state(
+                (admin_auth_provider, cfg.clone()),
+                ostrich_common::auth::TrustedProxyAuthLayer::authenticate,
+            ))
+        }
+        _ => match state.auth_mode {
+            EstAuthMode::Mtls => admin_routes.layer(middleware::from_fn_with_state(
+                admin_auth_provider,
+                ostrich_common::auth::MtlsAuthLayer::authenticate,
+            )),
+            EstAuthMode::MtlsWithBasicFallback => {
+                admin_routes.layer(middleware::from_fn_with_state(
+                    admin_auth_provider,
+                    ostrich_common::auth::MtlsOrBasicAuthLayer::authenticate,
+                ))
+            }
+            EstAuthMode::BearerToken => admin_routes.layer(middleware::from_fn_with_state(
+                admin_auth_provider,
+                AuthLayer::authenticate,
+            )),
+            // Operator authenticates by client certificate or session bearer token.
+            // Uses the raw provider (NOT the enrollment-token wrapper), so a device
+            // enrollment token can never mint/list/revoke tokens (AC-6).
+            EstAuthMode::MtlsWithTokenBootstrap => {
+                admin_routes.layer(middleware::from_fn_with_state(
+                    admin_auth_provider,
+                    ostrich_common::auth::MtlsOrBearerAuthLayer::authenticate,
+                ))
+            }
+        },
     };
 
     // Merge public, protected, and admin routes
@@ -516,6 +749,33 @@ async fn readiness_check(State(state): State<EstState>) -> impl IntoResponse {
     ostrich_common::health::readiness_response_with_db("ostrich-est", &state.db_pool).await
 }
 
+/// EST enrollment catalog (profile types, key algorithms, label scheme).
+///
+/// Backs the NPE-portal "EST / enrollment catalog" page. The payload is derived
+/// from the label parser's own token sets (`crate::label::catalog`), so it can
+/// never advertise a token issuance would reject. Public, non-sensitive metadata
+/// (no certificate or key material), so no client authentication is required.
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 7030 §3.2.2 - profile-label scheme this catalog documents
+/// - NIST 800-53: AC-3 - read of non-sensitive configuration metadata
+async fn get_catalog(State(state): State<EstState>) -> Json<crate::label::EstCatalog> {
+    // Scope the catalog to what this deployment actually offers: the key
+    // algorithms with a configured backend, and whether labeled routing is on at
+    // all — so the page never advertises a label that select_backend() rejects.
+    let configured_algos: Vec<String> = state
+        .label_routing
+        .as_ref()
+        .map(|r| r.algo_backends.keys().cloned().collect())
+        .unwrap_or_default();
+    let labeled_enrollment = state.label_routing.is_some();
+    Json(crate::label::catalog(
+        &configured_algos,
+        labeled_enrollment,
+        &state.enroll_profile,
+    ))
+}
+
 /// Get CA certificates (RFC 7030 S4.1)
 ///
 /// Returns a PKCS#7 certs-only structure containing CA certificate chain.
@@ -526,12 +786,18 @@ async fn readiness_check(State(state): State<EstState>) -> impl IntoResponse {
 /// - NIAP PP-CA: FTP_ITC.1 - Trusted channel (TLS, but no client auth required)
 /// - NIST 800-53: SC-17 - PKI certificate distribution
 /// - RFC 7030 S4.1 - CA certificate retrieval
-async fn get_ca_certs(State(state): State<EstState>) -> Result<Response> {
+async fn get_ca_certs(
+    State(state): State<EstState>,
+    label: Option<axum::extract::Path<String>>,
+) -> Result<Response> {
     // RFC 7030 §4.1 - Return the CA certificate(s) as a degenerate PKCS#7.
+    // The label (if present) selects which backend CA certificate to return.
     // When no CA certificate is configured we fail safe by returning an empty
     // (but valid) PKCS#7 so clients receive a well-formed response.
-    let pkcs7_der = match state.ca_certificate_der.as_ref() {
-        Some(der) => encode_certs_only_pkcs7(std::slice::from_ref(der))?,
+    let label = label.map(|p| p.0);
+    let ca_cert = state.resolve_ca_certificate(label.as_deref())?;
+    let pkcs7_der = match ca_cert {
+        Some(der) => encode_certs_only_pkcs7(&[der.to_vec()])?,
         None => {
             tracing::warn!("EST /cacerts: no CA certificate configured; returning empty PKCS#7");
             encode_certs_only_pkcs7(&[])?
@@ -546,7 +812,10 @@ async fn get_ca_certs(State(state): State<EstState>) -> Result<Response> {
         .into_response())
 }
 
-/// Encode certificates as PKCS#7 certs-only structure
+/// Encode certificates as a PKCS#7 certs-only structure.
+///
+/// Thin wrapper over the shared [`ostrich_x509::pkcs7::encode_certs_only_pkcs7`]
+/// (kept so existing EST call sites and the error type are unchanged).
 ///
 /// RFC 7030 S4.1: Responses use degenerate PKCS#7 (CMS) SignedData
 /// with no signed content, only certificates in the certificates field.
@@ -556,61 +825,8 @@ async fn get_ca_certs(State(state): State<EstState>) -> Result<Response> {
 /// - RFC 5652 S5 - CMS SignedData structure
 /// - RFC 7030 S4.1.3 - EST CA certificates response format
 pub(crate) fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
-    use cms::{content_info::ContentInfo, signed_data::SignedData};
-    use der::{
-        Decode, Encode,
-        asn1::{ObjectIdentifier, SetOfVec},
-    };
-    use x509_cert::Certificate;
-
-    // RFC 5652 §5: SignedData content type OID
-    const SIGNED_DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2");
-
-    // Parse certificates from DER
-    let mut cert_choices = SetOfVec::new();
-    for cert_der in certs {
-        let cert = Certificate::from_der(cert_der)
-            .map_err(|e| Error::Internal(format!("Invalid certificate DER: {}", e)))?;
-        let choice = cms::cert::CertificateChoices::Certificate(cert);
-        cert_choices
-            .insert(choice)
-            .map_err(|e| Error::Internal(format!("Too many certificates: {}", e)))?;
-    }
-
-    // Create degenerate SignedData with no content and empty SignerInfos
-    let digest_algorithms = SetOfVec::new();
-
-    // RFC 5652 §3: data content type OID
-    const DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
-
-    let encap_content_info = cms::signed_data::EncapsulatedContentInfo {
-        econtent_type: DATA_OID,
-        econtent: None,
-    };
-
-    let signed_data = SignedData {
-        version: cms::content_info::CmsVersion::V1,
-        digest_algorithms,
-        encap_content_info,
-        certificates: if cert_choices.is_empty() {
-            None
-        } else {
-            Some(cert_choices.into())
-        },
-        crls: None,
-        signer_infos: SetOfVec::new().into(),
-    };
-
-    // Wrap in ContentInfo
-    let content_info = ContentInfo {
-        content_type: SIGNED_DATA_OID,
-        content: der::Any::encode_from(&signed_data)
-            .map_err(|e| Error::Internal(format!("Failed to encode SignedData: {}", e)))?,
-    };
-
-    content_info
-        .to_der()
-        .map_err(|e| Error::Internal(format!("Failed to encode PKCS#7: {}", e)))
+    ostrich_x509::pkcs7::encode_certs_only_pkcs7(certs)
+        .map_err(|e| Error::Internal(format!("PKCS#7 encoding failed: {e}")))
 }
 
 /// Simple enrollment (RFC 7030 S4.2.1)
@@ -631,8 +847,11 @@ pub(crate) fn encode_certs_only_pkcs7(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
 async fn simple_enroll(
     State(state): State<EstState>,
     AuthUser(user): AuthUser,
+    label: Option<axum::extract::Path<String>>,
     body: Bytes,
 ) -> Result<Response> {
+    // RFC 7030 §3.2.2 label (present only on `/.well-known/est/{label}/...`).
+    let label = label.map(|p| p.0);
     // Use authenticated user identity as client identifier
     let client_identifier = &user.username;
 
@@ -719,7 +938,29 @@ async fn simple_enroll(
     // NIST 800-53: SI-17 - Fail secure: if CA integration is not configured we
     // never fabricate a certificate; we return an error and leave the
     // enrollment row "pending" so it can be retried once the CA is available.
-    let Some(ca_client) = state.ca_client.as_ref() else {
+    // Resolve the CA backend + profile. Unlabeled = the default single CA;
+    // labeled = RFC 7030 §3.2.2 routing (backend by key algorithm, profile by
+    // profile type). Fails closed if issuance isn't configured / label invalid.
+    let resolved = match state.resolve_enrollment(label.as_deref(), &user).await {
+        Ok(r) => r,
+        Err(e) => {
+            emit_enrollment_audit(
+                &state,
+                client_identifier,
+                enrollment.id,
+                "simpleenroll",
+                ostrich_audit::EventOutcome::Failure,
+            )
+            .await;
+            return Err(e);
+        }
+    };
+
+    // TOCTOU-safe single-use: reserve the token use BEFORE issuance so that N
+    // concurrent enrollments presenting the same single-use token cannot each
+    // mint a certificate (the previous order issued first, then decremented, so
+    // the losers still got certs). Refunded below if issuance fails.
+    if let Err(e) = reserve_enrollment_token_if_present(&state, &user).await {
         emit_enrollment_audit(
             &state,
             client_identifier,
@@ -728,22 +969,28 @@ async fn simple_enroll(
             ostrich_audit::EventOutcome::Failure,
         )
         .await;
-        return Err(Error::Internal(
-            "EST CA integration not configured".to_string(),
-        ));
-    };
+        return Err(e);
+    }
 
     // EstCaClient::enroll issues the certificate, records the certificate id on
     // the est_enrollments row, and transitions the enrollment to "issued".
     // RFC 7030 §4.2.1 - CSR forwarded to CA after proof-of-possession check.
-    // The profile honors any operator-pinned choice on the enrollment token.
-    let enroll_profile = resolve_enroll_profile(&state, &user).await;
-    let certificate_id = match ca_client
-        .enroll(enrollment.id, &csr_der, client_identifier, &enroll_profile)
+    let certificate_id = match resolved
+        .client
+        .enroll(
+            enrollment.id,
+            &csr_der,
+            client_identifier,
+            &resolved.profile,
+            &resolved.label_metadata(),
+        )
         .await
     {
         Ok(id) => id,
         Err(e) => {
+            // Issuance failed - refund the reserved use so a transient CA error
+            // does not permanently burn the token.
+            refund_enrollment_token_if_present(&state, &user).await;
             // H2 - issuance failures must be audited.
             emit_enrollment_audit(
                 &state,
@@ -757,9 +1004,9 @@ async fn simple_enroll(
         }
     };
 
-    // Single-use: consume the enrollment token (if this was token-authenticated)
-    // now that a certificate has been issued.
-    consume_enrollment_token_if_present(&state, &user, certificate_id).await;
+    // Record the issued certificate against the already-reserved token use and
+    // audit the consumption (the use was spent up-front, above).
+    finalize_enrollment_token_if_present(&state, &user, certificate_id).await;
 
     // Load the issued certificate and wrap it in a certs-only PKCS#7.
     // RFC 7030 §4.2.3 - Response is a degenerate PKCS#7 with the issued cert.
@@ -999,7 +1246,7 @@ async fn consume_enrollment_token_if_present(
         .await
     {
         Ok(true) => {
-            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token consumed (single-use)");
+            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token use consumed");
             ostrich_audit::EventOutcome::Success
         }
         Ok(false) => {
@@ -1015,6 +1262,136 @@ async fn consume_enrollment_token_if_present(
     };
     // AU-2/AU-3: the token lifecycle (unused -> used) is a security-relevant
     // state change and must leave an audit record, not just a log line.
+    let mut event = ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::ConfigurationChange,
+        &user.username,
+        "est:enrollment-tokens".to_string(),
+        "consume_est_token",
+        outcome,
+    )
+    .with_details(serde_json::json!({
+        "identity": user.username,
+        "token_id": token_id.to_string(),
+        "certificate_id": certificate_id.to_string(),
+    }))
+    .build();
+    let _ = state.audit_sink.record(&mut event).await;
+}
+
+/// Enforce that a token principal's operator-pinned profile is not widened by a
+/// client-controlled EST label. No-op for session/mTLS principals or tokens that
+/// pinned no profile; otherwise the requested profile must equal the pin.
+///
+/// NIST 800-53: AC-3 (access enforcement), AC-6 (least privilege).
+async fn enforce_token_profile_pin(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+    requested_profile: &str,
+) -> Result<()> {
+    if !user.has_role(ostrich_common::auth::Role::EstEnrollee) {
+        return Ok(());
+    }
+    let token_id = *user.id.as_uuid();
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    match repo.enrollment_token_profile(token_id).await {
+        Ok(Some(pinned)) if pinned != requested_profile => {
+            tracing::warn!(
+                actor = %user.username, token_id = %token_id,
+                pinned = %pinned, requested = %requested_profile,
+                "labeled EST enrollment attempted to widen past the token's pinned profile"
+            );
+            Err(Error::Forbidden(format!(
+                "enrollment token is pinned to profile '{pinned}'; label requests '{requested_profile}'"
+            )))
+        }
+        Ok(_) => Ok(()), // no pin, or the label matches the pin
+        Err(e) => Err(Error::Database(e)),
+    }
+}
+
+/// Reserve one enrollment-token use BEFORE issuance (TOCTOU-safe single-use).
+///
+/// The spend is an atomic `uses_remaining = uses_remaining - 1 WHERE
+/// uses_remaining > 0 AND expires_at > now()`, so of N concurrent enrollments on
+/// a single-use token at most one reserves the use; the rest fail closed here and
+/// never reach issuance. No-op for session/mTLS principals (no token). Pair with
+/// [`finalize_enrollment_token_if_present`] on success and
+/// [`refund_enrollment_token_if_present`] on issuance failure.
+///
+/// NIST 800-53: IA-5 (bounded credential), AC-6 (least privilege).
+async fn reserve_enrollment_token_if_present(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+) -> Result<()> {
+    if !user.has_role(ostrich_common::auth::Role::EstEnrollee) {
+        return Ok(()); // session/mTLS auth — no enrollment token to reserve
+    }
+    let token_id = *user.id.as_uuid();
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    match repo.consume_enrollment_token(token_id, None).await {
+        Ok(true) => {
+            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token use reserved");
+            Ok(())
+        }
+        Ok(false) => {
+            tracing::warn!(actor = %user.username, token_id = %token_id, "EST enrollment token has no uses remaining or is expired");
+            Err(Error::Forbidden(
+                "enrollment token has no remaining uses or has expired".to_string(),
+            ))
+        }
+        Err(e) => {
+            tracing::error!(error = %e, token_id = %token_id, "failed to reserve EST enrollment token");
+            Err(Error::Database(e))
+        }
+    }
+}
+
+/// Compensate a reserved-but-unused token use after issuance fails, so a
+/// transient CA/HSM error does not permanently burn the token.
+async fn refund_enrollment_token_if_present(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+) {
+    if !user.has_role(ostrich_common::auth::Role::EstEnrollee) {
+        return;
+    }
+    let token_id = *user.id.as_uuid();
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    match repo.refund_enrollment_token(token_id).await {
+        Ok(()) => {
+            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token use refunded after issuance failure")
+        }
+        Err(e) => {
+            tracing::error!(error = %e, token_id = %token_id, "failed to refund EST enrollment token use")
+        }
+    }
+}
+
+/// Record the issued certificate against a token use already spent by
+/// [`reserve_enrollment_token_if_present`] and emit the consumption audit record.
+async fn finalize_enrollment_token_if_present(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+    certificate_id: uuid::Uuid,
+) {
+    if !user.has_role(ostrich_common::auth::Role::EstEnrollee) {
+        return;
+    }
+    let token_id = *user.id.as_uuid();
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let outcome = match repo
+        .record_enrollment_token_cert(token_id, certificate_id)
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token use consumed");
+            ostrich_audit::EventOutcome::Success
+        }
+        Err(e) => {
+            tracing::error!(error = %e, token_id = %token_id, "failed to record cert on consumed EST enrollment token");
+            ostrich_audit::EventOutcome::Failure
+        }
+    };
     let mut event = ostrich_audit::AuditEventBuilder::new(
         ostrich_audit::EventType::ConfigurationChange,
         &user.username,
@@ -1102,8 +1479,10 @@ async fn resolve_enroll_profile(
 async fn simple_reenroll(
     State(state): State<EstState>,
     AuthUser(user): AuthUser,
+    label: Option<axum::extract::Path<String>>,
     body: Bytes,
 ) -> Result<Response> {
+    let label = label.map(|p| p.0);
     // Use authenticated user identity as client identifier
     let client_identifier = &user.username;
 
@@ -1253,29 +1632,38 @@ async fn simple_reenroll(
     // Submit the CSR to the CA service for re-issuance (RFC 7030 §4.2.2).
     // NIST 800-53: SI-17 - Fail secure: never fabricate a certificate when the
     // CA integration is unavailable.
-    let Some(ca_client) = state.ca_client.as_ref() else {
-        emit_enrollment_audit(
-            &state,
-            client_identifier,
-            enrollment.id,
-            "simplereenroll",
-            ostrich_audit::EventOutcome::Failure,
-        )
-        .await;
-        return Err(Error::Internal(
-            "EST CA integration not configured".to_string(),
-        ));
+    let resolved = match state.resolve_enrollment(label.as_deref(), &user).await {
+        Ok(r) => r,
+        Err(e) => {
+            emit_enrollment_audit(
+                &state,
+                client_identifier,
+                enrollment.id,
+                "simplereenroll",
+                ostrich_audit::EventOutcome::Failure,
+            )
+            .await;
+            return Err(e);
+        }
     };
 
     // Reissue under the prior certificate's profile (preserving its EKUs per RFC
     // 7030 §4.2.2). Re-validate it against the allowlist (SI-10) and fail secure to
-    // the resolved/default profile if it is unknown or no longer offerable.
+    // the label/default-resolved profile if it is unknown or no longer offerable.
+    // The CA backend, however, is the label-resolved one.
     let enroll_profile = match prior_profile {
         Some(p) if OFFERABLE_EST_PROFILES.contains(&p.as_str()) => p,
-        _ => resolve_enroll_profile(&state, &user).await,
+        _ => resolved.profile.clone(),
     };
-    let certificate_id = match ca_client
-        .enroll(enrollment.id, &csr_der, client_identifier, &enroll_profile)
+    let certificate_id = match resolved
+        .client
+        .enroll(
+            enrollment.id,
+            &csr_der,
+            client_identifier,
+            &enroll_profile,
+            &resolved.label_metadata(),
+        )
         .await
     {
         Ok(id) => id,
@@ -1351,6 +1739,31 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
         .into_response())
 }
 
+/// Structured server-side key-generation request for the EFS portal flow.
+///
+/// Unlike the RFC 7030 §4.4.1 CSR body, this carries NO client key or PKCS#10:
+/// the subject is taken from the mTLS-authenticated NPE identity (never supplied
+/// by the client), so there is no untrusted CSR/ASN.1 to parse and no client key
+/// to discard. Accepted only when the resolved profile is EFS.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-10 (input validation — the subject is never client-supplied
+///   and requested SANs are still checked against the caller's allowed identities)
+/// - NIAP PP-CA: FDP_CER_EXT.1 (the requested certificate content is constrained)
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EfsKeygenRequest {
+    /// Additional Subject Alternative Names to request (e.g. `"DNS:host.mil"`).
+    /// Each is still checked against the caller's allowlist (H1) — the form
+    /// cannot widen the identity beyond what the principal may assert.
+    #[serde(default)]
+    sans: Vec<String>,
+    /// Requested RSA key size. Optional; only 2048 (the EFS profile's key) is
+    /// accepted, so a mismatch fails fast rather than at CA issuance.
+    #[serde(default)]
+    key_strength: Option<u32>,
+}
+
 /// Server-side key generation (RFC 7030 §4.4)
 ///
 /// Server generates key pair and returns PKCS#12 with certificate + encrypted private key.
@@ -1369,81 +1782,210 @@ async fn get_csr_attrs(State(_state): State<EstState>) -> Result<Response> {
 ///
 /// # Request Format
 ///
-/// The client sends a base64-encoded "CSR-like" structure containing:
-/// - Subject distinguished name
-/// - Requested key type (from CSR algorithm field or attributes)
-/// - Optional SANs
-///
-/// Unlike normal CSR, there is no proof-of-possession since the client
-/// doesn't have the private key yet.
+/// Two input shapes:
+/// - RFC 7030 §4.4.1: a base64 PKCS#10 CSR conveying the desired subject/SANs.
+///   The server generates the key, so the CSR's own key and signature are not
+///   used for proof-of-possession.
+/// - EFS portal flow (`Content-Type: application/json`, EFS profile only): an
+///   [`EfsKeygenRequest`] carrying optional SANs + key strength. The subject is
+///   taken from the mTLS-authenticated identity, so no client CSR/key is sent.
 ///
 /// # Response Format
 ///
-/// Returns a PKCS#12 bundle (application/pkcs12) containing:
-/// - Issued certificate
-/// - Encrypted private key (password-protected)
-/// - CA certificate chain
+/// Two delivery shapes, selected by the resolved profile:
+/// - Default: RFC 7030 §4.4.2 `multipart/mixed` carrying the EC P-256 private
+///   key (`application/pkcs8`, RFC 5958) and the certificate (certs-only
+///   `application/pkcs7-mime`).
+/// - EFS profile: an `application/json` envelope `{format, certificateId,
+///   pkcs12, password}` where `pkcs12` is a base64 encrypted PKCS#12 (RFC 7292)
+///   holding the RSA key + certificate, and `password` is its one-time
+///   decryption password.
 ///
 /// # Security Notes
 ///
 /// - CRITICAL: This endpoint MUST require client authentication (mTLS)
-/// - Private keys are zeroized from memory after PKCS#12 creation
-/// - PKCS#12 password should be communicated out-of-band (not in this response)
+/// - Private keys are zeroized from memory after the response body is built
+/// - The EFS one-time PKCS#12 password is returned exactly once, over the mTLS
+///   channel, and is never stored server side (unrecoverable after the operator
+///   closes the page); it is never written to logs or audit records
 /// - Consider KRA escrow for key recovery capability
 ///
 async fn server_key_gen(
     State(state): State<EstState>,
     AuthUser(user): AuthUser,
+    label: Option<axum::extract::Path<String>>,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response> {
+    let label = label.map(|p| p.0);
     use crate::serverkeygen::{ServerKeyGenRequest, generate_key_pair_for_client};
+    use ostrich_common::types::DistinguishedName;
     use ostrich_crypto::KeyType;
 
     let client_identifier = &user.username;
 
-    // The client POSTs a base64 PKCS#10 CSR conveying the desired subject/SANs
-    // (RFC 7030 §4.4.1); the server generates the key, so the CSR's own key and
-    // signature are not used for proof-of-possession.
-    let request_der = match BASE64_STANDARD.decode(&body) {
-        Ok(der) if der.len() >= 10 => der,
-        _ => {
-            emit_failure_audit(
-                &state,
-                client_identifier,
-                "est:serverkeygen",
-                "invalid_csr_encoding",
-            )
-            .await;
-            return Err(Error::BadRequest("Invalid or too-short CSR".to_string()));
-        }
-    };
-    let parsed = match ostrich_x509::parser::parse_csr(&request_der) {
-        Ok(c) => c,
+    // Resolve the CA backend + profile first (fail closed; RFC 7030 §3.2.2 label
+    // routing selects the backend by key algorithm and the profile by type). The
+    // resolved profile decides both the key type and which input shapes are
+    // accepted (the structured EFS body is EFS-only).
+    let resolved = match state.resolve_enrollment(label.as_deref(), &user).await {
+        Ok(r) => r,
         Err(e) => {
             emit_failure_audit(
                 &state,
                 client_identifier,
                 "est:serverkeygen",
-                "csr_parse_failed",
+                "ca_not_configured",
             )
             .await;
-            return Err(Error::InvalidCsr(format!(
-                "Failed to parse serverkeygen CSR: {}",
-                e
-            )));
+            return Err(e);
         }
     };
-    let subject = ostrich_x509::parser::parse_csr_subject_dn(&request_der)
-        .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR subject: {}", e)))?;
+    let enroll_profile = resolved.profile.clone();
+    // EFS (Microsoft Encrypting File System) certificates are delivered as an
+    // encrypted PKCS#12 holding an RSA key — Windows EFS requires RSA. Every
+    // other server-keygen profile gets a modern EC P-256 key.
+    let is_efs = enroll_profile == EFS_PROFILE_NAME;
+    let key_type = if is_efs {
+        KeyType::Rsa2048
+    } else {
+        KeyType::EcP256
+    };
+
+    // Server-side key generation chooses the key by profile, so it cannot honor a
+    // label-requested key algorithm. Reject AK-labeled serverkeygen rather than
+    // silently issuing a different algorithm than requested (fail closed; full
+    // multi-algorithm SSKG is a follow-up).
+    if let Some(algo) = resolved.key_algo {
+        emit_failure_audit(
+            &state,
+            client_identifier,
+            "est:serverkeygen",
+            "serverkeygen_keyalgo_unsupported",
+        )
+        .await;
+        return Err(Error::BadRequest(format!(
+            "server-side key generation does not support a label-requested key algorithm '{}' yet",
+            algo.token()
+        )));
+    }
+
+    // Two input shapes select the subject + requested SANs:
+    //  - EFS portal flow (application/json): subject = the authenticated identity
+    //    (never client-supplied), so there is no untrusted CSR/ASN.1 to parse and
+    //    no throwaway client key. Accepted only for the EFS profile.
+    //  - RFC 7030 §4.4.1: a base64 PKCS#10 CSR conveying the subject/SANs.
+    let is_json_efs = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| {
+            ct.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/json")
+        })
+        .unwrap_or(false);
+
+    let (subject, requested_sans): (DistinguishedName, Vec<String>) = if is_json_efs {
+        if !is_efs {
+            emit_failure_audit(
+                &state,
+                client_identifier,
+                "est:serverkeygen",
+                "structured_input_non_efs",
+            )
+            .await;
+            return Err(Error::BadRequest(
+                "structured (JSON) server-side key generation is only supported for the EFS profile"
+                    .to_string(),
+            ));
+        }
+        let req: EfsKeygenRequest = match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                emit_failure_audit(
+                    &state,
+                    client_identifier,
+                    "est:serverkeygen",
+                    "invalid_efs_request",
+                )
+                .await;
+                return Err(Error::BadRequest(format!(
+                    "invalid EFS server-keygen request: {e}"
+                )));
+            }
+        };
+        // EFS issues an RSA-2048 key; reject any other requested strength up
+        // front. Audit the rejection like every other input-validation failure
+        // (AU-2): a client probing for accepted key sizes must leave a trace.
+        if let Some(bits) = req.key_strength
+            && bits != 2048
+        {
+            emit_failure_audit(
+                &state,
+                client_identifier,
+                "est:serverkeygen",
+                "unsupported_key_strength",
+            )
+            .await;
+            return Err(Error::BadRequest(format!(
+                "EFS server-side key generation supports only RSA-2048 (requested {bits})"
+            )));
+        }
+        // SI-10: the subject CN is ALWAYS the authenticated identity, never taken
+        // from the request body — the client cannot name a different subject.
+        let subject = DistinguishedName {
+            common_name: Some(client_identifier.to_string()),
+            ..Default::default()
+        };
+        (subject, req.sans)
+    } else {
+        let request_der = match BASE64_STANDARD.decode(&body) {
+            Ok(der) if der.len() >= 10 => der,
+            _ => {
+                emit_failure_audit(
+                    &state,
+                    client_identifier,
+                    "est:serverkeygen",
+                    "invalid_csr_encoding",
+                )
+                .await;
+                return Err(Error::BadRequest("Invalid or too-short CSR".to_string()));
+            }
+        };
+        let parsed = match ostrich_x509::parser::parse_csr(&request_der) {
+            Ok(c) => c,
+            Err(e) => {
+                emit_failure_audit(
+                    &state,
+                    client_identifier,
+                    "est:serverkeygen",
+                    "csr_parse_failed",
+                )
+                .await;
+                return Err(Error::InvalidCsr(format!(
+                    "Failed to parse serverkeygen CSR: {}",
+                    e
+                )));
+            }
+        };
+        let subject = ostrich_x509::parser::parse_csr_subject_dn(&request_der)
+            .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR subject: {}", e)))?;
+        (subject, parsed.subject_alternative_names)
+    };
 
     // H1 - the server is about to mint a key AND a certificate for whatever
-    // identity the CSR names; bind that identity to the authenticated principal
-    // (CN or a SAN must equal `client_identifier`). Fail secure: deny + audit.
+    // identity was requested; bind that identity to the authenticated principal
+    // (CN or a SAN must equal `client_identifier`). For the EFS JSON path the CN
+    // is already the authenticated identity; this still runs every requested SAN
+    // through the same authorization policy so the form cannot widen the identity
+    // beyond what the principal may assert. Fail secure: deny + audit.
     if !identity_authorized(
         &state,
         &user,
         subject.common_name.as_deref(),
-        &parsed.subject_alternative_names,
+        &requested_sans,
     )
     .await?
     {
@@ -1456,41 +1998,22 @@ async fn server_key_gen(
         .await;
         tracing::warn!(
             client = %client_identifier,
-            "EST serverkeygen denied: CSR identity does not match authenticated principal (H1)"
+            "EST serverkeygen denied: requested identity does not match authenticated principal (H1)"
         );
         return Err(Error::Forbidden(
-            "CSR subject CN or a SAN must match the authenticated client identity".to_string(),
+            "subject CN or a SAN must match the authenticated client identity".to_string(),
         ));
     }
 
-    let dns_sans: Vec<String> = parsed
-        .subject_alternative_names
+    let dns_sans: Vec<String> = requested_sans
         .iter()
         .filter_map(|s| s.strip_prefix("DNS:").map(String::from))
         .collect();
 
-    // CA integration is required (fail closed, never fabricate).
-    let Some(ca_client) = state.ca_client.as_ref() else {
-        emit_failure_audit(
-            &state,
-            client_identifier,
-            "est:serverkeygen",
-            "ca_not_configured",
-        )
-        .await;
-        return Err(Error::Internal(
-            "EST CA integration not configured".to_string(),
-        ));
-    };
-
-    // Resolve once: the same profile drives both the server-built CSR and the
-    // CA issuance call, honoring any operator-pinned profile on the token.
-    let enroll_profile = resolve_enroll_profile(&state, &user).await;
-
     // Generate the key pair + a CSR signed by it (proof-of-possession).
     let request = ServerKeyGenRequest {
         subject,
-        key_type: KeyType::EcP256, // server-chosen; modern default
+        key_type, // server-chosen: EFS → RSA, otherwise EC P-256
         dns_sans,
         profile_name: enroll_profile.clone(),
     };
@@ -1515,12 +2038,14 @@ async fn server_key_gen(
         .await
         .map_err(|e| Error::Internal(format!("Failed to create enrollment: {}", e)))?;
 
-    let issue_result = ca_client
+    let issue_result = resolved
+        .client
         .enroll(
             enrollment.id,
             &material.csr_der,
             client_identifier,
             &enroll_profile,
+            &resolved.label_metadata(),
         )
         .await;
 
@@ -1556,43 +2081,91 @@ async fn server_key_gen(
 
     // Single-use: serverkeygen is reachable by an enrollment token (it also
     // requires SubmitRequest), so it must consume the token too — otherwise the
-    // token would be reusable here, defeating single-use.
+    // token would be reusable here, defeating single-use. The expiry-guarded
+    // spend still bounds reuse; unlike simpleenroll this spend is post-issuance,
+    // so a narrow concurrent-use window remains (SubmitRequest-gated, far less
+    // exposed than simpleenroll). POAM: move to the reserve-then-issue ordering
+    // once serverkeygen's issuance is refactored to reserve up-front.
     consume_enrollment_token_if_present(&state, &user, certificate_id).await;
 
-    // Fetch the issued certificate and encode it as a certs-only PKCS#7.
+    // Fetch the issued certificate.
     let cert = ostrich_db::repository::CertificateRepository::new(state.db_pool.clone())
         .find_by_id(certificate_id)
         .await
         .map_err(|e| Error::Internal(format!("Failed to load issued certificate: {}", e)))?
         .ok_or_else(|| Error::Internal("Issued certificate not found".to_string()))?;
-    let pkcs7 = encode_certs_only_pkcs7(&[cert.der_encoded])
-        .map_err(|e| Error::Internal(format!("PKCS#7 encoding failed: {}", e)))?;
 
-    // RFC 7030 §4.4.2 - multipart/mixed: the private key (application/pkcs8) and
-    // the certificate (application/pkcs7-mime; certs-only). Both base64.
-    //
-    // M3 - the private key is sensitive: encode it into a Zeroizing buffer and
-    // assemble the body in a Zeroizing buffer so these intermediate copies are
-    // wiped on drop. (One copy still lives in the outbound HTTP body buffer,
-    // which is inherent to returning the key; everything else is zeroized.)
-    const BOUNDARY: &str = "estServerKeyGenBoundary";
-    let key_b64 =
-        zeroize::Zeroizing::new(BASE64_STANDARD.encode(material.private_key_pkcs8.as_slice()));
-    let cert_b64 = BASE64_STANDARD.encode(&pkcs7);
-    let body = zeroize::Zeroizing::new(format!(
-        "--{b}\r\n\
-         Content-Type: application/pkcs8\r\n\
-         Content-Transfer-Encoding: base64\r\n\r\n\
-         {key}\r\n\
-         --{b}\r\n\
-         Content-Type: application/pkcs7-mime; smime-type=certs-only\r\n\
-         Content-Transfer-Encoding: base64\r\n\r\n\
-         {cert}\r\n\
-         --{b}--\r\n",
-        b = BOUNDARY,
-        key = key_b64.as_str(),
-        cert = cert_b64,
-    ));
+    // The server-held private key is sensitive: every intermediate that touches
+    // it lives in a Zeroizing buffer and is wiped on drop. (One copy still lives
+    // in the outbound HTTP body buffer, which is inherent to returning the key;
+    // everything else is zeroized.)
+    let response = if is_efs {
+        // EFS delivery: wrap the RSA key + issued cert in an encrypted PKCS#12
+        // protected by a freshly generated one-time password. The password is
+        // returned exactly once, in this response, and is never stored server
+        // side, so it is unrecoverable after the operator closes the page.
+        //
+        // COMPLIANCE MAPPING:
+        // - NIST 800-53: SC-12 (key establishment — escrow transport key),
+        //   SC-13 (PBES2/AES-256 + HMAC-SHA256 protection of the key bag),
+        //   SI-12 (one-time password never persisted; sensitive output handling)
+        // - NIAP PP-CA: FCS_CKM.1 (RSA key generation), FCS_COP.1 (PKCS#12 MAC)
+        // - RFC 7292 - PKCS#12 Personal Information Exchange
+        let password = generate_one_time_pkcs12_password();
+        let pkcs12 = ostrich_x509::pkcs12::build_encrypted_pkcs12(
+            material.private_key_pkcs8.as_slice(),
+            &cert.der_encoded,
+            password.as_str(),
+        )
+        .map_err(|e| Error::Internal(format!("PKCS#12 assembly failed: {}", e)))?;
+        let body = zeroize::Zeroizing::new(
+            serde_json::json!({
+                "format": "pkcs12",
+                "certificateId": certificate_id.to_string(),
+                "pkcs12": BASE64_STANDARD.encode(&pkcs12),
+                "password": password.as_str(),
+            })
+            .to_string(),
+        );
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json".to_string())],
+            body.to_string(),
+        )
+            .into_response()
+    } else {
+        // RFC 7030 §4.4.2 - multipart/mixed: the private key (application/pkcs8)
+        // and the certificate (application/pkcs7-mime; certs-only). Both base64.
+        let pkcs7 = encode_certs_only_pkcs7(&[cert.der_encoded])
+            .map_err(|e| Error::Internal(format!("PKCS#7 encoding failed: {}", e)))?;
+        const BOUNDARY: &str = "estServerKeyGenBoundary";
+        let key_b64 =
+            zeroize::Zeroizing::new(BASE64_STANDARD.encode(material.private_key_pkcs8.as_slice()));
+        let cert_b64 = BASE64_STANDARD.encode(&pkcs7);
+        let body = zeroize::Zeroizing::new(format!(
+            "--{b}\r\n\
+             Content-Type: application/pkcs8\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n\
+             {key}\r\n\
+             --{b}\r\n\
+             Content-Type: application/pkcs7-mime; smime-type=certs-only\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n\
+             {cert}\r\n\
+             --{b}--\r\n",
+            b = BOUNDARY,
+            key = key_b64.as_str(),
+            cert = cert_b64,
+        ));
+        (
+            StatusCode::OK,
+            [(
+                header::CONTENT_TYPE,
+                format!("multipart/mixed; boundary=\"{}\"", BOUNDARY),
+            )],
+            body.to_string(),
+        )
+            .into_response()
+    };
 
     // H2 - audit the successful server-side key generation + issuance.
     emit_enrollment_audit(
@@ -1604,15 +2177,7 @@ async fn server_key_gen(
     )
     .await;
 
-    Ok((
-        StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            format!("multipart/mixed; boundary=\"{}\"", BOUNDARY),
-        )],
-        body.to_string(),
-    )
-        .into_response())
+    Ok(response)
 }
 
 // ===========================================================================
@@ -1645,21 +2210,55 @@ struct MintEnrollmentTokenRequest {
     /// Certificate profile the enrolled cert is issued under. One of
     /// `OFFERABLE_EST_PROFILES`; `None`/empty uses the EST server's default.
     profile: Option<String>,
+    /// Number of devices that may enroll with this token (the use budget).
+    /// Clamped to [1, 1000], default 1 (single-use). Values > 1 mint a
+    /// "multiple devices" token; the identity (H1) binding still applies to every
+    /// enrollment, so all devices enroll as the same pinned identity.
+    max_uses: Option<i64>,
 }
 
 /// Certificate profiles an operator may pin to an EST enrollment token. Kept in
 /// lockstep with the CA's registered issuance profiles (`default_profiles` in
-/// ca-server): `tls_client` (clientAuth), `tls_server` (serverAuth), and
-/// `tls_server_client` (serverAuth + clientAuth, for mutual-TLS devices).
+/// ca-server): `tls_client` (clientAuth), `tls_server` (serverAuth),
+/// `tls_server_client` (serverAuth + clientAuth, for mutual-TLS devices), and
+/// `efs` (Microsoft EFS — server-side keygen delivered as an encrypted PKCS#12).
 ///
 /// SI-10: reject anything else so a token can never reference an unissuable or
 /// over-privileged profile.
-const OFFERABLE_EST_PROFILES: [&str; 3] = ["tls_client", "tls_server", "tls_server_client"];
+const OFFERABLE_EST_PROFILES: [&str; 4] = [
+    "tls_client",
+    "tls_server",
+    "tls_server_client",
+    EFS_PROFILE_NAME,
+];
 
-/// Capability rank of an EST certificate profile, used so re-enrollment can
-/// preserve the broadest EKU set ever issued to an identity (RFC 7030 §4.2.2 — a
-/// renewal must not silently narrow a server+client node to client-only).
-/// `tls_server_client` (serverAuth + clientAuth) outranks the single-EKU profiles.
+/// Profile name that triggers the EFS server-side key-generation delivery path
+/// (RSA key + issued cert wrapped in an encrypted PKCS#12). Must match the CA's
+/// registered EFS profile (`CertificateProfile::efs`, `ProfileType::Efs`).
+const EFS_PROFILE_NAME: &str = "efs";
+
+/// Generate the one-time password that protects an EFS PKCS#12 bundle.
+///
+/// 18 CSPRNG bytes rendered as URL-safe unpadded base64 → 24 characters (~144
+/// bits of entropy), comfortably above the builder's 12-char floor. The value
+/// is returned to the operator exactly once and never stored, so it is the sole
+/// protection on the escrowed key in transit (SC-12, SI-12).
+fn generate_one_time_pkcs12_password() -> zeroize::Zeroizing<String> {
+    let bytes = zeroize::Zeroizing::new(rand::random::<[u8; 18]>());
+    zeroize::Zeroizing::new(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes.as_slice()),
+    )
+}
+
+/// Capability rank of an EST certificate profile within the TLS clientAuth/
+/// serverAuth breadth ladder, used so re-enrollment can preserve the broadest
+/// EKU set ever issued to an identity (RFC 7030 §4.2.2 — a renewal must not
+/// silently narrow a server+client node to client-only). `tls_server_client`
+/// (serverAuth + clientAuth) outranks the single-EKU profiles.
+///
+/// EFS is intentionally NOT on this ladder: it is a distinct certificate purpose
+/// (Microsoft EFS EKU), not a wider/narrower TLS EKU set. `broadest_est_profile`
+/// never compares it by rank — see the family guard there.
 fn profile_capability_rank(profile: &str) -> u8 {
     match profile {
         "tls_server_client" => 2,
@@ -1676,7 +2275,14 @@ fn broadest_est_profile(current: Option<String>, candidate: &Option<String>) -> 
         .filter(|p| OFFERABLE_EST_PROFILES.contains(p));
     match (current, candidate) {
         (Some(cur), Some(cand)) => {
-            if profile_capability_rank(cand) > profile_capability_rank(&cur) {
+            // EFS is orthogonal to the TLS EKU breadth ladder. A renewal must
+            // never silently swap an identity between the EFS and TLS families
+            // (that would change the certificate's purpose, not just widen its
+            // EKUs), so when exactly one side is EFS keep the profile already
+            // selected and never rank-compare across the boundary (fail secure).
+            if (cur == EFS_PROFILE_NAME) != (cand == EFS_PROFILE_NAME) {
+                Some(cur)
+            } else if profile_capability_rank(cand) > profile_capability_rank(&cur) {
                 Some(cand.to_string())
             } else {
                 Some(cur)
@@ -1697,6 +2303,8 @@ struct MintEnrollmentTokenResponse {
     identity: String,
     expires_at: String,
     expires_in_seconds: i64,
+    /// Use budget the token was minted with (1 = single-use).
+    max_uses: i64,
 }
 
 /// Mint a single-use, time-limited EST enrollment token bound to a device
@@ -1765,6 +2373,12 @@ async fn create_enrollment_token(
         .clamp(MIN_TTL, MAX_TTL);
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl);
 
+    // Clamp the use budget: single-use by default, at most 1000 devices. A
+    // multi-use token stays identity-pinned and time-limited; the cap bounds the
+    // blast radius of a leaked credential (IA-5 / AC-6).
+    const MAX_USE_BUDGET: i64 = 1000;
+    let max_uses = req.max_uses.unwrap_or(1).clamp(1, MAX_USE_BUDGET);
+
     // 256-bit URL-safe token; only its SHA-256 is stored. Zeroize the raw
     // entropy after encoding (NIST 800-53 SI-12: protect secrets in memory).
     let token_bytes = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
@@ -1781,6 +2395,7 @@ async fn create_enrollment_token(
             profile.as_deref(),
             &user.username,
             expires_at,
+            max_uses as i32,
         )
         .await
         .is_ok()
@@ -1803,6 +2418,7 @@ async fn create_enrollment_token(
         "ttl_seconds": ttl,
         "token_id": token_id.to_string(),
         "profile": profile,
+        "max_uses": max_uses,
     }))
     .build();
     let _ = state.audit_sink.record(&mut event).await;
@@ -1828,6 +2444,7 @@ async fn create_enrollment_token(
             identity,
             expires_at: expires_at.to_rfc3339(),
             expires_in_seconds: ttl,
+            max_uses,
         }),
     )
         .into_response())
@@ -1844,6 +2461,10 @@ struct EnrollmentTokenSummaryDto {
     expires_at: String,
     /// live | used | revoked | expired
     status: String,
+    /// Use budget the token was minted with (1 = single-use).
+    max_uses: i32,
+    /// Remaining uses (0 once exhausted/revoked).
+    uses_remaining: i32,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1876,6 +2497,24 @@ async fn authorize_token_mgmt(
     Ok(())
 }
 
+/// NPE sponsor token management is self-service; anyone with global oversight
+/// keeps the full view. "Global oversight" mirrors the CA's own-scope rule
+/// (`is_npe_self_service`) — a legacy operator/admin role OR any approver role
+/// (`ApproveRequest`) — so the two services never disagree on who is scoped.
+fn enrollment_token_owner_scope(user: &ostrich_common::auth::AuthenticatedUser) -> Option<&str> {
+    let is_npe_sponsor = user
+        .roles
+        .iter()
+        .any(|r| matches!(r, Role::PkiSponsor | Role::PkiSponsorAdmin));
+    let has_global_oversight = user
+        .roles
+        .iter()
+        .any(|r| matches!(r, Role::Administrator | Role::OperationsStaff))
+        || any_role_has_permission(&user.roles, Permission::ApproveRequest);
+
+    (is_npe_sponsor && !has_global_oversight).then_some(user.username.as_str())
+}
+
 /// List recently minted enrollment tokens (operator review).
 ///
 /// `GET /api/v1/est/enrollment-tokens` — requires `Permission::GenerateEstToken`.
@@ -1889,7 +2528,7 @@ async fn list_enrollment_tokens(
 
     let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
     let rows = repo
-        .list_enrollment_tokens(200)
+        .list_enrollment_tokens(enrollment_token_owner_scope(&user), 200)
         .await
         .map_err(|e| Error::Internal(format!("Failed to list enrollment tokens: {e}")))?;
 
@@ -1897,11 +2536,18 @@ async fn list_enrollment_tokens(
     let tokens = rows
         .into_iter()
         .map(|r| {
-            let status = match (&r.used_at, &r.used_by_cert) {
-                (Some(_), Some(_)) => "used",
-                (Some(_), None) => "revoked",
-                (None, _) if r.expires_at <= now => "expired",
-                (None, _) => "live",
+            // Derive status from the unambiguous lifecycle fields. `used_at` and
+            // `used_by_cert` cannot distinguish revoked-after-partial-use from
+            // exhausted-by-use for a multi-use token, so we key on `revoked_at`
+            // and `uses_remaining` instead.
+            let status = if r.revoked_at.is_some() {
+                "revoked"
+            } else if r.uses_remaining <= 0 {
+                "used"
+            } else if r.expires_at <= now {
+                "expired"
+            } else {
+                "live"
             };
             EnrollmentTokenSummaryDto {
                 id: r.id.to_string(),
@@ -1910,6 +2556,8 @@ async fn list_enrollment_tokens(
                 created_at: r.created_at.to_rfc3339(),
                 expires_at: r.expires_at.to_rfc3339(),
                 status: status.to_string(),
+                max_uses: r.max_uses,
+                uses_remaining: r.uses_remaining,
             }
         })
         .collect();
@@ -1936,7 +2584,7 @@ async fn revoke_enrollment_token(
 
     let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
     let revoked = repo
-        .revoke_enrollment_token(token_id)
+        .revoke_enrollment_token(token_id, enrollment_token_owner_scope(&user))
         .await
         .map_err(|e| Error::Internal(format!("Failed to revoke enrollment token: {e}")))?;
 
@@ -2173,6 +2821,44 @@ async fn delete_account_identity(
 mod tests {
     use super::*;
 
+    /// The EFS profile must be offerable, or serverkeygen would reject it before
+    /// ever reaching the PKCS#12 delivery path.
+    #[test]
+    fn efs_profile_is_offerable() {
+        assert!(OFFERABLE_EST_PROFILES.contains(&EFS_PROFILE_NAME));
+    }
+
+    /// The structured EFS serverkeygen body uses camelCase `keyStrength` and a
+    /// defaultable `sans`; both must round-trip so the portal contract holds.
+    #[test]
+    fn efs_keygen_request_deserializes() {
+        let full: EfsKeygenRequest =
+            serde_json::from_str(r#"{"sans":["DNS:host.mil"],"keyStrength":2048}"#).unwrap();
+        assert_eq!(full.sans, vec!["DNS:host.mil"]);
+        assert_eq!(full.key_strength, Some(2048));
+
+        // Both fields are optional (subject comes from the authenticated identity).
+        let empty: EfsKeygenRequest = serde_json::from_str("{}").unwrap();
+        assert!(empty.sans.is_empty());
+        assert_eq!(empty.key_strength, None);
+    }
+
+    /// The one-time PKCS#12 password must clear the builder's 12-char floor and
+    /// be unique per call (CSPRNG-derived, not a fixed/derivable value).
+    #[test]
+    fn one_time_pkcs12_password_is_long_and_unique() {
+        let a = generate_one_time_pkcs12_password();
+        let b = generate_one_time_pkcs12_password();
+        assert!(a.len() >= 12, "password must clear the builder's minimum");
+        assert_ne!(a.as_str(), b.as_str(), "passwords must not repeat");
+        // URL-safe base64 alphabet only (no '+', '/', or '=' padding).
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "password must be URL-safe base64"
+        );
+    }
+
     /// Re-enrollment must preserve the broadest EKU profile ever issued to an
     /// identity (RFC 7030 §4.2.2): a server+client node must not be narrowed to
     /// client-only on renewal, and one already narrowed (e.g. by an earlier
@@ -2200,7 +2886,35 @@ mod tests {
         );
         assert_eq!(broadest_est_profile(None, &Some("bogus".into())), None);
         assert_eq!(broadest_est_profile(None, &None), None);
-        assert!(profile_capability_rank("tls_server_client") > profile_capability_rank("tls_client"));
+        assert!(
+            profile_capability_rank("tls_server_client") > profile_capability_rank("tls_client")
+        );
+    }
+
+    /// EFS is orthogonal to the TLS EKU ladder: the broadest-profile fold must
+    /// never silently swap an identity between the EFS and TLS families (that
+    /// would change the certificate's purpose), in either encounter order.
+    #[test]
+    fn reenroll_never_swaps_efs_and_tls_families() {
+        // A pure-EFS identity renews as EFS (preserved, not folded away).
+        let efs_only = broadest_est_profile(
+            broadest_est_profile(None, &Some(EFS_PROFILE_NAME.to_string())),
+            &Some(EFS_PROFILE_NAME.to_string()),
+        );
+        assert_eq!(efs_only.as_deref(), Some(EFS_PROFILE_NAME));
+
+        // Mixed-purpose identity (same subject+SANs): never silently swap purpose,
+        // regardless of which family the fold encounters first.
+        let efs_then_tls = broadest_est_profile(
+            broadest_est_profile(None, &Some(EFS_PROFILE_NAME.to_string())),
+            &Some("tls_server_client".to_string()),
+        );
+        assert_eq!(efs_then_tls.as_deref(), Some(EFS_PROFILE_NAME));
+        let tls_then_efs = broadest_est_profile(
+            broadest_est_profile(None, &Some("tls_server_client".to_string())),
+            &Some(EFS_PROFILE_NAME.to_string()),
+        );
+        assert_eq!(tls_then_efs.as_deref(), Some("tls_server_client"));
     }
 
     #[test]

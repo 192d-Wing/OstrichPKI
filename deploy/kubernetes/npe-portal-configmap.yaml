@@ -1,0 +1,43 @@
+# OstrichPKI NPE Portal config (smoke-test / allow-insecure)
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: CM-2/CM-6 (baseline + configuration settings)
+#
+# Backends are reached over plain HTTP on the in-cluster network. This config is
+# paired with NPE_ALLOW_INSECURE=true for a smoke deploy (no client-CA, secure
+# cookies off). A production overlay replaces this with mTLS material + the real
+# allowedIssuers and serves over HTTPS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: npe-portal-config
+  namespace: ostrich-pki
+  labels:
+    app: npe-portal
+data:
+  npe-portal.json: |
+    {
+      "backend": {
+        "caUrl": "http://ca-service:8080",
+        "estUrl": "http://est-service:8443"
+      },
+      "session": {
+        "cookieName": "ostrich_npe_session",
+        "inactivityTimeoutSecs": 1800,
+        "absoluteTimeoutSecs": 28800,
+        "secureCookies": false
+      },
+      "oidMapping": {
+        "sponsorOids": ["2.16.840.1.101.2.1.11.42"],
+        "adminOid": "2.16.840.1.101.2.1.11.43",
+        "raOids": ["2.16.840.1.101.2.1.11.44"],
+        "caaOids": ["2.16.840.1.101.2.1.11.45"],
+        "allowedIssuers": ["CN=Example NPE Issuing CA,O=U.S. Government,C=US"]
+      },
+      "classificationBanner": "CUI",
+      "cspNonceLength": 16,
+      "staticFiles": {
+        "directory": "/app/static",
+        "urlPrefix": "/static"
+      }
+    }

@@ -23,6 +23,8 @@ pub mod crl;
 pub mod error;
 pub mod extensions;
 pub mod parser;
+pub mod pkcs12;
+pub mod pkcs7;
 pub mod profile;
 pub mod secure_defaults;
 pub mod signing;

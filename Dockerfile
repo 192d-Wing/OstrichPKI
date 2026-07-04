@@ -218,6 +218,28 @@ ENV OCSP_BIND_ADDRESS=0.0.0.0:8081
 ENTRYPOINT ["ostrich-ocsp-server"]
 
 # ==============================================================================
+# Stage: Notify Service (certificate-expiry notifications; NATS -> SMTP)
+# ==============================================================================
+FROM runtime-base AS notify-service
+
+LABEL org.opencontainers.image.title="OstrichPKI Notify Service"
+LABEL org.opencontainers.image.description="Certificate-expiry notification service (NATS JetStream -> SMTP)"
+LABEL org.opencontainers.image.vendor="OstrichPKI"
+
+COPY --from=builder /app/target/release/ostrich-notify-server /usr/local/bin/
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8090/health || exit 1
+
+USER ostrich
+EXPOSE 8090
+
+ENV RUST_LOG=info
+ENV NOTIFY_HEALTH_ADDRESS=0.0.0.0:8090
+
+ENTRYPOINT ["ostrich-notify-server"]
+
+# ==============================================================================
 # Stage 7: SCMS Service
 # ==============================================================================
 FROM runtime-base AS scms-service
@@ -280,3 +302,59 @@ COPY --chmod=755 docker/ca-init.sh /usr/local/bin/ca-init.sh
 USER ostrich
 
 ENTRYPOINT ["ostrich-cli"]
+
+# ==============================================================================
+# Stage 10: NPE Portal Web Builder (React/Vite SPA)
+# ==============================================================================
+# The NPE portal binary serves a static SPA from ./dist; build it here so the
+# runtime image carries only the compiled assets (no node toolchain).
+FROM node:22-bookworm-slim AS npe-portal-web-builder
+WORKDIR /web
+
+# Install dependencies first so this layer is cached until package.json changes.
+# No lockfile is committed for the SPA (matches services/web-ui/web), so `npm
+# install` resolves fresh — pinned, audited dependency upgrades happen in PRs.
+COPY services/npe-portal/web/package.json ./
+RUN npm install --no-audit --no-fund
+
+# Build the SPA. `npm run build` runs `tsc --noEmit && vite build` -> /web/dist.
+COPY services/npe-portal/web/ ./
+RUN npm run build
+
+# ==============================================================================
+# Stage 11: NPE Portal (mTLS BFF + React SPA)
+# ==============================================================================
+# A standalone Non-Person Entity enrollment portal: an Axum BFF authenticated by
+# mTLS client certificate (OID->role), serving the SPA and proxying an
+# allowlisted set of CA/EST routes.
+FROM runtime-base AS npe-portal
+
+# NIST 800-53: IA-2 (mTLS identification), AC-3 (OID->role + proxy allowlist)
+LABEL org.opencontainers.image.title="OstrichPKI NPE Portal"
+LABEL org.opencontainers.image.description="Non-Person Entity PKI enrollment portal (mTLS, OID-to-role)"
+LABEL org.opencontainers.image.vendor="OstrichPKI"
+
+# The BFF binary, the compiled SPA (served from the configured staticFiles
+# directory, /app/static, under the /static prefix matching Vite's base), and a
+# baseline config (production overrides by mounting config/npe-portal.json).
+COPY --from=builder /app/target/release/ostrich-npe-portal /usr/local/bin/
+COPY --from=npe-portal-web-builder /web/dist /app/static
+COPY --from=builder /app/config/npe-portal.example.json /app/config/npe-portal.json
+
+# The portal requires mTLS, so an HTTP health check cannot complete the TLS
+# handshake without a client certificate; check that the listener accepts a TCP
+# connection instead (SI-17 — liveness without weakening the auth posture).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/8443' || exit 1
+
+USER ostrich
+
+# mTLS HTTPS listener.
+EXPOSE 8443
+
+# NIST 800-53: CM-6 - secure defaults. The portal fails closed without mTLS
+# material unless NPE_ALLOW_INSECURE is set (development only).
+ENV RUST_LOG=info
+ENV NPE_BIND_ADDRESS=0.0.0.0:8443
+
+ENTRYPOINT ["ostrich-npe-portal"]

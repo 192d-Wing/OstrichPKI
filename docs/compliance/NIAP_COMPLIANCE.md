@@ -1,6 +1,6 @@
 # NIAP Protection Profile for Certification Authorities v2.1 Compliance Matrix
 
-**Document Version:** 2.5
+**Document Version:** 2.7
 **Date:** 2026-01-07
 **OstrichPKI Version:** 0.15.0
 **Protection Profile:** NIAP PP-CA v2.1
@@ -128,8 +128,20 @@ This document tracks OstrichPKI's compliance with the NIAP Protection Profile fo
 - ✅ `AuditRepository::find_security_events()` - Query security-relevant events
 - ✅ Auditor role defined in ADMIN_GUIDE.md (read-only access to audit logs)
 - ✅ Records returned in human-readable format (JSON serialization)
+- ✅ NPE-portal Audit Log page (`services/npe-portal/web/src/pages/audit-log.tsx`,
+  route `/audit`) surfaces the paginated/filtered trail (actor / event-type /
+  outcome) with a one-click hash-chain + signature integrity check
+  (`GET /api/v1/audit/verify`). Read access is gated by `Permission::ReadAuditLog`,
+  held by a dedicated read-only NPE `Auditor` role (`NpeAuditor` — audit review
+  only, no issuance/approval/config authority) that provides separation of duties
+  (AC-5 / FMT_SMR.2), and additionally granted to the `RegistrationAuthority` and
+  `CaaAdmin` roles for operational review
+  (`crates/ostrich-common/src/auth/permissions.rs`). The dedicated Auditor is the
+  SoD-clean reviewer independent of those who act; RA/CAA audit-read is a
+  documented deployment policy choice layered on top of it.
 
-**NIAP Annotation:** `crates/ostrich-db/src/repository/audit.rs` lines 312-463
+**NIAP Annotation:** `crates/ostrich-db/src/repository/audit.rs` lines 312-463;
+`crates/ostrich-ca/src/rest.rs` (`GET /api/v1/audit`, `/audit/verify`)
 
 **Related NIST 800-53:** AU-6 (Audit Review, Analysis, and Reporting)
 
@@ -2228,6 +2240,66 @@ The following SFRs require a complete authentication system:
 
 ---
 
+## NPE Portal (Non-Person Entity enrollment)
+
+The `ostrich-npe-portal` service maps to the following SFRs:
+
+- **FIA_UAU.1 / FIA_X509_EXT.1 / FIA_X509_EXT.2:** mTLS client-certificate
+  authentication; the role is derived from (issuer-scoped) certificate policy
+  OIDs — `services/npe-portal/src/server/oid.rs`.
+- **FMT_SMR.2 (Security Roles):** five NPE roles — PKI Sponsor, Administrator,
+  Registration Authority, CA Admin, and a read-only **Auditor** (`NpeAuditor`:
+  audit review only, no issuance/approval/config authority) — the dedicated
+  reviewer that supports separation of duties (AC-5) for audit access —
+  `crates/ostrich-common/src/auth/roles.rs`. All five are OID-derived and
+  assignable by the CAA (`ASSIGNABLE_NPE_ROLES`).
+- **FTA_SSL.1 / FTA_SSL.3 (Session Locking / Termination):** 30-minute inactivity
+  lock and session termination — `services/npe-portal/src/server/session.rs`.
+- **FAU_GEN.1 / FAU_GEN.2 (Audit Generation / Identity Association):**
+  authentication audit records (login/consent/logout) with user-identity
+  association — `services/npe-portal/src/server/audit.rs`.
+- **FMT_SMF.1 (Management Functions):** USG consent acknowledgement and session
+  lifecycle management — `services/npe-portal/src/server/router.rs`. Consent and
+  userinfo endpoints re-check the session's certificate fingerprint before
+  returning identity data or mutating consent state.
+
+The portal also drives these CA/EST capabilities (gated by the proxy allowlist
+and per-route RBAC):
+
+- **FDP_CER_EXT.3 / FDP_SEPP.1 (Issuance Approval / Segregation of Duties):** the
+  RA approval queue (approve/reject/override) is gated on the `ApproveRequest`
+  permission at BOTH the REST layer and the approval engine's `can_approve`
+  (requestor ≠ approver enforced); approving despite validation advisories
+  additionally requires `OverrideValidation` and is recorded on the decision —
+  `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-ca/src/approval.rs`.
+- **FMT_MTD.1 / FDP_ACC.1 (TSF Data / Access Control):** PKI Sponsor and NPE
+  Administrator self-service reads are owner-scoped at the repository layer for
+  certificate inventory/detail/stats, FQDN history, and EST token metadata; EST
+  token list/revoke is scoped to tokens created by the same NPE sponsor unless a
+  legacy global token-management role is present — `crates/ostrich-ca/src/rest.rs`,
+  `crates/ostrich-est/src/rest.rs`, `crates/ostrich-db/src/repository/{certificate,fqdn,est}.rs`.
+- **FMT_SMR.2 / FMT_MTD.1 (Role Management):** CAA user management
+  (create/list/assign-roles/status/delete) with a self-action block (a CAA cannot
+  modify/disable/delete their own account — AC-5 separation of duties) and a
+  privilege ceiling (only the four NPE roles are assignable) —
+  `crates/ostrich-ca/src/rest.rs` (`load_target_user_guarded`, `parse_roles`).
+- **FMT_SMF.1 / FDP_ACF.1 (Management Functions / Name Constraints):** CAA
+  wildcard/namespace policy management and system-configuration management, both
+  attributed + audited (CM-3) — `crates/ostrich-ca/src/rest.rs`.
+- **FCS_CKM.1 / FCS_COP.1 (Key Generation / Crypto Operation):** EFS server-side
+  key generation delivering an encrypted PKCS#12 (RFC 7292; PBES2 +
+  HMAC-SHA256 MAC) under a one-time password —
+  `crates/ostrich-x509/src/pkcs12.rs`, `crates/ostrich-est/src/rest.rs`.
+- **FDP_CER_EXT.2 (Certificate Request Linkage):** Administrator bulk enrollment
+  validates each CSR in an uploaded archive and queues it as an approval request,
+  recording a durable per-CSR outcome — `crates/ostrich-ca/src/rest.rs`,
+  `crates/ostrich-db/src/repository/bulk_enrollment.rs`.
+
+Deployment (active-active, IL5): container image + Helm chart (mTLS, per-network
+ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
+
+---
+
 ## Document Change History
 
 | Version | Date | Author | Changes |
@@ -2243,6 +2315,8 @@ The following SFRs require a complete authentication system:
 | 2.4 | 2026-01-04 | OstrichPKI Team | Phase 19: HSM enforcement, 98% compliance |
 | 2.5 | 2026-01-07 | OstrichPKI Team | Phase 20: Web UI service - OIDC authentication (FIA_UAU_EXT.1), CSP nonces (FPT_TRP_EXT.1), session mgmt (FTA_SSL.3/4) |
 | 2.6 | 2026-06-23 | OstrichPKI Team | TAMP (RFC 5934) manager: FMT_SMF.1 (trust anchor management functions), FCS_COP.1 (CMS sign/verify), FAU_GEN.1 (TampProtocol audit), FPT_STM.1 — `ostrich-tamp` crate + `ostrich-tamp-server` |
+| 2.7 | 2026-06-26 | OstrichPKI Team | NPE Portal: FIA_UAU.1 / FIA_X509_EXT.1-.2 (mTLS cert auth), FMT_SMR.2 (4 NPE roles), FTA_SSL.1/.3 (30-min inactivity), FAU_GEN.1/.2 (auth audit), FMT_SMF.1 (consent/session mgmt) — `ostrich-npe-portal` |
+| 2.8 | 2026-06-29 | OstrichPKI Team | NPE Portal workflows: FDP_CER_EXT.3 / FDP_SEPP.1 (RA approval + override, engine-gated segregation), FMT_SMR.2 / FMT_MTD.1 (CAA user mgmt + self-action block + role ceiling), FMT_SMF.1 / FDP_ACF.1 (namespace + system-config mgmt), FCS_CKM.1 / FCS_COP.1 (EFS PKCS#12 delivery), FDP_CER_EXT.2 (bulk enrollment); container image + Helm chart |
 
 ---
 

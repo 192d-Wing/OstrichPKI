@@ -84,6 +84,58 @@
       "description": "Serve token bootstrap and mTLS re-enrollment on one port: request (but do not require) client certificates, authenticate /simplereenroll by the client certificate (RFC 7030 §3.3) and /simpleenroll by a single-use bearer enrollment token. Requires tlsCaCert.",
       "default": false
     },
+    "caBackends": {
+      "type": "array",
+      "description": "Named CA backends for RFC 7030 §3.2.2 label-routed enrollment (e.g. an EC CA and an RSA CA). The label's key-algorithm token selects which backend issues.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "grpcUrl"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Backend name, referenced by labelRouting.algoBackends / defaultBackend."
+          },
+          "grpcUrl": {
+            "type": "string",
+            "description": "CA gRPC endpoint for this backend."
+          },
+          "clientCert": {
+            "type": "string",
+            "description": "Path to the mTLS client certificate (PEM) for this backend's gRPC channel."
+          },
+          "clientKey": {
+            "type": "string",
+            "description": "Path to the mTLS client private key (PEM)."
+          },
+          "caCert": {
+            "type": "string",
+            "description": "Path to the CA certificate (PEM) verifying this backend's gRPC server."
+          },
+          "caCertificateId": {
+            "type": "string",
+            "description": "UUID of this backend's issuing CA certificate (in ca_certificates), served by /{label}/cacerts."
+          }
+        }
+      }
+    },
+    "labelRouting": {
+      "type": "object",
+      "description": "Maps RFC 7030 §3.2.2 labels to caBackends. Enables the /.well-known/est/{label}/... paths.",
+      "additionalProperties": false,
+      "required": ["defaultBackend"],
+      "properties": {
+        "algoBackends": {
+          "type": "object",
+          "description": "Key-algorithm token ('2048', 'P384') -> backend name.",
+          "additionalProperties": { "type": "string" }
+        },
+        "defaultBackend": {
+          "type": "string",
+          "description": "Backend used when a label carries no key-algorithm token."
+        }
+      }
+    },
     "logLevel": {
       "type": "string",
       "description": "Log level / filter (e.g. info, debug, ostrich_est=debug).",

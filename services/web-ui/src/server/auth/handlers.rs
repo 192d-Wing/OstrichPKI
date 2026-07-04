@@ -17,7 +17,33 @@ use axum::{
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
 
+use super::super::backend_client::HttpClient;
 use super::super::router::AppState;
+
+/// POST a JSON body to the CA over the shared TLS-capable client, returning the
+/// response status and (bounded) body bytes. Sets an `Authorization` header when
+/// `bearer` is present. Errors on a transport failure (e.g. the CA unreachable)
+/// or an unbuildable request, which callers map to a 502.
+async fn ca_post_json(
+    client: &HttpClient,
+    url: &str,
+    body: &serde_json::Value,
+    bearer: Option<&str>,
+) -> anyhow::Result<(StatusCode, axum::body::Bytes)> {
+    let mut builder = hyper::Request::builder()
+        .method(hyper::Method::POST)
+        .uri(url)
+        .header(hyper::header::CONTENT_TYPE, "application/json");
+    if let Some(b) = bearer {
+        builder = builder.header(hyper::header::AUTHORIZATION, b);
+    }
+    let req = builder.body(axum::body::Body::from(serde_json::to_vec(body)?))?;
+    let resp = client.request(req).await?;
+    let status = resp.status();
+    // CA auth responses are tiny JSON objects; cap the read defensively.
+    let bytes = axum::body::to_bytes(axum::body::Body::new(resp.into_body()), 64 * 1024).await?;
+    Ok((status, bytes))
+}
 
 /// Query parameters for OAuth callback
 #[derive(Debug, Deserialize)]
@@ -109,18 +135,15 @@ pub async fn internal_login(
         "{}/api/v1/auth/login",
         state.config.backend.ca_url.trim_end_matches('/')
     );
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .json(&serde_json::json!({
-            "username": req.username,
-            "password": req.password,
-            "evict_existing": req.evict_existing
-        }))
-        .send()
-        .await;
-
-    let resp = match resp {
-        Ok(r) => r,
+    let payload = serde_json::json!({
+        "username": req.username,
+        "password": req.password,
+        "evict_existing": req.evict_existing
+    });
+    // Dial the CA over the shared TLS-capable client (built with the CA trust
+    // anchor); a bare HTTP client cannot reach the CA's TLS 1.3 REST API.
+    let (status, body) = match ca_post_json(&state.ca_client, &url, &payload, None).await {
+        Ok(pair) => pair,
         Err(e) => {
             tracing::error!(error = %e, "internal login: CA auth endpoint unreachable");
             return (
@@ -137,7 +160,7 @@ pub async fn internal_login(
     // Credentials are valid but the user is at the concurrent-session cap: the CA
     // returns 409. Surface it distinctly (not as "invalid credentials") so the
     // client can offer "sign out my other sessions" and retry with evict.
-    if resp.status() == reqwest::StatusCode::CONFLICT {
+    if status == StatusCode::CONFLICT {
         tracing::warn!(user = %req.username, "internal login blocked: session limit reached");
         return (
             StatusCode::CONFLICT,
@@ -149,9 +172,9 @@ pub async fn internal_login(
             .into_response();
     }
 
-    if !resp.status().is_success() {
+    if !status.is_success() {
         // NIAP PP-CA: FIA_AFL.1 - failed authentication (lockout enforced CA-side)
-        tracing::warn!(status = %resp.status(), user = %req.username, "internal login rejected by CA");
+        tracing::warn!(status = %status, user = %req.username, "internal login rejected by CA");
         return (
             StatusCode::UNAUTHORIZED,
             Json(AuthError {
@@ -162,7 +185,7 @@ pub async fn internal_login(
             .into_response();
     }
 
-    let ca: CaLoginResponse = match resp.json().await {
+    let ca: CaLoginResponse = match serde_json::from_slice(&body) {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "internal login: malformed CA login response");
@@ -397,14 +420,17 @@ pub async fn logout_all(State(state): State<AppState>, jar: CookieJar) -> impl I
                 "{}/api/v1/auth/logout-all",
                 state.config.backend.ca_url.trim_end_matches('/')
             );
-            match reqwest::Client::new()
-                .post(&url)
-                .header("authorization", format!("Bearer {backend}"))
-                .send()
-                .await
+            let bearer = format!("Bearer {backend}");
+            match ca_post_json(
+                &state.ca_client,
+                &url,
+                &serde_json::json!({}),
+                Some(&bearer),
+            )
+            .await
             {
-                Ok(resp) if !resp.status().is_success() => {
-                    tracing::warn!(status = %resp.status(), "logout-all: CA returned non-success");
+                Ok((status, _)) if !status.is_success() => {
+                    tracing::warn!(status = %status, "logout-all: CA returned non-success");
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "logout-all: CA call failed"),

@@ -1,0 +1,28 @@
+{
+  "backend": {
+    "caUrl": "https://ca-service:8081",
+    "estUrl": "https://est-service:8087",
+    "mtlsClientCert": "/etc/ostrich/npe/portal-client.crt",
+    "mtlsClientKey": "/etc/ostrich/npe/portal-client.key",
+    "mtlsCaCert": "/etc/ostrich/npe/backend-ca.crt"
+  },
+  "session": {
+    "cookieName": "ostrich_npe_session",
+    "inactivityTimeoutSecs": 1800,
+    "absoluteTimeoutSecs": 28800,
+    "secureCookies": true
+  },
+  "oidMapping": {
+    "sponsorOids": ["2.16.840.1.101.2.1.11.42"],
+    "adminOid": "2.16.840.1.101.2.1.11.43",
+    "raOids": ["2.16.840.1.101.2.1.11.44"],
+    "caaOids": ["2.16.840.1.101.2.1.11.45"],
+    "allowedIssuers": ["CN=Example NPE Issuing CA,O=U.S. Government,C=US"]
+  },
+  "classificationBanner": "CUI",
+  "cspNonceLength": 16,
+  "staticFiles": {
+    "directory": "/app/static",
+    "urlPrefix": "/static"
+  }
+}

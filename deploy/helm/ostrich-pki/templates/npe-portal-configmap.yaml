@@ -1,0 +1,21 @@
+{{/*
+OstrichPKI NPE Portal config (npe-portal.json)
+
+Rendered from .Values.npePortal.config unless an existingConfigMap is supplied.
+
+COMPLIANCE MAPPING:
+- NIST 800-53: CM-2/CM-6 (baseline + configuration settings)
+*/}}
+{{- if and .Values.npePortal.enabled (not .Values.npePortal.existingConfigMap) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-npe-portal
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: npe-portal
+data:
+  npe-portal.json: |-
+{{ .Values.npePortal.config | toPrettyJson | indent 4 }}
+{{- end }}

@@ -48,6 +48,11 @@ pub struct CertificateAuthority {
     /// Revocation manager
     revocation_manager: RevocationManager,
 
+    /// DER encoding of the CA's own certificate, retained so the API can report
+    /// enriched CA details (key type, algorithm, validity, chain) without
+    /// re-plumbing the certificate through the issuer.
+    ca_certificate_der: Vec<u8>,
+
     // --- Audit-trail integrity verification (AU-9/AU-10, FAU_STG.1.2) ---
     // The CA key signs audit records (see the signed sinks above); these let
     // `verify_audit_chain` recompute the chain and check each signature against
@@ -75,6 +80,9 @@ impl CertificateAuthority {
         HsmKeyValidator::validate_ca_signing_key(&ca_key)?;
 
         let ca_id = ca_certificate.id;
+        // Retain the CA cert DER before `ca_certificate` is moved into the issuer
+        // (used by the enriched CA-info endpoint).
+        let ca_certificate_der = ca_certificate.der_encoded.clone();
         // RFC 5280 §7.1 - parse the structured subject DN from the CA
         // certificate so issued certificates' issuer fields chain correctly.
         // (Wrapping the rendered string in new_cn produced "CN=CN=..." and
@@ -148,10 +156,16 @@ impl CertificateAuthority {
             ca_dn,
             issuer,
             revocation_manager,
+            ca_certificate_der,
             audit_crypto,
             audit_key,
             audit_db_pool,
         })
+    }
+
+    /// DER encoding of the CA's own certificate.
+    pub fn certificate_der(&self) -> &[u8] {
+        &self.ca_certificate_der
     }
 
     /// Verify the integrity of the audit trail.

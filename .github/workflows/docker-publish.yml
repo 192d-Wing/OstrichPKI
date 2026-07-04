@@ -3,7 +3,7 @@
 # Builds the multi-service Dockerfile and publishes each service image to the
 # GitHub Container Registry (GHCR):
 #   ghcr.io/<owner>/{ca-service,acme-service,est-service,ocsp-service,
-#                    scms-service,kra-service,cli}
+#                    scms-service,kra-service,cli,npe-portal}
 # The web UI has its own multi-stage Dockerfile (Trunk WASM client + Axum
 # server) and is published alongside them as:
 #   ghcr.io/<owner>/web-ui
@@ -84,7 +84,7 @@ jobs:
           cache_ref="ghcr.io/${owner}/build-cache-services"
 
           i=0
-          for svc in ca-service acme-service est-service ocsp-service scms-service kra-service cli; do
+          for svc in ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal; do
             tags=( --tag "ghcr.io/${owner}/${svc}:sha-${sha}" )
             for t in "${extra_tags[@]}"; do
               tags+=( --tag "ghcr.io/${owner}/${svc}:${t}" )
@@ -106,7 +106,7 @@ jobs:
             i=$((i + 1))
           done
 
-          echo "Published service images: ca-service acme-service est-service ocsp-service scms-service kra-service cli"
+          echo "Published service images: ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal"
 
   # ---- Web UI (independent Dockerfile + build graph) ----
   web-ui:

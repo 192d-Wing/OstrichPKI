@@ -16,10 +16,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::any,
 };
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use serde_json::json;
 
+use super::backend_client::HttpClient;
 use super::router::AppState;
 
 /// Create the API proxy router
@@ -48,7 +47,13 @@ async fn proxy_est(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.config.backend.est_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.est_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the CA service
@@ -57,7 +62,13 @@ async fn proxy_ca(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.config.backend.ca_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.ca_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the ACME service
@@ -66,7 +77,13 @@ async fn proxy_acme(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.config.backend.acme_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.acme_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the OCSP service
@@ -75,7 +92,13 @@ async fn proxy_ocsp(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.config.backend.ocsp_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.ocsp_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the SCMS service
@@ -84,7 +107,13 @@ async fn proxy_scms(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.config.backend.scms_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.scms_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the KRA service
@@ -93,7 +122,13 @@ async fn proxy_kra(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.config.backend.kra_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.kra_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the Audit service
@@ -102,11 +137,22 @@ async fn proxy_audit(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.config.backend.audit_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.audit_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Generic proxy function to forward requests to a backend service
-async fn proxy_to_service(base_url: &str, path: &str, original_request: Request<Body>) -> Response {
+async fn proxy_to_service(
+    client: &HttpClient,
+    base_url: &str,
+    path: &str,
+    original_request: Request<Body>,
+) -> Response {
     // Preserve the query string (pagination, filters) — the `{*path}` capture
     // excludes it, so it must be re-appended or backends see no query at all.
     let base = base_url.trim_end_matches('/');
@@ -177,11 +223,9 @@ async fn proxy_to_service(base_url: &str, path: &str, original_request: Request<
         }
     };
 
-    // Create HTTP client
-    // Note: In production, reuse a connection pool via State
-    let client: Client<_, Body> = Client::builder(TokioExecutor::new()).build_http();
-
-    // Execute the request
+    // Execute the request over the shared, TLS-capable client (built once with
+    // the CA trust anchor). The connector is `https_or_http`, so plaintext
+    // backends still work through the same pooled client.
     match client.request(proxy_request).await {
         Ok(response) => {
             let (parts, body) = response.into_parts();

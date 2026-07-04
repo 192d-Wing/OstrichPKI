@@ -1,0 +1,88 @@
+[package]
+name = "ostrich-npe-portal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OstrichPKI Non-Person Entity (NPE) Enrollment Portal"
+
+[[bin]]
+name = "ostrich-npe-portal"
+path = "src/main.rs"
+
+# Standalone NPE portal: an Axum BFF that serves the React/Cloudscape
+# console (built separately under web/ with Vite) and proxies an allowlisted set
+# of CA/EST routes. Authentication is passwordless mTLS; the client certificate's
+# OIDs are mapped to an NPE role (Sponsor / Administrator / RA / CAA).
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+# Internal crates
+ostrich-common = { workspace = true }
+ostrich-audit = { workspace = true }
+# CSR parsing for the submit form's CN/SAN preview (reuses the same parser the
+# CA/EST services use).
+ostrich-x509 = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Web framework (server)
+axum = { workspace = true }
+axum-extra = { workspace = true, features = ["typed-header", "cookie"] }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["fs", "set-header"] }
+hyper = { workspace = true }
+# client-legacy + http1 give us the pooled Client used by the backend proxy.
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
+cookie = { workspace = true }
+
+# X.509 client-certificate parsing (OID -> role mapping)
+x509-parser = { workspace = true }
+const-oid = { workspace = true }
+
+# Logging/Tracing
+tracing-subscriber = { workspace = true }
+
+# Configuration
+clap = { workspace = true, features = ["derive", "env"] }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Utilities
+base64 = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+# TLS — mTLS HTTPS client to the CA/EST backends (identity bridge). hyper-rustls
+# wires the rustls client config (aws-lc-rs/FIPS provider) into the hyper client.
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1"] }
+
+# ACME client (RFC 8555): the portal auto-enrolls + renews its own TLS server
+# certificate from the OstrichPKI ACME server (HTTP-01).
+instant-acme = { workspace = true }
+# CSR construction for ACME finalize: we build a CSR carrying a subject CN (not
+# just SANs) so the issued cert has a populated subject — an empty subject with a
+# non-critical SAN violates RFC 5280 §4.1.2.6 and is rejected by strict clients.
+# Also used by the operator-cert generator example + TLS unit tests.
+rcgen = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[features]
+default = []

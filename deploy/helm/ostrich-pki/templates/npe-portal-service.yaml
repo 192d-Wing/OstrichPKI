@@ -1,0 +1,26 @@
+{{/*
+OstrichPKI NPE Portal Service
+
+COMPLIANCE MAPPING:
+- NIST 800-53: SC-8 (Transmission Confidentiality - mTLS)
+*/}}
+{{- if .Values.npePortal.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-npe-portal
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: npe-portal
+spec:
+  type: {{ .Values.npePortal.service.type }}
+  ports:
+    - port: {{ .Values.npePortal.service.port }}
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    {{- include "ostrich-pki.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: npe-portal
+{{- end }}

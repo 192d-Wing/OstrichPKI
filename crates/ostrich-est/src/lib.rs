@@ -56,6 +56,7 @@ pub mod device_cert;
 pub mod enrollment;
 pub mod enrollment_token;
 pub mod error;
+pub mod label;
 pub mod mtls;
 pub mod rest;
 pub mod serverkeygen;

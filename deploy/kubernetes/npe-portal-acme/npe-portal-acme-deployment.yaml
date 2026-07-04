@@ -1,0 +1,122 @@
+# OstrichPKI NPE Portal Deployment (ACME production overlay)
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: IA-2/AC-17 (mandatory mTLS client auth), AC-3 (OID->role +
+#   proxy allowlist), SC-8 (TLS 1.3), SC-12 (ACME-managed, auto-renewed cert),
+#   CM-2/CM-6 (secure-by-default: no NPE_ALLOW_INSECURE)
+#
+# Production posture: serves mTLS HTTPS on :8443 with an ACME-issued server cert
+# and a required operator client CA. Single replica — see README (HTTP-01
+# challenge locality with an in-memory challenge store).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: npe-portal
+  namespace: ostrich-pki
+  labels:
+    app: npe-portal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: npe-portal
+  strategy:
+    # The cert-cache PVC is ReadWriteOnce; avoid two pods contending for it
+    # during a rollout.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: npe-portal
+    spec:
+      serviceAccountName: ostrich-pki
+      # acme.oopl.dev.mil is not in cluster DNS, but its Traefik Ingress (TLS
+      # terminated with the acme-ingress-tls cert) answers on the .54 VIP. Pin
+      # the name to that VIP so the portal's ACME client reaches the directory
+      # over its advertised https base_url. (npe-portal.oopl.dev.mil resolves
+      # in-cluster on its own, so HTTP-01 validation needs no alias.)
+      hostAliases:
+        - ip: "10.10.10.54"
+          hostnames:
+            - acme.oopl.dev.mil
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: npe-portal
+          image: ghcr.io/192d-wing/npe-portal:latest
+          imagePullPolicy: Always
+          ports:
+            - { name: https, containerPort: 8443 }
+            - { name: acme-http, containerPort: 8080 }
+          env:
+            - { name: RUST_LOG, value: "info" }
+            - { name: NPE_BIND_ADDRESS, value: "0.0.0.0:8443" }
+            # mTLS is mandatory: the operator client CA is required. The server
+            # cert is sourced from ACME (no TLS_CERT_FILE/TLS_KEY_FILE), so the
+            # fail-closed gate treats ACME mode as ready with just the client CA.
+            - { name: TLS_CLIENT_CA_FILE, value: "/app/tls/operator-client-ca.pem" }
+          volumeMounts:
+            - name: npe-config
+              mountPath: /app/config/npe-portal.json
+              subPath: npe-portal.json
+              readOnly: true
+            - name: operator-client-ca
+              mountPath: /app/tls/operator-client-ca.pem
+              subPath: ca.pem
+              readOnly: true
+            - name: acme-ca-bundle
+              mountPath: /app/tls/acme-ca-bundle.pem
+              subPath: acme-ca-bundle.pem
+              readOnly: true
+            - name: acme-cache
+              mountPath: /app/acme-cache
+            # Backend mTLS material: the portal presents portal-client.crt
+            # (CN=npe-portal, issued by the OstrichPKI Intermediate CA) to the CA
+            # so it trusts the forwarded X-Npe-* identity (the identity bridge).
+            - name: backend-mtls
+              mountPath: /etc/ostrich/npe
+              readOnly: true
+          # Probes target the ACME challenge responder (:8080), NOT the mTLS
+          # listener (:8443). The mTLS listener only comes up AFTER the initial
+          # ACME enrollment, and enrollment's HTTP-01 challenge is fetched through
+          # this Service on :8080 — so gating readiness on :8443 would leave the
+          # Service with no endpoints during enrollment, the challenge would 503,
+          # and enrollment could never complete (a deadlock). The responder binds
+          # at startup, so :8080 readiness lets the challenge through; the mTLS
+          # listener follows within seconds once the cert is issued.
+          livenessProbe:
+            tcpSocket: { port: acme-http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            tcpSocket: { port: acme-http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+      volumes:
+        - name: npe-config
+          configMap:
+            name: npe-portal-config
+        - name: operator-client-ca
+          secret:
+            secretName: npe-operator-client-ca
+        - name: backend-mtls
+          secret:
+            secretName: npe-backend-mtls
+        - name: acme-ca-bundle
+          configMap:
+            name: npe-acme-ca-bundle
+        - name: acme-cache
+          persistentVolumeClaim:
+            claimName: npe-portal-acme-cache
