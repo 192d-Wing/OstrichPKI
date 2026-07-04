@@ -34,6 +34,7 @@ resources:
   - est-service.yaml
   - ocsp-deployment.yaml
   - ocsp-service.yaml
+  - est-networkpolicy.yaml
   # NOTE: the NPE portal is intentionally NOT in this base. npe-portal-deployment.yaml
   # is the SMOKE-TEST variant (NPE_ALLOW_INSECURE=true — mTLS client-cert auth and
   # OID->role enforcement DISABLED, plaintext proxy to CA/EST), so including it here
