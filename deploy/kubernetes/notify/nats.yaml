@@ -36,9 +36,16 @@ spec:
       containers:
         - name: nats
           image: nats:2.10-alpine
-          # TLS + password auth are configured via the mounted nats.conf; JetStream
-          # store + monitoring port move into the config (were -js/-sd/-m args).
-          args: ["-c", "/etc/nats/nats.conf"]
+          # JetStream + server-side TLS + single-user password auth, all via flags.
+          # The credentials are expanded from the nats-auth secret env by the shell
+          # (config-file `$VAR` expansion proved unreliable for the password, giving
+          # "Authorization Violation"); shell expansion into --user/--pass is robust.
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              exec nats-server -js -sd /data -m 8222
+              --tls --tlscert /etc/nats/tls/tls.crt --tlskey /etc/nats/tls/tls.key
+              --user "$NATS_USER" --pass "$NATS_PASSWORD"
           env:
             - name: NATS_USER
               valueFrom: { secretKeyRef: { name: nats-auth, key: NATS_USER } }
@@ -49,7 +56,6 @@ spec:
             - { name: monitor, containerPort: 8222 }
           volumeMounts:
             - { name: data, mountPath: /data }
-            - { name: nats-config, mountPath: /etc/nats, readOnly: true }
             - { name: nats-tls, mountPath: /etc/nats/tls, readOnly: true }
           livenessProbe:
             httpGet: { path: /healthz, port: monitor }
@@ -70,9 +76,6 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: nats-data
-        - name: nats-config
-          configMap:
-            name: nats-config
         - name: nats-tls
           secret:
             secretName: nats-server-tls

@@ -10,7 +10,6 @@ kind: Kustomization
 namespace: ostrich-pki
 resources:
   - nats.yaml
-  - nats-config.yaml
   - notify-postgres.yaml
   - notify-deployments.yaml
   - networkpolicy.yaml
@@ -27,4 +26,4 @@ configMapGenerator:
 # Pin to a built notify-service image (bump as new builds land).
 images:
   - name: ghcr.io/192d-wing/notify-service
-    newTag: sha-d41a31e
+    newTag: sha-c316cbb
