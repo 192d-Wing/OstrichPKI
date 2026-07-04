@@ -12,10 +12,7 @@ pub type Pool = sqlx::PgPool;
 /// Connect and apply the notify-service migrations (advisory-locked, so it is
 /// safe for both roles to call concurrently).
 pub async fn connect(url: &str) -> Result<Pool> {
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(url)
-        .await?;
+    let pool = PgPoolOptions::new().max_connections(5).connect(url).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
 }
