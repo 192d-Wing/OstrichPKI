@@ -95,18 +95,22 @@ COPY migrations/ ./migrations/
 RUN cargo build --release -p ostrich-web-ui
 
 # ==============================================================================
-# Stage 3: Runtime Image
+# Stage 3: Runtime Image — Iron Bank UBI 10 (multi-arch: amd64 + arm64)
 # ==============================================================================
-FROM debian:bookworm-slim AS runtime
+# Hardened DoD Iron Bank Red Hat UBI base (replaces debian:bookworm-slim).
+FROM registry1.dso.mil/ironbank/redhat/ubi/ubi10:10.2 AS runtime
 
-# Install runtime dependencies
+# Install runtime dependencies (RHEL/UBI package names).
 # NIST 800-53: CM-6 - Minimal software installation
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
-    libpq5 \
-    curl \
-    && rm -rf /var/lib/apt/lists/* \
+#   - ca-certificates : trust store
+#   - openssl-libs    : libcrypto/libssl (the web-ui binary links openssl via reqwest)
+#   - libpq           : PostgreSQL client library
+# curl for the HEALTHCHECK is already present in the UBI base image.
+RUN dnf install -y --setopt=install_weak_deps=0 \
+        ca-certificates \
+        openssl-libs \
+        libpq \
+    && dnf clean all \
     && useradd -r -u 1000 -s /sbin/nologin ostrich
 
 # Create application directories

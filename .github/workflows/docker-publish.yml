@@ -118,6 +118,29 @@ jobs:
             i=$((i + 1))
           done
 
+      - name: Build web-ui image (${{ matrix.arch }}) and push by digest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          # web-ui builds from its own Dockerfile (separate build graph + cache).
+          # Its runtime base is Iron Bank UBI 10 (uses the Iron Bank login above).
+          cache_ref="ghcr.io/${owner}/build-cache-web-ui-${{ matrix.arch }}"
+
+          echo "::group::build web-ui (${{ matrix.arch }})"
+          docker buildx build \
+            --file services/web-ui/Dockerfile \
+            --target runtime \
+            --platform "linux/${{ matrix.arch }}" \
+            --cache-from "type=registry,ref=${cache_ref}" \
+            --cache-to "type=registry,ref=${cache_ref},mode=max" \
+            --output "type=image,name=ghcr.io/${owner}/web-ui,push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file "/tmp/metadata-web-ui.json" \
+            .
+          jq -r '."containerimage.digest"' "/tmp/metadata-web-ui.json" > /tmp/digests/web-ui
+          echo "::endgroup::"
+
       - name: Upload ${{ matrix.arch }} digests
         uses: actions/upload-artifact@v4
         with:
@@ -169,7 +192,7 @@ jobs:
             extra_tags+=( "${GITHUB_REF_NAME#v}" )
           fi
 
-          for svc in ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal; do
+          for svc in ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal web-ui; do
             img="ghcr.io/${owner}/${svc}"
             amd64_digest="$(cat "/tmp/digests/digests-amd64/${svc}")"
             arm64_digest="$(cat "/tmp/digests/digests-arm64/${svc}")"
@@ -187,65 +210,4 @@ jobs:
             echo "::endgroup::"
           done
 
-          echo "Published multi-arch (amd64+arm64) service images: ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal"
-
-  # ---- Web UI (independent Dockerfile + build graph) ----
-  web-ui:
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push web-ui image
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          sha="${GITHUB_SHA::7}"
-
-          extra_tags=()
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            extra_tags+=( "latest" "${version}" )
-          fi
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            extra_tags+=( "${GITHUB_REF_NAME#v}" )
-          fi
-
-          # The web UI builds from its own Dockerfile (services/web-ui/Dockerfile):
-          # a Trunk/WASM client stage + an Axum server stage, combined into one
-          # runtime image. Build context is the repo root so the Dockerfile can
-          # COPY the workspace. Its build graph differs from the root image, so it
-          # uses a separate cache scope.
-          webui_tags=( --tag "ghcr.io/${owner}/web-ui:sha-${sha}" )
-          for t in "${extra_tags[@]}"; do
-            webui_tags+=( --tag "ghcr.io/${owner}/web-ui:${t}" )
-          done
-
-          # Registry-backed build cache (GHCR) — see the services job for why
-          # type=gha is unsuitable for the large cargo-chef dependency layer.
-          cache_ref="ghcr.io/${owner}/build-cache-web-ui"
-
-          echo "::group::build web-ui (${webui_tags[*]})"
-          docker buildx build \
-            --file services/web-ui/Dockerfile \
-            --target runtime \
-            "${webui_tags[@]}" \
-            --cache-from "type=registry,ref=${cache_ref}" \
-            --cache-to "type=registry,ref=${cache_ref},mode=max" \
-            --push \
-            .
-          echo "::endgroup::"
-
-          echo "Published image: web-ui"
+          echo "Published multi-arch (amd64+arm64) images: ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal web-ui"
