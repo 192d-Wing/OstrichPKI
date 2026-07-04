@@ -74,8 +74,8 @@ jobs:
         uses: docker/login-action@v4
         with:
           registry: registry1.dso.mil
-          username: ${{ secrets.REPO_USER }}
-          password: ${{ secrets.REPO }}
+          username: ${{ secrets.REPO1 }}
+          password: ${{ secrets.REPO1_USER }}
 
       - name: Build and push service images
         shell: bash
