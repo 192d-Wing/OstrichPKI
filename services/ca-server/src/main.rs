@@ -137,6 +137,16 @@ struct Args {
     /// NATS server URL the producer publishes schedules to.
     #[arg(long, env = "NATS_URL", default_value = "nats://nats:4222")]
     nats_url: String,
+    /// PEM file of the CA that signed the NATS server certificate. When set, the
+    /// producer requires TLS and verifies the server against this root (SC-8/SC-13).
+    #[arg(long, env = "NATS_CA_FILE")]
+    nats_ca_file: Option<std::path::PathBuf>,
+    /// NATS username for password authentication (AC-3 / IA-2). Optional.
+    #[arg(long, env = "NATS_USER")]
+    nats_user: Option<String>,
+    /// NATS password — `Zeroizing` (SI-12), sourced from a k8s secret.
+    #[arg(long, env = "NATS_PASSWORD", value_parser = nats_secret)]
+    nats_password: Option<zeroize::Zeroizing<String>>,
     /// Notify when a certificate is within this many days of expiry.
     #[arg(long, env = "NOTIFY_DAYS_BEFORE", default_value = "90")]
     notify_days_before: i64,
@@ -150,8 +160,19 @@ struct Args {
     #[arg(long, env = "NOTIFY_DEFAULT_TIME", default_value = "09:00:00Z")]
     notify_default_time: String,
     /// Default reminder weekdays.
-    #[arg(long, env = "NOTIFY_DEFAULT_DAYS", value_delimiter = ',', default_value = "Monday")]
+    #[arg(
+        long,
+        env = "NOTIFY_DEFAULT_DAYS",
+        value_delimiter = ',',
+        default_value = "Monday"
+    )]
     notify_default_days: Vec<String>,
+}
+
+/// clap value parser: wrap the NATS password in `Zeroizing` so it is wiped from
+/// memory on drop (NIST 800-53 SI-12).
+fn nats_secret(s: &str) -> Result<zeroize::Zeroizing<String>, std::convert::Infallible> {
+    Ok(zeroize::Zeroizing::new(s.to_string()))
 }
 
 #[tokio::main]
@@ -162,6 +183,11 @@ async fn main() -> Result<()> {
     // Initialize logging
     // NIST 800-53: AU-2 - Audit Events
     init_logging(&args.log_level, args.log_json)?;
+
+    // Install the process-wide rustls CryptoProvider (aws-lc-rs / FIPS) so the
+    // NATS producer's optional TLS connection can build a client config. Idempotent
+    // and harmless if another component already installed one. NIST 800-53: SC-13.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -185,6 +211,9 @@ async fn main() -> Result<()> {
         let producer_pool = db_pool.pool().clone();
         let producer_cfg = expiry_producer::ProducerConfig {
             nats_url: args.nats_url.clone(),
+            nats_ca_file: args.nats_ca_file.clone(),
+            nats_user: args.nats_user.clone(),
+            nats_password: args.nats_password.as_ref().map(|p| p.as_str().to_owned()),
             days_before: args.notify_days_before,
             scan_interval_hours: args.notify_scan_interval_hours,
             default_frequency: args.notify_default_frequency.clone(),

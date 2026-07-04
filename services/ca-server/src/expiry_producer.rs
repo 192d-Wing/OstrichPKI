@@ -20,6 +20,11 @@ use sqlx::{PgPool, Row};
 /// Producer configuration (sourced from CA env in `main`).
 pub struct ProducerConfig {
     pub nats_url: String,
+    /// CA cert (PEM) verifying the NATS server's TLS cert; `Some` requires TLS.
+    pub nats_ca_file: Option<std::path::PathBuf>,
+    /// NATS username / password for authenticated connections (optional).
+    pub nats_user: Option<String>,
+    pub nats_password: Option<String>,
     pub days_before: i64,
     pub scan_interval_hours: u64,
     pub default_frequency: String,
@@ -30,7 +35,18 @@ pub struct ProducerConfig {
 /// Run the producer loop forever (spawn this). Logs and disables itself if NATS
 /// is unreachable at startup; never panics.
 pub async fn run(pool: PgPool, cfg: ProducerConfig) {
-    let client = match async_nats::connect(&cfg.nats_url).await {
+    // Optional TLS (verify the NATS server against the configured CA) + password
+    // auth. SC-8/SC-13 (transport confidentiality), AC-3/IA-2 (authenticated client).
+    let mut nats_opts = async_nats::ConnectOptions::new();
+    if let Some(ca) = &cfg.nats_ca_file {
+        nats_opts = nats_opts
+            .add_root_certificates(ca.clone())
+            .require_tls(true);
+    }
+    if let (Some(user), Some(pass)) = (&cfg.nats_user, &cfg.nats_password) {
+        nats_opts = nats_opts.user_and_password(user.clone(), pass.clone());
+    }
+    let client = match nats_opts.connect(&cfg.nats_url).await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, nats = %cfg.nats_url,

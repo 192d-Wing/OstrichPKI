@@ -41,11 +41,26 @@ async fn main() -> Result<()> {
     // only reports Ready when its database is actually reachable (NIST SI-17).
     tokio::spawn(health_server(cfg.health_address.clone(), pool.clone()));
 
-    let client = async_nats::connect(&cfg.nats_url)
+    // Build the NATS connection with optional TLS (verify the server against the
+    // configured CA) and password auth. SC-8/SC-13 (transport confidentiality),
+    // AC-3/IA-2 (authenticated client).
+    let mut nats_opts = async_nats::ConnectOptions::new();
+    if let Some(ca) = &cfg.nats_ca_file {
+        nats_opts = nats_opts
+            .add_root_certificates(ca.clone())
+            .require_tls(true);
+    }
+    if let (Some(user), Some(pass)) = (&cfg.nats_user, &cfg.nats_password) {
+        nats_opts = nats_opts.user_and_password(user.clone(), pass.as_str().to_owned());
+    }
+    let client = nats_opts
+        .connect(&cfg.nats_url)
         .await
         .with_context(|| format!("connecting to NATS at {}", cfg.nats_url))?;
     let js = jetstream::new(client);
-    ensure_stream(&js).await.context("ensuring JetStream stream")?;
+    ensure_stream(&js)
+        .await
+        .context("ensuring JetStream stream")?;
 
     match cfg.role {
         Role::Scheduler => scheduler::run(pool, js, cfg.tick_seconds).await,

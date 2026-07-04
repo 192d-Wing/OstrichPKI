@@ -40,6 +40,20 @@ pub struct Config {
     #[arg(long, env = "NATS_URL", default_value = "nats://nats:4222")]
     pub nats_url: String,
 
+    /// PEM file of the CA that signed the NATS server certificate. When set, the
+    /// client requires TLS and verifies the server against this root (SC-8/SC-13).
+    #[arg(long, env = "NATS_CA_FILE")]
+    pub nats_ca_file: Option<std::path::PathBuf>,
+
+    /// NATS username for password authentication (AC-3 / IA-2). Optional.
+    #[arg(long, env = "NATS_USER")]
+    pub nats_user: Option<String>,
+
+    /// NATS password — held in a `Zeroizing` buffer (SI-12), sourced from a k8s
+    /// secret, never a plaintext env file.
+    #[arg(long, env = "NATS_PASSWORD", value_parser = secret)]
+    pub nats_password: Option<Zeroizing<String>>,
+
     /// PostgreSQL URL for the notify-service's OWN database.
     #[arg(long, env = "DATABASE_URL")]
     pub database_url: String,

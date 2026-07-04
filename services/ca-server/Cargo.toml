@@ -47,8 +47,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Expiry-notification producer: scans expiring certs and publishes schedules to
-# the notify-service over NATS JetStream.
+# the notify-service over NATS JetStream (optionally TLS + password auth).
 async-nats = { workspace = true }
+# NATS TLS needs a process-wide rustls CryptoProvider; install aws-lc-rs (FIPS).
+rustls = { workspace = true }
+# Zeroize the NATS password in memory after use (NIST 800-53 SI-12).
+zeroize = { workspace = true }
 sqlx = { workspace = true }
 chrono = { workspace = true }
 
