@@ -386,10 +386,23 @@ extension (uncommon) remains.
 - `parse_csr_subject_dn` (identity binding) and `verify_csr_signature` (PoP over
   the raw `CertificationRequestInfo`) use the same fallback so the whole
   enrollment path is consistent for these CSRs.
-- **Evidence:** [parser.rs `parse_csr_der_fallback` / `extract_cert_req_info_tbs`](../../crates/ostrich-x509/src/parser.rs),
+- **Missing `attributes` field (RFC 2986 §4.1):** `attributes` is `[0] IMPLICIT
+  SET OF Attribute` — mandatory but permitted to be empty. Some clients (notably
+  pkijs, used by the NPE portal in-browser generator, and other lightweight
+  tooling) OMIT the field entirely when there are no attributes. OpenSSL accepts
+  such requests, but both strict decoders reject them (x509-parser →
+  `InvalidAttributes`; RustCrypto `der` → malformed context-[0]). The fallback's
+  `normalize_missing_attributes` injects an empty `SET OF` (`A0 00`) — and only
+  when the field is genuinely absent — so these requests enroll. The self-signature
+  is verified over the **original** (attribute-less) `CertificationRequestInfo`
+  bytes, so PoP is unaffected. The NPE portal generator was also fixed to always
+  emit the field ([csr.ts](../../services/npe-portal/web/src/lib/csr.ts)).
+- **Evidence:** [parser.rs `parse_csr_der_fallback` / `normalize_missing_attributes` / `extract_cert_req_info_tbs`](../../crates/ostrich-x509/src/parser.rs),
   regression tests `test_parse_csr_ia5_challenge_password_fallback` and
   `test_parse_csr_printable_challenge_password_fallback` in
-  [csr_parsing_test.rs](../../tests/integration/csr_parsing_test.rs).
+  [csr_parsing_test.rs](../../tests/integration/csr_parsing_test.rs), and
+  `test_parse_csr_missing_attributes_field` in
+  [parser.rs](../../crates/ostrich-x509/src/parser.rs).
 
 **Proof-of-Possession enforcement (RFC 2986 / NIST 800-53 SI-10):**
 
