@@ -86,22 +86,56 @@ COPY migrations/ ./migrations/
 RUN cargo build --release --workspace
 
 # ==============================================================================
-# Stage 2: Runtime Base Image
+# Stage 2a: SoftHSM provider
 # ==============================================================================
-FROM debian:bookworm-slim AS runtime-base
+# SoftHSM2 provides a PKCS#11 token for development (production mounts a real
+# HSM's module — NIAP PP-CA FCS_STG_EXT.1). It is not in the Iron Bank UBI repos
+# (upstream ships it in EPEL), and SoftHSM 2.6.1 does not build against UBI's
+# OpenSSL 3 (it uses the removed ENGINE rdrand API). So take Debian's already
+# OpenSSL-3-patched package: OpenSSL 3.x is ABI-stable (libcrypto.so.3), so the
+# module + util load cleanly against UBI's openssl-libs/sqlite-libs/libstdc++.
+FROM debian:bookworm-slim AS softhsm-provider
+RUN apt-get update && apt-get install -y softhsm2 && rm -rf /var/lib/apt/lists/*
 
-# Install runtime dependencies
+# ==============================================================================
+# Stage 2b: Runtime Base Image — Iron Bank UBI 10 (multi-arch: amd64 + arm64)
+# ==============================================================================
+# Hardened DoD Iron Bank Red Hat UBI base (replaces debian:bookworm-slim).
+# Package management is dnf/RHEL, not apt/Debian.
+FROM registry1.dso.mil/ironbank/redhat/ubi/ubi10:10.2 AS runtime-base
+ARG TARGETARCH
+
+# Install runtime dependencies (RHEL/UBI package names).
 # NIST 800-53: CM-6 - Minimal software installation
-# softhsm2 provides a PKCS#11 token for development; production deployments
-# mount a real HSM's PKCS#11 module instead (NIAP PP-CA FCS_STG_EXT.1).
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
-    libpq5 \
-    curl \
-    softhsm2 \
-    && rm -rf /var/lib/apt/lists/* \
+#   - ca-certificates : trust store
+#   - openssl-libs    : libcrypto/libssl for the SoftHSM module + any dynamic TLS
+#   - sqlite-libs     : SoftHSM's token store backend
+#   - libpq           : PostgreSQL client library
+#   - libstdc++       : C++ runtime for softhsm2-util
+# curl for the HEALTHCHECKs is already present in the UBI base image.
+RUN dnf install -y --setopt=install_weak_deps=0 \
+        ca-certificates \
+        openssl-libs \
+        sqlite-libs \
+        libpq \
+        libstdc++ \
+    && dnf clean all \
     && useradd -r -u 1000 -s /sbin/nologin ostrich
+
+# SoftHSM2 (module + CLI) from the Debian provider. The module lands at the stable
+# path the deployment's PKCS11_MODULE_PATH uses (/usr/lib/softhsm/libsofthsm2.so),
+# and a per-arch symlink satisfies softhsm2-util's compiled-in default module path
+# (Debian multiarch dir), so `softhsm2-util` in docker/ca-init.sh works unchanged.
+COPY --from=softhsm-provider /usr/lib/*/softhsm/libsofthsm2.so /usr/lib/softhsm/libsofthsm2.so
+COPY --from=softhsm-provider /usr/bin/softhsm2-util /usr/local/bin/softhsm2-util
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) triplet=x86_64-linux-gnu ;; \
+      arm64) triplet=aarch64-linux-gnu ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p "/usr/lib/${triplet}/softhsm"; \
+    ln -sf /usr/lib/softhsm/libsofthsm2.so "/usr/lib/${triplet}/softhsm/libsofthsm2.so"
 
 # Create necessary directories with proper permissions
 # NIST 800-53: AC-6 - Least Privilege
