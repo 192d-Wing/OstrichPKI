@@ -59,7 +59,7 @@ jobs:
         working-directory: services/web-ui/web
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           # >=20.19 required by vite 8 / rolldown (see web/package.json engines).
           node-version: "20.19"
