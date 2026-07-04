@@ -193,7 +193,7 @@ rand_core = "0.10"
 reqwest = { version = "0.13", features = ["json"] }
 
 # Messaging + email (notify-service: NATS JetStream queue + SMTP delivery).
-async-nats = "0.38"
+async-nats = "0.49"
 # rustls TLS (STARTTLS) via the same provider story as the rest of the project;
 # the notify-sender installs the aws-lc-rs default CryptoProvider at startup.
 lettre = { version = "0.11", default-features = false, features = [
