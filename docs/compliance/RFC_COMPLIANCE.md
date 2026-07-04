@@ -370,6 +370,27 @@ extension (uncommon) remains.
 - Validates attribute structure before certificate issuance
 - Used by ACME (RFC 8555) and EST (RFC 7030) for CSR validation
 
+**Robust PKCS#10 attribute handling (RFC 2986 §4 / RFC 2985 §5.4.1 / NIST 800-53 SI-10):**
+
+- `parse_csr` parses with x509-parser first, then falls back to a der-based
+  (`x509-cert`) decode when x509-parser rejects a request while deep-parsing its
+  attributes. x509-parser 0.18 decodes `challengePassword` only as UTF8/Printable/
+  Universal/BMP/T61String and fails the **entire** request with `InvalidAttributes`
+  for other valid encodings — e.g. an IA5String challengePassword, or a
+  PrintableString containing characters outside the PrintableString repertoire
+  (`!`, `_`, `@`) — which device/NPE enrollment clients commonly emit.
+- The fallback models attribute values as opaque `Any`, so it accepts these
+  requests without interpreting the challengePassword value. It only runs after
+  the strict parse already failed, so it cannot change results for CSRs that
+  parse today (fail-safe, not fail-open — the signature/PoP check still applies).
+- `parse_csr_subject_dn` (identity binding) and `verify_csr_signature` (PoP over
+  the raw `CertificationRequestInfo`) use the same fallback so the whole
+  enrollment path is consistent for these CSRs.
+- **Evidence:** [parser.rs `parse_csr_der_fallback` / `extract_cert_req_info_tbs`](../../crates/ostrich-x509/src/parser.rs),
+  regression tests `test_parse_csr_ia5_challenge_password_fallback` and
+  `test_parse_csr_printable_challenge_password_fallback` in
+  [csr_parsing_test.rs](../../tests/integration/csr_parsing_test.rs).
+
 **Proof-of-Possession enforcement (RFC 2986 / NIST 800-53 SI-10):**
 
 - The CA issuance path (`CertificateIssuer::issue`) verifies the CSR signature

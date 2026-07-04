@@ -1512,6 +1512,22 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
   - Supports all 9 GeneralName types (Phase 15 enhancement)
   - Used by ACME and EST for certificate issuance
   - Test coverage: 1 integration test + 5 unit tests with all GeneralName types
+- ✅ **Resilient PKCS#10 acceptance** (RFC 2986 §4, RFC 2985 §5.4.1) — accept
+  well-formed input, do not reject over-strictly (SI-10 intent)
+  - `parse_csr` / `parse_csr_subject_dn` / `verify_csr_signature` fall back to a
+    der-based (`x509-cert`) decode when x509-parser deep-parses a
+    `challengePassword` and rejects the whole request with `InvalidAttributes`
+    (IA5String, or PrintableString with out-of-repertoire characters — common
+    from device/NPE enrollment clients). See `parse_csr_der_fallback`,
+    `extract_cert_req_info_tbs`, `der_tlv` in `crates/ostrich-x509/src/parser.rs`.
+  - Fail-safe: the fallback only runs after the strict parse fails, so it cannot
+    change results for CSRs that parse today; PoP signature verification is still
+    enforced over the byte-exact CertificationRequestInfo, and the subject DN is
+    rendered/decoded via x509-parser (identical to the primary path, so EST
+    re-enrollment identity binding is unaffected).
+  - Test coverage: `test_parse_csr_ia5_challenge_password_fallback`,
+    `test_parse_csr_printable_challenge_password_fallback`
+    (`tests/integration/csr_parsing_test.rs`).
 - ✅ **CSR signature verification** (RFC 2986 §4.2, FCO_NRO_EXT.2)
   - Centralized implementation in ostrich-x509/src/parser.rs:326-355
   - Verifies proof-of-possession before certificate issuance
