@@ -590,7 +590,10 @@ mod tests {
     #[test]
     fn test_npe_sponsor_permissions() {
         // Sponsor can submit/rekey/view-own and mint EST tokens...
-        assert!(role_has_permission(Role::PkiSponsor, Permission::SubmitRequest));
+        assert!(role_has_permission(
+            Role::PkiSponsor,
+            Permission::SubmitRequest
+        ));
         assert!(role_has_permission(
             Role::PkiSponsor,
             Permission::GenerateEstToken
@@ -600,7 +603,10 @@ mod tests {
             Role::PkiSponsor,
             Permission::ApproveRequest
         ));
-        assert!(!role_has_permission(Role::PkiSponsor, Permission::BulkEnroll));
+        assert!(!role_has_permission(
+            Role::PkiSponsor,
+            Permission::BulkEnroll
+        ));
         assert!(!role_has_permission(
             Role::PkiSponsor,
             Permission::RevokeCertificate

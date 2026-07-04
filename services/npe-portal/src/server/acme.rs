@@ -98,9 +98,14 @@ pub async fn obtain_certificate(
         )
         .await?;
 
-    let identifiers: Vec<Identifier> =
-        cfg.domains.iter().map(|d| Identifier::Dns(d.clone())).collect();
-    let mut order = account.new_order(&NewOrder::new(identifiers.as_slice())).await?;
+    let identifiers: Vec<Identifier> = cfg
+        .domains
+        .iter()
+        .map(|d| Identifier::Dns(d.clone()))
+        .collect();
+    let mut order = account
+        .new_order(&NewOrder::new(identifiers.as_slice()))
+        .await?;
 
     // Run the whole challenge -> finalize flow inside one fallible block so that
     // EVERY exit path (including an authorization-fetch or set_ready error) falls
@@ -161,7 +166,10 @@ pub async fn obtain_certificate(
         order.finalize_csr(csr.der()).await?;
         let cert_chain_pem = order.poll_certificate(&RetryPolicy::default()).await?;
         let private_key_pem = key.serialize_pem();
-        Ok(CertMaterial { cert_chain_pem, private_key_pem })
+        Ok(CertMaterial {
+            cert_chain_pem,
+            private_key_pem,
+        })
     }
     .await;
 
@@ -210,7 +218,9 @@ impl AcmeCertResolver {
     /// Create a resolver with no certificate yet. Until [`install`](Self::install)
     /// is called, TLS handshakes are refused (no cert to present).
     pub fn new() -> Self {
-        Self { current: RwLock::new(None) }
+        Self {
+            current: RwLock::new(None),
+        }
     }
 
     /// Swap in a new certificate + key. Applies to subsequent handshakes.
@@ -224,10 +234,7 @@ impl AcmeCertResolver {
     /// Whether a certificate is currently installed (readiness / test accessor).
     #[allow(dead_code)]
     pub fn has_cert(&self) -> bool {
-        self.current
-            .read()
-            .map(|c| c.is_some())
-            .unwrap_or(false)
+        self.current.read().map(|c| c.is_some()).unwrap_or(false)
     }
 }
 
@@ -247,9 +254,10 @@ pub fn certified_key_from_pem(
     cert_chain_pem: &str,
     private_key_pem: &str,
 ) -> anyhow::Result<CertifiedKey> {
-    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_chain_pem.as_bytes())
-        .collect::<Result<_, _>>()
-        .map_err(|e| anyhow::anyhow!("failed to parse ACME certificate chain: {e}"))?;
+    let certs: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_slice_iter(cert_chain_pem.as_bytes())
+            .collect::<Result<_, _>>()
+            .map_err(|e| anyhow::anyhow!("failed to parse ACME certificate chain: {e}"))?;
     if certs.is_empty() {
         anyhow::bail!("ACME certificate chain contained no certificates");
     }
@@ -377,7 +385,9 @@ fn bundle_path(cache_dir: &str) -> PathBuf {
 /// loaded bundle is consumed correctly without splitting it back apart. It is
 /// only ever installed, never re-saved, so the fields are never re-combined.
 async fn load_cached(cache_dir: &str) -> Option<CertMaterial> {
-    let bundle = tokio::fs::read_to_string(bundle_path(cache_dir)).await.ok()?;
+    let bundle = tokio::fs::read_to_string(bundle_path(cache_dir))
+        .await
+        .ok()?;
     Some(CertMaterial {
         cert_chain_pem: bundle.clone(),
         private_key_pem: bundle,
@@ -413,9 +423,13 @@ async fn write_atomic(path: &FsPath, contents: &[u8], mode: u32) -> anyhow::Resu
     tokio::fs::write(&tmp, contents)
         .await
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", tmp.display()))?;
-    tokio::fs::rename(&tmp, path)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to rename {} -> {}: {e}", tmp.display(), path.display()))
+    tokio::fs::rename(&tmp, path).await.map_err(|e| {
+        anyhow::anyhow!(
+            "failed to rename {} -> {}: {e}",
+            tmp.display(),
+            path.display()
+        )
+    })
 }
 
 /// Persist the cert chain + key as one combined PEM bundle under `cache_dir`,
@@ -479,7 +493,9 @@ pub async fn acquire_on_startup(
                 return Ok(not_after);
             }
             Ok(_) => tracing::info!("cached ACME certificate is near expiry; re-enrolling"),
-            Err(e) => tracing::warn!(error = %e, "cached ACME certificate unreadable; re-enrolling"),
+            Err(e) => {
+                tracing::warn!(error = %e, "cached ACME certificate unreadable; re-enrolling")
+            }
         }
     }
 
@@ -621,7 +637,10 @@ mod tests {
     fn leaf_not_after_unix_reads_validity() {
         let (cert_pem, _key_pem) = self_signed_pem();
         let na = leaf_not_after_unix(&cert_pem).unwrap();
-        assert!(na > chrono::Utc::now().timestamp(), "cert should not be expired");
+        assert!(
+            na > chrono::Utc::now().timestamp(),
+            "cert should not be expired"
+        );
     }
 
     #[tokio::test]
@@ -637,7 +656,9 @@ mod tests {
 
         // The cached bundle round-trips: the loaded material parses into a usable
         // cert+key, and the leaf validity is recoverable for renewal scheduling.
-        let loaded = load_cached(&dir_str).await.expect("cached material present");
+        let loaded = load_cached(&dir_str)
+            .await
+            .expect("cached material present");
         certified_key_from_pem(&loaded.cert_chain_pem, &loaded.private_key_pem)
             .expect("loaded bundle yields a valid cert + key");
         assert!(leaf_not_after_unix(&loaded.cert_chain_pem).unwrap() > 0);

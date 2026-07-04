@@ -184,15 +184,17 @@ mod tests {
         assert_eq!(backends[0].name, "ec");
         let lr = cfg.label_routing.unwrap();
         assert_eq!(lr.default_backend, "ec");
-        assert_eq!(lr.algo_backends.get("2048").map(String::as_str), Some("rsa"));
+        assert_eq!(
+            lr.algo_backends.get("2048").map(String::as_str),
+            Some("rsa")
+        );
     }
 
     #[test]
     fn rejects_ca_backend_missing_name() {
-        let err = FileConfig::from_json(
-            r#"{ "caBackends": [ { "grpcUrl": "https://ca:50051" } ] }"#,
-        )
-        .unwrap_err();
+        let err =
+            FileConfig::from_json(r#"{ "caBackends": [ { "grpcUrl": "https://ca:50051" } ] }"#)
+                .unwrap_err();
         assert!(format!("{err:#}").contains("schema validation"));
     }
 

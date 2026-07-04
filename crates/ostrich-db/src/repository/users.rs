@@ -240,26 +240,22 @@ impl DbUserRepository {
 
     /// Replace a user's assigned roles. Returns false if no such user.
     pub async fn set_user_roles(&self, id: Uuid, roles: &[Role]) -> Result<bool> {
-        let result = sqlx::query(
-            "UPDATE users SET roles = $2, updated_at = now() WHERE id = $1",
-        )
-        .bind(id)
-        .bind(role_strings(roles))
-        .execute(self.pool.pool())
-        .await?;
+        let result = sqlx::query("UPDATE users SET roles = $2, updated_at = now() WHERE id = $1")
+            .bind(id)
+            .bind(role_strings(roles))
+            .execute(self.pool.pool())
+            .await?;
         Ok(result.rows_affected() > 0)
     }
 
     /// Set a user's account status (e.g. `active`, `disabled`). Returns false if
     /// no such user. The status string is validated by the table CHECK.
     pub async fn set_user_status(&self, id: Uuid, status: &str) -> Result<bool> {
-        let result = sqlx::query(
-            "UPDATE users SET status = $2, updated_at = now() WHERE id = $1",
-        )
-        .bind(id)
-        .bind(status)
-        .execute(self.pool.pool())
-        .await?;
+        let result = sqlx::query("UPDATE users SET status = $2, updated_at = now() WHERE id = $1")
+            .bind(id)
+            .bind(status)
+            .execute(self.pool.pool())
+            .await?;
         Ok(result.rows_affected() > 0)
     }
 

@@ -188,15 +188,60 @@ pub struct EstCatalog {
 /// [`KNOWN_PROFILE_TYPES`] / [`ParsedLabel::profile_name`] so the three stay in
 /// step: (token, display, description, server_keygen).
 const PROFILE_META: [(&str, &str, &str, bool); 9] = [
-    ("DEV", "Device (TLS client)", "Client-authentication TLS certificate for a device or non-person entity.", false),
-    ("TLS", "TLS server", "Server-authentication TLS certificate (id-kp-serverAuth; capped at 397 days).", false),
-    ("DC", "Domain controller (mutual TLS)", "Both client and server authentication.", false),
-    ("EFS", "EFS file encryption", "Microsoft Encrypting File System: server-side RSA-2048 key generation delivered as an encrypted PKCS#12. Use serverkeygen (no CSR).", true),
-    ("EMAIL", "S/MIME email", "Email protection (S/MIME). Recognized but not yet issuable.", false),
-    ("IPSEC", "IPsec", "IPsec endpoint. Recognized but not yet issuable.", false),
-    ("MCAUTH", "Mobile-code authentication", "Recognized but not yet issuable.", false),
-    ("MCKEY", "Mobile-code key management", "Recognized but not yet issuable.", false),
-    ("KERB", "Kerberos / smartcard logon", "Recognized but not yet issuable.", false),
+    (
+        "DEV",
+        "Device (TLS client)",
+        "Client-authentication TLS certificate for a device or non-person entity.",
+        false,
+    ),
+    (
+        "TLS",
+        "TLS server",
+        "Server-authentication TLS certificate (id-kp-serverAuth; capped at 397 days).",
+        false,
+    ),
+    (
+        "DC",
+        "Domain controller (mutual TLS)",
+        "Both client and server authentication.",
+        false,
+    ),
+    (
+        "EFS",
+        "EFS file encryption",
+        "Microsoft Encrypting File System: server-side RSA-2048 key generation delivered as an encrypted PKCS#12. Use serverkeygen (no CSR).",
+        true,
+    ),
+    (
+        "EMAIL",
+        "S/MIME email",
+        "Email protection (S/MIME). Recognized but not yet issuable.",
+        false,
+    ),
+    (
+        "IPSEC",
+        "IPsec",
+        "IPsec endpoint. Recognized but not yet issuable.",
+        false,
+    ),
+    (
+        "MCAUTH",
+        "Mobile-code authentication",
+        "Recognized but not yet issuable.",
+        false,
+    ),
+    (
+        "MCKEY",
+        "Mobile-code key management",
+        "Recognized but not yet issuable.",
+        false,
+    ),
+    (
+        "KERB",
+        "Kerberos / smartcard logon",
+        "Recognized but not yet issuable.",
+        false,
+    ),
 ];
 
 /// Build the enrollment catalog from the label scheme's own token sets, scoped
@@ -238,7 +283,11 @@ pub fn catalog(
     // Only advertise key algorithms that have a configured backend.
     let key_algorithms: Vec<CatalogKeyAlgo> = [
         (KeyAlgo::Rsa2048, "RSA 2048", "RSA-2048 issuing CA backend."),
-        (KeyAlgo::EcP384, "EC P-384", "Elliptic-curve P-384 issuing CA backend."),
+        (
+            KeyAlgo::EcP384,
+            "EC P-384",
+            "Elliptic-curve P-384 issuing CA backend.",
+        ),
     ]
     .iter()
     .filter(|(algo, _, _)| configured_algo_tokens.iter().any(|t| t == algo.token()))
@@ -250,7 +299,11 @@ pub fn catalog(
     .collect();
 
     // Examples use only configured tokens, so a copied example always resolves.
-    let mut examples = vec!["PTDEV".to_string(), "PTTLS".to_string(), "PTEFS".to_string()];
+    let mut examples = vec![
+        "PTDEV".to_string(),
+        "PTTLS".to_string(),
+        "PTEFS".to_string(),
+    ];
     if labeled_enrollment {
         match key_algorithms.first() {
             Some(k) => {
@@ -312,7 +365,10 @@ pub fn parse_label(raw: &str) -> Result<ParsedLabel, LabelError> {
                 .parse()
                 .map_err(|_| LabelError::InvalidValidity(v.to_string(), MAX_VALIDITY_DAYS))?;
             if days == 0 || days > MAX_VALIDITY_DAYS {
-                return Err(LabelError::InvalidValidity(v.to_string(), MAX_VALIDITY_DAYS));
+                return Err(LabelError::InvalidValidity(
+                    v.to_string(),
+                    MAX_VALIDITY_DAYS,
+                ));
             }
             validity_days = Some(days);
         } else if let Some(v) = seg.strip_prefix("CC") {
@@ -369,7 +425,10 @@ mod tests {
             parse_label("PTDC-AK2048").unwrap().key_algo,
             Some(KeyAlgo::Rsa2048)
         );
-        assert_eq!(parse_label("PTDC").unwrap().profile_name().unwrap(), "tls_server_client");
+        assert_eq!(
+            parse_label("PTDC").unwrap().profile_name().unwrap(),
+            "tls_server_client"
+        );
     }
 
     #[test]
@@ -400,7 +459,10 @@ mod tests {
 
     #[test]
     fn rejects_missing_pt_prefix() {
-        assert_eq!(parse_label("TLS-AKP384"), Err(LabelError::MissingProfileType));
+        assert_eq!(
+            parse_label("TLS-AKP384"),
+            Err(LabelError::MissingProfileType)
+        );
     }
 
     #[test]
@@ -455,7 +517,11 @@ mod tests {
         // Every catalog profile token must be one the parser recognizes, and its
         // `issuable` flag must agree with `profile_name()`.
         for p in &cat.profiles {
-            assert!(KNOWN_PROFILE_TYPES.contains(&p.token.as_str()), "{}", p.token);
+            assert!(
+                KNOWN_PROFILE_TYPES.contains(&p.token.as_str()),
+                "{}",
+                p.token
+            );
             let parsed = parse_label(&format!("PT{}", p.token)).unwrap();
             assert_eq!(p.issuable, parsed.profile_name().is_ok(), "{}", p.token);
             assert_eq!(p.profile_name.is_some(), p.issuable, "{}", p.token);
@@ -465,11 +531,18 @@ mod tests {
         // metadata is a test failure, not a silent omission).
         let catalog_tokens: Vec<&str> = cat.profiles.iter().map(|p| p.token.as_str()).collect();
         for known in KNOWN_PROFILE_TYPES {
-            assert!(catalog_tokens.contains(&known), "PROFILE_META missing '{known}'");
+            assert!(
+                catalog_tokens.contains(&known),
+                "PROFILE_META missing '{known}'"
+            );
         }
         // DEV/TLS/DC/EFS are the issuable set today.
-        let issuable: Vec<&str> =
-            cat.profiles.iter().filter(|p| p.issuable).map(|p| p.token.as_str()).collect();
+        let issuable: Vec<&str> = cat
+            .profiles
+            .iter()
+            .filter(|p| p.issuable)
+            .map(|p| p.token.as_str())
+            .collect();
         assert_eq!(issuable, ["DEV", "TLS", "DC", "EFS"]);
         // Advertised key algorithms are exactly the configured + valid ones.
         assert_eq!(cat.key_algorithms.len(), 2);
@@ -486,7 +559,11 @@ mod tests {
     fn catalog_scopes_to_configured_algos() {
         // Only RSA configured -> P384 is not advertised, and AK examples use 2048.
         let cat = catalog(&["2048".to_string()], true, "tls_client");
-        let tokens: Vec<&str> = cat.key_algorithms.iter().map(|k| k.token.as_str()).collect();
+        let tokens: Vec<&str> = cat
+            .key_algorithms
+            .iter()
+            .map(|k| k.token.as_str())
+            .collect();
         assert_eq!(tokens, ["2048"]);
         assert!(cat.examples.iter().all(|e| !e.contains("P384")));
 

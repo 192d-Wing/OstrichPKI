@@ -208,9 +208,7 @@ pub fn authenticate(
 
     // Issuer scoping (AC-3/AC-6): when configured, only certificates issued by
     // an authorized CA may carry role-granting policy OIDs.
-    if !mapping.allowed_issuers.is_empty()
-        && !mapping.allowed_issuers.contains(&parsed.issuer_dn)
-    {
+    if !mapping.allowed_issuers.is_empty() && !mapping.allowed_issuers.contains(&parsed.issuer_dn) {
         return Err(CertAuthError::UntrustedIssuer);
     }
 
@@ -246,7 +244,10 @@ mod tests {
 
     #[test]
     fn sponsor_oid_resolves_to_sponsor() {
-        assert_eq!(mapping().resolve(&oids(&["1.2.3.1"])), Some(Role::PkiSponsor));
+        assert_eq!(
+            mapping().resolve(&oids(&["1.2.3.1"])),
+            Some(Role::PkiSponsor)
+        );
     }
 
     #[test]
@@ -267,7 +268,10 @@ mod tests {
 
     #[test]
     fn auditor_oid_resolves_to_auditor() {
-        assert_eq!(mapping().resolve(&oids(&["1.2.3.5"])), Some(Role::NpeAuditor));
+        assert_eq!(
+            mapping().resolve(&oids(&["1.2.3.5"])),
+            Some(Role::NpeAuditor)
+        );
     }
 
     #[test]

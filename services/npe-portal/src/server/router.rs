@@ -94,11 +94,17 @@ pub async fn create_router(config: NpePortalConfig) -> Result<Router> {
     let local_api_routes = Router::new()
         .route("/v1/parse-csr", post(parse_csr))
         .with_state(state.clone())
-        .layer(middleware::from_fn_with_state(state.clone(), require_session));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_session,
+        ));
 
     // Allowlisted API proxy, gated by the session/consent middleware.
     let api_routes = proxy::create_proxy_routes(state.clone())
-        .layer(middleware::from_fn_with_state(state.clone(), require_session))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_session,
+        ))
         .merge(local_api_routes);
 
     let static_routes = Router::new().nest_service(
@@ -116,7 +122,10 @@ pub async fn create_router(config: NpePortalConfig) -> Result<Router> {
         .nest("/api", api_routes)
         .merge(static_routes)
         .merge(spa_routes)
-        .layer(middleware::from_fn_with_state(state.clone(), csp_middleware));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            csp_middleware,
+        ));
 
     Ok(app)
 }

@@ -560,8 +560,16 @@ mod tests {
         let defaults = SecureDefaults::new();
 
         // 397 and below: OK (tls_server carries serverAuth EKU).
-        assert!(defaults.validate_profile(&CertificateProfile::tls_server(397)).is_ok());
-        assert!(defaults.validate_profile(&CertificateProfile::tls_server(365)).is_ok());
+        assert!(
+            defaults
+                .validate_profile(&CertificateProfile::tls_server(397))
+                .is_ok()
+        );
+        assert!(
+            defaults
+                .validate_profile(&CertificateProfile::tls_server(365))
+                .is_ok()
+        );
 
         // 398..=825: under the generic max but over the serverAuth cap -> rejected.
         let result = defaults.validate_profile(&CertificateProfile::tls_server(500));
@@ -575,7 +583,11 @@ mod tests {
     fn test_clientauth_not_capped_at_397() {
         let defaults = SecureDefaults::new();
         // tls_client carries clientAuth (no serverAuth); 500 days is fine.
-        assert!(defaults.validate_profile(&CertificateProfile::tls_client(500)).is_ok());
+        assert!(
+            defaults
+                .validate_profile(&CertificateProfile::tls_client(500))
+                .is_ok()
+        );
     }
 
     /// The cap is detected by EKU OID, so expressing serverAuth via a Custom OID

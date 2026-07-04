@@ -20,6 +20,8 @@ use cms::content_info::ContentInfo;
 use der::asn1::{OctetString, SetOfVec};
 use der::{Any, Decode, Encode, Tag};
 use hmac::{Hmac, Mac};
+use pkcs8::PrivateKeyInfo;
+use pkcs8::pkcs5::pbes2;
 use pkcs12::cert_type::CertBag;
 use pkcs12::digest_info::DigestInfo;
 use pkcs12::kdf::{Pkcs12KeyType, derive_key_utf8};
@@ -27,8 +29,6 @@ use pkcs12::mac_data::MacData;
 use pkcs12::pfx::{Pfx, Version};
 use pkcs12::safe_bag::SafeBag;
 use pkcs12::{PKCS_12_CERT_BAG_OID, PKCS_12_PKCS8_KEY_BAG_OID, PKCS_12_X509_CERT_OID};
-use pkcs8::PrivateKeyInfo;
-use pkcs8::pkcs5::pbes2;
 use sha1::Sha1;
 use sha2::Sha256;
 use spki::AlgorithmIdentifierOwned;
@@ -69,9 +69,12 @@ fn enc_err(ctx: &str, e: impl std::fmt::Display) -> Error {
 fn local_key_id_attributes(certificate_der: &[u8]) -> Result<Attributes> {
     use sha1::Digest;
     let key_id = Sha1::digest(certificate_der);
-    let value = Any::new(Tag::OctetString, key_id.to_vec()).map_err(|e| enc_err("localKeyId", e))?;
+    let value =
+        Any::new(Tag::OctetString, key_id.to_vec()).map_err(|e| enc_err("localKeyId", e))?;
     let mut values: SetOfVec<Any> = SetOfVec::new();
-    values.insert(value).map_err(|e| enc_err("localKeyId set", e))?;
+    values
+        .insert(value)
+        .map_err(|e| enc_err("localKeyId set", e))?;
     let attr = Attribute {
         oid: OID_LOCAL_KEY_ID,
         values,
@@ -123,8 +126,8 @@ pub fn build_encrypted_pkcs12(
         .map_err(|_| Error::Encoding("PKCS#12 iv length".to_string()))?;
     let params = pbes2::Parameters::pbkdf2_sha256_aes256cbc(PBKDF2_ITERATIONS, &salt, &iv)
         .map_err(|e| enc_err("pbes2 params", e))?;
-    let pki = PrivateKeyInfo::from_der(private_key_pkcs8_der)
-        .map_err(|e| enc_err("parse PKCS#8", e))?;
+    let pki =
+        PrivateKeyInfo::from_der(private_key_pkcs8_der).map_err(|e| enc_err("parse PKCS#8", e))?;
     let encrypted_key = pki
         .encrypt_with_params(params, password.as_bytes())
         .map_err(|e| enc_err("encrypt key", e))?;
@@ -147,7 +150,9 @@ pub fn build_encrypted_pkcs12(
         cert_id: PKCS_12_X509_CERT_OID,
         cert_value: OctetString::new(certificate_der).map_err(|e| enc_err("cert octets", e))?,
     };
-    let cert_bag_der = cert_bag.to_der().map_err(|e| enc_err("encode certBag", e))?;
+    let cert_bag_der = cert_bag
+        .to_der()
+        .map_err(|e| enc_err("encode certBag", e))?;
     let cert_safe_bag = SafeBag {
         bag_id: PKCS_12_CERT_BAG_OID,
         bag_value: cert_bag_der,
@@ -163,7 +168,9 @@ pub fn build_encrypted_pkcs12(
         data_content_info(&key_contents_der)?,
         data_content_info(&cert_contents_der)?,
     ];
-    let auth_safe_der = auth_safe.to_der().map_err(|e| enc_err("encode authSafe", e))?;
+    let auth_safe_der = auth_safe
+        .to_der()
+        .map_err(|e| enc_err("encode authSafe", e))?;
 
     // 5. PKCS#12 MAC (HMAC-SHA256) over the AuthenticatedSafe DER, keyed via the
     //    RFC 7292 Appendix B KDF.
@@ -173,8 +180,7 @@ pub fn build_encrypted_pkcs12(
         derive_key_utf8::<Sha256>(password, &mac_salt, Pkcs12KeyType::Mac, MAC_ITERATIONS, 32)
             .map_err(|e| enc_err("mac kdf", e))?,
     );
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(&mac_key).map_err(|e| enc_err("hmac key", e))?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(&mac_key).map_err(|e| enc_err("hmac key", e))?;
     mac.update(&auth_safe_der);
     let mac_value = mac.finalize().into_bytes();
 

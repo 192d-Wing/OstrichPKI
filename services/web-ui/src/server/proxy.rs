@@ -47,7 +47,13 @@ async fn proxy_est(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.ca_client, &state.config.backend.est_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.est_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the CA service
@@ -56,7 +62,13 @@ async fn proxy_ca(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.ca_client, &state.config.backend.ca_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.ca_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the ACME service
@@ -65,7 +77,13 @@ async fn proxy_acme(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.ca_client, &state.config.backend.acme_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.acme_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the OCSP service
@@ -74,7 +92,13 @@ async fn proxy_ocsp(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.ca_client, &state.config.backend.ocsp_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.ocsp_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the SCMS service
@@ -83,7 +107,13 @@ async fn proxy_scms(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.ca_client, &state.config.backend.scms_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.scms_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the KRA service
@@ -92,7 +122,13 @@ async fn proxy_kra(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.ca_client, &state.config.backend.kra_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.kra_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Proxy requests to the Audit service
@@ -101,7 +137,13 @@ async fn proxy_audit(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.ca_client, &state.config.backend.audit_url, &path, request).await
+    proxy_to_service(
+        &state.ca_client,
+        &state.config.backend.audit_url,
+        &path,
+        request,
+    )
+    .await
 }
 
 /// Generic proxy function to forward requests to a backend service

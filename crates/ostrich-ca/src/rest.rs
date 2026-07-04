@@ -1767,6 +1767,7 @@ async fn list_profiles(State(_state): State<Arc<ApiState>>) -> Result<Json<ListP
 /// - NIAP PP-CA: FIA_UAU.1 - Authenticated user required
 /// - NIST 800-53: AC-3 - Access enforcement
 /// - NIST 800-53: AU-2 - Auditable event
+///
 /// Ensure a bridged NPE identity (authenticated via the portal's mTLS identity
 /// bridge, not a local `users` account) has a row in `users`, so approval FKs
 /// (`approval_requests.requestor_id`, `approval_decisions.approver_id`) resolve.

@@ -37,9 +37,9 @@ pub mod est;
 pub mod fqdn;
 pub mod kra;
 pub mod namespace;
-pub mod system_config;
 pub mod scms;
 pub mod session;
+pub mod system_config;
 pub mod tamp;
 pub mod users;
 
@@ -55,8 +55,8 @@ pub use fqdn::{FqdnNotification, FqdnRepository, FqdnSummary};
 pub use kra::KraRepository;
 pub use namespace::NamespaceRepository;
 pub use scms::ScmsRepository;
-pub use system_config::SystemConfigRepository;
 pub use session::DbSessionStore;
+pub use system_config::SystemConfigRepository;
 pub use tamp::{TampRepository, TampTargetRow, TampTrustAnchorRow, TrustAnchorWrite};
 pub use users::DbUserRepository;
 

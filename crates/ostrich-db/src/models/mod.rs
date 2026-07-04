@@ -25,5 +25,5 @@ pub use crl::Crl;
 pub use est::{EstClient, EstEnrollment};
 pub use kra::{EscrowedKey, RecoveryAgent, RecoveryRequest, RecoveryShare};
 pub use namespace::NamespaceRecord;
-pub use system_config::SystemConfigRecord;
 pub use scms::{Token, TokenEvent, TokenKey, TokenModel};
+pub use system_config::SystemConfigRecord;

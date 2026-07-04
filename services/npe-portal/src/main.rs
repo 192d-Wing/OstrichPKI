@@ -224,7 +224,8 @@ async fn serve_with_acme(
 
     // Build the mTLS server config bound to the dynamic resolver, then spawn the
     // background renewal task (swaps the cert in place — no restart).
-    let server_config = std::sync::Arc::new(build_mtls_server_config(client_ca_path, resolver.clone())?);
+    let server_config =
+        std::sync::Arc::new(build_mtls_server_config(client_ca_path, resolver.clone())?);
     tokio::spawn(renewal_loop(acme, store, resolver, not_after));
 
     info!(%addr, "Serving HTTPS (TLS 1.3, mTLS) with ACME-managed certificate");

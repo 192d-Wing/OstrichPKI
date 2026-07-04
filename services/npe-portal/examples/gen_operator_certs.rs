@@ -44,10 +44,26 @@ struct RoleSpec {
 
 fn roles() -> Vec<RoleSpec> {
     vec![
-        RoleSpec { name: "sponsor", common_name: "SPONSOR.TEST.NPE.1", policy_oids: &[SPONSOR_OID] },
-        RoleSpec { name: "admin", common_name: "ADMIN.TEST.NPE.2", policy_oids: &[SPONSOR_OID, ADMIN_OID] },
-        RoleSpec { name: "ra", common_name: "RA.TEST.NPE.3", policy_oids: &[RA_OID] },
-        RoleSpec { name: "caa", common_name: "CAA.TEST.NPE.4", policy_oids: &[CAA_OID] },
+        RoleSpec {
+            name: "sponsor",
+            common_name: "SPONSOR.TEST.NPE.1",
+            policy_oids: &[SPONSOR_OID],
+        },
+        RoleSpec {
+            name: "admin",
+            common_name: "ADMIN.TEST.NPE.2",
+            policy_oids: &[SPONSOR_OID, ADMIN_OID],
+        },
+        RoleSpec {
+            name: "ra",
+            common_name: "RA.TEST.NPE.3",
+            policy_oids: &[RA_OID],
+        },
+        RoleSpec {
+            name: "caa",
+            common_name: "CAA.TEST.NPE.4",
+            policy_oids: &[CAA_OID],
+        },
     ]
 }
 
@@ -84,7 +100,11 @@ fn dn(common_name: &str) -> DistinguishedName {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let out_dir = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "operator-certs".into()));
+    let out_dir = PathBuf::from(
+        std::env::args()
+            .nth(1)
+            .unwrap_or_else(|| "operator-certs".into()),
+    );
     std::fs::create_dir_all(&out_dir)?;
 
     // --- Operator client CA (self-signed) ---
@@ -92,8 +112,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ca_params = CertificateParams::new(Vec::<String>::new())?;
     ca_params.distinguished_name = dn("OstrichPKI NPE Operator CA");
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    ca_params.key_usages =
-        vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign, KeyUsagePurpose::DigitalSignature];
+    ca_params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::CrlSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
     let ca_cert = ca_params.self_signed(&ca_key)?;
     std::fs::write(out_dir.join("ca.pem"), ca_cert.pem())?;
     std::fs::write(out_dir.join("ca.key"), ca_key.serialize_pem())?;
@@ -111,13 +134,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
         p.use_authority_key_identifier_extension = true;
-        p.custom_extensions
-            .push(CustomExtension::from_oid_content(CERT_POLICIES_OID, cert_policies_value(role.policy_oids)));
+        p.custom_extensions.push(CustomExtension::from_oid_content(
+            CERT_POLICIES_OID,
+            cert_policies_value(role.policy_oids),
+        ));
 
         let leaf = p.signed_by(&leaf_key, &ca_issuer)?;
         let leaf_pem = leaf.pem();
         std::fs::write(out_dir.join(format!("{}.crt", role.name)), &leaf_pem)?;
-        std::fs::write(out_dir.join(format!("{}.key", role.name)), leaf_key.serialize_pem())?;
+        std::fs::write(
+            out_dir.join(format!("{}.key", role.name)),
+            leaf_key.serialize_pem(),
+        )?;
 
         // Self-check: re-parse exactly as the portal does (x509-parser) and
         // confirm the policy OIDs + capture the issuer DN string.
@@ -126,13 +154,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert!(
             want.is_subset(&got_policies),
             "role {}: expected policy OIDs {:?} but cert carries {:?}",
-            role.name, want, got_policies
+            role.name,
+            want,
+            got_policies
         );
         printed_issuer = issuer;
-        println!("  {:7} CN={:<20} policies={:?}", role.name, role.common_name, role.policy_oids);
+        println!(
+            "  {:7} CN={:<20} policies={:?}",
+            role.name, role.common_name, role.policy_oids
+        );
     }
 
-    println!("\nWrote operator CA + 4 role certs to {}", out_dir.display());
+    println!(
+        "\nWrote operator CA + 4 role certs to {}",
+        out_dir.display()
+    );
     println!("\nallowedIssuers (paste into the portal oidMapping):");
     println!("  \"{printed_issuer}\"");
     Ok(())

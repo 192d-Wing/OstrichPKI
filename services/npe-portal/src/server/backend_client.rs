@@ -21,8 +21,7 @@ use std::sync::Arc;
 use super::config::BackendConfig;
 
 /// Pooled HTTP(S) client used by the backend proxy.
-pub type HttpClient =
-    Client<hyper_rustls::HttpsConnector<HttpConnector>, axum::body::Body>;
+pub type HttpClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, axum::body::Body>;
 
 /// Build the backend client. Uses mTLS when client cert + key + CA are all
 /// configured; otherwise a plain-HTTP-capable client (development).
@@ -76,9 +75,7 @@ pub fn build(backend: &BackendConfig) -> Result<HttpClient> {
             .with_context(|| format!("read backend CA bundle {ca_path}"))?
         {
             let cert = cert.with_context(|| format!("parse backend CA bundle {ca_path}"))?;
-            roots
-                .add(cert)
-                .context("add backend CA to trust store")?;
+            roots.add(cert).context("add backend CA to trust store")?;
         }
     }
 

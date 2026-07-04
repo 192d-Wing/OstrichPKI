@@ -123,10 +123,7 @@ impl ApprovalRepository {
     /// lookup. Unknown ids are simply absent from the result. The caller is
     /// responsible for any own-scope filtering (a regular requester must only
     /// see their own requests).
-    pub async fn list_requests_by_ids(
-        &self,
-        ids: &[Uuid],
-    ) -> Result<Vec<ApprovalRequestRecord>> {
+    pub async fn list_requests_by_ids(&self, ids: &[Uuid]) -> Result<Vec<ApprovalRequestRecord>> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }

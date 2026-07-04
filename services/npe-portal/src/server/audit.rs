@@ -31,7 +31,8 @@ fn emit(
     session_id: Option<&str>,
     details: Option<Value>,
 ) {
-    let mut builder = AuditEventBuilder::new(EventType::Authentication, actor, target, action, outcome);
+    let mut builder =
+        AuditEventBuilder::new(EventType::Authentication, actor, target, action, outcome);
     if let Some(ip) = ip {
         builder = builder.with_ip(ip);
     }

@@ -157,7 +157,10 @@ mod tests {
         }"#;
         let m: NotifyMessage = serde_json::from_str(raw).unwrap();
         assert_eq!(m.notify_days_before_expiration, 90);
-        assert_eq!(parse_time(&m.notification_time), NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+        assert_eq!(
+            parse_time(&m.notification_time),
+            NaiveTime::from_hms_opt(9, 0, 0).unwrap()
+        );
         assert_eq!(
             send_weekdays(&m.notification_days, &m.notification_frequency),
             vec![Weekday::Mon, Weekday::Wed, Weekday::Fri]

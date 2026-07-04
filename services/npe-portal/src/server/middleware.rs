@@ -39,9 +39,7 @@ pub async fn csp_middleware(
     next: Next,
 ) -> Response {
     let nonce = BASE64.encode(secure_random_bytes(state.config.csp_nonce_length));
-    request
-        .extensions_mut()
-        .insert(CspNonce(nonce.clone()));
+    request.extensions_mut().insert(CspNonce(nonce.clone()));
 
     let mut response = next.run(request).await;
 
@@ -71,11 +69,7 @@ pub async fn require_session(
 
     let reject = |status: StatusCode, error: &str, message: &str| -> Response {
         tracing::warn!(path = %path, error = %error, "NPE proxy request rejected");
-        (
-            status,
-            Json(json!({ "error": error, "message": message })),
-        )
-            .into_response()
+        (status, Json(json!({ "error": error, "message": message }))).into_response()
     };
 
     let token = match jar.get(&state.config.session.cookie_name) {

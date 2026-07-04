@@ -116,7 +116,6 @@ pub enum Role {
     // mTLS handshake (not stored on accounts the way the CA roles are), but they
     // must exist in the shared RBAC model because the CA service is the
     // enforcement point for every action the portal proxies.
-
     /// NPE PKI Sponsor (standard requester)
     ///
     /// Submits certificate applications and rekeys, views the status of *its own*
@@ -218,7 +217,9 @@ impl Role {
             Role::EstEnrollee => "EST enrollment token principal (single-use, machine identity)",
             Role::EstDevice => "EST device principal (re-enrollment by existing certificate)",
             Role::PkiSponsor => "NPE PKI Sponsor (submit/rekey applications, own-scope)",
-            Role::PkiSponsorAdmin => "NPE PKI Sponsor with admin certificate (adds bulk enrollment)",
+            Role::PkiSponsorAdmin => {
+                "NPE PKI Sponsor with admin certificate (adds bulk enrollment)"
+            }
             Role::RegistrationAuthority => {
                 "NPE Registration Authority (approve/reject/override/revoke)"
             }

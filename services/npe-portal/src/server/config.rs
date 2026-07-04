@@ -142,7 +142,10 @@ fn ccsa_group(label: &str, opts: &[(&str, &str)]) -> CcsaGroupConfig {
         label: label.into(),
         options: opts
             .iter()
-            .map(|(l, v)| CcsaOptionConfig { label: (*l).into(), value: (*v).into() })
+            .map(|(l, v)| CcsaOptionConfig {
+                label: (*l).into(),
+                value: (*v).into(),
+            })
             .collect(),
     }
 }

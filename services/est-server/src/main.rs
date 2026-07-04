@@ -532,8 +532,11 @@ async fn main() -> Result<()> {
 
     // Named CA backends for RFC 7030 §3.2.2 label routing (e.g. an EC CA and an
     // RSA CA). Built before EstState so each client gets its own db_pool clone.
-    let mut ca_backends: Vec<(String, Arc<ostrich_est::ca_integration::EstCaClient>, Option<Vec<u8>>)> =
-        Vec::new();
+    let mut ca_backends: Vec<(
+        String,
+        Arc<ostrich_est::ca_integration::EstCaClient>,
+        Option<Vec<u8>>,
+    )> = Vec::new();
     let mut backend_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for backend in &settings.ca_backends {
         if !backend_names.insert(backend.name.clone()) {
@@ -575,7 +578,10 @@ async fn main() -> Result<()> {
         let cert_der = match &backend.ca_certificate_id {
             Some(id) => {
                 let uuid = uuid::Uuid::parse_str(id).map_err(|e| {
-                    anyhow::anyhow!("caBackends['{}'].caCertificateId invalid: {e}", backend.name)
+                    anyhow::anyhow!(
+                        "caBackends['{}'].caCertificateId invalid: {e}",
+                        backend.name
+                    )
                 })?;
                 let cert = ca_repo.find_ca_certificate(uuid).await?.ok_or_else(|| {
                     anyhow::anyhow!(
@@ -682,10 +688,11 @@ async fn main() -> Result<()> {
     // Client CA for the TLS listener: the enrollment mTLS CA if set, otherwise
     // the portal client CA when the bridge is enabled — so the portal cert is
     // verified without flipping enrollment to mTLS mode.
-    let tls_client_ca = settings
-        .tls_ca_cert
-        .clone()
-        .or_else(|| trusted_proxy.as_ref().and(settings.portal_client_ca.clone()));
+    let tls_client_ca = settings.tls_ca_cert.clone().or_else(|| {
+        trusted_proxy
+            .as_ref()
+            .and(settings.portal_client_ca.clone())
+    });
     let tls = ostrich_common::tls::TlsSettings::from_options(
         settings.tls_cert,
         settings.tls_key,
