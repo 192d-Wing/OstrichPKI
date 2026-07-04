@@ -400,6 +400,12 @@ impl EstState {
                     .profile_name()
                     .map_err(|e| Error::BadRequest(e.to_string()))?
                     .to_string();
+                // AC-6: a token principal may not use the client-controlled label
+                // to widen past the operator-pinned profile. The unlabeled path
+                // takes the pin directly; here we must reject a label whose profile
+                // differs from the token's pin (a token pinned to `tls_client`
+                // could otherwise obtain `tls_server` via the label).
+                enforce_token_profile_pin(self, user, &profile).await?;
                 let backend = self.select_backend(&parsed)?;
                 Ok(ResolvedEnrollment {
                     client: &backend.client,
@@ -424,12 +430,16 @@ impl EstState {
         // under the wrong algorithm). Only a label without an AK token uses the
         // routing default.
         let backend_name = match parsed.key_algo {
-            Some(algo) => routing.algo_backends.get(algo.token()).cloned().ok_or_else(|| {
-                Error::BadRequest(format!(
-                    "no CA backend is configured for key algorithm '{}'",
-                    algo.token()
-                ))
-            })?,
+            Some(algo) => routing
+                .algo_backends
+                .get(algo.token())
+                .cloned()
+                .ok_or_else(|| {
+                    Error::BadRequest(format!(
+                        "no CA backend is configured for key algorithm '{}'",
+                        algo.token()
+                    ))
+                })?,
             None => routing.default_backend.clone(),
         };
         self.ca_backends.get(&backend_name).ok_or_else(|| {
@@ -946,6 +956,22 @@ async fn simple_enroll(
         }
     };
 
+    // TOCTOU-safe single-use: reserve the token use BEFORE issuance so that N
+    // concurrent enrollments presenting the same single-use token cannot each
+    // mint a certificate (the previous order issued first, then decremented, so
+    // the losers still got certs). Refunded below if issuance fails.
+    if let Err(e) = reserve_enrollment_token_if_present(&state, &user).await {
+        emit_enrollment_audit(
+            &state,
+            client_identifier,
+            enrollment.id,
+            "simpleenroll",
+            ostrich_audit::EventOutcome::Failure,
+        )
+        .await;
+        return Err(e);
+    }
+
     // EstCaClient::enroll issues the certificate, records the certificate id on
     // the est_enrollments row, and transitions the enrollment to "issued".
     // RFC 7030 §4.2.1 - CSR forwarded to CA after proof-of-possession check.
@@ -962,6 +988,9 @@ async fn simple_enroll(
     {
         Ok(id) => id,
         Err(e) => {
+            // Issuance failed - refund the reserved use so a transient CA error
+            // does not permanently burn the token.
+            refund_enrollment_token_if_present(&state, &user).await;
             // H2 - issuance failures must be audited.
             emit_enrollment_audit(
                 &state,
@@ -975,9 +1004,9 @@ async fn simple_enroll(
         }
     };
 
-    // Single-use: consume the enrollment token (if this was token-authenticated)
-    // now that a certificate has been issued.
-    consume_enrollment_token_if_present(&state, &user, certificate_id).await;
+    // Record the issued certificate against the already-reserved token use and
+    // audit the consumption (the use was spent up-front, above).
+    finalize_enrollment_token_if_present(&state, &user, certificate_id).await;
 
     // Load the issued certificate and wrap it in a certs-only PKCS#7.
     // RFC 7030 §4.2.3 - Response is a degenerate PKCS#7 with the issued cert.
@@ -1233,6 +1262,136 @@ async fn consume_enrollment_token_if_present(
     };
     // AU-2/AU-3: the token lifecycle (unused -> used) is a security-relevant
     // state change and must leave an audit record, not just a log line.
+    let mut event = ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::ConfigurationChange,
+        &user.username,
+        "est:enrollment-tokens".to_string(),
+        "consume_est_token",
+        outcome,
+    )
+    .with_details(serde_json::json!({
+        "identity": user.username,
+        "token_id": token_id.to_string(),
+        "certificate_id": certificate_id.to_string(),
+    }))
+    .build();
+    let _ = state.audit_sink.record(&mut event).await;
+}
+
+/// Enforce that a token principal's operator-pinned profile is not widened by a
+/// client-controlled EST label. No-op for session/mTLS principals or tokens that
+/// pinned no profile; otherwise the requested profile must equal the pin.
+///
+/// NIST 800-53: AC-3 (access enforcement), AC-6 (least privilege).
+async fn enforce_token_profile_pin(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+    requested_profile: &str,
+) -> Result<()> {
+    if !user.has_role(ostrich_common::auth::Role::EstEnrollee) {
+        return Ok(());
+    }
+    let token_id = *user.id.as_uuid();
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    match repo.enrollment_token_profile(token_id).await {
+        Ok(Some(pinned)) if pinned != requested_profile => {
+            tracing::warn!(
+                actor = %user.username, token_id = %token_id,
+                pinned = %pinned, requested = %requested_profile,
+                "labeled EST enrollment attempted to widen past the token's pinned profile"
+            );
+            Err(Error::Forbidden(format!(
+                "enrollment token is pinned to profile '{pinned}'; label requests '{requested_profile}'"
+            )))
+        }
+        Ok(_) => Ok(()), // no pin, or the label matches the pin
+        Err(e) => Err(Error::Database(e)),
+    }
+}
+
+/// Reserve one enrollment-token use BEFORE issuance (TOCTOU-safe single-use).
+///
+/// The spend is an atomic `uses_remaining = uses_remaining - 1 WHERE
+/// uses_remaining > 0 AND expires_at > now()`, so of N concurrent enrollments on
+/// a single-use token at most one reserves the use; the rest fail closed here and
+/// never reach issuance. No-op for session/mTLS principals (no token). Pair with
+/// [`finalize_enrollment_token_if_present`] on success and
+/// [`refund_enrollment_token_if_present`] on issuance failure.
+///
+/// NIST 800-53: IA-5 (bounded credential), AC-6 (least privilege).
+async fn reserve_enrollment_token_if_present(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+) -> Result<()> {
+    if !user.has_role(ostrich_common::auth::Role::EstEnrollee) {
+        return Ok(()); // session/mTLS auth — no enrollment token to reserve
+    }
+    let token_id = *user.id.as_uuid();
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    match repo.consume_enrollment_token(token_id, None).await {
+        Ok(true) => {
+            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token use reserved");
+            Ok(())
+        }
+        Ok(false) => {
+            tracing::warn!(actor = %user.username, token_id = %token_id, "EST enrollment token has no uses remaining or is expired");
+            Err(Error::Forbidden(
+                "enrollment token has no remaining uses or has expired".to_string(),
+            ))
+        }
+        Err(e) => {
+            tracing::error!(error = %e, token_id = %token_id, "failed to reserve EST enrollment token");
+            Err(Error::Database(e))
+        }
+    }
+}
+
+/// Compensate a reserved-but-unused token use after issuance fails, so a
+/// transient CA/HSM error does not permanently burn the token.
+async fn refund_enrollment_token_if_present(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+) {
+    if !user.has_role(ostrich_common::auth::Role::EstEnrollee) {
+        return;
+    }
+    let token_id = *user.id.as_uuid();
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    match repo.refund_enrollment_token(token_id).await {
+        Ok(()) => {
+            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token use refunded after issuance failure")
+        }
+        Err(e) => {
+            tracing::error!(error = %e, token_id = %token_id, "failed to refund EST enrollment token use")
+        }
+    }
+}
+
+/// Record the issued certificate against a token use already spent by
+/// [`reserve_enrollment_token_if_present`] and emit the consumption audit record.
+async fn finalize_enrollment_token_if_present(
+    state: &EstState,
+    user: &ostrich_common::auth::AuthenticatedUser,
+    certificate_id: uuid::Uuid,
+) {
+    if !user.has_role(ostrich_common::auth::Role::EstEnrollee) {
+        return;
+    }
+    let token_id = *user.id.as_uuid();
+    let repo = ostrich_db::repository::EstRepository::new(state.db_pool.clone());
+    let outcome = match repo
+        .record_enrollment_token_cert(token_id, certificate_id)
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(actor = %user.username, token_id = %token_id, "EST enrollment token use consumed");
+            ostrich_audit::EventOutcome::Success
+        }
+        Err(e) => {
+            tracing::error!(error = %e, token_id = %token_id, "failed to record cert on consumed EST enrollment token");
+            ostrich_audit::EventOutcome::Failure
+        }
+    };
     let mut event = ostrich_audit::AuditEventBuilder::new(
         ostrich_audit::EventType::ConfigurationChange,
         &user.username,
@@ -1803,14 +1962,14 @@ async fn server_key_gen(
                     client_identifier,
                     "est:serverkeygen",
                     "csr_parse_failed",
-            )
-            .await;
-            return Err(Error::InvalidCsr(format!(
-                "Failed to parse serverkeygen CSR: {}",
-                e
-            )));
-        }
-    };
+                )
+                .await;
+                return Err(Error::InvalidCsr(format!(
+                    "Failed to parse serverkeygen CSR: {}",
+                    e
+                )));
+            }
+        };
         let subject = ostrich_x509::parser::parse_csr_subject_dn(&request_der)
             .map_err(|e| Error::InvalidCsr(format!("Failed to parse CSR subject: {}", e)))?;
         (subject, parsed.subject_alternative_names)
@@ -1922,7 +2081,11 @@ async fn server_key_gen(
 
     // Single-use: serverkeygen is reachable by an enrollment token (it also
     // requires SubmitRequest), so it must consume the token too — otherwise the
-    // token would be reusable here, defeating single-use.
+    // token would be reusable here, defeating single-use. The expiry-guarded
+    // spend still bounds reuse; unlike simpleenroll this spend is post-issuance,
+    // so a narrow concurrent-use window remains (SubmitRequest-gated, far less
+    // exposed than simpleenroll). POAM: move to the reserve-then-issue ordering
+    // once serverkeygen's issuance is refactored to reserve up-front.
     consume_enrollment_token_if_present(&state, &user, certificate_id).await;
 
     // Fetch the issued certificate.
@@ -2062,8 +2225,12 @@ struct MintEnrollmentTokenRequest {
 ///
 /// SI-10: reject anything else so a token can never reference an unissuable or
 /// over-privileged profile.
-const OFFERABLE_EST_PROFILES: [&str; 4] =
-    ["tls_client", "tls_server", "tls_server_client", EFS_PROFILE_NAME];
+const OFFERABLE_EST_PROFILES: [&str; 4] = [
+    "tls_client",
+    "tls_server",
+    "tls_server_client",
+    EFS_PROFILE_NAME,
+];
 
 /// Profile name that triggers the EFS server-side key-generation delivery path
 /// (RSA key + issued cert wrapped in an encrypted PKCS#12). Must match the CA's
@@ -2719,7 +2886,9 @@ mod tests {
         );
         assert_eq!(broadest_est_profile(None, &Some("bogus".into())), None);
         assert_eq!(broadest_est_profile(None, &None), None);
-        assert!(profile_capability_rank("tls_server_client") > profile_capability_rank("tls_client"));
+        assert!(
+            profile_capability_rank("tls_server_client") > profile_capability_rank("tls_client")
+        );
     }
 
     /// EFS is orthogonal to the TLS EKU ladder: the broadest-profile fold must

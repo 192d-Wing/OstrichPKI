@@ -301,7 +301,11 @@ fn is_bridgeable_role(role: super::roles::Role) -> bool {
     use super::roles::Role;
     matches!(
         role,
-        Role::PkiSponsor | Role::PkiSponsorAdmin | Role::RegistrationAuthority | Role::CaaAdmin
+        Role::PkiSponsor
+            | Role::PkiSponsorAdmin
+            | Role::RegistrationAuthority
+            | Role::CaaAdmin
+            | Role::NpeAuditor
     )
 }
 
@@ -311,7 +315,9 @@ fn is_bridgeable_role(role: super::roles::Role) -> bool {
 fn build_trusted_proxy_user(headers: &header::HeaderMap) -> Option<AuthenticatedUser> {
     let get = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
 
-    let username = get(HEADER_NPE_USER).map(str::trim).filter(|s| !s.is_empty())?;
+    let username = get(HEADER_NPE_USER)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
     // The subject DN defaults to the username when not supplied (own-scope id is
     // derived from it, so a stable value is required).
     let subject = get(HEADER_NPE_SUBJECT)
@@ -336,7 +342,9 @@ fn build_trusted_proxy_user(headers: &header::HeaderMap) -> Option<Authenticated
         .filter(|r| is_bridgeable_role(*r))
         .collect();
 
-    Some(AuthenticatedUser::from_trusted_proxy(subject, username, roles))
+    Some(AuthenticatedUser::from_trusted_proxy(
+        subject, username, roles,
+    ))
 }
 
 /// Composite layer: a verified, allow-listed reverse-proxy client certificate
@@ -629,7 +637,10 @@ mod tests {
         );
         // Same subject -> same id (own-scope stability across requests).
         assert_eq!(a.id, b.id);
-        assert_eq!(a.certificate_subject.as_deref(), Some("CN=DOE.JOHN.A.123,O=U.S. Government,C=US"));
+        assert_eq!(
+            a.certificate_subject.as_deref(),
+            Some("CN=DOE.JOHN.A.123,O=U.S. Government,C=US")
+        );
 
         // Different subject -> different id.
         let c = AuthenticatedUser::from_trusted_proxy("CN=OTHER", "OTHER", vec![]);

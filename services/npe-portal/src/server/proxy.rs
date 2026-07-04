@@ -45,7 +45,14 @@ async fn proxy_ca(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.http_client, &state.config.backend.ca_url, &path, Some(&session), request).await
+    proxy_to_service(
+        &state.http_client,
+        &state.config.backend.ca_url,
+        &path,
+        Some(&session),
+        request,
+    )
+    .await
 }
 
 async fn proxy_est(
@@ -54,18 +61,29 @@ async fn proxy_est(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    proxy_to_service(&state.http_client, &state.config.backend.est_url, &path, Some(&session), request).await
+    proxy_to_service(
+        &state.http_client,
+        &state.config.backend.est_url,
+        &path,
+        Some(&session),
+        request,
+    )
+    .await
 }
 
 /// Forward an OCSP request to the responder's root (RFC 6960 over HTTP). The
 /// NPE identity is NOT forwarded: OCSP is a public, no-auth protocol that does
 /// not consume the X-Npe-* headers, so attaching the caller's CN/DN/roles would
 /// be needless disclosure (least privilege / AC-6).
-async fn proxy_ocsp(
-    State(state): State<AppState>,
-    request: Request<Body>,
-) -> impl IntoResponse {
-    proxy_to_service(&state.http_client, &state.config.backend.ocsp_url, "", None, request).await
+async fn proxy_ocsp(State(state): State<AppState>, request: Request<Body>) -> impl IntoResponse {
+    proxy_to_service(
+        &state.http_client,
+        &state.config.backend.ocsp_url,
+        "",
+        None,
+        request,
+    )
+    .await
 }
 
 /// Forward a request to a backend service, preserving the query string and
@@ -180,12 +198,16 @@ fn is_hop_by_hop_header(name: &str) -> bool {
 /// Whether an inbound (client-supplied) header must be dropped before forwarding
 /// to the backend. This is the portal's anti-spoofing boundary: hop-by-hop
 /// headers, any client `Authorization` (the portal is the sole authority for the
-/// upstream credential), and ALL `X-Npe-*` identity headers are stripped — the
-/// proxy re-attaches the authenticated `X-Npe-*` identity itself, so a client can
-/// never forge its identity or role by sending those headers (NIST 800-53 AC-3).
+/// upstream credential), the browser `Cookie` (the portal's opaque session token
+/// is a bearer-equivalent secret the CA/EST backends have no need for — do not
+/// spread it into backend logs/memory or let a client smuggle a cookie-based
+/// session through), and ALL `X-Npe-*` identity headers are stripped — the proxy
+/// re-attaches the authenticated `X-Npe-*` identity itself, so a client can never
+/// forge its identity or role by sending those headers (NIST 800-53 AC-3).
 fn is_stripped_inbound_header(name: &str) -> bool {
     is_hop_by_hop_header(name)
         || name.eq_ignore_ascii_case("authorization")
+        || name.eq_ignore_ascii_case("cookie")
         || name.to_ascii_lowercase().starts_with("x-npe-")
 }
 

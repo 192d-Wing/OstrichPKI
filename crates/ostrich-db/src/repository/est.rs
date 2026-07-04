@@ -376,7 +376,7 @@ impl EstRepository {
             SET uses_remaining = uses_remaining - 1,
                 used_by_cert = COALESCE($2, used_by_cert),
                 used_at = CASE WHEN uses_remaining - 1 = 0 THEN now() ELSE used_at END
-            WHERE id = $1 AND uses_remaining > 0
+            WHERE id = $1 AND uses_remaining > 0 AND expires_at > now()
             "#,
         )
         .bind(id)
@@ -385,6 +385,34 @@ impl EstRepository {
         .await?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Refund one use previously spent by [`consume_enrollment_token`] when the
+    /// issuance it was reserved for subsequently failed, so a transient CA error
+    /// does not permanently burn a token use. Best-effort compensation; the
+    /// `expires_at`/`revoked` guards on the spend still bound reuse.
+    ///
+    /// NIST 800-53: IA-5 (bounded credential lifecycle).
+    pub async fn refund_enrollment_token(&self, id: Uuid) -> Result<()> {
+        sqlx::query(
+            "UPDATE est_enrollment_tokens SET uses_remaining = uses_remaining + 1 WHERE id = $1",
+        )
+        .bind(id)
+        .execute(self.pool.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Record the certificate a reserved use produced (provenance) *without*
+    /// spending a use — the use was already spent up-front by
+    /// [`consume_enrollment_token`] before issuance (TOCTOU-safe ordering).
+    pub async fn record_enrollment_token_cert(&self, id: Uuid, cert_id: Uuid) -> Result<()> {
+        sqlx::query("UPDATE est_enrollment_tokens SET used_by_cert = $2 WHERE id = $1")
+            .bind(id)
+            .bind(cert_id)
+            .execute(self.pool.pool())
+            .await?;
+        Ok(())
     }
 
     /// The certificate profile an enrollment token was minted for, by token id

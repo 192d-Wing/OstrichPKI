@@ -34,10 +34,13 @@ resources:
   - est-service.yaml
   - ocsp-deployment.yaml
   - ocsp-service.yaml
-  - npe-portal-configmap.yaml
-  - npe-portal-deployment.yaml
-  - npe-portal-service.yaml
-  - npe-portal-ingressroute.yaml
+  # NOTE: the NPE portal is intentionally NOT in this base. npe-portal-deployment.yaml
+  # is the SMOKE-TEST variant (NPE_ALLOW_INSECURE=true — mTLS client-cert auth and
+  # OID->role enforcement DISABLED, plaintext proxy to CA/EST), so including it here
+  # meant `kubectl apply -k deploy/kubernetes/` stood up an UNAUTHENTICATED CA/EST
+  # proxy by default. Deploy the portal via the `npe-portal-acme/` overlay (real
+  # mTLS + ACME-provisioned TLS), or, for a deliberate smoke test only, add the
+  # npe-portal-* resources in a dedicated dev overlay. (NIST 800-53: AC-3, CM-6.)
 
 labels:
   - pairs:

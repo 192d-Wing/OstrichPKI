@@ -1339,7 +1339,10 @@ async fn verify_audit_chain(
     // can't force an unbounded full-table O(n) rehash + signature check (SC-5).
     const TTL: std::time::Duration = std::time::Duration::from_secs(30);
     let cached = {
-        let guard = state.audit_verify_cache.lock().expect("audit-verify cache poisoned");
+        let guard = state
+            .audit_verify_cache
+            .lock()
+            .expect("audit-verify cache poisoned");
         guard
             .as_ref()
             .filter(|(at, _)| at.elapsed() < TTL)
@@ -1366,7 +1369,10 @@ async fn verify_audit_chain(
         verified_at: chrono::Utc::now().to_rfc3339(),
     };
     {
-        let mut guard = state.audit_verify_cache.lock().expect("audit-verify cache poisoned");
+        let mut guard = state
+            .audit_verify_cache
+            .lock()
+            .expect("audit-verify cache poisoned");
         *guard = Some((std::time::Instant::now(), dto.clone()));
     }
 
@@ -1548,7 +1554,10 @@ async fn get_certificate_pkcs7(
     }
 
     // Leaf first, then the issuing CA certificate, so the .p7b carries the chain.
-    let bundle = [cert.der_encoded.clone(), state.ca.certificate_der().to_vec()];
+    let bundle = [
+        cert.der_encoded.clone(),
+        state.ca.certificate_der().to_vec(),
+    ];
     let p7 = ostrich_x509::pkcs7::encode_certs_only_pkcs7(&bundle)?;
 
     tracing::info!(
@@ -2369,12 +2378,10 @@ async fn bulk_enroll(
     {
         match field.name() {
             Some("profile") => {
-                profile_name = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| Error::InvalidRequest(format!("invalid profile field: {e}")))?,
-                );
+                profile_name =
+                    Some(field.text().await.map_err(|e| {
+                        Error::InvalidRequest(format!("invalid profile field: {e}"))
+                    })?);
             }
             Some("archive") | Some("file") => {
                 zip_bytes = Some(
@@ -2393,8 +2400,8 @@ async fn bulk_enroll(
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
         .ok_or_else(|| Error::InvalidRequest("missing 'profile' field".to_string()))?;
-    let zip_bytes =
-        zip_bytes.ok_or_else(|| Error::InvalidRequest("missing 'archive' (ZIP) field".to_string()))?;
+    let zip_bytes = zip_bytes
+        .ok_or_else(|| Error::InvalidRequest("missing 'archive' (ZIP) field".to_string()))?;
 
     let entries = extract_csr_entries(&zip_bytes)?;
     if entries.is_empty() {
@@ -2412,10 +2419,7 @@ async fn bulk_enroll(
     // Create the job row up front (status `processing`) with the known total, so a
     // crash mid-batch leaves a non-terminal job rather than nothing.
     let job_id = uuid::Uuid::new_v4();
-    let bulk_identifier = format!(
-        "BULK-{}",
-        job_id.simple().to_string()[..12].to_uppercase()
-    );
+    let bulk_identifier = format!("BULK-{}", job_id.simple().to_string()[..12].to_uppercase());
     let now = chrono::Utc::now();
     let job = BulkEnrollmentJobRecord {
         id: job_id,
@@ -2495,7 +2499,15 @@ async fn bulk_enroll(
                     completed_at: submitted.completed_at,
                     metadata: None,
                 };
-                state.approval_repo.create_request(&record).await?;
+                // On a mid-loop DB failure, drive the job to a terminal `failed`
+                // state before returning — otherwise the job row is stranded in
+                // `processing` forever with a partial item set and no recovery.
+                if let Err(e) = state.approval_repo.create_request(&record).await {
+                    let _ = bulk_repo
+                        .finalize_job(job_id, "failed", succeeded, failed)
+                        .await;
+                    return Err(e.into());
+                }
                 item.subject_cn = subject_cn;
                 item.status = "queued".to_string();
                 item.request_id = Some(submitted.id);
@@ -2503,7 +2515,15 @@ async fn bulk_enroll(
             }
         }
 
-        let stored = bulk_repo.create_item(&item).await?;
+        let stored = match bulk_repo.create_item(&item).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                let _ = bulk_repo
+                    .finalize_job(job_id, "failed", succeeded, failed)
+                    .await;
+                return Err(e.into());
+            }
+        };
         items.push(BulkItemDto::from(stored));
     }
 
@@ -2538,11 +2558,12 @@ async fn list_bulk_jobs(
     State(state): State<Arc<ApiState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Json<Vec<BulkJobSummaryDto>>> {
-    let bulk_repo = ostrich_db::repository::BulkEnrollmentRepository::new(
-        state.db_pool.as_ref().clone(),
-    );
+    let bulk_repo =
+        ostrich_db::repository::BulkEnrollmentRepository::new(state.db_pool.as_ref().clone());
     let jobs = bulk_repo.list_jobs_by_submitter(*user.id.as_uuid()).await?;
-    Ok(Json(jobs.into_iter().map(BulkJobSummaryDto::from).collect()))
+    Ok(Json(
+        jobs.into_iter().map(BulkJobSummaryDto::from).collect(),
+    ))
 }
 
 /// Fetch one bulk job + its per-CSR items. Own-scope: the submitter, or any
@@ -2554,9 +2575,8 @@ async fn get_bulk_job(
 ) -> Result<Json<BulkJobDetailDto>> {
     let job_id = uuid::Uuid::parse_str(&id)
         .map_err(|_| Error::InvalidRequest("Invalid bulk job ID".to_string()))?;
-    let bulk_repo = ostrich_db::repository::BulkEnrollmentRepository::new(
-        state.db_pool.as_ref().clone(),
-    );
+    let bulk_repo =
+        ostrich_db::repository::BulkEnrollmentRepository::new(state.db_pool.as_ref().clone());
     let job = bulk_repo
         .get_job(job_id)
         .await?
@@ -2940,8 +2960,7 @@ async fn list_config(
     State(state): State<Arc<ApiState>>,
     AuthUser(_user): AuthUser,
 ) -> Result<Json<Vec<ConfigDto>>> {
-    let repo =
-        ostrich_db::repository::SystemConfigRepository::new(state.db_pool.as_ref().clone());
+    let repo = ostrich_db::repository::SystemConfigRepository::new(state.db_pool.as_ref().clone());
     let settings = repo
         .list()
         .await
@@ -2968,8 +2987,7 @@ async fn set_config(
         )));
     }
 
-    let repo =
-        ostrich_db::repository::SystemConfigRepository::new(state.db_pool.as_ref().clone());
+    let repo = ostrich_db::repository::SystemConfigRepository::new(state.db_pool.as_ref().clone());
 
     // CM-3 / fail closed: only a known (seeded) setting may be changed; reject an
     // unknown key rather than creating an unconsumed configuration entry.
@@ -2979,7 +2997,9 @@ async fn set_config(
         .map_err(|e| Error::Internal(format!("Failed to load config: {e}")))?
         .is_none()
     {
-        return Err(Error::NotFound(format!("unknown configuration key '{key}'")));
+        return Err(Error::NotFound(format!(
+            "unknown configuration key '{key}'"
+        )));
     }
 
     // SI-10: a known key's value must match its expected type.
@@ -3713,10 +3733,7 @@ mod tests {
         assert!(pem.starts_with("-----BEGIN CERTIFICATE-----\n"));
         assert!(pem.trim_end().ends_with("-----END CERTIFICATE-----"));
         // The base64 body must decode back to the original DER.
-        let body: String = pem
-            .lines()
-            .filter(|l| !l.starts_with("-----"))
-            .collect();
+        let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
         assert_eq!(BASE64_STANDARD.decode(body).unwrap(), der);
     }
 

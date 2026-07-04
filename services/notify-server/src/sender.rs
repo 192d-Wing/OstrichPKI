@@ -113,6 +113,17 @@ fn build_mailer(cfg: &Config) -> Result<Mailer> {
     let mut builder = builder0.port(port);
 
     if let (Some(user), Some(pass)) = (&cfg.smtp_username, &cfg.smtp_password) {
+        // Fail secure: never transmit SMTP AUTH credentials over an unencrypted
+        // transport. `builder_dangerous` (SMTP_SECURITY=none) sends the AUTH
+        // exchange in cleartext, exposing the relay password to any on-path
+        // observer (NIST 800-53 SC-8 / SC-13). Require STARTTLS or implicit TLS
+        // whenever credentials are configured.
+        if matches!(cfg.smtp_security, SmtpSecurity::None) {
+            return Err(anyhow::anyhow!(
+                "refusing to send SMTP AUTH credentials over an unencrypted connection: \
+                 set SMTP_SECURITY=starttls or =tls (or clear SMTP_USERNAME/SMTP_PASSWORD)"
+            ));
+        }
         // `pass` is a Zeroizing<String>; lettre copies it into its own Credentials,
         // but our config copy is zeroized on drop (NIST 800-53 SI-12).
         builder = builder.credentials(Credentials::new(user.clone(), pass.as_str().to_owned()));
