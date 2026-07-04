@@ -61,7 +61,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # >=20.19 required by vite 8 / rolldown (see web/package.json engines).
+          node-version: "20.19"
       - name: Enable pnpm (corepack; version pinned by packageManager)
         run: corepack enable
       - name: Install (frozen lockfile — CM-2)
