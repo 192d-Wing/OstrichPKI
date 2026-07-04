@@ -12,6 +12,7 @@ resources:
   - nats.yaml
   - notify-postgres.yaml
   - notify-deployments.yaml
+  - networkpolicy.yaml
 
 # Non-secret notify config (NATS URL, scheduler cadence, SMTP relay) is sourced
 # from the git-controlled variable file notify.env. kustomize hashes it into a
