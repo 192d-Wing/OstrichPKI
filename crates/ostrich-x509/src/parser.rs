@@ -546,7 +546,10 @@ pub fn parse_csr(der: &[u8]) -> Result<ParsedCsr> {
 fn parse_csr_der_fallback(der: &[u8]) -> Result<ParsedCsr> {
     use der::{Decode, Encode};
 
-    let req = x509_cert::request::CertReq::from_der(der)
+    // Tolerate a CSR that omits the (mandatory-but-emptyable) attributes field,
+    // as OpenSSL does; the original bytes are still what der_encoded/PoP use.
+    let normalized = normalize_missing_attributes(der)?;
+    let req = x509_cert::request::CertReq::from_der(&normalized)
         .map_err(|e| Error::Parse(format!("der CertReq decode failed: {}", e)))?;
     let info = &req.info;
 
@@ -683,6 +686,82 @@ fn der_tlv(buf: &[u8], off: usize, expected_tag: u8) -> Result<(usize, usize)> {
     Ok((value_offset, end_offset))
 }
 
+/// Encode a DER definite-form length. Short form (< 128) is a single octet; long
+/// form is `0x80 | n` followed by `n` big-endian octets. CSR component lengths
+/// always fit, so this covers every real input.
+fn der_len_bytes(len: usize) -> Vec<u8> {
+    if len < 0x80 {
+        return vec![len as u8];
+    }
+    let be = len.to_be_bytes();
+    let first = be.iter().position(|&b| b != 0).unwrap_or(be.len() - 1);
+    let sig = &be[first..];
+    let mut out = Vec::with_capacity(sig.len() + 1);
+    out.push(0x80 | sig.len() as u8);
+    out.extend_from_slice(sig);
+    out
+}
+
+/// Wrap `content` in a DER SEQUENCE (tag `0x30`) with a correct length header.
+fn der_seq(content: &[u8]) -> Vec<u8> {
+    let len = der_len_bytes(content.len());
+    let mut out = Vec::with_capacity(1 + len.len() + content.len());
+    out.push(0x30);
+    out.extend_from_slice(&len);
+    out.extend_from_slice(content);
+    out
+}
+
+/// Normalize a PKCS#10 CSR whose `CertificationRequestInfo` OMITS the mandatory
+/// `attributes [0]` field by injecting an empty `SET OF Attribute` (`A0 00`).
+///
+/// RFC 2986 §4.1 defines `attributes` as `[0] IMPLICIT SET OF Attribute` — a
+/// field that may be empty but is NOT optional. Some clients (notably pkijs used
+/// by the in-browser generator, and other lightweight tooling) drop the field
+/// entirely when there are no attributes. OpenSSL accepts such requests, but the
+/// strict Rust decoders (x509-parser → `InvalidAttributes`, RustCrypto `der` →
+/// malformed context-[0]) reject them. To match OpenSSL's leniency without
+/// relaxing the decoders elsewhere, we rebuild the DER with an empty attributes
+/// field when — and only when — it is genuinely absent.
+///
+/// The self-signature is computed over the ORIGINAL `CertificationRequestInfo`
+/// bytes (RFC 2986 §4.2), so callers MUST keep the original DER for
+/// proof-of-possession verification; this normalized form is used only for
+/// structural field extraction.
+///
+/// COMPLIANCE MAPPING:
+/// - RFC 2986 §4.1: CertificationRequestInfo.attributes (mandatory, may be empty)
+/// - NIST 800-53 SI-10: Accept well-formed input; interoperate with conformant clients
+fn normalize_missing_attributes(der: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>> {
+    use std::borrow::Cow;
+
+    // CertificationRequest ::= SEQUENCE { CertificationRequestInfo, algId, sig }
+    let (outer_val, outer_end) = der_tlv(der, 0, 0x30)?;
+    // CertificationRequestInfo ::= SEQUENCE { version, subject, spki, [0] attrs }
+    let (ci_val, ci_end) = der_tlv(der, outer_val, 0x30)?;
+    // Walk the three mandatory leading fields; whatever remains is `attributes`.
+    let (_, ver_end) = der_tlv(der, ci_val, 0x02)?; // version INTEGER
+    let (_, subj_end) = der_tlv(der, ver_end, 0x30)?; // subject Name SEQUENCE
+    let (_, spki_end) = der_tlv(der, subj_end, 0x30)?; // subjectPKInfo SEQUENCE
+
+    // Anything (well-formed or not) after the public key means the attributes
+    // field is present — leave the request untouched so the decoder sees it
+    // verbatim. Only a CertReqInfo that ends exactly at the public key is missing
+    // the field and needs an empty one injected.
+    if spki_end != ci_end {
+        return Ok(Cow::Borrowed(der));
+    }
+
+    let mut ci_content = der[ci_val..ci_end].to_vec();
+    ci_content.extend_from_slice(&[0xA0, 0x00]); // empty [0] IMPLICIT SET OF
+    let new_ci = der_seq(&ci_content);
+
+    // Reassemble: new CertReqInfo + the original algId + signature bytes.
+    let mut outer_content = new_ci;
+    outer_content.extend_from_slice(&der[ci_end..outer_end]);
+    Ok(Cow::Owned(der_seq(&outer_content)))
+}
+
 /// Parse X.509 Distinguished Name to structured format
 ///
 /// Parse the subject DN of a DER-encoded certificate into a structured DN.
@@ -719,12 +798,14 @@ pub fn parse_csr_subject_dn(der: &[u8]) -> Result<ostrich_common::types::Disting
         Ok((_, csr)) => parse_distinguished_name(&csr.certification_request_info.subject),
         Err(primary_err) => {
             use der::{Decode, Encode};
-            let req = x509_cert::request::CertReq::from_der(der).map_err(|fallback_err| {
-                Error::Parse(format!(
-                    "Failed to parse PKCS#10 CSR: {} (der fallback also failed: {})",
-                    primary_err, fallback_err
-                ))
-            })?;
+            let normalized = normalize_missing_attributes(der)?;
+            let req =
+                x509_cert::request::CertReq::from_der(&normalized).map_err(|fallback_err| {
+                    Error::Parse(format!(
+                        "Failed to parse PKCS#10 CSR: {} (der fallback also failed: {})",
+                        primary_err, fallback_err
+                    ))
+                })?;
             // Re-parse only the subject Name with x509-parser (it rejects the
             // request *attributes*, not the Name) so the structured DN and its
             // per-attribute string decoding are identical to the primary path -
@@ -1532,6 +1613,75 @@ mod tests {
                 .subject_alternative_names
                 .contains(&"email:test@example.com".to_string())
         );
+    }
+
+    /// A CSR that OMITS the mandatory (but emptyable) `attributes [0]` field must
+    /// still parse. In-browser generators built on pkijs drop the field entirely
+    /// when there are no SANs, producing requests OpenSSL accepts but strict Rust
+    /// decoders reject (x509-parser `InvalidAttributes`; RustCrypto `der` malformed
+    /// context-[0]). `normalize_missing_attributes` injects an empty `A0 00` so
+    /// these enroll. Fixtures are real pkijs output (subject CN=SPONSOR.TEST.NPE.1,
+    /// no SANs) for an ECDSA P-256 and an RSA-2048 key.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - RFC 2986 §4.1: attributes is mandatory but may be empty
+    /// - NIST 800-53 SI-10: accept well-formed input; interoperate with clients
+    #[test]
+    fn test_parse_csr_missing_attributes_field() {
+        // pkijs ECDSA P-256 CSR, no SANs → CertReqInfo ends at the public key.
+        let ec = hex::decode(
+            "3081d5307d020100301d311b301906035504030c1253504f4e534f522e5445\
+             53542e4e50452e313059301306072a8648ce3d020106082a8648ce3d030107\
+             03420004e880acc08946ab6e804cb31f3162ff97e89a9011740857c2af81da\
+             330d8b5243620a103938806e32522ee43771ab3fb9532706c1e2308d07a0a4\
+             8d2160a3a63a300a06082a8648ce3d0403020348003045022100aa0146c1e6\
+             e881c8090c700963fe08004f47518e99e5f6d19b58850aae4757020220141932\
+             415e115746cfd12135239cc7de45e3bc5aa281d3e2e6856363b279cdef",
+        )
+        .unwrap();
+        // pkijs RSA-2048 CSR, no SANs.
+        let rsa = hex::decode(
+            "3082025e30820148020100301d311b301906035504030c1253504f4e534f52\
+             2e544553542e4e50452e3130820122300d06092a864886f70d010101050003\
+             82010f003082010a0282010100bf472adf90f843f180c63a1274666f4b897c\
+             1596329a8b77729a28c7893610117d1d978d8a9a66a8637e98d328895191f7\
+             753259cbbb3a33d9a6aec6dadb3d3268649e3ac932332b19d7cb374bd99644\
+             235b290074f1c38c693df8a2d84a30e75ee5b8084691e7274c049a01b05516\
+             d6451e6855bfbdcfd6568e6f54537e264b37993af8595bed984550c5c33382\
+             3dfa59bfe8dd3a1fdb461458e3a50746aef292ecadc4b3f918a3462483e8fb\
+             4f1f17d74fae267fff425799a6ef72c389b99dcc21bc332d87ba9db95b9c6f\
+             1955c8da76a8f65763a4d1af502f102aac7bb54102c93d5beea6283c250c1a\
+             2750d7b1602de281982104cbe2d72882c23bc31b250203010001300b06092a\
+             864886f70d01010b038201010048cd154cf22f1870d3610382232f050d59e7\
+             1b5329c4b912398d13cb1e3a608e81093d6a6a45b470e27799dbdd3b3ba726\
+             047db6acdff61fbbc617288a38703299603b1373e58e1ad24356f0e78acd56\
+             fb54f3fae001e5b5bdc5101854844a22fe70a0b68d0e78c97eda8d9fffdadf\
+             4d92f1e7c5bfa04aaf9198648492a3ba514e7b46a98a5e4389bfe417c7cf37\
+             ab9c99a8b798a68d468842eb384469ac3e0d8f243e7b91e2ce84f9121e2d4f\
+             7e813e01e89d22a94b1203fd7dfe364c24e8aa24de1760ed0a93a0a7c55ecf\
+             fc9c125f015c458c30750e221f5e6dd53a4618f22e19d0a7aca6a787bbe7fb\
+             4db19e9cba9d9212be0ce4416fe73b775038837696",
+        )
+        .unwrap();
+
+        for (label, der) in [("ecdsa", &ec), ("rsa", &rsa)] {
+            let parsed =
+                parse_csr(der).unwrap_or_else(|e| panic!("{label} no-attrs CSR must parse: {e}"));
+            assert_eq!(
+                parsed.subject_dn, "CN=SPONSOR.TEST.NPE.1",
+                "{label} subject"
+            );
+            assert!(
+                parsed.subject_alternative_names.is_empty(),
+                "{label} SANs empty"
+            );
+            // The structured-DN path (RFC 7030 re-enrollment binding) must agree.
+            let dn = parse_csr_subject_dn(der).expect("structured subject DN");
+            assert_eq!(dn.common_name.as_deref(), Some("SPONSOR.TEST.NPE.1"));
+            // der_encoded must stay the ORIGINAL bytes so PoP verifies the real
+            // signature (computed over the attribute-less CertificationRequestInfo).
+            assert_eq!(parsed.der_encoded, *der, "{label} der_encoded unchanged");
+        }
     }
 
     /// Test parse_csr_subject_dn extracts the structured subject DN, and that it

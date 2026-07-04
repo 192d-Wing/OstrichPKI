@@ -229,6 +229,15 @@ export async function generateCsr(
       )}. Remove them, or paste a CSR generated with full tooling instead.`,
     );
   }
+  // RFC 2986 §4.1: CertificationRequestInfo.attributes is `[0] IMPLICIT SET OF
+  // Attribute` — a mandatory field that may be empty, NOT an optional one. pkijs
+  // OMITS the `[0]` entirely when `attributes` is left undefined, producing a
+  // request that lenient parsers (OpenSSL) accept but strict DER decoders reject:
+  // x509-parser fails with `InvalidAttributes` and RustCrypto's `der` (our server
+  // fallback) fails decoding the absent context-[0]. Always assign `attributes`
+  // so pkijs emits a well-formed field — an empty `SET OF` (`A0 00`) when there
+  // are no SANs, or the extensionRequest attribute when there are.
+  pkcs10.attributes = [];
   if (generalNames.length > 0) {
     const altNames = new GeneralNames({ names: generalNames });
     const extensions = new Extensions({
@@ -240,9 +249,9 @@ export async function generateCsr(
         }),
       ],
     });
-    pkcs10.attributes = [
+    pkcs10.attributes.push(
       new Attribute({ type: OID_EXTENSION_REQUEST, values: [extensions.toSchema()] }),
-    ];
+    );
   }
 
   await pkcs10.sign(keys.privateKey, hash);

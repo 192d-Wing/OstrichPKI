@@ -1561,14 +1561,22 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
     (IA5String, or PrintableString with out-of-repertoire characters — common
     from device/NPE enrollment clients). See `parse_csr_der_fallback`,
     `extract_cert_req_info_tbs`, `der_tlv` in `crates/ostrich-x509/src/parser.rs`.
+  - The same fallback also accepts a CSR that OMITS the mandatory-but-emptyable
+    `attributes [0]` field (RFC 2986 §4.1) — `normalize_missing_attributes`
+    injects an empty `SET OF` (only when absent). pkijs (the NPE portal in-browser
+    generator) and other lightweight clients emit these; OpenSSL accepts them but
+    strict Rust decoders do not. The generator was also fixed to always emit the
+    field (`services/npe-portal/web/src/lib/csr.ts`).
   - Fail-safe: the fallback only runs after the strict parse fails, so it cannot
     change results for CSRs that parse today; PoP signature verification is still
-    enforced over the byte-exact CertificationRequestInfo, and the subject DN is
-    rendered/decoded via x509-parser (identical to the primary path, so EST
-    re-enrollment identity binding is unaffected).
+    enforced over the byte-exact (original) CertificationRequestInfo, and the
+    subject DN is rendered/decoded via x509-parser (identical to the primary path,
+    so EST re-enrollment identity binding is unaffected).
   - Test coverage: `test_parse_csr_ia5_challenge_password_fallback`,
     `test_parse_csr_printable_challenge_password_fallback`
-    (`tests/integration/csr_parsing_test.rs`).
+    (`tests/integration/csr_parsing_test.rs`),
+    `test_parse_csr_missing_attributes_field`
+    (`crates/ostrich-x509/src/parser.rs`).
 - ✅ **CSR signature verification** (RFC 2986 §4.2, FCO_NRO_EXT.2)
   - Centralized implementation in ostrich-x509/src/parser.rs:326-355
   - Verifies proof-of-possession before certificate issuance
