@@ -7,7 +7,6 @@ import {
   ColumnLayout,
   Container,
   ContentLayout,
-  ExpandableSection,
   FormField,
   Header,
   Modal,
@@ -18,6 +17,7 @@ import {
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { StatusBadge } from "@/components/status-badge";
+import { SubmittedDetails } from "@/components/submitted-details";
 import { portalApi } from "@/lib/portal-api";
 
 type ActionKind = "approve" | "override" | "reject";
@@ -46,16 +46,6 @@ export function ManageApplicationDetailPage() {
     queryKey: ["approval-request", id],
     queryFn: () => portalApi.getApplication(id),
     enabled: id.length > 0,
-  });
-
-  // The submitted CSR carries the Common Name / full subject; parse it (portal-
-  // local, session-gated) so the RA sees the identity being requested, not just
-  // the SANs. Gated on the CSR being present in the loaded request_details.
-  const csrPem = data?.request?.request_details?.csr_pem ?? "";
-  const csrInfo = useQuery({
-    queryKey: ["approval-csr", id],
-    queryFn: () => portalApi.parseCsr(csrPem),
-    enabled: csrPem.length > 0,
   });
 
   const [action, setAction] = useState<ActionKind | null>(null);
@@ -118,10 +108,6 @@ export function ManageApplicationDetailPage() {
   const decisions = data?.decisions ?? [];
   const details = request?.request_details;
   const isPending = request?.status?.toLowerCase() === "pending";
-
-  // Render a list of values as comma-separated text, or an em dash when empty.
-  const listOrDash = (values?: string[] | null) =>
-    values && values.length > 0 ? values.join(", ") : "—";
 
   return (
     <ContentLayout
@@ -215,42 +201,8 @@ export function ManageApplicationDetailPage() {
         >
           {isLoading ? (
             <Box>Loading…</Box>
-          ) : details ? (
-            <SpaceBetween size="l">
-              <ColumnLayout columns={2} variant="text-grid">
-                <ValueRow label="Common name">
-                  {csrInfo.data?.commonName ?? (csrInfo.isLoading ? "Loading…" : "—")}
-                </ValueRow>
-                <ValueRow label="Profile">{details.profile ?? "—"}</ValueRow>
-                <ValueRow label="Subject DN">
-                  <Box variant="code">{csrInfo.data?.subjectDn ?? "—"}</Box>
-                </ValueRow>
-                <ValueRow label="CC/S/A">{details.ccsa ?? "—"}</ValueRow>
-                <ValueRow label="Subject alternative names">
-                  {listOrDash(details.subject_alt_names)}
-                </ValueRow>
-                <ValueRow label="Notification email">
-                  {details.notification_email ?? "—"}
-                </ValueRow>
-                <ValueRow label="Key usage">{listOrDash(details.key_usage)}</ValueRow>
-                <ValueRow label="Extended key usage">
-                  {listOrDash(details.extended_key_usage)}
-                </ValueRow>
-                <ValueRow label="ISSM email">{details.issm_email ?? "—"}</ValueRow>
-                <ValueRow label="PM email">{details.pm_email ?? "—"}</ValueRow>
-              </ColumnLayout>
-              {details.csr_pem && (
-                <ExpandableSection headerText="Submitted CSR (PEM)">
-                  <Box variant="code" fontSize="body-s">
-                    <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                      {details.csr_pem}
-                    </pre>
-                  </Box>
-                </ExpandableSection>
-              )}
-            </SpaceBetween>
           ) : (
-            !isError && <Box color="text-body-secondary">No submitted details available.</Box>
+            <SubmittedDetails details={details} cacheKey={id} />
           )}
         </Container>
 
