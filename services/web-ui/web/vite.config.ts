@@ -22,11 +22,12 @@ export default defineConfig({
       output: {
         // Split the heavy Cloudscape vendor code from app code so it caches
         // independently of route chunks and our own source changes.
-        manualChunks: {
-          cloudscape: [
-            "@cloudscape-design/components",
-            "@cloudscape-design/global-styles",
-          ],
+        // Function form (not the object map) — required by vite 8's rolldown
+        // bundler, which rejects the Rollup object syntax.
+        manualChunks(id) {
+          if (id.includes("@cloudscape-design")) {
+            return "cloudscape";
+          }
         },
       },
     },
