@@ -17,7 +17,7 @@
 # The React console is the primary app (served at /). The Vite build only needs
 # services/web-ui/web — no Rust workspace — so this is a small Node-only stage.
 # corepack pins pnpm from web/package.json's "packageManager".
-FROM node:20-bookworm-slim AS web-builder
+FROM node:26-bookworm-slim AS web-builder
 WORKDIR /app/web
 COPY services/web-ui/web/ ./
 RUN corepack enable \
