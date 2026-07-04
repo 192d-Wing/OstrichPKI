@@ -3002,7 +3002,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-acme"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "axum",
  "chrono",
@@ -3035,7 +3035,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-acme-server"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3057,14 +3057,14 @@ dependencies = [
 
 [[package]]
 name = "ostrich-api"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "ostrich-common",
 ]
 
 [[package]]
 name = "ostrich-audit"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3085,7 +3085,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-benches"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "chrono",
  "const-oid",
@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-ca"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3138,7 +3138,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-ca-server"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3164,7 +3164,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-cli"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -3177,7 +3177,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-common"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3212,7 +3212,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-crypto"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "aes 0.9.1",
  "anyhow",
@@ -3245,7 +3245,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-db"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3267,7 +3267,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-est"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -3301,7 +3301,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-est-server"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3323,7 +3323,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-init"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3383,7 +3383,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-kra"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3405,7 +3405,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-kra-server"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3426,7 +3426,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-ocsp"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -3452,7 +3452,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-ocsp-server"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3474,7 +3474,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-protocol"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "ostrich-common",
  "prost",
@@ -3488,7 +3488,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-scms"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "axum",
  "chrono",
@@ -3506,7 +3506,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-scms-server"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3527,7 +3527,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-tamp"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -3556,7 +3556,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-tamp-server"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3577,7 +3577,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-web-ui"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3613,7 +3613,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-x509"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "async-trait",
