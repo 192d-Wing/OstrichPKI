@@ -14,6 +14,7 @@ import {
 } from "@cloudscape-design/components";
 
 import { StatusBadge } from "@/components/status-badge";
+import { SubmittedDetails } from "@/components/submitted-details";
 import { portalApi, type ApplicationDetail } from "@/lib/portal-api";
 
 export function ApplicationStatusPage() {
@@ -103,6 +104,13 @@ export function ApplicationStatusPage() {
                   { label: "Expires", value: detail.request.expires_at },
                 ]}
               />
+              <SpaceBetween size="s">
+                <Header variant="h3">Submitted details</Header>
+                <SubmittedDetails
+                  details={detail.request.request_details}
+                  cacheKey={detail.request.id}
+                />
+              </SpaceBetween>
               <Table
                 header={<Header variant="h3">Review decisions</Header>}
                 items={detail.decisions}
