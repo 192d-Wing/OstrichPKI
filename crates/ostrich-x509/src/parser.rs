@@ -550,9 +550,22 @@ fn parse_csr_der_fallback(der: &[u8]) -> Result<ParsedCsr> {
         .map_err(|e| Error::Parse(format!("der CertReq decode failed: {}", e)))?;
     let info = &req.info;
 
-    // Subject DN as an RFC 4514 string (informational; the security-critical
-    // identity binding uses the structured `parse_csr_subject_dn`).
-    let subject_dn = info.subject.to_string();
+    // Render the subject DN via x509-parser so the string is byte-for-byte
+    // identical to the primary path and to `parse_certificate` (both use
+    // x509-parser's rendering). This matters for correctness: EST re-enrollment
+    // (RFC 7030 §4.2.2) compares the CSR's full subject-DN string against the
+    // prior certificate's; mixing x509-cert's RFC 4514 rendering (RDNs reversed,
+    // no separator spaces) with x509-parser's would spuriously fail that match
+    // for any multi-RDN subject. x509-parser parses a `Name` fine — it is only
+    // the request *attributes* it rejects — so re-encode the Name and re-parse.
+    let subject_der = info
+        .subject
+        .to_der()
+        .map_err(|e| Error::Parse(format!("re-encode subject Name: {}", e)))?;
+    let subject_dn = match x509_parser::x509::X509Name::from_der(&subject_der) {
+        Ok((_, name)) => name.to_string(),
+        Err(_) => info.subject.to_string(),
+    };
 
     // SubjectPublicKeyInfo, re-encoded to DER (canonical for DER input).
     let public_key = info
@@ -581,11 +594,11 @@ fn parse_csr_der_fallback(der: &[u8]) -> Result<ParsedCsr> {
             .to_der()
             .map_err(|e| Error::Parse(format!("re-encode attribute values: {}", e)))?;
         if oid == "1.2.840.113549.1.9.14" {
-            // Best-effort: a malformed extensionRequest must not sink an
-            // otherwise-valid request. SANs are re-validated during issuance.
-            if let Ok(extracted) = extract_sans_from_extension_request(&value) {
-                sans.extend(extracted);
-            }
+            // Use the same routine — and the same strictness — as the primary
+            // path so both yield identical `subject_alternative_names`, and a
+            // malformed extensionRequest is surfaced rather than silently issuing
+            // a certificate that is missing its requested SANs.
+            sans.extend(extract_sans_from_extension_request(&value)?);
         }
         attributes.push((oid, value));
     }
@@ -645,13 +658,17 @@ fn der_tlv(buf: &[u8], off: usize, expected_tag: u8) -> Result<(usize, usize)> {
         if n == 0 || n > 4 {
             return Err(Error::Parse("unsupported DER length encoding".to_string()));
         }
-        let mut length = 0usize;
+        // Accumulate in u64 so a 4-octet length never overflows the shift on
+        // 32-bit targets, then narrow to usize (rejecting > usize::MAX).
+        let mut length: u64 = 0;
         for i in 0..n {
             let b = *rest
                 .get(2 + i)
                 .ok_or_else(|| Error::Parse("CSR truncated (length octets)".to_string()))?;
-            length = (length << 8) | b as usize;
+            length = (length << 8) | b as u64;
         }
+        let length = usize::try_from(length)
+            .map_err(|_| Error::Parse("DER length exceeds usize".to_string()))?;
         (2 + n, length)
     };
     let value_offset = off
@@ -664,56 +681,6 @@ fn der_tlv(buf: &[u8], off: usize, expected_tag: u8) -> Result<(usize, usize)> {
         return Err(Error::Parse("DER length exceeds buffer".to_string()));
     }
     Ok((value_offset, end_offset))
-}
-
-/// Map a decoded x509-cert `Name` to the structured [`DistinguishedName`] used
-/// across the codebase. Mirrors [`parse_distinguished_name`] for the der-based
-/// fallback path so identity binding works for CSRs x509-parser cannot parse.
-///
-/// COMPLIANCE MAPPING:
-/// - RFC 5280 §4.1.2.4 / RFC 4514: Subject DN representation
-/// - NIST 800-53 SI-10: Input validation (DN attribute extraction)
-fn distinguished_name_from_x509cert(
-    name: &x509_cert::name::Name,
-) -> Result<ostrich_common::types::DistinguishedName> {
-    let mut common_name = None;
-    let mut country = None;
-    let mut state_or_province = None;
-    let mut locality = None;
-    let mut organization = None;
-    let mut organizational_unit = None;
-    let mut serial_number = None;
-
-    // Name = RDNSequence; each RDN is a SET OF AttributeTypeAndValue.
-    for rdn in name.0.iter() {
-        for atav in rdn.0.iter() {
-            let oid = atav.oid.to_string();
-            // Directory-string values (Printable/UTF8/IA5/...) carry UTF-8-
-            // compatible content bytes; decode leniently for the string forms
-            // used in practice.
-            let value = String::from_utf8_lossy(atav.value.value()).to_string();
-            match oid.as_str() {
-                "2.5.4.3" => common_name = Some(value),
-                "2.5.4.6" => country = Some(value),
-                "2.5.4.8" => state_or_province = Some(value),
-                "2.5.4.7" => locality = Some(value),
-                "2.5.4.10" => organization = Some(value),
-                "2.5.4.11" => organizational_unit = Some(value),
-                "2.5.4.5" => serial_number = Some(value),
-                _ => {}
-            }
-        }
-    }
-
-    Ok(ostrich_common::types::DistinguishedName {
-        common_name,
-        country,
-        state_or_province,
-        locality,
-        organization,
-        organizational_unit,
-        serial_number,
-    })
 }
 
 /// Parse X.509 Distinguished Name to structured format
@@ -751,14 +718,26 @@ pub fn parse_csr_subject_dn(der: &[u8]) -> Result<ostrich_common::types::Disting
     match x509_parser::certification_request::X509CertificationRequest::from_der(der) {
         Ok((_, csr)) => parse_distinguished_name(&csr.certification_request_info.subject),
         Err(primary_err) => {
-            use der::Decode;
+            use der::{Decode, Encode};
             let req = x509_cert::request::CertReq::from_der(der).map_err(|fallback_err| {
                 Error::Parse(format!(
                     "Failed to parse PKCS#10 CSR: {} (der fallback also failed: {})",
                     primary_err, fallback_err
                 ))
             })?;
-            distinguished_name_from_x509cert(&req.info.subject)
+            // Re-parse only the subject Name with x509-parser (it rejects the
+            // request *attributes*, not the Name) so the structured DN and its
+            // per-attribute string decoding are identical to the primary path -
+            // in particular non-UTF-8 directory strings (BMP/Universal/Teletex)
+            // decode correctly instead of via lossy UTF-8.
+            let subject_der = req
+                .info
+                .subject
+                .to_der()
+                .map_err(|e| Error::Parse(format!("re-encode subject Name: {}", e)))?;
+            let (_, name) = x509_parser::x509::X509Name::from_der(&subject_der)
+                .map_err(|e| Error::Parse(format!("Failed to parse CSR subject Name: {}", e)))?;
+            parse_distinguished_name(&name)
         }
     }
 }

@@ -313,6 +313,22 @@ fn assert_csr_fallback_ok(hex_der: &str) {
         ostrich_x509::parser::parse_csr_subject_dn(&csr_der).expect("subject DN must be parseable");
     assert_eq!(dn.common_name, Some("device01.npe.example.mil".to_string()));
     assert_eq!(dn.organization, Some("Example".to_string()));
+
+    // Regression (code-review): the fallback's `subject_dn` must be rendered by
+    // x509-parser (as `parse_certificate` does), NOT x509-cert's reversed,
+    // space-less RFC 4514 form. EST re-enrollment (RFC 7030 §4.2.2) compares the
+    // CSR's full subject-DN string against the prior cert's; a rendering mismatch
+    // would spuriously deny renewal for this multi-RDN (CN + O) subject.
+    assert!(
+        parsed.subject_dn.starts_with("CN=device01.npe.example.mil"),
+        "subject_dn must use x509-parser rendering (CN first, ', ' separators); got {:?}",
+        parsed.subject_dn
+    );
+    assert!(
+        parsed.subject_dn.contains("O=Example"),
+        "subject_dn missing O RDN; got {:?}",
+        parsed.subject_dn
+    );
 }
 
 /// IA5String challengePassword: parse + SAN + structured DN must all succeed.
