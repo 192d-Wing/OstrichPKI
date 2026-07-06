@@ -342,7 +342,7 @@ ENTRYPOINT ["ostrich-cli"]
 # ==============================================================================
 # The NPE portal binary serves a static SPA from ./dist; build it here so the
 # runtime image carries only the compiled assets (no node toolchain).
-FROM node:22-bookworm-slim AS npe-portal-web-builder
+FROM node:26-bookworm-slim AS npe-portal-web-builder
 WORKDIR /web
 
 # Install dependencies first so this layer is cached until package.json changes.
