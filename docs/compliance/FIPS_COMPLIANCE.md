@@ -194,14 +194,22 @@ signing/verification/key-generation run inside the AWS-LC FIPS 140-3 module via
      mismatch rejection, nonce uniqueness, KEK length validation
    - [crates/ostrich-crypto/src/provider.rs:83-91](../../crates/ostrich-crypto/src/provider.rs#L83-L91) - HSM `wrap_key()` interface (AES-KW per SP 800-38F) remains for PKCS#11-resident keys
 
-3. **TLS 1.3 Service Endpoints** ✅ **Implemented**
-   - [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - rustls with explicit ring provider, TLS 1.3 only
-   - AES-GCM AEAD suites via the ring CryptoProvider
+3. **TLS 1.3 Service Endpoints** ✅ **Implemented (FIPS provider, fail-closed)**
+   - [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - rustls with the explicit `aws_lc_rs` provider, TLS 1.3 only
+   - The serving TLS stack runs inside AWS-LC's FIPS 140-3 module (rustls `fips`
+     feature), so the handshake AEAD, key-exchange, and the client/server
+     CertificateVerify signature checks all execute in the validated module —
+     not `ring` (which is not FIPS-validated). Restricted to FIPS-approved suites.
+   - `TlsSettings::load` asserts `ServerConfig::fips()` and **fails closed** if it
+     is not FIPS-compliant, so a build/feature regression cannot silently serve a
+     non-FIPS transport (SC-13). Shared by every service binary.
+   - Regression guard: `tls::tests::aws_lc_rs_provider_is_in_fips_mode` fails if
+     the `fips` feature is ever dropped.
 
 **Implementation:**
 
 - ✅ KRA escrow key wrapping: AES-256-GCM (the prior placeholder XOR stub is removed)
-- ✅ TLS uses AES-GCM (via rustls/ring)
+- ✅ TLS uses AES-GCM inside the AWS-LC FIPS module (via rustls/aws-lc-rs `fips`); `ServerConfig::fips()` asserted at startup
 
 **Compliance Notes:**
 
