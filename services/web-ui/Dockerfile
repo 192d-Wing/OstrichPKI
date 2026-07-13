@@ -30,7 +30,7 @@ RUN corepack enable \
 # cargo-chef caches dependency compilation (the expensive aws-lc-fips C/asm
 # build) separately from the workspace source, so a routine source edit no
 # longer rebuilds the whole crypto stack. Mirrors the root Dockerfile.
-FROM rust:1.96-bookworm AS server-chef
+FROM rust:1.97-bookworm AS server-chef
 
 # Install build dependencies. The server binary's dependency graph pulls in the
 # FIPS crypto module (aws-lc-fips-sys, via rustls / ostrich-crypto), which builds
