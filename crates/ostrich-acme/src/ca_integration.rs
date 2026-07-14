@@ -74,16 +74,20 @@ impl AcmeCaClient {
         // (rest.rs:806-814) before this function is called. This ensures
         // proof-of-possession before forwarding to the CA service.
 
-        // Extract subject from CSR
-        let subject = csr.info.subject;
-        let proto_subject = Self::convert_subject_to_proto(&subject)?;
-
         // Parse CSR to extract SANs (using the full parser with extension support)
         let parsed_csr = ostrich_x509::parser::parse_csr(csr_der)
             .map_err(|e| Error::BadCsr(format!("Failed to parse CSR for SANs: {}", e)))?;
 
         // Convert SANs to proto format
         let subject_alt_names = Self::convert_sans_to_proto(&parsed_csr.subject_alternative_names)?;
+
+        // Extract subject from CSR. ACME CSRs commonly carry an empty subject and
+        // convey identifiers only through the SAN (RFC 8555 §7.4). When the subject
+        // DN is empty, derive the subject CN from a DNS SAN so the issued
+        // certificate still carries a non-empty subject for clients that read the
+        // CN. The SAN remains non-critical (RFC 5280 §4.2.1.6).
+        let proto_subject =
+            Self::resolve_proto_subject(&csr.info.subject, &parsed_csr.subject_alternative_names)?;
 
         // Extract public key
         let public_key_der = csr
@@ -181,6 +185,44 @@ impl AcmeCaClient {
         })
     }
 
+    /// Build the proto subject for issuance.
+    ///
+    /// When the CSR subject DN is empty (the common ACME case, RFC 8555 §7.4),
+    /// derive the subject CN from a DNS SAN (RFC 5280 §4.1.2.6 - subject conveyed
+    /// via subjectAltName). If no DNS SAN is usable as a CN, the (empty) subject
+    /// is forwarded as-is and the CA enforces whether an empty subject is
+    /// permitted. A non-empty subject is converted unchanged.
+    fn resolve_proto_subject(
+        subject: &x509_cert::name::Name,
+        sans: &[String],
+    ) -> Result<ProtoDistinguishedName> {
+        if subject.0.is_empty()
+            && let Some(cn) = Self::derived_cn_from_sans(sans)
+        {
+            return Ok(ProtoDistinguishedName {
+                common_name: Some(cn),
+                ..Default::default()
+            });
+        }
+        Self::convert_subject_to_proto(subject)
+    }
+
+    /// First DNS SAN usable as an X.509 common name, if any.
+    ///
+    /// A CN attribute is `SIZE(1..ub-common-name)` with `ub-common-name = 64`
+    /// (RFC 5280 Appendix A / X.520), so only a DNS SAN whose length is in
+    /// `1..=64` is a valid CN. SANs outside that range are skipped rather than
+    /// emitted as a non-conformant (over-long or empty) CN; if none qualifies the
+    /// subject is left empty. DNS names are ASCII (A-labels for IDNs), so byte
+    /// length equals character count here.
+    fn derived_cn_from_sans(sans: &[String]) -> Option<String> {
+        const UB_COMMON_NAME: usize = 64;
+        sans.iter()
+            .filter_map(|san| san.strip_prefix("DNS:"))
+            .find(|dns| (1..=UB_COMMON_NAME).contains(&dns.len()))
+            .map(str::to_string)
+    }
+
     /// Convert parsed SANs to proto SubjectAltName format
     ///
     /// RFC 5280 §4.2.1.6 - SubjectAltName extension
@@ -269,5 +311,77 @@ mod tests {
         let sans = vec!["unknown:value".to_string()];
         let result = AcmeCaClient::convert_sans_to_proto(&sans).unwrap();
         assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_derived_cn_prefers_first_usable_dns() {
+        // First DNS SAN is returned even when a non-DNS SAN precedes it.
+        let sans = vec![
+            "IP:192.0.2.1".to_string(),
+            "DNS:example.com".to_string(),
+            "DNS:www.example.com".to_string(),
+        ];
+        assert_eq!(
+            AcmeCaClient::derived_cn_from_sans(&sans),
+            Some("example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_derived_cn_none_without_dns() {
+        // No DNS SAN → no derived subject CN.
+        let sans = vec!["IP:192.0.2.1".to_string(), "email:a@b.com".to_string()];
+        assert_eq!(AcmeCaClient::derived_cn_from_sans(&sans), None);
+        assert_eq!(AcmeCaClient::derived_cn_from_sans(&[]), None);
+    }
+
+    #[test]
+    fn test_derived_cn_skips_over_long_dns() {
+        // A DNS SAN longer than ub-common-name (64) is not a valid CN and must be
+        // skipped in favour of the next usable DNS SAN.
+        let long = format!("DNS:{}.example.com", "a".repeat(64)); // 64 + 12 > 64
+        let sans = vec![long, "DNS:short.example.com".to_string()];
+        assert_eq!(
+            AcmeCaClient::derived_cn_from_sans(&sans),
+            Some("short.example.com".to_string())
+        );
+
+        // ...and if every DNS SAN is over-long, no CN is derived.
+        let only_long = vec![format!("DNS:{}.example.com", "a".repeat(64))];
+        assert_eq!(AcmeCaClient::derived_cn_from_sans(&only_long), None);
+    }
+
+    #[test]
+    fn test_derived_cn_skips_empty_dns() {
+        // An empty dNSName ("DNS:") would produce a zero-length CN (invalid,
+        // CN is SIZE(1..64)); it must be skipped.
+        let sans = vec!["DNS:".to_string(), "DNS:host.example.com".to_string()];
+        assert_eq!(
+            AcmeCaClient::derived_cn_from_sans(&sans),
+            Some("host.example.com".to_string())
+        );
+        assert_eq!(
+            AcmeCaClient::derived_cn_from_sans(&["DNS:".to_string()]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_resolve_proto_subject_empty_derives_cn() {
+        // Empty subject + usable DNS SAN → CN derived from the DNS SAN.
+        let empty = x509_cert::name::Name::default();
+        let sans = vec!["DNS:host.example.com".to_string()];
+        let proto = AcmeCaClient::resolve_proto_subject(&empty, &sans).unwrap();
+        assert_eq!(proto.common_name, Some("host.example.com".to_string()));
+        assert_eq!(proto.organization, None);
+    }
+
+    #[test]
+    fn test_resolve_proto_subject_empty_no_dns_stays_empty() {
+        // Empty subject + no usable DNS SAN → subject forwarded empty (no CN).
+        let empty = x509_cert::name::Name::default();
+        let sans = vec!["IP:192.0.2.1".to_string()];
+        let proto = AcmeCaClient::resolve_proto_subject(&empty, &sans).unwrap();
+        assert_eq!(proto.common_name, None);
     }
 }

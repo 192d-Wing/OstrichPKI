@@ -745,6 +745,16 @@ of identifiers authorized in the order.
   unused), so a client that validated one identifier could submit a CSR for
   arbitrary OTHER identifiers and obtain a certificate — a domain-control /
   authorization bypass. Unit-tested (`test_validate_csr_identifiers`).
+- ✅ **Empty-subject handling (RFC 5280 §4.1.2.6):** ACME CSRs typically carry an
+  empty subject and convey identifiers only via the SAN. When the CSR subject DN
+  is empty, `finalize_order` (`crates/ostrich-acme/src/ca_integration.rs`,
+  `resolve_proto_subject`) derives the subject CN from the first DNS SAN whose
+  length is a valid common name (`1..=64`, X.520 `ub-common-name`, RFC 5280
+  Appendix A); over-long or empty DNS SANs are skipped so no non-conformant CN is
+  emitted, and if none qualifies the subject is left empty. The SAN extension
+  remains non-critical (§4.2.1.6). Unit-tested (`test_derived_cn_prefers_first_usable_dns`,
+  `test_derived_cn_skips_over_long_dns`, `test_derived_cn_skips_empty_dns`,
+  `test_resolve_proto_subject_empty_derives_cn`).
 
 ---
 
