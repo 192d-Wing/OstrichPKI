@@ -17,7 +17,7 @@
 # dependency set (recipe.json), so it stays cached across builds until a
 # dependency actually changes — a routine source edit no longer rebuilds the
 # whole crypto stack from scratch.
-FROM rust:1.96-bookworm AS chef
+FROM rust:1.97-bookworm AS chef
 
 # Install build dependencies for the FIPS crypto module (aws-lc-fips-sys):
 #   - clang + libclang-dev: bindgen
