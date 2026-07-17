@@ -3865,7 +3865,7 @@ dependencies = [
  "der",
  "digest 0.10.7",
  "hex",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "ostrich-common",
  "ostrich-crypto",
  "pem-rfc7468 1.0.0",
