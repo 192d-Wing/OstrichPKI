@@ -917,14 +917,20 @@ of identifiers authorized in the order.
 - ✅ TLS client with ALPN `acme-tls/1`; verifies the server negotiated
   `acme-tls/1` and that the peer cert carries the `id-pe-acmeIdentifier`
   extension (OID 1.3.6.1.5.5.7.1.31) matching the expected hash.
-- ✅ **Self-signed challenge cert accepted (RFC 8737 §3):** the validator uses a
-  custom rustls `ServerCertVerifier` (`AcmeTlsAlpnCertVerifier`) that accepts the
-  peer certificate regardless of issuer/name (control is proven by the
-  acmeIdentifier extension, not PKI) while still verifying the handshake
-  signature. **Fixed:** the TLS client previously verified the peer cert against
-  public `webpki-roots`, so every self-signed challenge cert failed the handshake
-  with `UnknownIssuer` and TLS-ALPN-01 could never succeed. Tested
-  (`tls_alpn_verifier_accepts_self_signed_challenge_cert`).
+- ✅ **Self-signed, critical-extension challenge cert accepted (RFC 8737 §3):**
+  the validator uses a custom rustls `ServerCertVerifier` (`AcmeTlsAlpnCertVerifier`)
+  that accepts the peer certificate and its CertificateVerify signature without
+  any PKI/webpki parsing. Per §3 the acmeIdentifier extension MUST be critical,
+  and rustls verifies both the chain and the CertificateVerify signature through
+  `webpki`, which rejects a self-signed chain (`UnknownIssuer`) and unknown
+  critical extensions (`UnsupportedCriticalExtension`). Control is proven by the
+  connection reaching the identifier's `:443` and by the acmeIdentifier extension
+  check after the handshake — not by the TLS certificate — so both webpki gates
+  are bypassed (mirroring Boulder/Pebble). **Fixed:** TLS-ALPN-01 previously
+  verified the peer cert against public `webpki-roots` and could never complete a
+  handshake with a spec-compliant challenge cert. Tested
+  (`tls_alpn_verifier_accepts_self_signed_challenge_cert`) and end-to-end via the
+  in-cluster ACME smoke test.
 - ✅ SSRF policy honors `allow_private_ip_domains` uniformly with HTTP-01 (see SI-10 above).
 
 ---
