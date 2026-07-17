@@ -38,7 +38,6 @@ der = { workspace = true }
 spki = { workspace = true }
 x509-cert = { workspace = true }
 x509-parser = { workspace = true }
-webpki-roots = { workspace = true }
 
 # HTTP client (for challenge validation)
 reqwest = { workspace = true }

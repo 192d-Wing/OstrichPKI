@@ -3185,7 +3185,6 @@ dependencies = [
  "tonic",
  "tracing",
  "uuid",
- "webpki-roots 1.0.5",
  "x509-cert",
  "x509-parser",
 ]

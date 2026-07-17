@@ -523,15 +523,25 @@ impl TlsAlpn01Validator {
         let key_authorization = format!("{}.{}", token, account_key_thumbprint);
         let expected_hash = Sha256::digest(key_authorization.as_bytes());
 
-        // Create TLS client configuration with ALPN "acme-tls/1"
-        // RFC 8737 §3: Client must send "acme-tls/1" in ALPN extension
-        let mut root_store = rustls::RootCertStore::empty();
-
-        // Add system root certificates
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-        let mut config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
+        // Create TLS client configuration with ALPN "acme-tls/1".
+        //
+        // RFC 8737 §3: the TLS-ALPN-01 challenge certificate is a SELF-SIGNED
+        // certificate the ACME client generates on the fly; it does NOT chain to
+        // any CA. Domain control is proven by the `id-pe-acmeIdentifier` extension
+        // checked after the handshake — NOT by PKI path validation. So the peer
+        // certificate MUST be accepted regardless of issuer/name; verifying it
+        // against public roots (as this previously did) makes every TLS-ALPN-01
+        // handshake fail with UnknownIssuer, so the challenge could never succeed.
+        // The handshake signature is still verified (proves key possession).
+        // NIST 800-53: SI-10 (validation is the extension check below), SC-13.
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut config = rustls::ClientConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .map_err(|e| {
+                Error::ChallengeValidation(format!("TLS provider configuration failed: {e}"))
+            })?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcmeTlsAlpnCertVerifier::new(provider)))
             .with_no_client_auth();
 
         // Set ALPN protocols: "acme-tls/1" ONLY
@@ -671,6 +681,74 @@ fn is_disallowed_ip(ip: std::net::IpAddr) -> bool {
 /// the check but an internal one for the actual connection.
 ///
 /// COMPLIANCE: NIST 800-53 SI-10; RFC 8555 §10.1 (SSRF in validation).
+/// rustls server-certificate verifier for TLS-ALPN-01 validation (RFC 8737).
+///
+/// The challenge certificate is self-signed and conveys no trust — control is
+/// proven by the `id-pe-acmeIdentifier` extension inspected after the handshake.
+/// This verifier therefore accepts ANY presented certificate (no chain/name/OCSP
+/// checks) but still verifies the handshake signature, so the peer must prove
+/// possession of the certificate's private key. It is used ONLY by
+/// [`TlsAlpn01Validator`]; it is not a general-purpose TLS client verifier.
+#[derive(Debug)]
+struct AcmeTlsAlpnCertVerifier {
+    provider: std::sync::Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl AcmeTlsAlpnCertVerifier {
+    fn new(provider: std::sync::Arc<rustls::crypto::CryptoProvider>) -> Self {
+        Self { provider }
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for AcmeTlsAlpnCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        // RFC 8737: accept the self-signed challenge certificate; the
+        // acmeIdentifier extension check is the actual proof of control.
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
 /// Resolve `host:port` for a pinned connection, applying the SI-10 SSRF guard
 /// unless `allow_private` is set. With `allow_private` (the deploy-time
 /// `allow_private_ip_domains` override) the first resolved address is returned
@@ -769,6 +847,26 @@ mod tests {
                 .insecure_allow_private_domains()
                 .allow_private_domains
         );
+    }
+
+    #[test]
+    fn tls_alpn_verifier_accepts_self_signed_challenge_cert() {
+        use rustls::client::danger::ServerCertVerifier;
+        // RFC 8737: the challenge cert is self-signed and must be accepted (control
+        // is proven by the acmeIdentifier extension, not PKI). Verifying against
+        // public roots — as the code did before — failed every handshake, so
+        // TLS-ALPN-01 could never succeed.
+        let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let v = AcmeTlsAlpnCertVerifier::new(provider);
+        let cert = rustls::pki_types::CertificateDer::from(vec![0x30, 0x00]); // not CA-issued
+        let name = rustls::pki_types::ServerName::try_from("acme-smoke.internal").unwrap();
+        assert!(
+            v.verify_server_cert(&cert, &[], &name, &[], rustls::pki_types::UnixTime::now())
+                .is_ok(),
+            "self-signed TLS-ALPN-01 challenge cert must be accepted"
+        );
+        // The handshake signature is still checked, so schemes must be advertised.
+        assert!(!v.supported_verify_schemes().is_empty());
     }
 
     #[tokio::test]

@@ -832,7 +832,7 @@ of identifiers authorized in the order.
 
 - ✅ §8.3 - HTTP-01 Challenge (validator implemented)
 - ✅ §8.4 - DNS-01 Challenge (infrastructure ready, DNS resolver TODO)
-- ⚠️ §8.5 - TLS-ALPN-01 Challenge (infrastructure ready, TLS client TODO)
+- ✅ §8.5 - TLS-ALPN-01 Challenge (RFC 8737; self-signed challenge cert accepted, acmeIdentifier extension verified)
 
 **Implementation:**
 
@@ -903,25 +903,29 @@ of identifiers authorized in the order.
 
 ### RFC 8737: ACME TLS-ALPN-01 Challenge
 
-**Status:** 🟡 **Partial**
+**Status:** 🟢 **Implemented**
 
 **Requirement:** TLS-ALPN-01 challenge validation
 
 **Implementation:**
 
-- [crates/ostrich-acme/src/validation.rs](../../crates/ostrich-acme/src/validation.rs) - TlsAlpn01Validator structure
+- [crates/ostrich-acme/src/validation.rs](../../crates/ostrich-acme/src/validation.rs) - `TlsAlpn01Validator`
 
 **Evidence:**
 
 - ✅ acmeIdentifier hash computation (SHA-256 of `<token>.<thumbprint>`)
-- ⚠️ TLS client implementation pending
-
-**Gaps:**
-
-- TLS client with ALPN "acme-tls/1" not implemented
-- Certificate extraction from TLS handshake pending
-
-**Remediation:** Phase 16 - Implement TLS client for TLS-ALPN-01
+- ✅ TLS client with ALPN `acme-tls/1`; verifies the server negotiated
+  `acme-tls/1` and that the peer cert carries the `id-pe-acmeIdentifier`
+  extension (OID 1.3.6.1.5.5.7.1.31) matching the expected hash.
+- ✅ **Self-signed challenge cert accepted (RFC 8737 §3):** the validator uses a
+  custom rustls `ServerCertVerifier` (`AcmeTlsAlpnCertVerifier`) that accepts the
+  peer certificate regardless of issuer/name (control is proven by the
+  acmeIdentifier extension, not PKI) while still verifying the handshake
+  signature. **Fixed:** the TLS client previously verified the peer cert against
+  public `webpki-roots`, so every self-signed challenge cert failed the handshake
+  with `UnknownIssuer` and TLS-ALPN-01 could never succeed. Tested
+  (`tls_alpn_verifier_accepts_self_signed_challenge_cert`).
+- ✅ SSRF policy honors `allow_private_ip_domains` uniformly with HTTP-01 (see SI-10 above).
 
 ---
 
