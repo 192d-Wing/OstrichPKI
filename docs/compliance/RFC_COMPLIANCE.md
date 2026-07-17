@@ -773,6 +773,14 @@ of identifiers authorized in the order.
   `acme_accounts_jwk_thumbprint` unique constraint and got a `500 serverInternal`
   (duplicate-key). The lookup now runs first for all requests, and a concurrent
   insert race is recovered by re-fetching (`new_account` / `existing_account_response`).
+- ✅ **Problem-document sanitization (§6.7; NIST SI-11):** internal-class errors
+  (`Database`, `Common`, `ServerInternal`) now return a generic `"Internal server
+  error"` detail with the real cause logged server-side, instead of echoing raw
+  DB/SQLx text to the client. **Fixed:** the duplicate-key 500 above previously
+  leaked `duplicate key value violates unique constraint "acme_accounts_jwk_thumbprint_key"`
+  (schema/constraint names) in the problem `detail`. See `Error::client_detail`;
+  client-class errors keep their descriptive detail. Tested
+  (`internal_errors_do_not_leak_detail`, `client_errors_keep_descriptive_detail`).
 - ✅ §7.3.2 - Account update
 - ✅ §7.3.5 - Account key rollover (structure exists)
 
