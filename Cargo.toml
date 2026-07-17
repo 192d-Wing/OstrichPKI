@@ -218,7 +218,7 @@ rustls = { version = "0.23", features = ["aws_lc_rs", "fips"] }
 tokio-rustls = "0.26"
 rustls-pki-types = "1.13"
 # HTTPS serving for axum routers (used by ostrich-common::tls::serve)
-axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
