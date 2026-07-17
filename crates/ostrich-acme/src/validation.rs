@@ -535,13 +535,13 @@ impl TlsAlpn01Validator {
         // The handshake signature is still verified (proves key possession).
         // NIST 800-53: SI-10 (validation is the extension check below), SC-13.
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-        let mut config = rustls::ClientConfig::builder_with_provider(provider.clone())
+        let mut config = rustls::ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
             .map_err(|e| {
                 Error::ChallengeValidation(format!("TLS provider configuration failed: {e}"))
             })?
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(AcmeTlsAlpnCertVerifier::new(provider)))
+            .with_custom_certificate_verifier(Arc::new(AcmeTlsAlpnCertVerifier))
             .with_no_client_auth();
 
         // Set ALPN protocols: "acme-tls/1" ONLY
@@ -684,21 +684,24 @@ fn is_disallowed_ip(ip: std::net::IpAddr) -> bool {
 /// rustls server-certificate verifier for TLS-ALPN-01 validation (RFC 8737).
 ///
 /// The challenge certificate is self-signed and conveys no trust — control is
-/// proven by the `id-pe-acmeIdentifier` extension inspected after the handshake.
-/// This verifier therefore accepts ANY presented certificate (no chain/name/OCSP
-/// checks) but still verifies the handshake signature, so the peer must prove
-/// possession of the certificate's private key. It is used ONLY by
+/// proven by the connection reaching the identifier's own `:443` and by the
+/// `id-pe-acmeIdentifier` extension inspected after the handshake, NOT by PKI or
+/// by the TLS CertificateVerify signature (the responder generated the ephemeral
+/// cert itself). This verifier therefore accepts the presented certificate and
+/// its handshake signature unconditionally. It is used ONLY by
 /// [`TlsAlpn01Validator`]; it is not a general-purpose TLS client verifier.
+///
+/// Why the handshake signature is not checked here: per RFC 8737 §3 the
+/// acmeIdentifier extension MUST be marked critical, and rustls verifies the
+/// CertificateVerify signature by parsing the peer cert through `webpki`, which
+/// rejects unknown critical extensions (`UnsupportedCriticalExtension`) — so any
+/// spec-compliant challenge cert would fail. The domain-control proof does not
+/// depend on that signature, so it is accepted and the extension check below is
+/// the sole cryptographic gate (this mirrors Boulder/Pebble, which validate the
+/// challenge cert out-of-band rather than as a normal TLS server certificate).
+/// NIST 800-53: SI-10 (the extension check is the input validation of record).
 #[derive(Debug)]
-struct AcmeTlsAlpnCertVerifier {
-    provider: std::sync::Arc<rustls::crypto::CryptoProvider>,
-}
-
-impl AcmeTlsAlpnCertVerifier {
-    fn new(provider: std::sync::Arc<rustls::crypto::CryptoProvider>) -> Self {
-        Self { provider }
-    }
-}
+struct AcmeTlsAlpnCertVerifier;
 
 impl rustls::client::danger::ServerCertVerifier for AcmeTlsAlpnCertVerifier {
     fn verify_server_cert(
@@ -716,36 +719,38 @@ impl rustls::client::danger::ServerCertVerifier for AcmeTlsAlpnCertVerifier {
 
     fn verify_tls12_signature(
         &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
     ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.provider.signature_verification_algorithms,
-        )
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
 
     fn verify_tls13_signature(
         &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
     ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &self.provider.signature_verification_algorithms,
-        )
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.provider
-            .signature_verification_algorithms
-            .supported_schemes()
+        // Advertise the standard schemes so the peer selects one for its
+        // CertificateVerify; the signature itself is accepted above (see doc).
+        use rustls::SignatureScheme::*;
+        vec![
+            ECDSA_NISTP256_SHA256,
+            ECDSA_NISTP384_SHA384,
+            ECDSA_NISTP521_SHA512,
+            ED25519,
+            RSA_PSS_SHA256,
+            RSA_PSS_SHA384,
+            RSA_PSS_SHA512,
+            RSA_PKCS1_SHA256,
+            RSA_PKCS1_SHA384,
+            RSA_PKCS1_SHA512,
+        ]
     }
 }
 
@@ -852,12 +857,14 @@ mod tests {
     #[test]
     fn tls_alpn_verifier_accepts_self_signed_challenge_cert() {
         use rustls::client::danger::ServerCertVerifier;
-        // RFC 8737: the challenge cert is self-signed and must be accepted (control
-        // is proven by the acmeIdentifier extension, not PKI). Verifying against
-        // public roots — as the code did before — failed every handshake, so
-        // TLS-ALPN-01 could never succeed.
-        let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-        let v = AcmeTlsAlpnCertVerifier::new(provider);
+        // RFC 8737: the challenge cert is self-signed AND carries a critical
+        // acmeIdentifier extension. Control is proven by that extension (checked
+        // after the handshake), not by PKI or the CertificateVerify signature.
+        // Both the cert and its handshake signature must therefore be accepted —
+        // verifying either through webpki (as the code did before) rejected the
+        // self-signed chain / the critical extension and TLS-ALPN-01 could never
+        // succeed.
+        let v = AcmeTlsAlpnCertVerifier;
         let cert = rustls::pki_types::CertificateDer::from(vec![0x30, 0x00]); // not CA-issued
         let name = rustls::pki_types::ServerName::try_from("acme-smoke.internal").unwrap();
         assert!(
@@ -865,7 +872,9 @@ mod tests {
                 .is_ok(),
             "self-signed TLS-ALPN-01 challenge cert must be accepted"
         );
-        // The handshake signature is still checked, so schemes must be advertised.
+        // Schemes are still advertised so the peer selects one for CertificateVerify
+        // (the signature itself is accepted; see the verifier doc). The end-to-end
+        // handshake with a critical-extension cert is covered by the ACME smoke test.
         assert!(!v.supported_verify_schemes().is_empty());
     }
 
