@@ -525,6 +525,31 @@ async fn get_new_nonce(State(state): State<AcmeState>, method: Method) -> Respon
         .into_response()
 }
 
+/// Build the 200 (OK) response returned when new-account finds — or races into —
+/// an account that already exists for the request key (RFC 8555 §7.3: new-account
+/// is idempotent on the account key and returns the existing account, never a
+/// duplicate).
+async fn existing_account_response(
+    state: &AcmeState,
+    existing: ostrich_db::models::AcmeAccount,
+) -> Response {
+    let account_id = existing.account_id.clone();
+    let nonce = generate_nonce(state).await;
+    let account = map_db_account_to_service(existing, &state.base_url);
+    (
+        StatusCode::OK,
+        [
+            (
+                "Location",
+                format!("{}/acme/account/{}", state.base_url, account_id),
+            ),
+            ("Replay-Nonce", nonce),
+        ],
+        Json(account),
+    )
+        .into_response()
+}
+
 /// Create new account (RFC 8555 §7.3)
 ///
 /// # NIAP PP-CA v2.1 Compliance
@@ -551,31 +576,21 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
 
     let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
-    // RFC 8555 §7.3.1: a key-lookup (onlyReturnExisting) returns the existing
-    // account or `accountDoesNotExist`. It is NOT account creation, so it does
-    // not require terms agreement — handle it before the terms-of-service gate.
+    // RFC 8555 §7.3: new-account is idempotent on the account key. If an account
+    // already exists for this JWK, the server MUST return 200 (OK) with the
+    // existing account and MUST NOT create a duplicate — for BOTH a plain
+    // new-account request and an `onlyReturnExisting` key-lookup (§7.3.1). Look
+    // up first so a returning client is answered from the existing row instead
+    // of hitting the `acme_accounts_jwk_thumbprint` unique constraint (which
+    // previously surfaced as a 500 serverInternal).
+    if let Some(existing) = repo.find_account_by_jwk(&jwk_thumbprint).await? {
+        return Ok(existing_account_response(&state, existing).await);
+    }
+
+    // No existing account. A key-lookup (`onlyReturnExisting`) must NOT create
+    // one — it returns `accountDoesNotExist` (RFC 8555 §7.3.1).
     if let Some(true) = request.only_return_existing {
-        if let Some(existing) = repo.find_account_by_jwk(&jwk_thumbprint).await? {
-            let account_id = existing.account_id.clone();
-            let nonce = generate_nonce(&state).await;
-
-            let account = map_db_account_to_service(existing, &state.base_url);
-
-            return Ok((
-                StatusCode::OK,
-                [
-                    (
-                        "Location",
-                        format!("{}/acme/account/{}", state.base_url, account_id),
-                    ),
-                    ("Replay-Nonce", nonce),
-                ],
-                Json(account),
-            )
-                .into_response());
-        } else {
-            return Err(Error::AccountDoesNotExist);
-        }
+        return Err(Error::AccountDoesNotExist);
     }
 
     // RFC 8555 §7.3: creating a new account requires agreement to the terms.
@@ -587,7 +602,7 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
 
     // Create new account
     let account_id = format!("acct-{}", Uuid::new_v4());
-    let db_account = repo
+    let db_account = match repo
         .create_account(
             &account_id,
             &jwk_thumbprint,
@@ -596,7 +611,20 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
             "valid",
             true,
         )
-        .await?;
+        .await
+    {
+        Ok(account) => account,
+        Err(e) => {
+            // Race: a concurrent new-account for the same key won the insert
+            // between our lookup above and this one. Preserve RFC 8555 §7.3
+            // idempotency by returning the now-existing account instead of
+            // surfacing the `acme_accounts_jwk_thumbprint` unique-constraint 500.
+            if let Some(existing) = repo.find_account_by_jwk(&jwk_thumbprint).await? {
+                return Ok(existing_account_response(&state, existing).await);
+            }
+            return Err(e.into());
+        }
+    };
 
     // Audit log
     // TODO: Add audit logging (Phase 11)
@@ -1011,9 +1039,11 @@ async fn validate_challenge_inner(
                 .await?
         }
         "tls-alpn-01" => {
-            crate::validation::TlsAlpn01Validator::new()
-                .validate(domain, token, thumbprint)
-                .await?
+            let mut validator = crate::validation::TlsAlpn01Validator::new();
+            if state.allow_private_ip_domains {
+                validator = validator.insecure_allow_private_domains();
+            }
+            validator.validate(domain, token, thumbprint).await?
         }
         other => {
             return Err(Error::Malformed(format!(

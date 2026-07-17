@@ -765,6 +765,14 @@ of identifiers authorized in the order.
 **Endpoints:**
 
 - ✅ §7.3.1 - newAccount (account creation)
+- ✅ §7.3.1 - newAccount **idempotency**: a request whose key already has an
+  account returns `200 (OK)` with the existing account (never a duplicate), for
+  both a plain newAccount and an `onlyReturnExisting` key-lookup. **Fixed:** the
+  handler previously only looked up an existing account when `onlyReturnExisting`
+  was set, so a returning client's plain newAccount hit the
+  `acme_accounts_jwk_thumbprint` unique constraint and got a `500 serverInternal`
+  (duplicate-key). The lookup now runs first for all requests, and a concurrent
+  insert race is recovered by re-fetching (`new_account` / `existing_account_response`).
 - ✅ §7.3.2 - Account update
 - ✅ §7.3.5 - Account key rollover (structure exists)
 
@@ -834,6 +842,12 @@ of identifiers authorized in the order.
   MANUALLY so each redirect hop is re-resolved and re-validated. **Fixed:** the
   previous check only string-matched literal private-IP hostnames, so a public
   name resolving to an internal address bypassed it.
+- ✅ **Uniform allow-private policy:** the deploy-time `allow_private_ip_domains`
+  override (dev/E2E or deliberately-internal deployments) is now honored by
+  **both** HTTP-01 and TLS-ALPN-01 via a shared `resolve_pinned` helper.
+  **Fixed:** TLS-ALPN-01 previously always called the strict resolver and
+  ignored the flag, so an internal identifier that validated over HTTP-01 was
+  refused over TLS-ALPN-01 ("resolves to non-public address … SSRF prevention").
 - ✅ DNS-01: Compute `_acme-challenge.<domain>` TXT record value
 - ⚠️ DNS-01: DNS resolver implementation pending
 

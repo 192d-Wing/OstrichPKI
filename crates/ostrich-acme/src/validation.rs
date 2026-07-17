@@ -448,12 +448,30 @@ impl Default for Dns01Validator {
 pub struct TlsAlpn01Validator {
     /// TLS connection timeout in seconds
     timeout_secs: u64,
+    /// When set, permit the identifier to resolve to a private/loopback address.
+    ///
+    /// SECURITY: disables the SI-10 SSRF guard for TLS-ALPN-01, mirroring
+    /// [`Http01Validator`]. Dev/E2E and deliberately-internal deployments only —
+    /// see [`Self::insecure_allow_private_domains`].
+    allow_private_domains: bool,
 }
 
 impl TlsAlpn01Validator {
     /// Create new TLS-ALPN-01 validator
     pub fn new() -> Self {
-        Self { timeout_secs: 10 }
+        Self {
+            timeout_secs: 10,
+            allow_private_domains: false,
+        }
+    }
+
+    /// Disable the private-IP SSRF guard (SI-10). Dev/E2E or deliberately-internal
+    /// deployments only; the name is a deploy-time review flag. Mirrors
+    /// [`Http01Validator::insecure_allow_private_domains`] so the ACME server's
+    /// `allow_private_ip_domains` setting applies uniformly across challenge types.
+    pub fn insecure_allow_private_domains(mut self) -> Self {
+        self.allow_private_domains = true;
+        self
     }
 
     /// Validate TLS-ALPN-01 challenge
@@ -488,8 +506,10 @@ impl TlsAlpn01Validator {
         // SI-10: SSRF prevention. Resolve the domain, require every resolved
         // address to be globally routable, and connect to that VALIDATED address
         // (not a re-resolution) — closing DNS-rebinding. The TLS ServerName below
-        // stays the domain so certificate validation is unaffected.
-        let addr = resolve_public(domain, 443).await?;
+        // stays the domain so certificate validation is unaffected. When the
+        // server is configured to allow private-IP identifiers, the guard is
+        // bypassed uniformly (same as Http01Validator).
+        let addr = resolve_pinned(domain, 443, self.allow_private_domains).await?;
         let tcp_stream = timeout(
             std::time::Duration::from_secs(self.timeout_secs),
             TcpStream::connect(addr),
@@ -651,6 +671,26 @@ fn is_disallowed_ip(ip: std::net::IpAddr) -> bool {
 /// the check but an internal one for the actual connection.
 ///
 /// COMPLIANCE: NIST 800-53 SI-10; RFC 8555 §10.1 (SSRF in validation).
+/// Resolve `host:port` for a pinned connection, applying the SI-10 SSRF guard
+/// unless `allow_private` is set. With `allow_private` (the deploy-time
+/// `allow_private_ip_domains` override) the first resolved address is returned
+/// without the globally-routable requirement — for deliberately-internal
+/// deployments only. Without it, this delegates to [`resolve_public`].
+async fn resolve_pinned(
+    host: &str,
+    port: u16,
+    allow_private: bool,
+) -> Result<std::net::SocketAddr> {
+    if !allow_private {
+        return resolve_public(host, port).await;
+    }
+    tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| Error::ChallengeValidation(format!("DNS resolution failed for {host}: {e}")))?
+        .next()
+        .ok_or_else(|| Error::ChallengeValidation(format!("{host} did not resolve to any address")))
+}
+
 async fn resolve_public(host: &str, port: u16) -> Result<std::net::SocketAddr> {
     let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
         .await
@@ -721,5 +761,32 @@ mod tests {
     fn test_tls_alpn_validator_creation() {
         let validator = TlsAlpn01Validator::new();
         assert_eq!(validator.timeout_secs, 10);
+        // SSRF guard on by default; the allow-private override is opt-in and
+        // mirrors Http01Validator (uniform policy across challenge types).
+        assert!(!validator.allow_private_domains);
+        assert!(
+            TlsAlpn01Validator::new()
+                .insecure_allow_private_domains()
+                .allow_private_domains
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_pinned_enforces_ssrf_guard_unless_allowed() {
+        // Strict (default): a name resolving to a private address is refused.
+        let strict = resolve_pinned("localhost", 443, false).await;
+        assert!(
+            matches!(strict, Err(Error::Malformed(_))),
+            "private address must be refused when allow_private=false, got {strict:?}"
+        );
+
+        // Allow-private override: the same name resolves and is returned. This is
+        // the deploy-time `allow_private_ip_domains` path that TLS-ALPN-01 now
+        // honors (previously it always refused, breaking internal identifiers).
+        let permit = resolve_pinned("localhost", 443, true).await;
+        assert!(
+            matches!(permit, Ok(addr) if addr.ip().is_loopback()),
+            "loopback must resolve when allow_private=true, got {permit:?}"
+        );
     }
 }
