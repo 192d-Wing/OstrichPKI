@@ -2,7 +2,7 @@
 #
 # Builds the multi-service Dockerfile and publishes each service image to the
 # GitHub Container Registry (GHCR):
-#   ghcr.io/<owner>/{ca-service,acme-service,est-service,ocsp-service,
+#   ghcr.io/<owner>/{ca-service,ca-init-service,acme-service,est-service,ocsp-service,
 #                    scms-service,kra-service,cli,npe-portal}
 # The web UI has its own multi-stage Dockerfile (Trunk WASM client + Axum
 # server) and is published alongside them as:
@@ -98,7 +98,7 @@ jobs:
 
           mkdir -p /tmp/digests
           i=0
-          for svc in ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal; do
+          for svc in ca-service ca-init-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal; do
             cache_args=( --cache-from "type=registry,ref=${cache_ref}" )
             if [ "${i}" -eq 0 ]; then
               cache_args+=( --cache-to "type=registry,ref=${cache_ref},mode=max" )
@@ -192,7 +192,7 @@ jobs:
             extra_tags+=( "${GITHUB_REF_NAME#v}" )
           fi
 
-          for svc in ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal web-ui; do
+          for svc in ca-service ca-init-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal web-ui; do
             img="ghcr.io/${owner}/${svc}"
             amd64_digest="$(cat "/tmp/digests/digests-amd64/${svc}")"
             arm64_digest="$(cat "/tmp/digests/digests-arm64/${svc}")"
@@ -210,4 +210,4 @@ jobs:
             echo "::endgroup::"
           done
 
-          echo "Published multi-arch (amd64+arm64) images: ca-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal web-ui"
+          echo "Published multi-arch (amd64+arm64) images: ca-service ca-init-service acme-service est-service ocsp-service scms-service kra-service notify-service cli npe-portal web-ui"

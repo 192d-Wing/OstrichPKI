@@ -1,0 +1,44 @@
+# OstrichPKI profile for disposable usg-est-issuer conformance clusters.
+# Never use these settings or credentials in a persistent environment.
+image:
+  pullPolicy: IfNotPresent
+
+ca:
+  bootstrap:
+    enabled: true
+    existingSecret: ostrich-ci-bootstrap
+    adminUsername: integration.lab.example.mil
+    keyType: EcP384
+    commonName: OstrichPKI EST Issuer Integration Root
+  hsm:
+    existingSecret: ostrich-ci-bootstrap
+    tokenPersistence:
+      enabled: true
+      size: 256Mi
+  requireApproval: false
+
+est:
+  allowBearerAuth: false
+  allowBasicAuth: true
+  tls:
+    existingSecret: ostrich-ci-est-tls
+    certFile: /app/certs/tls.crt
+    keyFile: /app/certs/tls.key
+    caCertFile: /app/certs/client-ca.crt
+
+acme:
+  enabled: false
+
+npePortal:
+  enabled: false
+
+ocsp:
+  enabled: false
+
+postgresql:
+  primary:
+    persistence:
+      enabled: false
+
+metrics:
+  enabled: false

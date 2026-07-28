@@ -100,7 +100,8 @@ Service named "<fullname>-ca"; gRPC listens on .Values.ca.grpc.service.port.
 
 {{/*
 Init container that blocks until the CA has been bootstrapped (an issuing,
-non-root CA certificate exists). Used by est/ocsp/acme, which finalize against
+CA certificate exists). Used by ca/est/ocsp/acme, which cannot serve before
+the explicitly enabled bootstrap Job has completed.
 the CA over gRPC and cannot serve before it is ready.
 */}}
 {{- define "ostrich-pki.waitForCa" -}}
@@ -109,7 +110,7 @@ the CA over gRPC and cannot serve before it is ready.
   command: ["sh", "-c"]
   args:
     - |
-      until psql "$DATABASE_URL" -tAc "SELECT 1 FROM ca_certificates WHERE is_root = false LIMIT 1" 2>/dev/null | grep -q 1; do
+      until psql "$DATABASE_URL" -tAc "SELECT 1 FROM ca_certificates WHERE not_after > NOW() LIMIT 1" 2>/dev/null | grep -q 1; do
         echo "waiting for CA bootstrap..."; sleep 3;
       done
   env:
@@ -117,9 +118,16 @@ the CA over gRPC and cannot serve before it is ready.
       valueFrom:
         secretKeyRef:
           name: {{ include "ostrich-pki.databaseSecretName" . }}
-          key: {{ include "ostrich-pki.databasePasswordKey" . }}
+          key: {{ include "ostrich-pki.databasePasswordKey" . | trim | quote }}
     - name: DATABASE_URL
       value: {{ include "ostrich-pki.databaseUrl" . }}
+{{- end }}
+
+{{/*
+Name of the PVC containing the non-extractable SoftHSM token state.
+*/}}
+{{- define "ostrich-pki.hsmClaimName" -}}
+{{- .Values.ca.hsm.tokenPersistence.existingClaim | default (printf "%s-hsm" (include "ostrich-pki.fullname" .)) -}}
 {{- end }}
 
 {{/*
@@ -127,7 +135,7 @@ Database URL construction
 */}}
 {{- define "ostrich-pki.databaseUrl" -}}
 {{- if .Values.postgresql.enabled }}
-{{- printf "postgresql://%s:$(DATABASE_PASSWORD)@%s-postgresql:5432/%s" .Values.postgresql.auth.username (include "ostrich-pki.fullname" .) .Values.postgresql.auth.database }}
+{{- printf "postgresql://%s:$(DATABASE_PASSWORD)@%s-postgresql:5432/%s" .Values.postgresql.auth.username .Release.Name .Values.postgresql.auth.database }}
 {{- else }}
 {{- printf "postgresql://%s:$(DATABASE_PASSWORD)@%s:%d/%s" .Values.externalDatabase.user .Values.externalDatabase.host (.Values.externalDatabase.port | int) .Values.externalDatabase.database }}
 {{- end }}
@@ -141,7 +149,7 @@ Database secret name
 {{- if .Values.postgresql.auth.existingSecret }}
 {{- .Values.postgresql.auth.existingSecret }}
 {{- else }}
-{{- printf "%s-postgresql" (include "ostrich-pki.fullname" .) }}
+{{- printf "%s-postgresql" .Release.Name }}
 {{- end }}
 {{- else }}
 {{- if .Values.externalDatabase.existingSecret }}
@@ -175,7 +183,7 @@ Common environment variables for all services
   valueFrom:
     secretKeyRef:
       name: {{ include "ostrich-pki.databaseSecretName" . }}
-      key: {{ include "ostrich-pki.databasePasswordKey" . }}
+      key: {{ include "ostrich-pki.databasePasswordKey" . | trim | quote }}
 - name: DATABASE_URL
   value: {{ include "ostrich-pki.databaseUrl" . }}
 {{- end }}

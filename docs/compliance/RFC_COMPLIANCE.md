@@ -1576,6 +1576,7 @@ consumed by the TAMP messages above.
 | 1.8 | 2026-06-26 | OstrichPKI Team | NPE Portal (`ostrich-npe-portal`): RFC 8446 (TLS 1.3) + RFC 9325 (TLS client authentication / mTLS) for operator auth; RFC 5280 §4.2.1.4 certificate-policy OIDs consumed for role mapping. (RFC 7030 §3.2.2 EST label routing is planned for a later milestone.) |
 | 1.9 | 2026-06-26 | OstrichPKI Team | RFC 7030 §3.2.2: EST arbitrary-label routing implemented in `ostrich-est` — `/.well-known/est/{label}/...` with the `PTptval[-AKakval][-VPvpval][-CCccval]` scheme; the label selects the certificate profile and (by key algorithm) the issuing CA backend, enabling one EST instance to front multiple CAs (e.g. EC and RSA). |
 | 2.0 | 2026-06-29 | OstrichPKI Team | RFC 7030 §4.4 + RFC 7292: EFS server-side key generation delivers the key + certificate as an encrypted PKCS#12 (PBES2 PBKDF2-HMAC-SHA256 / AES-256-CBC + HMAC-SHA256 MAC) under a one-time password — `crates/ostrich-x509/src/pkcs12.rs`. The EFS portal flow uses a CSR-free JSON `/serverkeygen` input (subject from the mTLS identity; no untrusted PKCS#10 parsed) alongside the standard §4.4.1 CSR path. RFC 5754 (SHA-2 AlgorithmIdentifiers omit NULL params) observed in the PKCS#12 structure. |
+| 2.1 | 2026-07-27 | OstrichPKI Team | Added Kubernetes integration profile for RFC 7030 §3.2.3 TLS-protected Basic bootstrap and §4.2 enrollment through an external cert-manager issuer. |
 
 ---
 

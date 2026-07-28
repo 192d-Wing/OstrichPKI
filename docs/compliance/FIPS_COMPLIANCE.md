@@ -992,6 +992,7 @@ allowed_pqc_algorithms = [
 |---------|------|--------|---------|
 | 1.0 | 2026-01-03 | OstrichPKI Team | Initial FIPS compliance assessment based on v0.10.0 codebase |
 | 1.3 | 2026-06-29 | OstrichPKI Team | NPE portal vulnerability fixes reviewed for FIPS impact: access-control/session-binding changes only; no cryptographic algorithm, key-generation, signature, KEM, DRBG, or module-boundary changes. |
+| 1.4 | 2026-07-27 | OstrichPKI Team | Integration profile generates a P-384 CA key through the PKCS#11 abstraction using SoftHSM. SoftHSM is test emulation and is not represented as a FIPS-validated production module. |
 
 ---
 

@@ -1,0 +1,115 @@
+{{/*
+Explicit, convergent CA bootstrap for development and integration environments.
+
+COMPLIANCE MAPPING:
+- NIST 800-53: CM-2, CM-6 - explicit and repeatable baseline
+- NIST 800-53: IA-5, IA-7 - Secret-backed HSM authentication
+- NIST 800-53: SC-12, SC-17 - P-384 CA key and certificate lifecycle
+- NIAP PP-CA: FCS_CKM.1, FCS_STG_EXT.1 - non-extractable SoftHSM key
+*/}}
+{{- if .Values.ca.bootstrap.enabled }}
+{{- if not .Values.ca.hsm.tokenPersistence.enabled }}
+{{- fail "ca.bootstrap.enabled requires ca.hsm.tokenPersistence.enabled" }}
+{{- end }}
+{{- if not .Values.ca.bootstrap.existingSecret }}
+{{- fail "ca.bootstrap.enabled requires ca.bootstrap.existingSecret" }}
+{{- end }}
+{{- if not .Values.ca.hsm.existingSecret }}
+{{- fail "ca.bootstrap.enabled requires ca.hsm.existingSecret" }}
+{{- end }}
+{{- if and (not .Values.ca.hsm.tokenPersistence.existingClaim) (not .Values.ca.hsm.tokenPersistence.enabled) }}
+{{- fail "CA bootstrap requires an HSM token PVC" }}
+{{- end }}
+{{- if not .Values.ca.hsm.tokenPersistence.existingClaim }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ostrich-pki.hsmClaimName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.ca.hsm.tokenPersistence.size }}
+  {{- with .Values.ca.hsm.tokenPersistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ostrich-pki.fullname" . }}-ca-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ostrich-pki.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ca-bootstrap
+spec:
+  backoffLimit: {{ .Values.ca.bootstrap.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "ostrich-pki.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ca-bootstrap
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "ostrich-pki.serviceAccountName" . }}
+      securityContext:
+        {{- include "ostrich-pki.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        - name: wait-database
+          image: postgres:16-alpine
+          command: ["sh", "-c"]
+          args:
+            - until pg_isready -d "$DATABASE_URL"; do sleep 2; done
+          env:
+            {{- include "ostrich-pki.commonEnv" . | nindent 12 }}
+      containers:
+        - name: bootstrap
+          image: {{ include "ostrich-pki.image" (dict "service" "ca-init" "repository" .Values.ca.bootstrap.image.repository "tag" .Values.ca.bootstrap.image.tag "root" .) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "ostrich-pki.securityContext" . | nindent 12 }}
+          env:
+            {{- include "ostrich-pki.commonEnv" . | nindent 12 }}
+            - name: PKCS11_MODULE_PATH
+              value: {{ .Values.ca.hsm.modulePath | quote }}
+            - name: PKCS11_PIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ca.hsm.existingSecret }}
+                  key: {{ .Values.ca.hsm.pinKey }}
+            - name: PKCS11_SO_PIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ca.bootstrap.existingSecret }}
+                  key: {{ .Values.ca.bootstrap.soPinKey }}
+            - name: SOFTHSM_TOKEN_LABEL
+              value: {{ .Values.ca.bootstrap.tokenLabel | quote }}
+            - name: CA_KEY_LABEL
+              value: {{ .Values.ca.bootstrap.keyLabel | quote }}
+            {{- if .Values.ca.bootstrap.adminUsername }}
+            - name: CA_ADMIN_USERNAME
+              value: {{ .Values.ca.bootstrap.adminUsername | quote }}
+            - name: CA_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ca.bootstrap.existingSecret }}
+                  key: {{ .Values.ca.bootstrap.adminPasswordKey }}
+            {{- end }}
+          args:
+            - --key-type
+            - {{ .Values.ca.bootstrap.keyType | quote }}
+            - --common-name
+            - {{ .Values.ca.bootstrap.commonName | quote }}
+          volumeMounts:
+            - name: hsm-tokens
+              mountPath: /app/tokens
+      volumes:
+        - name: hsm-tokens
+          persistentVolumeClaim:
+            claimName: {{ include "ostrich-pki.hsmClaimName" . }}
+{{- end }}

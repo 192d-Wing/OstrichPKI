@@ -59,6 +59,35 @@ ca:
     repository: ""  # Uses global if empty
     tag: ""         # Uses global if empty
 
+  # One-shot HSM-backed CA initialization. Disabled by default so production
+  # deployments cannot create a new trust anchor implicitly.
+  bootstrap:
+    enabled: false
+    image:
+      repository: ca-init-service
+      tag: ""
+    existingSecret: ""
+    pinKey: pkcs11-pin
+    soPinKey: pkcs11-so-pin
+    adminPasswordKey: admin-password
+    tokenLabel: ostrich-integration
+    keyLabel: ostrich-integration-root
+    keyType: EcP384
+    commonName: OstrichPKI Integration Root CA
+    adminUsername: ""
+    backoffLimit: 2
+
+  # PKCS#11 settings shared by the bootstrap Job and CA Deployment.
+  hsm:
+    modulePath: /usr/lib/softhsm/libsofthsm2.so
+    existingSecret: ""
+    pinKey: pkcs11-pin
+    tokenPersistence:
+      enabled: false
+      existingClaim: ""
+      size: 1Gi
+      storageClass: ""
+
   # REST API
   rest:
     port: 8080
@@ -81,6 +110,10 @@ ca:
     # Or specify paths (mounted via volumes)
     certFile: ""
     keyFile: ""
+
+  # Approval remains fail-closed by default. Automated integration labs may
+  # disable it because cert-manager approval is enforced by usg-est-issuer.
+  requireApproval: true
 
   resources:
     limits:
@@ -168,6 +201,8 @@ est:
 
   # Accept bearer-token auth in addition to mTLS (RFC 7030 §3.2).
   allowBearerAuth: true
+  # Permit HTTP Basic only as a TLS-protected bootstrap fallback.
+  allowBasicAuth: false
 
   # mTLS configuration (required per RFC 7030)
   # NIST 800-53: SC-8 (Transmission Confidentiality)

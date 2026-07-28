@@ -589,3 +589,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | January 2026 | OstrichPKI Team | Initial test evidence package |
+| 1.1 | July 2026 | OstrichPKI Team | Added Helm-render and runtime certificate-lifecycle evidence requirements for the EST external-issuer integration profile. |

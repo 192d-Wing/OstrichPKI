@@ -46,4 +46,5 @@ exec ostrich-init \
     --pkcs11-module "${MODULE}" \
     --pkcs11-slot "${SLOT}" \
     --pkcs11-pin "${PIN}" \
-    --if-exists-ok
+    --if-exists-ok \
+    "$@"
