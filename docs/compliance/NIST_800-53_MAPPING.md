@@ -1958,3 +1958,13 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 ---
 
 **Next Review Date:** 2026-02-01 (or upon completion of Phase 21)
+### PKCS#11 ECDSA mechanism portability
+
+**Controls:** SC-12, SC-13
+**Status:** Implemented and integration-tested
+
+`crates/ostrich-crypto/src/pkcs11/mod.rs` hashes ECDSA messages with the
+FIPS-enabled AWS-LC SHA-2 implementation and sends the digest to the mandatory
+PKCS#11 `CKM_ECDSA` mechanism. This avoids relying on optional combined
+`CKM_ECDSA_SHA*` token mechanisms while keeping private-key operations inside
+the configured HSM boundary.
