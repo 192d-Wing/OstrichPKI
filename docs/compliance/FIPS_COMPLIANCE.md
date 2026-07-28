@@ -1005,3 +1005,8 @@ For ECDSA, SHA-256, SHA-384, or SHA-512 is computed by the FIPS-enabled AWS-LC
 module (FIPS 180-4), and the resulting digest is signed by the configured
 PKCS#11 token using `CKM_ECDSA` (FIPS 186-5). SoftHSM remains test-only and is
 not represented as a FIPS-validated production module.
+### EST mTLS probe boundary
+
+Kubernetes TCP probes do not negotiate cryptography or bypass client
+authentication. Application traffic remains protected by the EST service's
+TLS 1.3 configuration and configured trust anchors.

@@ -76,19 +76,31 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           livenessProbe:
+            {{- if .Values.est.tls.caCertFile }}
+            # Kubernetes HTTP probes cannot present an mTLS client certificate.
+            # Probe the authenticated listener without weakening its TLS policy.
+            tcpSocket:
+              port: https
+            {{- else }}
             httpGet:
               path: /health
               port: https
               scheme: {{ ternary "HTTPS" "HTTP" (and (ne .Values.est.tls.certFile "") (ne .Values.est.tls.keyFile "")) }}
+            {{- end }}
             initialDelaySeconds: 10
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 3
           readinessProbe:
+            {{- if .Values.est.tls.caCertFile }}
+            tcpSocket:
+              port: https
+            {{- else }}
             httpGet:
               path: /ready
               port: https
               scheme: {{ ternary "HTTPS" "HTTP" (and (ne .Values.est.tls.certFile "") (ne .Values.est.tls.keyFile "")) }}
+            {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 5

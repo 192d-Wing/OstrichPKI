@@ -1572,3 +1572,8 @@ psql ostrich -c "SELECT * FROM audit_events WHERE event_type LIKE 'FMT_%'" > evi
 The CA no longer depends on optional `CKM_ECDSA_SHA*` mechanisms. The provider
 uses `CKM_ECDSA` with a FIPS AWS-LC SHA-2 digest, closing the SoftHSM and
 hardware-token portability gap for FCS_COP.1.
+### Closed: Kubernetes probes against mandatory mTLS
+
+The EST chart no longer uses unauthenticated HTTP probes against an mTLS-only
+listener. TCP probes confirm socket availability without creating an
+authentication bypass or restart loop.

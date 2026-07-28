@@ -1968,3 +1968,11 @@ FIPS-enabled AWS-LC SHA-2 implementation and sends the digest to the mandatory
 PKCS#11 `CKM_ECDSA` mechanism. This avoids relying on optional combined
 `CKM_ECDSA_SHA*` token mechanisms while keeping private-key operations inside
 the configured HSM boundary.
+### EST mTLS workload probes
+
+**Controls:** SC-8, SC-23, SI-4
+
+The Helm deployment uses TCP socket probes for an EST listener configured with
+a client CA. Kubernetes native HTTP probes cannot present a client certificate;
+the chart therefore verifies listener availability without weakening mandatory
+mTLS or adding an unauthenticated HTTP exception.
