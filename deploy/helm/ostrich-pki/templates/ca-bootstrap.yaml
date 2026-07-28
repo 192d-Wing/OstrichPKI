@@ -61,7 +61,8 @@ spec:
         {{- include "ostrich-pki.podSecurityContext" . | nindent 8 }}
       initContainers:
         - name: wait-database
-          image: postgres:16-alpine
+          image: {{ include "ostrich-pki.postgresClientImage" . }}
+          imagePullPolicy: {{ .Values.postgresClientImage.pullPolicy }}
           command: ["sh", "-c"]
           args:
             - until pg_isready -d "$DATABASE_URL"; do sleep 2; done

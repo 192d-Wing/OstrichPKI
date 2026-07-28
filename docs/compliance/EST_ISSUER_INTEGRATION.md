@@ -22,6 +22,8 @@ cause Helm rendering or workload startup to fail closed.
   they are not Helm values, command-line arguments, ConfigMaps, or log fields.
 - The CA Deployment waits for a valid CA database record before starting and
   mounts the same token PVC read/write.
+- Database readiness containers use a multi-architecture digest-pinned
+  PostgreSQL client image so a mutable registry tag cannot alter startup code.
 - EST Basic authentication is permitted only on the TLS listener with a client
   CA configured, matching the server's existing fail-closed startup checks.
 - The integration profile disables CA approval only because cert-manager

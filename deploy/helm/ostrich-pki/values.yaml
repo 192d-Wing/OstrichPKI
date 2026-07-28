@@ -25,6 +25,15 @@ image:
   pullPolicy: Always
   tag: latest  # Pin per environment (e.g. sha-<commit>); empty falls back to appVersion
 
+# Minimal PostgreSQL client used only by database/CA readiness init containers.
+# The multi-architecture digest prevents a mutable tag from changing CI or
+# production startup behavior.
+postgresClientImage:
+  repository: docker.io/library/postgres
+  tag: 16.10-alpine3.22
+  digest: sha256:ab8380566c3ea09690a9ecaa85a59d82bfc6eb86744151a2a54335866c83a3e9
+  pullPolicy: IfNotPresent
+
 # Service account
 serviceAccount:
   create: true
