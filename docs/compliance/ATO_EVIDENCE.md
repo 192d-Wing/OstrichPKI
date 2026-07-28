@@ -1711,3 +1711,8 @@ of a production HSM's FIPS validation.
 | Controls / SFR | Evidence | Expected result |
 |---|---|---|
 | SC-12, SC-13, FCS_COP.1 | `crates/ostrich-crypto/src/pkcs11/mod.rs`; SoftHSM integration lifecycle | FIPS AWS-LC SHA-2 digest followed by token-resident `CKM_ECDSA` signing; no dependency on optional combined mechanisms |
+### EST mTLS Kubernetes probes
+
+| Controls / SFRs | Evidence | Expected result |
+|---|---|---|
+| SC-8, SC-23, SI-4, FTP_ITC.1 | `deploy/helm/ostrich-pki/templates/est-deployment.yaml`; issuer integration lifecycle | EST remains healthy under Kubernetes while all HTTP requests continue to require the configured client certificate |

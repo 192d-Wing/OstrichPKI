@@ -1587,3 +1587,8 @@ PKCS#11 ECDSA operations hash the complete signed input with the SHA-2 function
 selected by the certificate signature algorithm, then submit that digest to
 `CKM_ECDSA`. The returned fixed-width `r || s` value continues through the
 existing X.509 DER conversion path.
+### RFC 7030 mTLS health-probe boundary
+
+When EST client-certificate authentication is configured, Kubernetes uses TCP
+socket probes because native HTTP probes cannot supply an enrollment client
+certificate. RFC 7030 authentication remains enforced for all HTTP requests.

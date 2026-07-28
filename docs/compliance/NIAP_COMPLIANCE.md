@@ -2338,3 +2338,10 @@ ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
 ECDSA signing and verification use FIPS AWS-LC SHA-2 preprocessing followed by
 the required PKCS#11 `CKM_ECDSA` primitive. This supports conformant tokens that
 do not implement the optional combined hash-and-sign mechanisms.
+### EST mTLS workload probes
+
+**SFRs:** FTP_ITC.1, FPT_TST_EXT.1
+
+Liveness and readiness checks use a TCP socket when client-certificate
+authentication is configured. The EST TLS handshake continues to require a
+trusted client certificate for every HTTP request.
