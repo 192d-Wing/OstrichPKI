@@ -2353,3 +2353,8 @@ The `MtlsWithBasicFallback` listener uses optional client-certificate
 negotiation and then requires either a verified certificate identity or valid
 HTTP Basic credentials. This makes the configured bootstrap mechanism
 reachable without accepting anonymous enrollment.
+
+The chart's opt-in Basic bootstrap account is assigned the fixed,
+machine-only `EstEnrollee` role. It can submit an enrollment request and has no
+administrative, approval, audit, revocation, or key-management permission,
+providing FIA_UAU.5 authentication and FMT_SMR.2 role separation.

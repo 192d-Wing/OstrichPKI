@@ -106,6 +106,17 @@ struct Args {
     /// or logged in plaintext). NIST 800-53: IA-5(1)
     #[arg(long, env = "CA_ADMIN_PASSWORD")]
     admin_password: Option<String>,
+
+    /// Provision a least-privilege EST bootstrap account with this username.
+    /// Requires --est-enrollee-password. The account receives only the
+    /// EstEnrollee role (SubmitRequest).
+    #[arg(long, env = "CA_EST_ENROLLEE_USERNAME")]
+    est_enrollee_username: Option<String>,
+
+    /// EST bootstrap account password (hashed with Argon2id; never stored or
+    /// logged in plaintext). NIST 800-53: IA-5(1)
+    #[arg(long, env = "CA_EST_ENROLLEE_PASSWORD")]
+    est_enrollee_password: Option<String>,
 }
 
 #[tokio::main]
@@ -133,6 +144,7 @@ async fn main() -> Result<()> {
     // Runs before the CA-exists early-return so re-running the tool can add
     // the admin to an already-bootstrapped deployment.
     provision_admin(&args, &db_pool).await?;
+    provision_est_enrollee(&args, &db_pool).await?;
 
     let ca_repo = ostrich_db::repository::CaRepository::new(db_pool.clone());
     if ca_repo
@@ -554,10 +566,10 @@ fn parse_crypto_enum<T: serde::de::DeserializeOwned>(s: &str) -> Result<T> {
 /// - NIST 800-53: CM-6 - explicit provisioning instead of hardcoded seed users
 /// - NIAP PP-CA: FMT_SMR.2 - Administrator role assignment
 async fn provision_admin(args: &Args, db_pool: &ostrich_db::DatabasePool) -> Result<()> {
-    let (username, password) = match (&args.admin_username, &args.admin_password) {
-        (Some(u), Some(p)) => (u, p),
-        (None, None) => return Ok(()),
-        _ => bail!("Both --admin-username and --admin-password are required to provision an admin"),
+    let Some((username, password)) =
+        requested_credentials(&args.admin_username, &args.admin_password, "Administrator")?
+    else {
+        return Ok(());
     };
 
     if password.len() < 12 {
@@ -573,7 +585,7 @@ async fn provision_admin(args: &Args, db_pool: &ostrich_db::DatabasePool) -> Res
 
     let hash = ostrich_common::auth::password::hash_password(
         &ostrich_common::auth::PasswordHashConfig::default(),
-        &secrecy::SecretString::from(password.clone()),
+        &secrecy::SecretString::from(password.to_owned()),
     )
     .map_err(|e| anyhow::anyhow!("Password hashing failed: {}", e))?;
 
@@ -589,6 +601,84 @@ async fn provision_admin(args: &Args, db_pool: &ostrich_db::DatabasePool) -> Res
 
     println!("Administrator account '{}' created (id {}).", username, id);
     Ok(())
+}
+
+/// Provision a machine-only EST bootstrap principal if requested.
+///
+/// The role is fixed rather than operator-selectable so bootstrap cannot become
+/// an arbitrary-role account-provisioning path.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-2, AC-3, AC-6 - explicit least-privilege account
+/// - NIST 800-53: IA-5(1) - Argon2id hashing; plaintext never persisted/logged
+/// - NIAP PP-CA: FIA_UAU.5, FMT_SMR.2 - authenticated EST enrollee role
+/// - RFC 7030 §3.2.3 - TLS-protected HTTP Basic bootstrap
+async fn provision_est_enrollee(args: &Args, db_pool: &ostrich_db::DatabasePool) -> Result<()> {
+    let Some((username, password)) = requested_credentials(
+        &args.est_enrollee_username,
+        &args.est_enrollee_password,
+        "EST enrollee",
+    )?
+    else {
+        return Ok(());
+    };
+
+    if args.admin_username.as_deref().map(str::trim) == Some(username) {
+        bail!("Administrator and EST enrollee usernames must be distinct");
+    }
+
+    let users = ostrich_db::repository::DbUserRepository::new(db_pool.clone());
+    if let Some(existing) = ostrich_common::auth::UserRepository::find_by_username(&users, username)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to inspect existing EST enrollee: {e}"))?
+    {
+        if existing.roles == [ostrich_common::auth::Role::EstEnrollee]
+            && existing.status == ostrich_common::auth::AccountStatus::Active
+        {
+            println!("EST enrollee '{}' already exists; skipping.", username);
+            return Ok(());
+        }
+        bail!("Existing EST enrollee username has an unexpected role or account status");
+    }
+
+    let hash = ostrich_common::auth::password::hash_password(
+        &ostrich_common::auth::PasswordHashConfig::default(),
+        &secrecy::SecretString::from(password.to_owned()),
+    )
+    .map_err(|e| anyhow::anyhow!("Password hashing failed: {}", e))?;
+
+    let id = users
+        .create_user(
+            username,
+            Some("EST Bootstrap Enrollee"),
+            &hash,
+            &[ostrich_common::auth::Role::EstEnrollee],
+        )
+        .await
+        .context("Failed to create EST enrollee user")?;
+
+    println!("EST enrollee account '{}' created (id {}).", username, id);
+    Ok(())
+}
+
+fn requested_credentials<'a>(
+    username: &'a Option<String>,
+    password: &'a Option<String>,
+    account_type: &str,
+) -> Result<Option<(&'a str, &'a str)>> {
+    match (username.as_deref(), password.as_deref()) {
+        (None, None) => Ok(None),
+        (Some(username), Some(password)) => {
+            if username.trim().is_empty() {
+                bail!("{account_type} username must not be empty");
+            }
+            if password.len() < 12 {
+                bail!("{account_type} password must be at least 12 characters (NIST 800-63B)");
+            }
+            Ok(Some((username.trim(), password)))
+        }
+        _ => bail!("Both {account_type} username and password are required"),
+    }
 }
 
 /// Assemble TBS DER + signature into a complete DER certificate.
@@ -615,5 +705,56 @@ fn enum_name<T: serde::Serialize>(value: &T) -> Result<String> {
     match serde_json::to_value(value)? {
         serde_json::Value::String(s) => Ok(s),
         other => bail!("Unexpected enum encoding: {}", other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requested_credentials;
+
+    #[test]
+    fn credentials_are_optional_only_as_a_pair() {
+        assert!(
+            requested_credentials(&None, &None, "EST enrollee")
+                .unwrap()
+                .is_none()
+        );
+        assert!(requested_credentials(&Some("device".into()), &None, "EST enrollee").is_err());
+        assert!(
+            requested_credentials(&None, &Some("long-enough-password".into()), "EST enrollee")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn credentials_reject_empty_username_and_short_password() {
+        assert!(
+            requested_credentials(
+                &Some("  ".into()),
+                &Some("long-enough-password".into()),
+                "EST enrollee",
+            )
+            .is_err()
+        );
+        assert!(
+            requested_credentials(
+                &Some("device".into()),
+                &Some("too-short".into()),
+                "EST enrollee",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn credentials_trim_username_without_exposing_password() {
+        let username = Some("  device.example  ".to_string());
+        let password = Some("long-enough-password".to_string());
+        let (actual_username, actual_password) =
+            requested_credentials(&username, &password, "EST enrollee")
+                .unwrap()
+                .unwrap();
+        assert_eq!(actual_username, "device.example");
+        assert_eq!(actual_password, "long-enough-password");
     }
 }
