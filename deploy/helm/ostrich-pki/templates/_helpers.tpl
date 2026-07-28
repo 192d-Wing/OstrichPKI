@@ -106,7 +106,8 @@ the CA over gRPC and cannot serve before it is ready.
 */}}
 {{- define "ostrich-pki.waitForCa" -}}
 - name: wait-ca
-  image: postgres:16-alpine
+  image: {{ include "ostrich-pki.postgresClientImage" . }}
+  imagePullPolicy: {{ .Values.postgresClientImage.pullPolicy }}
   command: ["sh", "-c"]
   args:
     - |
@@ -128,6 +129,18 @@ Name of the PVC containing the non-extractable SoftHSM token state.
 */}}
 {{- define "ostrich-pki.hsmClaimName" -}}
 {{- .Values.ca.hsm.tokenPersistence.existingClaim | default (printf "%s-hsm" (include "ostrich-pki.fullname" .)) -}}
+{{- end }}
+
+{{/*
+Digest-pinned PostgreSQL client image for readiness init containers.
+*/}}
+{{- define "ostrich-pki.postgresClientImage" -}}
+{{- $image := printf "%s:%s" .Values.postgresClientImage.repository .Values.postgresClientImage.tag -}}
+{{- if .Values.postgresClientImage.digest -}}
+{{- printf "%s@%s" $image .Values.postgresClientImage.digest -}}
+{{- else -}}
+{{- $image -}}
+{{- end -}}
 {{- end }}
 
 {{/*
