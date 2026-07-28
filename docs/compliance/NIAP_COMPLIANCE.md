@@ -2330,3 +2330,11 @@ ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
 ---
 
 **Next Review Date:** 2026-02-01 (or upon completion of Phase 21)
+### PKCS#11 ECDSA interoperability evidence
+
+**SFR:** FCS_COP.1
+**Status:** Implemented
+
+ECDSA signing and verification use FIPS AWS-LC SHA-2 preprocessing followed by
+the required PKCS#11 `CKM_ECDSA` primitive. This supports conformant tokens that
+do not implement the optional combined hash-and-sign mechanisms.

@@ -24,6 +24,9 @@ cause Helm rendering or workload startup to fail closed.
   mounts the same token PVC read/write.
 - Database readiness containers use a multi-architecture digest-pinned
   PostgreSQL client image so a mutable registry tag cannot alter startup code.
+- Database transport mode is explicit: external databases default to
+  `sslmode=require`; the disposable in-cluster PostgreSQL test boundary
+  deliberately selects `sslmode=disable` because it has no TLS listener.
 - EST Basic authentication is permitted only on the TLS listener with a client
   CA configured, matching the server's existing fail-closed startup checks.
 - The integration profile disables CA approval only because cert-manager

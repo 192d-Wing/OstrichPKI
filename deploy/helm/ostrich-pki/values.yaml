@@ -452,6 +452,10 @@ externalDatabase:
   user: ostrich
   password: ""
   database: ostrich_pki
+  # External database transport fails closed unless the operator explicitly
+  # selects another libpq sslmode. The bundled in-cluster PostgreSQL dependency
+  # is handled separately with sslmode=disable because it has no TLS listener.
+  sslMode: require
   existingSecret: ""
   existingSecretPasswordKey: password
 
