@@ -1984,3 +1984,9 @@ When HTTP Basic bootstrap is explicitly enabled, the TLS 1.3 listener requests
 and validates a client certificate when presented but permits a
 certificate-less handshake so HTTP authentication can execute. Requests
 without a valid client certificate or valid Basic credential remain denied.
+
+The opt-in Helm bootstrap path creates a dedicated `EstEnrollee` identity whose
+fixed role contains only `SubmitRequest`. It does not reuse or widen the
+Administrator role, satisfying AC-2, AC-3, and AC-6 least-privilege boundaries.
+Missing credential pairs, an empty username, a short password, or a Basic
+bootstrap configuration without its referenced Secret fails closed.

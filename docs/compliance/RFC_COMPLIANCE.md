@@ -1598,3 +1598,7 @@ With Basic bootstrap explicitly enabled, the EST TLS listener requests but does
 not require a client certificate during negotiation. The application then
 requires either verified mTLS identity or valid Basic credentials before
 enrollment, allowing bootstrap without anonymous access.
+
+The optional Helm bootstrap principal is created with the fixed
+`EstEnrollee` role, which authorizes only the RFC 7030 simple-enrollment
+submission. Administrator credentials are not used for enrollment.

@@ -1722,3 +1722,9 @@ of a production HSM's FIPS validation.
 | Controls / SFRs | Evidence | Expected result |
 |---|---|---|
 | AC-3, IA-2, SC-8, FIA_UAU.5, FTP_ITC.1 | `services/est-server/src/main.rs`; issuer integration lifecycle | Certificate-less TLS bootstrap reaches Basic authentication; invalid or absent application credentials cannot enroll |
+
+### Least-privilege EST bootstrap account
+
+| Controls / SFRs | Evidence | Expected result |
+|---|---|---|
+| AC-2, AC-3, AC-6, IA-5, FIA_UAU.5, FMT_SMR.2 | `tools/ostrich-init/src/main.rs`; `deploy/helm/ostrich-pki/templates/ca-bootstrap.yaml`; issuer integration lifecycle | Bootstrap identity receives only `EstEnrollee`; incomplete credentials and invalid chart combinations fail closed |
