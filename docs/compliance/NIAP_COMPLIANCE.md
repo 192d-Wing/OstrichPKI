@@ -2345,3 +2345,11 @@ do not implement the optional combined hash-and-sign mechanisms.
 Liveness and readiness checks use a TCP socket when client-certificate
 authentication is configured. The EST TLS handshake continues to require a
 trusted client certificate for every HTTP request.
+### EST Basic bootstrap authentication
+
+**SFRs:** FIA_UAU.5, FTP_ITC.1
+
+The `MtlsWithBasicFallback` listener uses optional client-certificate
+negotiation and then requires either a verified certificate identity or valid
+HTTP Basic credentials. This makes the configured bootstrap mechanism
+reachable without accepting anonymous enrollment.

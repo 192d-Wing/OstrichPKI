@@ -1577,3 +1577,8 @@ hardware-token portability gap for FCS_COP.1.
 The EST chart no longer uses unauthenticated HTTP probes against an mTLS-only
 listener. TCP probes confirm socket availability without creating an
 authentication bypass or restart loop.
+### Closed: unreachable EST Basic bootstrap
+
+The TLS layer now permits certificate-less negotiation only when the operator
+explicitly enables Basic bootstrap. HTTP authentication remains mandatory and
+fail-closed, closing the mismatch between TLS and application authentication.

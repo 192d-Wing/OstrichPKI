@@ -1716,3 +1716,9 @@ of a production HSM's FIPS validation.
 | Controls / SFRs | Evidence | Expected result |
 |---|---|---|
 | SC-8, SC-23, SI-4, FTP_ITC.1 | `deploy/helm/ostrich-pki/templates/est-deployment.yaml`; issuer integration lifecycle | EST remains healthy under Kubernetes while all HTTP requests continue to require the configured client certificate |
+
+### EST Basic bootstrap TLS boundary
+
+| Controls / SFRs | Evidence | Expected result |
+|---|---|---|
+| AC-3, IA-2, SC-8, FIA_UAU.5, FTP_ITC.1 | `services/est-server/src/main.rs`; issuer integration lifecycle | Certificate-less TLS bootstrap reaches Basic authentication; invalid or absent application credentials cannot enroll |

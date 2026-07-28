@@ -1592,3 +1592,9 @@ existing X.509 DER conversion path.
 When EST client-certificate authentication is configured, Kubernetes uses TCP
 socket probes because native HTTP probes cannot supply an enrollment client
 certificate. RFC 7030 authentication remains enforced for all HTTP requests.
+### RFC 7030 §3.2.3 — HTTP Basic bootstrap
+
+With Basic bootstrap explicitly enabled, the EST TLS listener requests but does
+not require a client certificate during negotiation. The application then
+requires either verified mTLS identity or valid Basic credentials before
+enrollment, allowing bootstrap without anonymous access.
