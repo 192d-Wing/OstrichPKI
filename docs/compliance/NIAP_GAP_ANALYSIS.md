@@ -1567,3 +1567,8 @@ psql ostrich -c "SELECT * FROM audit_events WHERE event_type LIKE 'FMT_%'" > evi
 - **Change Log:**
   - 2026-01-03: Initial gap analysis created based on NIAP PP-CA v2.1 evaluation
   - 2026-07-27: Added repeatable FCS_CKM.1/FCS_STG_EXT.1 deployment evidence for the EST external-issuer integration profile; production HSM certification remains outside this lab boundary.
+### Closed: optional PKCS#11 ECDSA mechanisms
+
+The CA no longer depends on optional `CKM_ECDSA_SHA*` mechanisms. The provider
+uses `CKM_ECDSA` with a FIPS AWS-LC SHA-2 digest, closing the SoftHSM and
+hardware-token portability gap for FCS_COP.1.

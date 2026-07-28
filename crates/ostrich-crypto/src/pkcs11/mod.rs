@@ -17,6 +17,26 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use zeroize::Zeroizing;
 
+/// Prepare PKCS#11 ECDSA input using the FIPS-validated AWS-LC SHA-2
+/// implementation. PKCS#11 guarantees `CKM_ECDSA`, while combined
+/// `CKM_ECDSA_SHA*` mechanisms are optional.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SC-13 - Cryptographic protection
+/// - NIAP PP-CA: FCS_COP.1 - Signature generation and verification
+/// - FIPS 180-4 - SHA-2 message digest
+/// - FIPS 186-5 - ECDSA signs the message digest
+fn pkcs11_signature_input(algorithm: Algorithm, data: &[u8]) -> Vec<u8> {
+    use aws_lc_rs::digest::{SHA256, SHA384, SHA512, digest};
+
+    match algorithm {
+        Algorithm::EcdsaP256Sha256 => digest(&SHA256, data).as_ref().to_vec(),
+        Algorithm::EcdsaP384Sha384 => digest(&SHA384, data).as_ref().to_vec(),
+        Algorithm::EcdsaP521Sha512 => digest(&SHA512, data).as_ref().to_vec(),
+        _ => data.to_vec(),
+    }
+}
+
 /// PKCS#11 provider that interfaces with HSMs
 ///
 /// This provider uses on-demand session management. Sessions are created per-operation
@@ -703,15 +723,12 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
             Algorithm::RsaPkcs1Sha384 => Mechanism::Sha384RsaPkcs,
             Algorithm::RsaPkcs1Sha512 => Mechanism::Sha512RsaPkcs,
 
-            // ECDSA - use the HASHING mechanisms (CKM_ECDSA_SHA*) so the HSM
-            // computes the digest itself. Raw CKM_ECDSA (Mechanism::Ecdsa)
-            // treats its input as an already-computed hash; passing the full
-            // TBS to it signs raw/truncated TBS bytes, producing signatures
-            // that fail verification against `ecdsa-with-SHA*` (which hash the
-            // TBS). RFC 5758 §3.2 / FIPS 186-5.
-            Algorithm::EcdsaP256Sha256 => Mechanism::EcdsaSha256,
-            Algorithm::EcdsaP384Sha384 => Mechanism::EcdsaSha384,
-            Algorithm::EcdsaP521Sha512 => Mechanism::EcdsaSha512,
+            // Combined CKM_ECDSA_SHA* mechanisms are optional. Hash through
+            // FIPS AWS-LC below and pass the digest to raw CKM_ECDSA, which is
+            // interoperable with SoftHSM and hardware tokens.
+            Algorithm::EcdsaP256Sha256
+            | Algorithm::EcdsaP384Sha384
+            | Algorithm::EcdsaP521Sha512 => Mechanism::Ecdsa,
 
             // EdDSA not supported in PKCS#11
             Algorithm::Ed25519 | Algorithm::Ed448 => {
@@ -732,8 +749,9 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
 
         // Perform signing operation
         // FIPS 186-5: Digital signature generation in FIPS 140-3 module
+        let signature_input = pkcs11_signature_input(algorithm, data);
         let signature = session
-            .sign(&mechanism, private_key_handle, data)
+            .sign(&mechanism, private_key_handle, &signature_input)
             .map_err(|e| Error::Signing(format!("HSM signing failed: {}", e)))?;
 
         // Logout session
@@ -834,10 +852,10 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
             Algorithm::RsaPkcs1Sha256 => Mechanism::Sha256RsaPkcs,
             Algorithm::RsaPkcs1Sha384 => Mechanism::Sha384RsaPkcs,
             Algorithm::RsaPkcs1Sha512 => Mechanism::Sha512RsaPkcs,
-            // Hashing mechanisms - must match the sign path above
-            Algorithm::EcdsaP256Sha256 => Mechanism::EcdsaSha256,
-            Algorithm::EcdsaP384Sha384 => Mechanism::EcdsaSha384,
-            Algorithm::EcdsaP521Sha512 => Mechanism::EcdsaSha512,
+            // Hash through FIPS AWS-LC below, matching the sign path.
+            Algorithm::EcdsaP256Sha256
+            | Algorithm::EcdsaP384Sha384
+            | Algorithm::EcdsaP521Sha512 => Mechanism::Ecdsa,
             Algorithm::Ed25519 | Algorithm::Ed448 => {
                 return Err(Error::UnsupportedAlgorithm(format!(
                     "{:?} not supported by PKCS#11",
@@ -853,8 +871,9 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
         };
 
         // Perform verification
+        let signature_input = pkcs11_signature_input(algorithm, data);
         let is_valid = session
-            .verify(&mechanism, public_key_handle, data, signature)
+            .verify(&mechanism, public_key_handle, &signature_input, signature)
             .is_ok();
 
         // Logout session

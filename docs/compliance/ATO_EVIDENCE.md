@@ -1706,3 +1706,8 @@ of a production HSM's FIPS validation.
 ---
 
 **End of ATO Evidence Collection Guide**
+### PKCS#11 ECDSA token portability
+
+| Controls / SFR | Evidence | Expected result |
+|---|---|---|
+| SC-12, SC-13, FCS_COP.1 | `crates/ostrich-crypto/src/pkcs11/mod.rs`; SoftHSM integration lifecycle | FIPS AWS-LC SHA-2 digest followed by token-resident `CKM_ECDSA` signing; no dependency on optional combined mechanisms |

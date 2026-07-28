@@ -999,3 +999,9 @@ allowed_pqc_algorithms = [
 **Next Review Date:** 2026-02-01 (or upon completion of Phase 15)
 
 **Post-Quantum Transition Review:** Annually (monitor NIST PQC standardization)
+### PKCS#11 ECDSA digest boundary
+
+For ECDSA, SHA-256, SHA-384, or SHA-512 is computed by the FIPS-enabled AWS-LC
+module (FIPS 180-4), and the resulting digest is signed by the configured
+PKCS#11 token using `CKM_ECDSA` (FIPS 186-5). SoftHSM remains test-only and is
+not represented as a FIPS-validated production module.

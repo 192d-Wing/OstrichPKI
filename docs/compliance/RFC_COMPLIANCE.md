@@ -1581,3 +1581,9 @@ consumed by the TAMP messages above.
 ---
 
 **Next Review Date:** 2026-02-01 (or upon completion of Phase 15)
+### RFC 5758 §3.2 — ECDSA with SHA-2
+
+PKCS#11 ECDSA operations hash the complete signed input with the SHA-2 function
+selected by the certificate signature algorithm, then submit that digest to
+`CKM_ECDSA`. The returned fixed-width `r || s` value continues through the
+existing X.509 DER conversion path.
