@@ -36,6 +36,10 @@ spec:
       serviceAccountName: {{ include "ostrich-pki.serviceAccountName" . }}
       securityContext:
         {{- include "ostrich-pki.podSecurityContext" . | nindent 8 }}
+      {{- if .Values.ca.bootstrap.enabled }}
+      initContainers:
+        {{- include "ostrich-pki.waitForCa" . | nindent 8 }}
+      {{- end }}
       containers:
         - name: ca
           securityContext:
@@ -55,6 +59,17 @@ spec:
               value: "0.0.0.0:{{ .Values.ca.rest.port }}"
             - name: CA_GRPC_ADDRESS
               value: "0.0.0.0:{{ .Values.ca.grpc.port }}"
+            - name: CA_REQUIRE_APPROVAL
+              value: {{ .Values.ca.requireApproval | quote }}
+            {{- if .Values.ca.hsm.existingSecret }}
+            - name: PKCS11_MODULE_PATH
+              value: {{ .Values.ca.hsm.modulePath | quote }}
+            - name: PKCS11_PIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ca.hsm.existingSecret }}
+                  key: {{ .Values.ca.hsm.pinKey }}
+            {{- end }}
             {{- if .Values.ca.caCert.certFile }}
             - name: CA_CERT_FILE
               value: {{ .Values.ca.caCert.certFile | quote }}
@@ -95,6 +110,10 @@ spec:
             {{- with .Values.ca.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- if .Values.ca.hsm.tokenPersistence.enabled }}
+            - name: hsm-tokens
+              mountPath: /app/tokens
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -105,6 +124,11 @@ spec:
         {{- end }}
         {{- with .Values.ca.extraVolumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.ca.hsm.tokenPersistence.enabled }}
+        - name: hsm-tokens
+          persistentVolumeClaim:
+            claimName: {{ include "ostrich-pki.hsmClaimName" . }}
         {{- end }}
       {{- with .Values.ca.nodeSelector }}
       nodeSelector:

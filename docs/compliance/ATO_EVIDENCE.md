@@ -1698,6 +1698,11 @@ tsc --noEmit + vite build (services/npe-portal/web)    # exit 0
 helm template ... npe-portal-*                          # renders (deployment/service/configmap/ingress)
 ```
 
+EST external-issuer deployment evidence is defined in
+`docs/compliance/EST_ISSUER_INTEGRATION.md`. The Helm profile is an explicitly
+enabled, disposable test boundary; SoftHSM results do not constitute evidence
+of a production HSM's FIPS validation.
+
 ---
 
 **End of ATO Evidence Collection Guide**

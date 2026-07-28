@@ -2325,6 +2325,7 @@ ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
 | 2.6 | 2026-06-23 | OstrichPKI Team | TAMP (RFC 5934) manager: FMT_SMF.1 (trust anchor management functions), FCS_COP.1 (CMS sign/verify), FAU_GEN.1 (TampProtocol audit), FPT_STM.1 — `ostrich-tamp` crate + `ostrich-tamp-server` |
 | 2.7 | 2026-06-26 | OstrichPKI Team | NPE Portal: FIA_UAU.1 / FIA_X509_EXT.1-.2 (mTLS cert auth), FMT_SMR.2 (4 NPE roles), FTA_SSL.1/.3 (30-min inactivity), FAU_GEN.1/.2 (auth audit), FMT_SMF.1 (consent/session mgmt) — `ostrich-npe-portal` |
 | 2.8 | 2026-06-29 | OstrichPKI Team | NPE Portal workflows: FDP_CER_EXT.3 / FDP_SEPP.1 (RA approval + override, engine-gated segregation), FMT_SMR.2 / FMT_MTD.1 (CAA user mgmt + self-action block + role ceiling), FMT_SMF.1 / FDP_ACF.1 (namespace + system-config mgmt), FCS_CKM.1 / FCS_COP.1 (EFS PKCS#12 delivery), FDP_CER_EXT.2 (bulk enrollment); container image + Helm chart |
+| 2.9 | 2026-07-27 | OstrichPKI Team | FCS_CKM.1/FCS_STG_EXT.1/FMT_SMF.1 test evidence: opt-in P-384 SoftHSM CA bootstrap and EST external-issuer integration profile. |
 
 ---
 

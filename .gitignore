@@ -35,3 +35,6 @@ deploy/cluster/
 # Stray curl cookie jars from local verification (never commit; may hold session tokens)
 /cj*.txt
 /*.cookies
+
+# Helm dependency archives are reproducibly restored from Chart.lock.
+/deploy/helm/ostrich-pki/charts/

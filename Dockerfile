@@ -186,6 +186,21 @@ ENV CA_REST_ADDRESS=0.0.0.0:8080
 ENTRYPOINT ["ostrich-ca-server"]
 
 # ==============================================================================
+# Stage 3b: CA Bootstrap Job
+# ==============================================================================
+FROM runtime-base AS ca-init-service
+
+LABEL org.opencontainers.image.title="OstrichPKI CA Bootstrap"
+LABEL org.opencontainers.image.description="One-shot SoftHSM-backed CA initialization"
+LABEL org.opencontainers.image.vendor="OstrichPKI"
+
+COPY --from=builder /app/target/release/ostrich-init /usr/local/bin/
+COPY docker/ca-init.sh /usr/local/bin/ca-init.sh
+
+USER ostrich
+ENTRYPOINT ["/usr/local/bin/ca-init.sh"]
+
+# ==============================================================================
 # Stage 4: ACME Service
 # ==============================================================================
 FROM runtime-base AS acme-service

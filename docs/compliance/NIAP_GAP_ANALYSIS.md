@@ -1566,3 +1566,4 @@ psql ostrich -c "SELECT * FROM audit_events WHERE event_type LIKE 'FMT_%'" > evi
 - **Next Review:** After Phase 15 completion (estimate: 4 weeks)
 - **Change Log:**
   - 2026-01-03: Initial gap analysis created based on NIAP PP-CA v2.1 evaluation
+  - 2026-07-27: Added repeatable FCS_CKM.1/FCS_STG_EXT.1 deployment evidence for the EST external-issuer integration profile; production HSM certification remains outside this lab boundary.
