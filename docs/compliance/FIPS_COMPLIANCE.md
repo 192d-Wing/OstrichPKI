@@ -1010,3 +1010,9 @@ not represented as a FIPS-validated production module.
 Kubernetes TCP probes do not negotiate cryptography or bypass client
 authentication. Application traffic remains protected by the EST service's
 TLS 1.3 configuration and configured trust anchors.
+
+### EST Basic bootstrap transport
+
+Basic bootstrap remains protected by the same TLS 1.3 server-authenticated
+channel. Optional client-certificate negotiation changes authentication
+selection, not the approved transport cryptography.

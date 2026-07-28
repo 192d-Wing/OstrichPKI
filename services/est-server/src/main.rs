@@ -698,11 +698,18 @@ async fn main() -> Result<()> {
         settings.tls_key,
         tls_client_ca,
     )?
-    // With the bridge on, request (but do not require) a client certificate: the
-    // portal presents one and takes the trusted-proxy path, while in-cluster
-    // bearer clients without a certificate still complete the handshake.
+    // Bootstrap fallbacks must complete the TLS handshake without a client
+    // certificate before HTTP authentication can run. Request and validate a
+    // certificate when one is presented, but do not require it at the TLS
+    // layer for the trusted-proxy bridge or Basic bootstrap mode. The HTTP
+    // middleware still rejects unauthenticated requests fail closed.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: AC-3, IA-2, SC-8
+    // - NIAP PP-CA: FIA_UAU.5, FTP_ITC.1
+    // - RFC 7030 §3.2.3 - HTTP Basic bootstrap over authenticated TLS
     .map(|s| {
-        if trusted_proxy.is_some() {
+        if trusted_proxy.is_some() || auth_mode == EstAuthMode::MtlsWithBasicFallback {
             s.with_optional_client_auth(true)
         } else {
             s

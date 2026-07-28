@@ -1976,3 +1976,11 @@ The Helm deployment uses TCP socket probes for an EST listener configured with
 a client CA. Kubernetes native HTTP probes cannot present a client certificate;
 the chart therefore verifies listener availability without weakening mandatory
 mTLS or adding an unauthenticated HTTP exception.
+### EST Basic bootstrap TLS negotiation
+
+**Controls:** AC-3, IA-2, SC-8
+
+When HTTP Basic bootstrap is explicitly enabled, the TLS 1.3 listener requests
+and validates a client certificate when presented but permits a
+certificate-less handshake so HTTP authentication can execute. Requests
+without a valid client certificate or valid Basic credential remain denied.
