@@ -148,9 +148,9 @@ Database URL construction
 */}}
 {{- define "ostrich-pki.databaseUrl" -}}
 {{- if .Values.postgresql.enabled }}
-{{- printf "postgresql://%s:$(DATABASE_PASSWORD)@%s-postgresql:5432/%s" .Values.postgresql.auth.username .Release.Name .Values.postgresql.auth.database }}
+{{- printf "postgresql://%s:$(DATABASE_PASSWORD)@%s-postgresql:5432/%s?sslmode=disable" .Values.postgresql.auth.username .Release.Name .Values.postgresql.auth.database }}
 {{- else }}
-{{- printf "postgresql://%s:$(DATABASE_PASSWORD)@%s:%d/%s" .Values.externalDatabase.user .Values.externalDatabase.host (.Values.externalDatabase.port | int) .Values.externalDatabase.database }}
+{{- printf "postgresql://%s:$(DATABASE_PASSWORD)@%s:%d/%s?sslmode=%s" .Values.externalDatabase.user .Values.externalDatabase.host (.Values.externalDatabase.port | int) .Values.externalDatabase.database (.Values.externalDatabase.sslMode | default "require") }}
 {{- end }}
 {{- end }}
 
