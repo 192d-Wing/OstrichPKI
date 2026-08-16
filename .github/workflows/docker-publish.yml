@@ -142,7 +142,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Upload ${{ matrix.arch }} digests
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digests-${{ matrix.arch }}
           path: /tmp/digests/*
