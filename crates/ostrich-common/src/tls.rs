@@ -161,6 +161,22 @@ impl TlsSettings {
         let mut config = builder
             .with_single_cert(certs, key)
             .map_err(|e| Error::Config(format!("TLS certificate/key rejected: {e}")))?;
+
+        // SC-13 fail-closed: never serve TLS that is not FIPS-validated. `fips()`
+        // is true only when the crypto provider is the aws-lc-rs FIPS module and
+        // every enabled protocol version / cipher suite / key-exchange group is
+        // FIPS-approved. A false here means a build/feature regression (e.g. the
+        // `fips` feature was dropped, or a non-FIPS provider leaked in), so refuse
+        // to start rather than silently degrade the transport.
+        // NIST 800-53: SC-13 (FIPS-validated cryptography), SC-8.
+        if !config.fips() {
+            return Err(Error::Config(
+                "TLS configuration is not FIPS-compliant: expected the aws-lc-rs \
+                 FIPS provider (rustls `fips` feature). Refusing to serve."
+                    .to_string(),
+            ));
+        }
+
         config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Ok(config)
     }
@@ -333,6 +349,26 @@ fn tls_err(action: &str, path: &std::path::Path, err: impl std::fmt::Display) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aws_lc_rs_provider_is_in_fips_mode() {
+        // SC-13: the serving TLS provider must be the aws-lc-rs FIPS module. A
+        // ClientConfig needs no certificate, so this checks the provider/suite
+        // posture directly: `fips()` is true only when the aws-lc-rs provider is
+        // running in FIPS mode AND the enabled TLS 1.3 suites/groups are all
+        // FIPS-approved. Fails if the rustls `fips` feature is ever dropped — the
+        // same regression `TlsSettings::load` refuses to start on.
+        let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("TLS 1.3 must be supported by the FIPS provider")
+            .with_root_certificates(RootCertStore::empty())
+            .with_no_client_auth();
+        assert!(
+            config.fips(),
+            "aws-lc-rs provider is not in FIPS mode (is the rustls `fips` feature enabled?)"
+        );
+    }
 
     #[test]
     fn from_options_none_when_unconfigured() {
