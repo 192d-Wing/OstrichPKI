@@ -102,7 +102,7 @@ spki = "0.7"
 # 0.10 introduces a type-level split (ObjectIdentifier<39> vs the un-parameterized
 # 0.9 type) that propagates through every AttributeType / extn_id usage.
 const-oid = { version = "0.9", features = ["db"] }
-pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
+pkcs8 = { version = "0.11", features = ["encryption", "pem"] }
 pkcs1 = { version = "0.7", features = ["pem"] }
 # PKCS#12 (RFC 7292) for EFS server-side key delivery (matches der 0.7 / cms 0.2).
 # `kdf` enables the RFC 7292 Appendix B key-derivation used for the PKCS#12 MAC.
