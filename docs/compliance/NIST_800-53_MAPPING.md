@@ -731,11 +731,18 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 - Git version control for all code changes
 - Database migrations for schema changes
+- AI-assisted multi-role review workflow ([.claude/skills/ostrich-workflow/SKILL.md](../../.claude/skills/ostrich-workflow/SKILL.md)):
+  each change is planned, implemented, tested, and independently reviewed by
+  security, NIST 800-53/NIAP, PQC/FIPS crypto, and RFC conformance roles before
+  a recorded PASS/FAIL gate (role definitions in [.claude/agents/](../../.claude/agents/))
 
 **Evidence:**
 
 - ✅ All code changes tracked in git
 - ✅ Database migrations numbered and ordered
+- 🟡 Per-change review record (`gate.md`, `findings-*.md`) produced by the
+  workflow; it is a developer-side review aid, not a substitute for human
+  change approval
 - 🔴 No formal change approval process
 
 **Gaps:**
@@ -1954,6 +1961,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 1.8 | 2026-06-26 | OstrichPKI Team | NPE Portal (`ostrich-npe-portal`): IA-2/IA-5(2) mTLS OID→role auth, CM-6 fail-closed mTLS, AC-3/AC-6 four NPE roles + identity-forwarding allowlisted proxy, AC-8 USG consent, AC-12 30-min inactivity, SC-23 cert-bound sessions, AU-2/AU-3/AU-12 auth audit |
 | 1.9 | 2026-06-26 | OstrichPKI Team | CM-6 secure config: serverAuth (TLS server) certificate profiles capped at 397 days in `ostrich-x509` secure-defaults validation (Apple/iOS / CA-Browser Forum); NPE portal surfaces the advisory 397-day warning. |
 | 2.0 | 2026-07-27 | OstrichPKI Team | CM-2/CM-6/IA-5/IA-7/SC-12/SC-17/SA-11: explicit SoftHSM-backed EST external-issuer integration profile and fail-closed CA bootstrap. See `EST_ISSUER_INTEGRATION.md`. |
+| 2.1 | 2026-10-23 | OstrichPKI Team | CM-3/SA-11: added multi-agent development workflow (`.claude/skills/ostrich-workflow`, `.claude/agents/`) with independent security, NIST 800-53/NIAP, PQC/FIPS, and RFC review roles and a recorded quality gate. CM-3 status unchanged (Partial). |
 
 ---
 
