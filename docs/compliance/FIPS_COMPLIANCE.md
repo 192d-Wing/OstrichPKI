@@ -1016,3 +1016,8 @@ TLS 1.3 configuration and configured trust anchors.
 Basic bootstrap remains protected by the same TLS 1.3 server-authenticated
 channel. Optional client-certificate negotiation changes authentication
 selection, not the approved transport cryptography.
+
+Provisioning the bootstrap identity with the fixed `EstEnrollee` role changes
+authorization only. Password hashing remains Argon2id outside the claimed
+FIPS cryptographic boundary; EST transport and CA signing continue to use the
+configured TLS 1.3 and HSM/AWS-LC cryptographic paths.

@@ -212,6 +212,12 @@ est:
   allowBearerAuth: true
   # Permit HTTP Basic only as a TLS-protected bootstrap fallback.
   allowBasicAuth: false
+  # Optional least-privilege Basic bootstrap account created by the explicit
+  # CA bootstrap Job. The role is fixed to EstEnrollee (SubmitRequest only).
+  basicBootstrap:
+    username: ""
+    existingSecret: ""
+    passwordKey: est-enrollee-password
 
   # mTLS configuration (required per RFC 7030)
   # NIST 800-53: SC-8 (Transmission Confidentiality)

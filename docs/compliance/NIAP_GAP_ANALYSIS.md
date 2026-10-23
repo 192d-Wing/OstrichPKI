@@ -1582,3 +1582,7 @@ authentication bypass or restart loop.
 The TLS layer now permits certificate-less negotiation only when the operator
 explicitly enables Basic bootstrap. HTTP authentication remains mandatory and
 fail-closed, closing the mismatch between TLS and application authentication.
+
+The deployment profile also provisions Basic bootstrap as `EstEnrollee`
+instead of reusing an Administrator account. This closes the authorization
+mismatch without adding `SubmitRequest` to a privileged administrative role.

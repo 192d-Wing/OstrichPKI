@@ -7,7 +7,6 @@ ca:
   bootstrap:
     enabled: true
     existingSecret: ostrich-ci-bootstrap
-    adminUsername: integration.lab.example.mil
     keyType: EcP384
     commonName: OstrichPKI EST Issuer Integration Root
   hsm:
@@ -20,6 +19,10 @@ ca:
 est:
   allowBearerAuth: false
   allowBasicAuth: true
+  basicBootstrap:
+    username: integration.lab.example.mil
+    existingSecret: ostrich-ci-bootstrap
+    passwordKey: est-enrollee-password
   tls:
     existingSecret: ostrich-ci-est-tls
     certFile: /app/certs/tls.crt

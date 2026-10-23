@@ -17,6 +17,12 @@ COMPLIANCE MAPPING:
 {{- if not .Values.ca.hsm.existingSecret }}
 {{- fail "ca.bootstrap.enabled requires ca.hsm.existingSecret" }}
 {{- end }}
+{{- if and .Values.est.basicBootstrap.username (not .Values.est.allowBasicAuth) }}
+{{- fail "est.basicBootstrap.username requires est.allowBasicAuth=true" }}
+{{- end }}
+{{- if and .Values.est.basicBootstrap.username (not .Values.est.basicBootstrap.existingSecret) }}
+{{- fail "est.basicBootstrap.username requires est.basicBootstrap.existingSecret" }}
+{{- end }}
 {{- if and (not .Values.ca.hsm.tokenPersistence.existingClaim) (not .Values.ca.hsm.tokenPersistence.enabled) }}
 {{- fail "CA bootstrap requires an HSM token PVC" }}
 {{- end }}
@@ -100,6 +106,15 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.ca.bootstrap.existingSecret }}
                   key: {{ .Values.ca.bootstrap.adminPasswordKey }}
+            {{- end }}
+            {{- if .Values.est.basicBootstrap.username }}
+            - name: CA_EST_ENROLLEE_USERNAME
+              value: {{ .Values.est.basicBootstrap.username | quote }}
+            - name: CA_EST_ENROLLEE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.est.basicBootstrap.existingSecret }}
+                  key: {{ .Values.est.basicBootstrap.passwordKey }}
             {{- end }}
           args:
             - --key-type
