@@ -8,6 +8,31 @@
 
 ---
 
+## Multi-Agent Development Workflow (CM-3 / SA-11 / CA-2)
+
+Changes can be run through the `/ostrich-workflow` skill, which coordinates
+specialist Claude Code subagents: architect, coder, QA engineer, security
+reviewer, NIST 800-53 Rev 5 / NIAP reviewer, PQC/FIPS crypto reviewer, RFC
+conformance reviewer, compliance scribe, and release engineer. Reviewers are
+read-only and work independently; must-fix findings loop back to the coder and
+are re-verified by the reviewer that raised them.
+
+| Control | Framework   | Evidence |
+|---------|-------------|----------|
+| CM-3    | NIST 800-53 | Per-change record in `target/agent-workflow/<run>/`: `plan.md`, `findings-*.md`, `fixes-round-*.md`, `gate.md` (PASS / PASS WITH POA&M / FAIL) |
+| SA-11   | NIST 800-53 | `qa-report.md` lists every gate command with result; gates not run are recorded as NOT RUN ([quality-gates.md](../../.claude/skills/ostrich-workflow/references/quality-gates.md)) |
+| CA-2    | NIST 800-53 | Independent security, control, crypto, and protocol reviews per [triage-matrix.md](../../.claude/skills/ostrich-workflow/references/triage-matrix.md) |
+
+Run records live under the gitignored `target/` directory. To keep one as ATO
+evidence, copy it into the evidence store described in §5. The workflow is a
+developer-side aid; it does not replace human change approval (see the CM-3
+gap in `NIST_800-53_MAPPING.md`).
+
+Definitions: [.claude/skills/ostrich-workflow/SKILL.md](../../.claude/skills/ostrich-workflow/SKILL.md),
+[.claude/agents/](../../.claude/agents/).
+
+---
+
 ## NPE Portal → CA Identity Bridge over mTLS (AC-17 / SC-8 / IA-2 / AC-3)
 
 The NPE portal forwards each operator's identity to the CA as `X-Npe-*` headers.

@@ -6,6 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 OstrichPKI is a Public Key Infrastructure (PKI) system written in Rust. The project is currently in its initial setup phase.
 
+## Multi-Agent Workflow
+
+For features, bug fixes, and reviews that need the full team, use the
+`/ostrich-workflow` skill (`.claude/skills/ostrich-workflow/SKILL.md`). The main
+conversation acts as orchestrator and delegates to the subagents in
+`.claude/agents/`: `pki-architect`, `pki-coder`, `qa-engineer`,
+`security-reviewer`, `nist-800-53-reviewer`, `pqc-reviewer`,
+`rfc-conformance-reviewer`, `compliance-scribe`, `release-engineer`.
+
+- `/ostrich-workflow <task>` — plan → build → test → parallel review → fix loop → docs → release gate
+- `/ostrich-workflow review [base-ref]` — review the current diff only
+- `/ostrich-workflow plan <task>` — plan only
+
 ## Development Commands
 
 ### Rust Standard Commands
