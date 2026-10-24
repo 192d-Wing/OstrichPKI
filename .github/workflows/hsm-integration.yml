@@ -1,0 +1,96 @@
+# PKCS#11 / HSM integration suite against SoftHSM2 (Linux)
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SA-11 (Developer Testing), IA-7 (Cryptographic Module
+#   Authentication; positive authentication path only - user-PIN login
+#   succeeds), SC-12/SC-13 (key generation and signing through the HSM provider)
+# - NIAP PP-CA: FCS_CKM.1, FCS_COP.1 (test evidence)
+# - NIST 800-53: CM-6 - least-privilege token (contents: read), no secrets
+# SoftHSM is a test double: the token, PINs and keys below are throwaway test
+# values (they match crates/ostrich-crypto/tests/pkcs11_integration_test.rs).
+# The token store lives under $RUNNER_TEMP and is never cached or uploaded; only
+# the test log ($RUNNER_TEMP/pkcs11.txt) is uploaded as a durable SA-11 record.
+
+name: HSM integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Only superseded PR runs are cancelled; push-to-main runs always complete.
+concurrency:
+  group: hsm-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  pkcs11-softhsm:
+    name: PKCS#11 suite (SoftHSM2)
+    # Pinned image so the distro SoftHSM version is a fixed baseline.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install SoftHSM2 and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends softhsm2 cmake clang libclang-dev golang-go perl pkg-config nasm protobuf-compiler libssl-dev
+          softhsm2-util --version
+          go version
+          test -f "$PKCS11_MODULE_PATH"
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: pkcs11
+
+      - name: Initialise SoftHSM token (label matches pkcs11_integration_test.rs)
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/softhsm"
+          mkdir -p "$d/tokens" && chmod 700 "$d" "$d/tokens"
+          printf 'directories.tokendir = %s\nobjectstore.backend = file\nobjectstore.umask = 0077\nlog.level = INFO\n' "$d/tokens" > "$d/softhsm2.conf"
+          echo "SOFTHSM2_CONF=$d/softhsm2.conf" >> "$GITHUB_ENV"
+          SOFTHSM2_CONF="$d/softhsm2.conf" softhsm2-util --init-token --free --label "OstrichPKI-Test" --pin 1234 --so-pin 12345678
+          SOFTHSM2_CONF="$d/softhsm2.conf" softhsm2-util --show-slots
+
+      # Output is kept as a durable test record (SA-11 evidence): the full test
+      # log plus the SoftHSM/rustc versions it ran against.
+      - name: PKCS#11 integration tests (serial; one token, shared session state)
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/pkcs11.txt"
+          rc=0
+          cargo test -p ostrich-crypto --test pkcs11_integration_test --locked -- --test-threads=1 2>&1 | tee "$out" || rc=$?
+          {
+            echo "--- environment"
+            echo "commit: $GITHUB_SHA"
+            echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+            echo "softhsm2-util --version: $(softhsm2-util --version)"
+            rustc -V
+            echo "exit status: $rc"
+          } >> "$out"
+          exit "$rc"
+
+      - name: Upload PKCS#11 test record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pkcs11-softhsm-results
+          path: ${{ runner.temp }}/pkcs11.txt
+          if-no-files-found: warn
+          retention-days: 90

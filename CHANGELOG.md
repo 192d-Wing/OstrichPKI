@@ -48,7 +48,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and never calls `extract()`. The crate was bumped anyway.
   - **NIST 800-53**: SI-2, SI-10
 
+#### Blocking dependency gate in CI (cargo audit + cargo deny)
+
+##### workspace (CI)
+
+- `.github/workflows/audit.yml` ("dependency gate") is now **blocking**. `continue-on-error` is removed.
+  The workflow runs on every pull request with no path filters, so it can be a required status check.
+  It also runs on pushes to `main`, weekly (Mon 06:00 UTC) and on manual dispatch. It has two jobs:
+  - `cargo audit`: `cargo audit --deny warnings` (cargo-audit 0.22.2). Unmaintained, unsound and
+    yanked crates now fail the job, not only vulnerabilities.
+  - `cargo deny`: `cargo deny check` (cargo-deny 0.20.2), covering advisories, bans, licenses and
+    sources.
+  - The `rustsec/audit-check` action was replaced with checksum-verified prebuilt binaries
+    (`taiki-e/install-action`).
+- The only exception path for advisories is `.cargo/audit.toml`. `deny.toml [advisories].ignore` must
+  match it exactly. Current ignores, each with a rationale:
+  - RUSTSEC-2023-0071: risk acceptance, tracked as a POA&M item.
+  - RUSTSEC-2024-0436.
+  - RUSTSEC-2025-0134.
+  - RUSTSEC-2026-0097: POA&M, remove after the rand 0.8.6 lockfile bump.
+- Removed stale ignores: RUSTSEC-2026-0118, RUSTSEC-2025-0141 and RUSTSEC-2024-0370 no longer match the
+  dependency graph.
+- `deny.toml` was rewritten for the cargo-deny 0.18+ schema, which removed five keys. `cargo deny check`
+  now passes with no blanket ignores.
+  - The full feature set and all targets are evaluated.
+  - Non-default licenses are allowed only for named crates:
+    - OpenSSL: `aws-lc-fips-sys`
+    - CDLA-Permissive-2.0: `webpki-roots`, `webpki-root-certs`
+    - MIT-0: `borrow-or-share`
+- Every GitHub Actions `uses:` is pinned to a full commit SHA, and every checkout sets
+  `persist-credentials: false`. The GitLab `cargo install` steps pin cargo-audit 0.22.2 and
+  cargo-deny 0.20.2.
+- **NIST 800-53**: RA-5, SI-2, SR-3, SR-4, SR-11, SI-7, CM-6
+
 ### Changed
+
+#### CI hardening: pinned Rust toolchain and PKCS#11 tests on Linux
+
+##### workspace (build and CI)
+
+- New `rust-toolchain.toml` pins Rust **1.99.1** with the rustfmt and clippy components (minimal profile).
+  The MSRV is unchanged (`rust-version = "1.94"`). Every build uses this one version:
+  - GitHub Actions: `rustup toolchain install` reads the file. This replaces
+    `dtolnay/rust-toolchain@stable`.
+  - Release images: `Dockerfile` and `services/web-ui/Dockerfile` use `rust:1.99.1-bookworm`
+    (was `rust:1.96-bookworm`).
+  - GitLab CI: uses `rust:1.99.1-bookworm` (was `rust:1.92.0-trixie`, which is below the MSRV).
+- New blocking `Toolchain pin consistency` job in `ci.yml`. It fails if any `rust:<ver>-` image tag
+  disagrees with `rust-toolchain.toml` (CM-2).
+- GitLab `.rust-base` now installs the build dependencies of the FIPS module (aws-lc-fips-sys 0.14.2):
+  clang, libclang-dev, cmake, golang-go and perl. These mirror the Dockerfiles.
+- New `.github/workflows/hsm-integration.yml` job, `PKCS#11 suite (SoftHSM2)`. It runs
+  `cargo test -p ostrich-crypto --test pkcs11_integration_test` against SoftHSM2 on ubuntu-24.04:
+  - one test thread;
+  - a throwaway `OstrichPKI-Test` token;
+  - a token store under `$RUNNER_TEMP` that is never cached.
+- `make install-softhsm` creates the token the PKCS#11 suite looks for:
+  - label `OstrichPKI-Test` (was `ostrich-dev`), initialised with `--free`;
+  - safe to re-run;
+  - token directories with mode 0700 and umask 0077;
+  - prints the `SOFTHSM2_CONF` and `PKCS11_MODULE_PATH` exports it needs.
+- New `make test-pkcs11` target. It documents the macOS (Homebrew SoftHSM 2.7.0 + OpenSSL 4) workaround.
+- GitLab SoftHSM jobs now export `SOFTHSM2_CONF`, so the config they write is actually read. They
+  initialise the token with `--free` instead of `--slot 0`.
+- **NIST 800-53**: CM-2, CM-3, SA-11, SA-15, IA-7
+
+##### ostrich-integration-tests
+
+- `tests/Cargo.toml`: added `license.workspace = true`. cargo-deny rejected the crate as unlicensed.
 
 #### AWS-LC FIPS module update and zip 9 migration
 

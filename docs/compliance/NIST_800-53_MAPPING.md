@@ -708,13 +708,29 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - ✅ Database schema migrations tracked
 - ✅ Dependency baseline pinned in `Cargo.lock`; changes recorded in [CHANGELOG.md](../../CHANGELOG.md)
 - 🟡 **Build toolchain and crypto-module baseline (recorded 2026-10-23):**
-  - Toolchain: rustc **1.99.1** stable (host used for the 2026-10-23 gates);
-    workspace MSRV `rust-version = "1.94"`. CI installs
-    `dtolnay/rust-toolchain@stable`, which floats; there is no
-    `rust-toolchain.toml`, so the toolchain is recorded, not pinned.
-    `cargo clippy -D warnings` results depend on the toolchain version
-    (for example the `#[expect(clippy::result_large_err)]` attributes in
-    `services/web-ui/src/server/auth/handlers.rs`).
+  - Toolchain: pinned to rustc **1.99.1** by
+    [rust-toolchain.toml](../../rust-toolchain.toml) (components `rustfmt`,
+    `clippy`; profile `minimal`). Workspace MSRV is unchanged at
+    `rust-version = "1.94"`. GitHub CI installs the pinned toolchain with
+    `rustup toolchain install` (the floating `dtolnay/rust-toolchain@stable`
+    was removed). Both Dockerfiles and the GitLab `.rust-base` job use
+    `rust:1.99.1-bookworm`. The CI job `Toolchain pin consistency`
+    ([.github/workflows/ci.yml](../../.github/workflows/ci.yml)) fails if any
+    tracked `*Dockerfile*` or `.gitlab-ci.yml` names a `rust:` image that does
+    not start with `rust:<channel>-` (local positive and negative checks:
+    `fixes-round-1.md`, 18 cases). Change not yet merged; branch
+    `claude/ci-hardening`.
+  - **Pin inventory (CI tooling, 2026-10-23):** cargo-audit **0.22.2** and
+    cargo-deny **0.20.2** (GitHub: `taiki-e/install-action` at a pinned SHA
+    with checksum-verified manifests and `fallback: none`; GitLab:
+    `cargo install --locked --version`); GitHub runners `ubuntu-24.04`. Every
+    `uses:` in `ci.yml`, `audit.yml` and `hsm-integration.yml` is a full commit
+    SHA: `actions/checkout` v7.0.1 `3d3c42e5…`, `Swatinem/rust-cache` v2.9.3
+    `d1527c8f…`, `taiki-e/install-action` v2.87.31 `1e29709c…`,
+    `actions/setup-node` v4.4.0 `49933ea5…`, `actions/upload-artifact` v4.6.2
+    `ea165f8d…`. Container images are tag-pinned (`rust:1.99.1-bookworm`), not
+    digest-pinned. Not covered: `docker-publish.yml`, `cargo-chef` and several
+    GitLab tools and images (POAM-2026-10-23-15).
   - FIPS cryptographic module: **AWS-LC FIPS 4.2.0** built from source by
     `aws-lc-fips-sys` **0.14.2** (previously AWS-LC FIPS 3.3.0 via 0.13.14),
     reached through `aws-lc-rs` 1.18.2 (`fips` feature). TLS: `rustls` 0.23.46,
@@ -723,15 +739,15 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   - Module-source pin: [.cargo/config.toml](../../.cargo/config.toml) sets
     `AWS_LC_FIPS_SYS_USE_SYSTEM = "0"` (`force = true`) so the build uses the
     bundled, `Cargo.lock`-pinned module and never auto-links a system AWS-LC
-    (see CM-6). As of 2026-10-23 this file is new and not yet committed; the
-    baseline only holds once it is in version control.
+    (see CM-6). The file is committed on `main` (commit 05ea47a, PR #180).
 - 🔴 No deployment baseline configuration documented
 
 **Gaps:**
 
 - No formal configuration baseline documentation
-- No configuration item inventory
-- Rust toolchain not pinned (`rust-toolchain.toml` absent; CI uses floating `stable`)
+- No configuration item inventory (the CI pin inventory above covers build tooling only)
+- `docker-publish.yml`, `cargo-chef` and several GitLab tools and images are not version- or SHA-pinned (POAM-2026-10-23-15)
+- The pin inventory is not yet merged to `main` and no CI run has executed it
 
 **Remediation:** Phase 16 - Document baseline configuration for production deployment
 
@@ -1035,7 +1051,7 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 - [crates/ostrich-crypto/src/pkcs11/mod.rs:58-142](../../crates/ostrich-crypto/src/pkcs11/mod.rs#L58-L142) - PKCS#11 provider initialization with PIN authentication
 - [crates/ostrich-crypto/src/pkcs11/mod.rs:155-172](../../crates/ostrich-crypto/src/pkcs11/mod.rs#L155-L172) - Per-session authentication
-- [crates/ostrich-crypto/tests/pkcs11_integration_test.rs:56-64](../../crates/ostrich-crypto/tests/pkcs11_integration_test.rs#L56-L64) - Authentication testing
+- [crates/ostrich-crypto/tests/pkcs11_integration_test.rs:80-106](../../crates/ostrich-crypto/tests/pkcs11_integration_test.rs#L80-L106) - Authentication testing (`init_test_provider` user-PIN login and `test_pkcs11_provider_initialization`; positive path only)
 
 **Evidence:**
 
@@ -1070,7 +1086,7 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 **Control:** The organization monitors and scans for vulnerabilities in the system and hosted applications, analyzes scan reports, and remediates legitimate vulnerabilities in organization-defined response times.
 
-**Implementation Status:** 🟡 **Partial** (scan exists; it is advisory and response times are not yet approved)
+**Implementation Status:** 🟡 **Partial** (the scan fails CI on new advisories, but response times are not approved and the gate is not a required check)
 
 **NIAP Mapping:**
 
@@ -1078,29 +1094,31 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 **Implementation:**
 
-- [.github/workflows/audit.yml](../../.github/workflows/audit.yml) - `cargo audit` (`rustsec/audit-check@v2`) on pushes to `main` and pull requests that change `Cargo.toml`/`Cargo.lock`, plus a weekly schedule (Monday 06:00 UTC) and manual dispatch
+- [.github/workflows/audit.yml](../../.github/workflows/audit.yml) - "dependency gate" workflow (CI hardening, 2026-10-23; branch `claude/ci-hardening`, not yet merged). Job `cargo audit` runs `cargo audit --deny warnings` (cargo-audit 0.22.2), so vulnerabilities and unmaintained, unsound or yanked warnings all fail the job. Job `cargo deny` runs `cargo deny check` (cargo-deny 0.20.2: advisories, bans, licenses, sources). No `continue-on-error`. Least-privilege token (`contents: read`), `persist-credentials: false`, SHA-pinned actions
+- **Scan frequency (RA-5(a)):** every pull request (no path filter), every push to `main`, weekly (Monday 06:00 UTC), and manual dispatch. GitLab: `security:audit` and `security:deny` per merge request and on `main`/`develop`; `scheduled:security-scan` (audit and deny) on pipeline schedules
 - [.github/dependabot.yml](../../.github/dependabot.yml) - Dependabot dependency-update PRs
-- [.cargo/audit.toml](../../.cargo/audit.toml) - **authoritative risk-acceptance record** for Rust advisories: 7 ignored advisories, each with a written rationale (RUSTSEC-2023-0071 `rsa` Marvin, RUSTSEC-2026-0118 `hickory-proto`, and 5 unmaintained/unsound warnings)
+- [.cargo/audit.toml](../../.cargo/audit.toml) - **authoritative risk-acceptance record** and the only exception path for the gate: 4 ignored advisories, each with a rationale and a grep-able `# POAM:` tag (RUSTSEC-2023-0071 `rsa` Marvin, POAM-09; RUSTSEC-2026-0097 `rand` 0.8.5, POAM-11; RUSTSEC-2024-0436 `paste` and RUSTSEC-2025-0134 `rustls-pemfile`, both unmaintained, SA-22, POAM-12). [deny.toml](../../deny.toml) `[advisories].ignore` mirrors the same 4 IDs
 
 **Evidence:**
 
 - ✅ 2026-10-23 scan of `main` @ 88c10cd: **18 vulnerabilities, 4 warnings** (baseline saved in the run record)
 - ✅ 2026-10-23 scan after remediation (branch `claude/audit-advisories-clippy`): `cargo audit` with 1351 advisories loaded, 642 crates scanned, **0 vulnerabilities, 0 warnings**, exit 0 (cargo-audit 0.22.2). See SI-2 and [ATO_EVIDENCE.md §2.3](ATO_EVIDENCE.md#23-vulnerability-scan-results)
+- ✅ 2026-10-23 CI-hardening branch, local run: `cargo audit --deny warnings` exit 0 (642 crates); `cargo deny check` exit 0 (`advisories ok, bans ok, licenses ok, sources ok`); ignore lists identical in both files. No unused exception (no `advisory-not-detected` / `license-not-encountered` warnings). Negative checks: each of the 4 ignores was shown load-bearing in at least one of the two tools, and removing the `aws-lc-fips-sys`, `webpki-roots` or `borrow-or-share` license exception fails `cargo deny` (`qa-report.md` gates 6-16)
+- 🟡 No CI run of the new gate has been recorded yet
 
 **Gaps:**
 
-- **The scan is advisory and does not block.** The job `cargo audit (advisory)` sets `continue-on-error: true`, so a vulnerable lockfile does not fail CI or block a merge
+- **The gate is not a required check.** The workflow fails on a new advisory, but `main` has no branch protection (verified 2026-10-23), so a failing gate does not block a merge (POAM-2026-10-23-14). The gate workflow and exception files have no `CODEOWNERS` review (POAM-2026-10-23-13)
+- No documented procedure for a scheduled run that fails on an unchanged `Cargo.lock` (who triages, by when) (POAM-2026-10-23-03)
 - **Response times are not defined.** Exposure on `main` before the 2026-10-23 fix: h2 RUSTSEC-2026-0258 and quinn-proto RUSTSEC-2026-0339/0341/0342 (published 2026-08-17) were open 67 days. zip RUSTSEC-2026-0369 (CVSS 9.1, critical; published 2026-10-10) was open 13 days
 - Proposed remediation timeframes, **proposed — pending AO approval**: critical 15 days, high 30 days, medium and low 90 days, counted from advisory publication
-- `cargo deny check` cannot run: `deny.toml` uses keys removed in cargo-deny 0.20, so its license, ban, and advisory policy is not enforced (SEC-001 / QA-002)
-- The exception lists differ: `.cargo/audit.toml` ignores 7 advisories, while `deny.toml` ignores none. `.cargo/audit.toml` is the record of risk acceptance; `deny.toml` must mirror it once it can run (NIST-006)
-- Not verified: whether `rustsec/audit-check` can open issues with the workflow's `permissions: contents: read` token
 
 **Remediation (POA&M, see [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)):**
 
-- Make the `cargo audit` job blocking (remove `continue-on-error`) after AO approval of the timeframes
-- Migrate the `deny.toml` schema and mirror the `.cargo/audit.toml` exceptions
-- Track the `.cargo/audit.toml` POA&M notes (`rsa` RUSTSEC-2023-0071, `hickory-proto` RUSTSEC-2026-0118) as POA&M entries
+- Obtain AO approval of the remediation timeframes and document the red-scheduled-run procedure (POAM-03, narrowed)
+- Protect `main` and make `cargo audit`, `cargo deny` and `Toolchain pin consistency` required checks (POAM-14); add `CODEOWNERS` for the gate files (POAM-13)
+- Confirm the first green CI run of `cargo deny` on GitHub and GitLab (POAM-06, closed pending CI)
+- Bump `rand` to 0.8.6 and drop RUSTSEC-2026-0097 (POAM-11); keep the `rsa` (POAM-09) and SA-22 (POAM-12) acceptances under review
 
 **Evidence Required for ATO:**
 
@@ -1492,20 +1510,26 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - `ring` (no CMVP certificate) is still used outside the AWS-LC module: AES-256-GCM
   key wrapping in `crates/ostrich-kra/src/wrap.rs`, and gRPC TLS via `tonic`
   `tls-ring`
-- The cryptoki 0.11.1 update (RUSTSEC-2026-0286) has no executed PKCS#11 test
-  evidence: SoftHSM was not available on 2026-10-23 and no CI job runs
-  `pkcs11_integration_test` (QA-004)
+- PKCS#11 test evidence is partial. The CI job `PKCS#11 suite (SoftHSM2)`
+  ([.github/workflows/hsm-integration.yml](../../.github/workflows/hsm-integration.yml))
+  now exists, but has no recorded Linux run yet. The local macOS run on
+  2026-10-23 (non-standard invocation: test binary run directly with
+  `DYLD_INSERT_LIBRARIES`) gave 16 passed, 3 failed, 1 ignored. The 3 failures
+  are RSA-PSS signing through SoftHSM (`CKR_GENERAL_ERROR`), so RSA-PSS over
+  PKCS#11 is not demonstrated. The run does not exercise the
+  `CKA_ALLOWED_MECHANISMS` path fixed by cryptoki 0.11.1 (RUSTSEC-2026-0286)
+  (POAM-2026-10-23-07, narrowed)
 
 **Remediation:** Phase 12+ - Add post-quantum cryptography when HSM vendors provide support
 
 **Evidence Required for ATO:**
 
-- ✅ Cryptographic module inventory (SoftHSM for testing, production HSM TBD)
+- 🟡 Cryptographic module inventory (SoftHSM for testing, production HSM TBD)
 - ⚠️  FIPS 140-2/140-3 validation certificates (production HSM vendor to provide)
 - ✅ Algorithm usage matrix (documented in algorithm.rs and Phase 10 summary)
 - ✅ DER encoding test results (completed in Phase 8)
-- ✅ Signature generation/verification tests (18 integration tests in Phase 10)
-- ✅ HSM integration test results (SoftHSM validation complete)
+- 🟡 Signature generation/verification tests: `pkcs11_integration_test.rs` has 20 tests; local 2026-10-23 run 16 passed, 3 RSA-PSS failed, 1 ignored
+- 🟡 HSM integration test results: local macOS run only; Linux CI result pending (`hsm-integration.yml`, artifact `pkcs11-softhsm-results`)
 
 ---
 
@@ -1645,7 +1669,7 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 **Control:** The organization identifies, reports, and corrects system flaws, and installs security-relevant software updates within organization-defined time periods.
 
-**Implementation Status:** 🟡 **Partial** (flaws are corrected, but no approved time periods and no blocking gate)
+**Implementation Status:** 🟡 **Partial** (flaws are corrected and the CI gate fails on new advisories, but there are no approved time periods and the gate is not yet merge-blocking)
 
 **NIAP Mapping:**
 
@@ -1667,7 +1691,7 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 | RUSTSEC-2026-0382 | rustls-webpki | 0.103.13 → 0.103.16 | not scored | TLS peer path validation |
 | RUSTSEC-2026-0381 | webpki-roots | 1.0.5 → 1.0.11 | not scored | Transitive; the workspace-level declaration is unused by members (RFC-004) |
 | RUSTSEC-2026-0383 | webpki-root-certs | 1.0.5 → 1.0.11 | not scored | Transitive |
-| RUSTSEC-2026-0286 | cryptoki | 0.11.0 → 0.11.1 | not scored | PKCS#11 provider; `pkcs11/mod.rs` does not read `CKA_ALLOWED_MECHANISMS` (PQC review); no PKCS#11 test run (QA-004) |
+| RUSTSEC-2026-0286 | cryptoki | 0.11.0 → 0.11.1 | not scored | PKCS#11 provider; `pkcs11/mod.rs` does not read `CKA_ALLOWED_MECHANISMS` (PQC review); no PKCS#11 test run at remediation time (QA-004). Later on 2026-10-23: local SoftHSM run 16 passed / 3 RSA-PSS failed / 1 ignored; Linux CI pending |
 | RUSTSEC-2026-0385 | ctutils | 0.4.2 → 0.4.5 | not scored | sqlx-postgres SCRAM path only (PQC review) |
 | RUSTSEC-2026-0258 | h2 | 0.4.15 → 0.4.20 | not scored | HTTP/2 via hyper |
 | RUSTSEC-2026-0338 | quinn-proto | 0.11.15 → 0.11.19 | not scored | Target-specific transitive |
@@ -1692,8 +1716,9 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 **Gaps:**
 
 - No AO-approved flaw-remediation time periods (proposed values in RA-5, pending AO approval)
-- No blocking gate: a vulnerable dependency can be merged (RA-5)
-- The cryptoki fix has no executed PKCS#11 test evidence (QA-004)
+- The dependency gate fails in CI, but merge-blocking is pending required checks on `main` (POAM-2026-10-23-14); until then a vulnerable dependency can still be merged past a red check (RA-5)
+- `rand` 0.8.5 (RUSTSEC-2026-0097) has a fix available but is not yet bumped (POAM-2026-10-23-11)
+- The cryptoki fix has partial PKCS#11 test evidence only: a SoftHSM CI job exists; local macOS run 16 passed / 3 RSA-PSS failed / 1 ignored; Linux CI result pending (POAM-2026-10-23-07)
 
 **Remediation:** see RA-5 and the POA&M in [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)
 
@@ -2185,6 +2210,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 2.0 | 2026-07-27 | OstrichPKI Team | CM-2/CM-6/IA-5/IA-7/SC-12/SC-17/SA-11: explicit SoftHSM-backed EST external-issuer integration profile and fail-closed CA bootstrap. See `EST_ISSUER_INTEGRATION.md`. |
 | 2.1 | 2026-10-23 | OstrichPKI Team | CM-3/SA-11: added multi-agent development workflow (`.claude/skills/ostrich-workflow`, `.claude/agents/`) with independent security, NIST 800-53/NIAP, PQC/FIPS, and RFC review roles and a recorded quality gate. CM-3 status unchanged (Partial). |
 | 2.2 | 2026-10-23 | OstrichPKI Team | Dependency advisory remediation (cargo audit 18 vulnerabilities + 4 warnings → 0/0). New RA-5 and SI-2 sections (both Partial: the scan is advisory and response times are proposed, pending AO approval). Summary table: RA row added, SI and TOTAL rows recalculated. AWS-LC FIPS 4.2.0 (`aws-lc-fips-sys` 0.14.2) recorded in CM-2/SC-8/SC-13/TAMP, with the CMVP certificate for 4.2.0 pending confirmation (POA&M). CM-3 crypto-module review rule and CM-4 approval note. CM-6 `.cargo/config.toml` module pin. ML-DSA verification in TLS accepted (issuance still disabled). AC-17 stale TLS 1.3 gap removed. Cross-references: FTP_ITC.1 → SC-8, AC-17; FIA_X509_EXT.1 → IA-5(2), SC-17, SI-10. No status changes to existing controls. |
+| 2.3 | 2026-10-23 | OstrichPKI Team | CI hardening (branch `claude/ci-hardening`, not yet merged). CM-2: toolchain pinned by `rust-toolchain.toml` (1.99.1; MSRV 1.94 unchanged), CI pin inventory added, "not pinned" gap removed; module-pin file recorded as committed (05ea47a). RA-5: dependency-gate description (`cargo audit --deny warnings` + `cargo deny check`, fails on new advisories), scan frequency, 4 ignores with `# POAM:` IDs; obsolete deny/ignore-mismatch gaps removed; required-check and CODEOWNERS caveats added. SI-2: gate fails in CI, merge-blocking pending required checks. SC-13: PKCS#11 CI job exists, local 16/3/1, Linux pending; HSM evidence items ✅ → 🟡. IA-7: test line reference corrected to `:80-106`. **No control status changes; RA-5, SI-2, CM-2 stay Partial; SI-7 unchanged.** Summary table not recalculated. |
 
 ---
 

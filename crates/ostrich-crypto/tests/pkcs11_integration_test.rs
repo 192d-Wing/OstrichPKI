@@ -7,7 +7,7 @@
 //! Environment setup:
 //! ```bash
 //! # Initialize SoftHSM token (if not already done)
-//! softhsm2-util --init-token --slot 0 --label "OstrichPKI-Test" --so-pin 12345678 --pin 1234
+//! softhsm2-util --init-token --free --label "OstrichPKI-Test" --so-pin 12345678 --pin 1234
 //!
 //! # Set PKCS11_MODULE_PATH to SoftHSM library
 //! export PKCS11_MODULE_PATH=/usr/local/lib/softhsm/libsofthsm2.so  # macOS
@@ -20,7 +20,8 @@
 //! cargo test --test pkcs11_integration_test -- --test-threads=1
 //! ```
 //!
-//! NIST 800-53: CA-8 - Penetration testing (cryptographic module validation)
+//! NIST 800-53: SA-11 (Developer Testing), IA-7 (Cryptographic Module Authentication),
+//! SC-12/SC-13 (key generation and signing through the PKCS#11 provider)
 
 use ostrich_crypto::key::ProviderId;
 use ostrich_crypto::pkcs11::Pkcs11Provider;

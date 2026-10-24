@@ -644,8 +644,21 @@ workspace `fips` feature.
   (pkg-config / `OPENSSL_DIR`) instead of the bundled 4.2.0 source. The
   2026-10-23 build log shows `Building with: CMake` (bundled source). The pin
   does not override the target-suffixed `AWS_LC_FIPS_SYS_USE_SYSTEM_<target>`
-  variable. The container builder stages set the same variable (working tree,
-  not build-verified). The file must be committed for the pin to apply.
+  variable. The container builder stages set the same variable (not
+  build-verified). The file is committed on `main` (commit 05ea47a).
+- **Build-environment baseline (CM-2; CI hardening 2026-10-23, not yet
+  merged):** the module is compiled with the Rust toolchain pinned by
+  [rust-toolchain.toml](../../rust-toolchain.toml) (1.99.1). Builder images
+  are `rust:1.99.1-bookworm` everywhere: both Dockerfiles (previously
+  `rust:1.96-bookworm`) and GitLab `.rust-base` (previously
+  `rust:1.92.0-trixie`, which was below the 1.94 MSRV and lacked the FIPS
+  build dependencies). GitLab now installs clang, libclang-dev, cmake,
+  golang-go and perl, as the Dockerfiles already did. GitHub jobs that build
+  the module install `golang-go perl` and log `go version`, but the runner's
+  preinstalled Go may come first on `PATH`, so the Go version is recorded, not
+  pinned (POAM-2026-10-23-15). **The FIPS module itself is unchanged:**
+  `Cargo.lock` is untouched and `aws-lc-fips-sys` stays at 0.14.2 (AWS-LC FIPS
+  4.2.0). No container or GitLab build on the new images has been run yet.
 - **Algorithms in the boundary (as used):** RSA, ECDSA P-256/P-384, Ed25519,
   SHA-2, SP 800-90A DRBG, ML-KEM-512/768/1024, ML-DSA-44/65/87 (TLS
   verification only), AES-GCM (TLS 1.3 record protection via rustls)
@@ -683,6 +696,13 @@ workspace `fips` feature.
 
 - **Status:** Designed, not implemented
 - **Target HSMs:** Thales Luna, Entrust nShield, AWS CloudHSM, SoftHSM (testing)
+- **Test environment (2026-10-23):** the PKCS#11 integration suite runs in CI
+  against the Ubuntu 24.04 `softhsm2` package
+  ([.github/workflows/hsm-integration.yml](../../.github/workflows/hsm-integration.yml);
+  Linux result pending). Locally on macOS with SoftHSM 2.7.0 and OpenSSL 4,
+  RSA-PSS signing through PKCS#11 fails (`CKR_GENERAL_ERROR`) while RSA
+  PKCS#1 v1.5 and ECDSA pass. SoftHSM is test-only and is not represented as
+  a FIPS-validated module
 
 **Implementation:**
 
@@ -1065,6 +1085,7 @@ allowed_pqc_algorithms = [
 | 1.3 | 2026-06-29 | OstrichPKI Team | NPE portal vulnerability fixes reviewed for FIPS impact: access-control/session-binding changes only; no cryptographic algorithm, key-generation, signature, KEM, DRBG, or module-boundary changes. |
 | 1.4 | 2026-07-27 | OstrichPKI Team | Integration profile generates a P-384 CA key through the PKCS#11 abstraction using SoftHSM. SoftHSM is test emulation and is not represented as a FIPS-validated production module. |
 | 1.5 | 2026-10-23 | OstrichPKI Team | Module change AWS-LC FIPS 3.3.0 → 4.2.0 (`aws-lc-fips-sys` 0.13.14 → 0.14.2; aws-lc-rs 1.18.2; rustls 0.23.46), approved by the user 2026-10-23. CMVP certificate for 4.2.0 pending confirmation (POA&M). `.cargo/config.toml` module-source pin (CM-6). ML-DSA: TLS verification accepted (user decision 2026-10-23), issuance still disabled. Removed stale ML-DSA `unstable` and software-provider claims. Corrected the false "`ring` FIPS 140-2 validated (#3678)" statements. SLH-DSA source check updated to 0.14.2 / aws-lc-sys 0.46.0. No algorithm was added to CA issuance. |
+| 1.6 | 2026-10-23 | OstrichPKI Team | CI hardening. Build-environment baseline: `rust-toolchain.toml` 1.99.1; `rust:1.99.1-bookworm` in both Dockerfiles and GitLab (GitLab moved from `rust:1.92.0-trixie` and gained the FIPS build dependencies). Module-pin file recorded as committed. PKCS#11 SoftHSM test environment noted (RSA-PSS fails locally; Linux CI pending). **FIPS module unchanged** (AWS-LC FIPS 4.2.0, `aws-lc-fips-sys` 0.14.2); no algorithm, self-test or boundary change. |
 
 ---
 

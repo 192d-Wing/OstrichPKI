@@ -1,9 +1,12 @@
 # cargo-audit configuration (read by `cargo audit` and the CI audit job).
+# Keep in sync with `deny.toml [advisories].ignore`.
 #
-# Each ignored advisory below is triaged with a rationale and, where applicable,
-# a POA&M note. This is the security posture of record for known advisories that
-# currently have no actionable fix or require a tracked migration. New advisories
-# (anything not listed here) are surfaced by CI and by Dependabot.
+# Each ignored advisory below is triaged with a rationale and a `# POAM:` tag
+# carrying its POA&M ID (grep-able: `grep -rn 'POAM:'`). This is the security
+# posture of record for known advisories that currently have no actionable fix
+# or require a tracked migration. The CI dependency gate
+# (`cargo audit --deny warnings`) is blocking, so this list is the only
+# exception path: anything not listed here fails CI.
 
 [advisories]
 ignore = [
@@ -14,17 +17,17 @@ ignore = [
     # (OIDC, via openidconnect) and JWS SIGNING (ACME account keys) — neither
     # exposes an RSA *decryption* oracle over attacker-chosen ciphertexts, which
     # is what the attack requires. Risk accepted; revisit if `rsa` ships a fix.
+    # POAM: POAM-2026-10-23-09 - risk acceptance; re-evaluate when `rsa` ships a
+    # constant-time fix.
     "RUSTSEC-2023-0071",
 
-    # hickory-proto: NSEC3 closest-encloser validation can loop on crafted
-    # cross-zone DNSSEC responses. No fixed upgrade available. Reachable only via
-    # the ACME server's DNS-01 resolver. POA&M: re-evaluate when upstream fixes.
-    "RUSTSEC-2026-0118",
-
     # --- Unmaintained / unsound (warnings; all transitive, no direct use) ---
-    "RUSTSEC-2025-0141", # bincode 1.x unmaintained (transitive)
+    # POAM: POAM-2026-10-23-12 - SA-22 unmaintained-component acceptance; replace
+    # when upstream (cryptoki, axum-server) drops the dependency.
     "RUSTSEC-2024-0436", # paste unmaintained (transitive proc-macro dep)
-    "RUSTSEC-2024-0370", # proc-macro-error unmaintained (transitive)
     "RUSTSEC-2025-0134", # rustls-pemfile unmaintained (transitive)
-    "RUSTSEC-2026-0097", # rand unsound only with a custom global logger; not our usage
+    # rand 0.8.5: `rand::thread_rng` is unsound only when a custom `log` logger
+    # itself draws from ThreadRng; our loggers (tracing) do not.
+    # POAM: POAM-2026-10-23-11 - remove after bumping rand to 0.8.6 (patched).
+    "RUSTSEC-2026-0097",
 ]

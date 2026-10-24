@@ -16,11 +16,15 @@ variables:
   DATABASE_URL: postgresql://ostrich_test:test_password_insecure@postgres:5432/ostrich_pki_test
 
 # Cache configuration
+# NIST 800-53: CM-2 - the key includes rust-toolchain.toml so a toolchain/image
+# bump (the toolchain-pin check keeps the image tag equal to its channel) never
+# restores binaries or target/ built by a different toolchain or libc.
 .cargo-cache: &cargo-cache
   cache:
     key:
       files:
         - Cargo.lock
+        - rust-toolchain.toml
     paths:
       - .cargo/bin/
       - .cargo/registry/index/
@@ -30,11 +34,16 @@ variables:
     policy: pull-push
 
 # Base Rust image
+# NIST 800-53: CM-2 (Baseline Configuration) - same Rust toolchain and Debian
+# (bookworm) C-toolchain baseline as the release Dockerfiles.
 .rust-base: &rust-base
-  image: rust:1.92.0-trixie
+  image: rust:1.99.1-bookworm   # must equal rust-toolchain.toml channel (ci.yml toolchain-pin)
   before_script:
+    - rustup show active-toolchain
     - rustup component add rustfmt clippy
-    - apt-get update && apt-get install -y cmake pkg-config libssl-dev libpq-dev protobuf-compiler
+    # FIPS module (aws-lc-fips-sys 0.14.2) build deps: clang/libclang-dev (bindgen),
+    # cmake, golang-go + perl (aws-lc go.cmake / asm generation). Mirrors Dockerfile.
+    - apt-get update && apt-get install -y --no-install-recommends clang libclang-dev cmake golang-go perl pkg-config libssl-dev libpq-dev protobuf-compiler
 
 stages:
   - lint
@@ -78,10 +87,12 @@ lint:clippy:
 
 security:audit:
   <<: *rust-base
-  <<: *cargo-cache
+  # Gate job: no shared cache, so the gate tool binary is always built here from
+  # the pinned version and never restored from .cargo/bin/ (SR-11, SA-15).
+  cache: []
   stage: security
   script:
-    - cargo install cargo-audit --locked
+    - cargo install cargo-audit --locked --version 0.22.2
     - cargo audit --deny warnings
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -92,10 +103,12 @@ security:audit:
 
 security:deny:
   <<: *rust-base
-  <<: *cargo-cache
+  # Gate job: no shared cache, so the gate tool binary is always built here from
+  # the pinned version and never restored from .cargo/bin/ (SR-11, SA-15).
+  cache: []
   stage: security
   script:
-    - cargo install cargo-deny --locked
+    - cargo install cargo-deny --locked --version 0.20.2
     - cargo deny check
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -128,9 +141,10 @@ build:linux:
   stage: build
   script:
     - apt-get install -y softhsm2
+    - export SOFTHSM2_CONF="$HOME/.config/softhsm2/softhsm2.conf"
     - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
     - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin 5678
+    - softhsm2-util --init-token --free --label "ostrich-test" --pin 1234 --so-pin 5678
     - cargo build --workspace --all-features --verbose
   artifacts:
     paths:
@@ -147,9 +161,10 @@ build:release:
   stage: build
   script:
     - apt-get install -y softhsm2
+    - export SOFTHSM2_CONF="$HOME/.config/softhsm2/softhsm2.conf"
     - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
     - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin 5678
+    - softhsm2-util --init-token --free --label "ostrich-test" --pin 1234 --so-pin 5678
     - cargo build --workspace --all-features --release
   artifacts:
     paths:
@@ -171,10 +186,15 @@ test:unit:
     - build:linux
   script:
     - apt-get install -y softhsm2
+    - export SOFTHSM2_CONF="$HOME/.config/softhsm2/softhsm2.conf"
     - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
     - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin 5678
-    - cargo test --workspace --all-features --verbose
+    - softhsm2-util --init-token --free --label "ostrich-test" --pin 1234 --so-pin 5678
+    # ostrich-crypto holds the PKCS#11/SoftHSM suites, which share one token and
+    # session state: run that crate serially (as hsm-integration.yml and
+    # `make test-pkcs11` do) and everything else in parallel.
+    - cargo test --workspace --all-features --exclude ostrich-crypto --verbose
+    - cargo test -p ostrich-crypto --all-features --verbose -- --test-threads=1
   variables:
     PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
     PKCS11_SLOT_ID: "0"
@@ -206,11 +226,14 @@ test:coverage:
     - build:linux
   script:
     - apt-get install -y softhsm2
+    - export SOFTHSM2_CONF="$HOME/.config/softhsm2/softhsm2.conf"
     - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
     - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin 5678
+    - softhsm2-util --init-token --free --label "ostrich-test" --pin 1234 --so-pin 5678
     - cargo install cargo-tarpaulin
-    - cargo tarpaulin --workspace --all-features --timeout 300 --out Xml --output-dir ./coverage
+    # Serial test execution: the PKCS#11/SoftHSM suite shares one token and
+    # session state (matches hsm-integration.yml / `make test-pkcs11`).
+    - cargo tarpaulin --workspace --all-features --timeout 300 --out Xml --output-dir ./coverage -- --test-threads=1
   variables:
     PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
     CRYPTO_PROVIDER: software
@@ -239,9 +262,10 @@ test:integration:
       alias: postgres
   script:
     - apt-get install -y softhsm2
+    - export SOFTHSM2_CONF="$HOME/.config/softhsm2/softhsm2.conf"
     - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
     - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-test" --pin 1234 --so-pin 5678
+    - softhsm2-util --init-token --free --label "ostrich-test" --pin 1234 --so-pin 5678
     # Wait for PostgreSQL
     - apt-get install -y postgresql-client
     - until pg_isready -h postgres -p 5432; do sleep 2; done
@@ -274,9 +298,10 @@ benchmark:
     - test:unit
   script:
     - apt-get install -y softhsm2
+    - export SOFTHSM2_CONF="$HOME/.config/softhsm2/softhsm2.conf"
     - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
     - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-    - softhsm2-util --init-token --slot 0 --label "ostrich-bench" --pin 1234 --so-pin 5678
+    - softhsm2-util --init-token --free --label "ostrich-bench" --pin 1234 --so-pin 5678
     - cargo bench --workspace -- --noplot
   variables:
     PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
@@ -387,12 +412,14 @@ docker:build:
 
 scheduled:security-scan:
   <<: *rust-base
-  <<: *cargo-cache
+  # Gate job: no shared cache, so the gate tool binary is always built here from
+  # the pinned version and never restored from .cargo/bin/ (SR-11, SA-15).
+  cache: []
   stage: security
   script:
-    - cargo install cargo-audit --locked
+    - cargo install cargo-audit --locked --version 0.22.2
     - cargo audit --deny warnings
-    - cargo install cargo-deny --locked
+    - cargo install cargo-deny --locked --version 0.20.2
     - cargo deny check
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"

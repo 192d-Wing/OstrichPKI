@@ -20,25 +20,29 @@ jobs:
   # ---- Blocking gate: the workspace must build and unit/lib tests must pass ----
   build-test:
     name: Build & test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # aws-lc-rs (PQC / crypto) builds C/asm; install its toolchain.
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev pkg-config nasm protobuf-compiler libssl-dev
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev golang-go perl pkg-config nasm protobuf-compiler libssl-dev
+          go version
 
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version && cargo --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build
         run: cargo build --workspace --locked
 
-      # Unit/lib + binary tests only. Integration suites that need external
-      # infrastructure (PostgreSQL, a PKCS#11 HSM) are intentionally excluded
-      # here — they run in a separate, infra-provisioned workflow.
+      # Unit/lib + binary tests only. The PKCS#11 / SoftHSM suite runs in
+      # .github/workflows/hsm-integration.yml. PostgreSQL-backed integration
+      # tests are not yet run in GitHub Actions.
       - name: Test
         run: cargo test --workspace --lib --bins --locked
 
@@ -53,13 +57,15 @@ jobs:
   # - NIST 800-53: SI-7 / SA-12 (Integrity / Supply Chain) — CycloneDX SBOM
   web-ui-react:
     name: Web UI (React build + supply-chain)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: services/web-ui/web
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           # >=20.19 required by vite 8 / rolldown (see web/package.json engines).
           node-version: "20.19"
@@ -84,7 +90,7 @@ jobs:
       - name: Upload SBOM artifact
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: web-ui-sbom
           path: services/web-ui/web/sbom.web-ui.json
@@ -97,32 +103,81 @@ jobs:
   # Once both are clean, drop `continue-on-error` to make them required gates.
   clippy:
     name: Clippy (advisory)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev pkg-config nasm protobuf-compiler libssl-dev
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev golang-go perl pkg-config nasm protobuf-compiler libssl-dev
+          go version
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version && cargo --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   rustfmt:
     name: Rustfmt (advisory)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt
+          persist-credentials: false
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version && cargo --version
       - run: cargo fmt --all --check
 
-  # NOTE: the dependency vulnerability scan (cargo audit) lives in its own
-  # workflow (.github/workflows/audit.yml). It only depends on the dependency
-  # set, so it runs when a manifest/lockfile changes or on a weekly schedule —
-  # not on every PR — which keeps it off the per-PR critical path.
+  # ---- Toolchain pin consistency (blocking) ----
+  # COMPLIANCE MAPPING:
+  # - NIST 800-53: CM-2 (Baseline Configuration), SA-15 (Development Tools)
+  # Scans every tracked Dockerfile* and .gitlab-ci.yml. Every rust:<tag> image
+  # token (any form: rust:latest, rust:1.98, rust:1.98.0-slim, ...) must start
+  # with rust:<channel>- from rust-toolchain.toml, and a file that builds Rust
+  # (mentions cargo; always .gitlab-ci.yml) must contain at least one. Catches
+  # e.g. a Dependabot docker bump that did not also bump the toolchain file, or
+  # a new service Dockerfile on a different tag.
+  toolchain-pin:
+    name: Toolchain pin consistency
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: rust image tags match rust-toolchain.toml (CM-2)
+        run: |
+          set -euo pipefail
+          want="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$want" || { echo "::error::no channel in rust-toolchain.toml"; exit 1; }
+          # -z: NUL-separated, unquoted paths (non-ASCII/quoted names are not skipped).
+          rc=0; n=0
+          while IFS= read -r -d '' f; do
+            n=$((n + 1))
+            [ -f "$f" ] || { echo "::error::unreadable $f"; rc=1; continue; }
+            # Every rust:<tag> image token (any tag form, incl. rust:latest, rust:1.98).
+            refs="$(grep -nEo '(^|[[:space:]/="'\''])rust:[^[:space:]"'\'']+' "$f" | sed -E 's|^([0-9]+:)[[:space:]/="'\'']?|\1|' || true)"
+            if [ -z "$refs" ]; then
+              # A file that builds Rust must take its toolchain from a pinned rust image.
+              if [ "$f" = .gitlab-ci.yml ] || grep -qw cargo "$f"; then
+                echo "::error file=$f::builds Rust but has no rust:<tag> image reference"; rc=1
+              fi
+              continue
+            fi
+            while IFS= read -r r; do
+              tok="${r#*:}"
+              case "$tok" in
+                "rust:${want}-"*) echo "ok   $f:$r" ;;
+                *) echo "::error file=$f,line=${r%%:*}::$tok does not match rust-toolchain.toml (rust:${want}-<suffix>)"; rc=1 ;;
+              esac
+            done <<< "$refs"
+          done < <(git ls-files -z '*Dockerfile*' .gitlab-ci.yml)
+          [ "$n" -gt 0 ] || { echo "::error::no Dockerfiles or .gitlab-ci.yml tracked"; exit 1; }
+          exit "$rc"
+
+  # NOTE: the dependency gate (cargo audit + cargo deny) lives in its own
+  # workflow (.github/workflows/audit.yml). It runs on every PR, on pushes to
+  # main and on a weekly schedule, and is blocking.
