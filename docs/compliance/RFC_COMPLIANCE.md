@@ -1,7 +1,7 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 1.9
-**Date:** 2026-01-04
+**Document Version:** 2.2
+**Date:** 2026-10-23
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Excellent (85%)
 **Last Updated:** Phase 19 completion - HSM enforcement and 98% NIAP compliance
@@ -338,6 +338,22 @@ extension (uncommon) remains.
   - Policy processing: Simplified any-policy mode with future enhancement path
 - NIAP PP-CA FIA_X509_EXT.1 gap CLOSED
 - NIST 800-53 SC-17 requirement MET
+
+**TLS peer path validation (separate code path):** mTLS listeners
+(`crates/ostrich-common/src/tls.rs`, `WebPkiClientVerifier`) and rustls clients
+validate peer chains with **rustls-webpki 0.103.16**, not with the
+`ostrich-x509` validator above. Since 2026-10-23:
+
+- RUSTSEC-2026-0382 is fixed (0.103.13 accepted some distrusted intermediates)
+- TLS peer path validation additionally rejects certificates whose SPKI is on
+  webpki's built-in distrust list (emSign G3; `CertDistrusted`), independent of
+  configured trust anchors
+- ML-DSA-44/65/87 certificate signatures are verified (RFC 9881 algorithm
+  identifiers; accepted by the user 2026-10-23)
+- **No revocation checking** (no CRL or OCSP) is done on this path, so RFC 5280
+  §6.1.3(a)(3) revocation status is not checked for TLS peers (pre-existing gap)
+- Tests (2026-10-23): `mtls_handshake_rejects_untrusted_client`,
+  `mtls_handshake_rejects_client_cert_with_server_only_eku` (§4.2.1.12)
 
 ---
 
@@ -1294,34 +1310,37 @@ success the resolved identity flows through the same RBAC permission checks
 
 ### RFC 8446: The Transport Layer Security (TLS) Protocol Version 1.3
 
-**Status:** 🟡 **Partial**
+**Status:** 🟡 **Partial** (REST listeners and internal HTTPS clients conform; gRPC TLS not configured on ca-server)
 
 **Requirement:** All administrative and inter-service communication uses TLS 1.3
 
 **Implementation:**
 
-- REST and gRPC frameworks support TLS 1.3
-- Configuration delegated to deployment
+- [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - shared listener for all service binaries: **rustls 0.23.46** with the aws-lc-rs FIPS provider selected explicitly, **TLS 1.3 only** (`with_protocol_versions(&[&TLS13])`), and optional or mandatory mTLS via `WebPkiClientVerifier`
+- `services/web-ui/src/server/backend_client.rs`, `services/npe-portal/src/server/backend_client.rs` - internal HTTPS clients on the same provider
+- gRPC (`tonic`) is built with the `tls-ring` feature; gRPC TLS on ca-server is not configured (see NIST SC-8)
 
 **Evidence:**
 
-- ✅ axum (REST) supports TLS 1.3 via rustls
-- ✅ tonic (gRPC) supports TLS 1.3
-- 🔴 TLS configuration not in application code
+- ✅ TLS 1.3 minimum enforced in application code. Test `server_rejects_tls12_only_client` passed (2026-10-23)
+- ✅ mTLS implemented: mandatory by default, optional for bootstrap. Tests `mtls_handshake_accepts_trusted_client`, `mtls_handshake_rejects_missing_client_cert` and `optional_mtls_allows_anonymous_but_rejects_untrusted` passed (2026-10-23)
+- ✅ rustls 0.23.46 (2026-10-23) fixes RUSTSEC-2026-0285 (handshake messages accepted across encryption-level boundaries), RUSTSEC-2026-0349 (unauthenticated ServerHello downgrade to classical key exchange) and RUSTSEC-2026-0348 (pre-authentication certificate-decompression allocation). These fixes tighten conformance with §5.1, §4.4.2, §4.1.3, §4.1.4 and §5.5
+- ℹ️ **Signature algorithms (§4.2.3):** since rustls 0.23.46 the aws-lc-rs provider also advertises and verifies ML-DSA-44/65/87 (draft-ietf-tls-mldsa code points 0x0904–0x0906) under `fips`. Accepted by the user 2026-10-23
+- ℹ️ Key exchange: the provider's `fips`-filtered default groups (`default_kx_groups()` keeps only groups whose `fips()` is true); the resulting group list was not re-verified in this review
+
+**Cipher suites in effect (`fips` feature; NIST SP 800-52 Rev 2):**
+
+- TLS_AES_256_GCM_SHA384
+- TLS_AES_128_GCM_SHA256
+- TLS_CHACHA20_POLY1305_SHA256 is **not offered**: rustls removes it under `fips`. Corrected 2026-10-23: the list here previously included it
 
 **Gaps:**
 
-- No explicit TLS 1.3 minimum enforcement
-- No cipher suite restriction
-- mTLS not configured
+- gRPC listener TLS on ca-server not configured; gRPC client crypto provider is `ring`
+- No TLS scan of a deployed endpoint
+- No revocation checking of TLS peer certificates (see RFC 5280 §6)
 
-**Remediation:** Phase 16 - Configure TLS 1.3+ in application with approved cipher suites
-
-**Approved Cipher Suites (NIST SP 800-52 Rev 2):**
-
-- TLS_AES_128_GCM_SHA256
-- TLS_AES_256_GCM_SHA384
-- TLS_CHACHA20_POLY1305_SHA256
+**Remediation:** configure tonic TLS on the aws-lc-rs provider; capture a deployment TLS scan
 
 ---
 
@@ -1331,35 +1350,48 @@ success the resolved identity flows through the same RBAC permission checks
 
 **Recommendations:**
 
-- ✅ Use TLS 1.3 (or 1.2 minimum)
-- 🔴 Disable TLS 1.1 and earlier (not explicitly configured)
-- 🔴 Restrict cipher suites to strong AEAD ciphers
-- ✅ Use certificate-based authentication for mTLS (designed)
+- ✅ Use TLS 1.3: the shared listener is TLS 1.3 only (`crates/ostrich-common/src/tls.rs`)
+- ✅ TLS 1.2 and earlier refused by the shared listener (test `server_rejects_tls12_only_client`, 2026-10-23). Corrected 2026-10-23: this item previously said "not explicitly configured"
+- ✅ Strong AEAD suites only: AES-GCM under `fips` (see RFC 8446 above)
+- ✅ Certificate-based authentication for mTLS: implemented and tested (see RFC 8446 above)
+- 🔴 TLS peer certificate revocation not checked
 
-**Remediation:** Phase 16 - Apply all TLS best practices
+**Remediation:** add revocation checking for TLS peers; configure gRPC TLS (see RFC 8446)
+
+---
+
+### Dependency protocol conformance fixes (2026-10-23)
+
+Lockfile updates that fix advisories in protocol implementations (see NIST SI-2):
+
+- RFC 9113 (HTTP/2): h2 0.4.15 → 0.4.20 (RUSTSEC-2026-0258, unbounded empty DATA frames)
+- RFC 9000 (QUIC): quinn-proto 0.11.15 → 0.11.19 (RUSTSEC-2026-0338 to 0342). Target-specific transitive dependency
+- RFC 1951 (DEFLATE): zip 2.4.2 → 9.0.5 with the zlib-rs backend for bulk-enrollment ZIP reading. Inflate is bounded per entry (tests `extract_csr_entries_rejects_deflate_bomb` and `extract_csr_entries_rejects_corrupt_deflate_and_bad_crc`)
 
 ---
 
 ## Post-Quantum Cryptography (Draft RFCs)
 
-### draft-ietf-lamps-dilithium-certificates: ML-DSA in X.509
+### RFC 9881 (formerly draft-ietf-lamps-dilithium-certificates): ML-DSA in X.509
 
-**Status:** 🟡 **Designed** (not implemented)
+**Status:** 🟡 **Partial** — verification only (TLS peer certificates); issuance disabled
 
 **Implementation:**
 
 - [crates/ostrich-common/src/oid.rs:74](../../crates/ostrich-common/src/oid.rs#L74) - ML-DSA OID placeholder
 - [crates/ostrich-crypto/src/algorithm.rs](../../crates/ostrich-crypto/src/algorithm.rs) - Algorithm enum includes ML-DSA variants
+- [crates/ostrich-x509/src/signing.rs](../../crates/ostrich-x509/src/signing.rs) - id-ml-dsa-44/65/87 OIDs (2.16.840.1.101.3.4.3.17/.18/.19, parameters absent), reserved
 
 **Evidence:**
 
 - ✅ Algorithm types defined (ML-DSA-44, ML-DSA-65, ML-DSA-87)
-- 🔴 No implementation
+- 🟡 **Verification (since 2026-10-23):** rustls-webpki 0.103.16 on aws-lc-rs 1.18.2 (`fips`, AWS-LC FIPS 4.2.0) verifies ML-DSA-44/65/87 certificate signatures during TLS peer path building. This is upstream behaviour, accepted by the user on 2026-10-23. No OstrichPKI test exercises it
+- 🔴 **Issuance:** ML-DSA certificate, CRL and OCSP signing is disabled (`crates/ostrich-x509/src/secure_defaults.rs`)
 
 **Remediation:**
 
-- Phase 13 - Monitor IETF LAMPS WG for OID finalization
-- Phase 13 - Implement ML-DSA signing when draft standardizes
+- POA&M: enable ML-DSA issuance once CMVP confirms the AWS-LC FIPS 4.2.0 module (see FIPS_COMPLIANCE.md)
+- Add an ML-DSA chain test when issuance is enabled
 
 ---
 
@@ -1435,9 +1467,9 @@ splicing it into an OpenSSL SPKI for bidirectional interop
 ### Priority 2 (Important, Non-blocking)
 
 1. **RFC 8446 - TLS 1.3 Configuration** (🟡 Partial)
-   - Impact: Weak TLS configuration possible
-   - Phase: 16
-   - Effort: 3-5 days
+   - REST listeners and internal HTTPS clients: TLS 1.3 only with mTLS (done; tested 2026-10-23)
+   - Remaining: gRPC (tonic) TLS on the aws-lc-rs provider; revocation checking of TLS peers
+   - Corrected 2026-10-23: this item previously said "Weak TLS configuration possible", which no longer describes the REST listeners
 
 2. **RFC 8555 - ACME Challenge Validators** (🟡 Partial)
    - Impact: DNS-01 and TLS-ALPN-01 not fully functional
@@ -1577,6 +1609,7 @@ consumed by the TAMP messages above.
 | 1.9 | 2026-06-26 | OstrichPKI Team | RFC 7030 §3.2.2: EST arbitrary-label routing implemented in `ostrich-est` — `/.well-known/est/{label}/...` with the `PTptval[-AKakval][-VPvpval][-CCccval]` scheme; the label selects the certificate profile and (by key algorithm) the issuing CA backend, enabling one EST instance to front multiple CAs (e.g. EC and RSA). |
 | 2.0 | 2026-06-29 | OstrichPKI Team | RFC 7030 §4.4 + RFC 7292: EFS server-side key generation delivers the key + certificate as an encrypted PKCS#12 (PBES2 PBKDF2-HMAC-SHA256 / AES-256-CBC + HMAC-SHA256 MAC) under a one-time password — `crates/ostrich-x509/src/pkcs12.rs`. The EFS portal flow uses a CSR-free JSON `/serverkeygen` input (subject from the mTLS identity; no untrusted PKCS#10 parsed) alongside the standard §4.4.1 CSR path. RFC 5754 (SHA-2 AlgorithmIdentifiers omit NULL params) observed in the PKCS#12 structure. |
 | 2.1 | 2026-07-27 | OstrichPKI Team | Added Kubernetes integration profile for RFC 7030 §3.2.3 TLS-protected Basic bootstrap and §4.2 enrollment through an external cert-manager issuer. |
+| 2.2 | 2026-10-23 | OstrichPKI Team | Dependency advisory remediation (rustls 0.23.46, rustls-webpki 0.103.16, h2, quinn-proto, zip 9). RFC 8446 / RFC 9325: rewrote stale statements (TLS 1.3 minimum and mTLS are enforced in `tls.rs`; ChaCha20-Poly1305 is not offered under `fips`); status stays Partial (gRPC, revocation). RFC 5280 §6: added the TLS-peer path (webpki emSign SPKI distrust, no revocation). ML-DSA in X.509 is now RFC 9881: verification in TLS accepted by the user 2026-10-23, issuance disabled; status Designed → Partial (both 🟡, summary counts unchanged). Added RFC 9113/9000/1951 dependency fixes. |
 
 ---
 

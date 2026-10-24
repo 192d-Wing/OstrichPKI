@@ -1,7 +1,7 @@
 # NIAP Protection Profile Gap Analysis
 
-**Document Version:** 2.5
-**Generated:** 2026-01-04
+**Document Version:** 2.6
+**Generated:** 2026-01-04 (POA&M §11 added 2026-10-23)
 **OstrichPKI Version:** 0.15.0
 **NIAP PP-CA Version:** v2.1 FINAL
 **Current Compliance:** 98% (49/50 applicable SFRs Compliant, 1 N/A, 2 optional, 4 OE)
@@ -1160,6 +1160,14 @@ pub fn get_audit_configuration(actor: &Actor) -> Result<AuditConfiguration> {
 - No enforcement of TLS 1.3
 - No enforcement of mutual authentication
 
+**Update 2026-10-23 (gap narrowed, status unchanged):** the shared REST
+listener (`crates/ostrich-common/src/tls.rs`) is TLS 1.3 only and supports
+mandatory or optional mTLS. Under `fips`, rustls 0.23.46 offers only AES-GCM
+suites. In-memory handshake tests passed (TLS 1.2-only client rejected;
+untrusted, missing and serverAuth-only client certificates rejected). Still
+open: gRPC (tonic, `tls-ring` provider) TLS on ca-server; TLS handshake-failure
+auditing; revocation checking of TLS peer certificates.
+
 **Required Capabilities:**
 
 ```rust
@@ -1501,6 +1509,29 @@ psql ostrich -c "SELECT * FROM audit_events WHERE event_type LIKE 'FMT_%'" > evi
 
 ---
 
+## 11. Plan of Action and Milestones (POA&M) — Open Items
+
+Items opened or confirmed on 2026-10-23 by the dependency-advisory remediation
+(run record `target/agent-workflow/20261023-185030-audit-advisories/`). Each
+item is open. "Code location" names the `// POAM:` (or `# POAM:`) marker where
+one exists. Risk levels and target dates are proposals for the AO and are not
+yet approved.
+
+| ID | Weakness | Controls / SFRs | Source | Code location (`// POAM:`) | Milestone (proposed) | Status |
+|----|----------|-----------------|--------|----------------------------|----------------------|--------|
+| POAM-2026-10-23-01 | The CMVP (FIPS 140-3) certificate for **AWS-LC FIPS 4.2.0** (`aws-lc-fips-sys` 0.14.2), now the project's crypto module, could not be confirmed. Until it is confirmed, "FIPS-validated" claims are suspended (docs say "CMVP certificate for 4.2.0 pending confirmation") | SC-13, SC-12, CM-6; FCS_COP.1, FCS_CKM.1, FCS_RBG_EXT.1 | User decision 2026-10-23; NIST-002 | No marker for the confirmation itself; the dependent `# POAM:` (ML-DSA issuance) is in workspace `Cargo.toml` (`aws-lc-rs` comment) | Confirm the certificate number and its approved-algorithm list (ML-KEM, ML-DSA) **before ATO**. If no certificate exists, choose a validated module version and repeat the CM-4 analysis | Open |
+| POAM-2026-10-23-02 | ML-DSA certificate issuance disabled. TLS verification of ML-DSA was accepted by the user 2026-10-23 | SC-13, SC-17; FCS_COP.1, FDP_CER_EXT.1 | PQC-003 / NIST-009 | `# POAM:` in workspace `Cargo.toml` (`aws-lc-rs` comment block) | After POAM-01 closes | Open (blocked by 01) |
+| POAM-2026-10-23-03 | The `cargo audit` CI job is advisory (`continue-on-error: true`) and does not block merges. No AO-approved remediation timeframes (proposed: critical 15 days, high 30, medium and low 90). h2/quinn-proto advisories were on `main` for 67 days | RA-5, SI-2; ALC_FLR.2, AVA_VAN.2 | NIST-001 | None; `.github/workflows/audit.yml` (`continue-on-error: true`) | AO approves the timeframes, then remove `continue-on-error` | Open |
+| POAM-2026-10-23-04 | `bulk_enroll` claims AU-2/AU-3 in its COMPLIANCE MAPPING but emits only `tracing::info!`. It emits no `ostrich-audit` event for submissions, and the early-return rejections are not recorded | AU-2, AU-3, AU-12; FAU_GEN.1, FDP_CER_EXT.2 | NIST-003 (pre-existing); QA gap 6 | None yet; `crates/ostrich-ca/src/rest.rs` `bulk_enroll` (the annotation overstates AU-2/AU-3) | Emit `DatabaseAuditSink` events for success and failure, or correct the annotation and add `// POAM:` | Open |
+| POAM-2026-10-23-05 | No runtime FIPS-mode assertion. Services do not fail closed on a `try_fips_mode()` error and do not log `awslc_version()`/`fips_version()`. The existing self-test KATs do not exercise AWS-LC (PQC-005) | SC-13, SI-7; FPT_TST_EXT.1 | PQC-002 / NIST-007; PQC-005 | None; `crates/ostrich-crypto/src/self_test.rs`, `crates/ostrich-common/src/tls.rs`, `services/ca-server/src/main.rs` | Start-up gate that fails closed, plus a module-version audit record; KATs through `aws_lc_rs::digest` | Open |
+| POAM-2026-10-23-06 | `cargo deny check` cannot run: `deny.toml` uses 5 keys removed in cargo-deny ≥0.16 and fails validation under 0.20.2. License, ban and source policy is not enforced (6 crates were added on 2026-10-23 without a deny check) | SR-3, CM-7, RA-5, SA-11 | SEC-001 / QA-002 / REL-004 | None; `deny.toml` | Migrate the `[licenses]` schema (cargo-deny PR #611), mirror the `.cargo/audit.toml` exceptions, re-run | Open |
+| POAM-2026-10-23-07 | PKCS#11 integration tests are not run in CI and could not run locally (no SoftHSM). The cryptoki 0.11.1 fix (RUSTSEC-2026-0286) has no executed test evidence | SA-11, SC-12, IA-7; FCS_CKM.1, FCS_COP.1 | QA-004 | None; `crates/ostrich-crypto/tests/pkcs11_integration_test.rs` | Run `cargo test -p ostrich-crypto --test pkcs11_integration_test -- --test-threads=1` against SoftHSM and attach the output; add a SoftHSM CI job | Open |
+| POAM-2026-10-23-08 | `ring` (no CMVP certificate) is still used outside the AWS-LC FIPS module: AES-256-GCM key wrap in `crates/ostrich-kra/src/wrap.rs`, and gRPC TLS via `tonic` `tls-ring`. Found during documentation review, not raised by a reviewer | SC-13, SC-12; FCS_COP.1 | Compliance scribe, 2026-10-23 | None | Move both to aws-lc-rs (`fips`), or document them as non-security-relevant with AO acceptance | Open |
+| POAM-2026-10-23-09 | Risk-accepted advisories in `.cargo/audit.toml` have no POA&M entries: RUSTSEC-2023-0071 (`rsa` Marvin; no fix) and RUSTSEC-2026-0118 (`hickory-proto`, DNS-01 resolver; no fix). `.cargo/audit.toml` is the authoritative risk-acceptance record | RA-5, SI-2 | NIST-006 | `.cargo/audit.toml` (rationale and "POA&M: re-evaluate" note for hickory) | Re-evaluate when upstream ships a fix; review at each audit run | Open |
+| POAM-2026-10-23-10 | The FIPS module-source pin (`.cargo/config.toml`, `AWS_LC_FIPS_SYS_USE_SYSTEM=0`) is committed on branch `claude/audit-advisories-clippy` and mirrored as `ENV` in both Dockerfiles; it does not cover the target-suffixed variable, and no container build has been verified | CM-2, CM-6, SI-7 | PQC-001, SEC-005, SEC-006 | None | Commit the pin; verify a container build log shows `Building with: CMake` | Open |
+
+---
+
 ## Appendix A: SFR Implementation Status Table
 
 | SFR ID | Name | Status | Priority | Phase | Effort |
@@ -1567,6 +1598,7 @@ psql ostrich -c "SELECT * FROM audit_events WHERE event_type LIKE 'FMT_%'" > evi
 - **Change Log:**
   - 2026-01-03: Initial gap analysis created based on NIAP PP-CA v2.1 evaluation
   - 2026-07-27: Added repeatable FCS_CKM.1/FCS_STG_EXT.1 deployment evidence for the EST external-issuer integration profile; production HSM certification remains outside this lab boundary.
+  - 2026-10-23: Added §11 POA&M (10 open items from the dependency-advisory remediation: AWS-LC FIPS 4.2.0 CMVP confirmation, ML-DSA issuance, blocking cargo-audit, bulk_enroll AU-2 gap, runtime FIPS assertion, deny.toml schema, PKCS#11 tests not run, `ring` outside the FIPS boundary, audit.toml risk acceptances, module-pin commit). FTP_ITC.1 (§3.4): gap narrowed, status unchanged. No SFR status or compliance percentage changed.
 ### Closed: optional PKCS#11 ECDSA mechanisms
 
 The CA no longer depends on optional `CKM_ECDSA_SHA*` mechanisms. The provider

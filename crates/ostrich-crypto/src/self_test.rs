@@ -645,4 +645,20 @@ mod tests {
         let summary = runner.summary();
         assert!(summary.all_passed);
     }
+
+    /// SC-13 / FIPS 140-3: the linked AWS-LC module (aws-lc-fips-sys 0.14.x,
+    /// AWS-LC 4.2.0 after this change) initialises and reports FIPS mode, i.e.
+    /// its internal power-on self-tests passed. The SHA-2 KATs above run on
+    /// RustCrypto `sha2` and do not exercise AWS-LC, so this is the only unit
+    /// test that proves the FIPS module itself came up.
+    #[test]
+    fn aws_lc_module_reports_fips_mode() {
+        assert_eq!(aws_lc_rs::try_fips_mode(), Ok(()));
+        // Known-answer check through the FIPS module (FIPS 180-4 "abc").
+        let d = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, b"abc");
+        assert_eq!(
+            hex::encode(d.as_ref()),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }

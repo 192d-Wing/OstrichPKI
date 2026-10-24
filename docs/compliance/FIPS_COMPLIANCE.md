@@ -1,7 +1,7 @@
 # FIPS Cryptographic Standards Compliance Matrix
 
-**Document Version:** 1.2
-**Date:** 2026-01-04
+**Document Version:** 1.5
+**Date:** 2026-10-23
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Enhanced (70-75%)
 
@@ -16,6 +16,15 @@ This document tracks OstrichPKI's compliance with Federal Information Processing
 - **Cryptographic Modules**: FIPS 140-2/140-3
 
 **Crypto-Agility Requirement**: OstrichPKI must support both classical and post-quantum algorithms to facilitate migration as quantum computing advances.
+
+**Cryptographic module of record (2026-10-23):** **AWS-LC FIPS 4.2.0**, built
+from source by `aws-lc-fips-sys` **0.14.2** and used through `aws-lc-rs`
+1.18.2 (`fips` feature) and `rustls` 0.23.46 (aws-lc-rs provider). This
+replaces AWS-LC FIPS 3.3.0 (`aws-lc-fips-sys` 0.13.14). The user approved the
+change on 2026-10-23. **CMVP certificate for 4.2.0 pending confirmation
+(POA&M).** In this document, "FIPS-backed" means the algorithm runs inside this
+module's FIPS boundary. It does not mean the module version has a confirmed
+CMVP certificate. See [Cryptographic Module Validation](#fips-140-2--fips-140-3-security-requirements-for-cryptographic-modules).
 
 ---
 
@@ -57,7 +66,7 @@ signing/verification/key-generation run inside the AWS-LC FIPS 140-3 module via
 - ✅ RSA PKCS#1 v1.5 and PSS (SHA-256/384/512) signing/verification via the AWS-LC FIPS module — [crates/ostrich-crypto/src/software/mod.rs](../../crates/ostrich-crypto/src/software/mod.rs) (`sign_rsa`/`verify_rsa`, `generate` keygen)
 - ✅ RSA-2048 (PKCS#1/SHA-256) and RSA-3072 (PKCS#1/SHA-384) signatures verified externally by OpenSSL 3.6
 - ✅ ECDSA P-256/P-384 and Ed25519 sign/verify/keygen via the FIPS module (ECDSA verified externally by OpenSSL)
-- ✅ FIPS-validated DRBG supplies all key-generation and signing entropy (passed RNG args are ignored by aws-lc-rs in favour of the module's DRBG)
+- ✅ The AWS-LC FIPS 4.2.0 module's DRBG supplies all key-generation and signing entropy (passed RNG args are ignored by aws-lc-rs in favour of the module's DRBG; CMVP certificate for 4.2.0 pending confirmation)
 
 **Hash Functions (for RSA signatures):**
 
@@ -342,12 +351,11 @@ signing/verification/key-generation run inside the AWS-LC FIPS 140-3 module via
 - [crates/ostrich-crypto/src/kem.rs](../../crates/ostrich-crypto/src/kem.rs) - `MlKemKeyPair` (KeyGen/Decaps), `encapsulate()` (Encaps), and raw `ek`/`dk` import/export for KRA escrow
 - [crates/ostrich-crypto/src/algorithm.rs](../../crates/ostrich-crypto/src/algorithm.rs) - `KeyType::MlKem512/768/1024`
 
-**Backend:** AWS `aws-lc-rs` STABLE `kem` module (`ML_KEM_512/768/1024`). Unlike
-our ML-DSA path (which requires the non-FIPS `unstable` feature), ML-KEM is NOT
-gated by `unstable` and the same algorithm IDs are present inside AWS-LC's FIPS
-module (`aws-lc-fips-sys`). ML-KEM is therefore the one PQC primitive that can
-run inside the FIPS 140-3 boundary today by enabling the `fips` feature; see the
-ML-DSA caveat below.
+**Backend:** AWS `aws-lc-rs` STABLE `kem` module (`ML_KEM_512/768/1024`), built
+with the workspace `fips` feature, so ML-KEM runs inside the AWS-LC FIPS 4.2.0
+module (`aws-lc-fips-sys` 0.14.2). The PQC reviewer found `kem.rs` byte-identical
+between aws-lc-rs 1.17 and 1.18.2 (2026-10-23). CMVP certificate for 4.2.0
+pending confirmation (POA&M).
 
 **Evidence:**
 
@@ -355,7 +363,7 @@ ML-DSA caveat below.
 - ✅ FIPS 203 KeyGen / Encaps / Decaps implemented in `kem.rs`
 - ✅ Exact ek/dk/ciphertext sizes asserted against FIPS 203 Table 3 — `crates/ostrich-crypto/src/kem.rs` unit tests
 - ✅ Private-key (`dk`) escrow export/import round-trip — `private_key_escrow_round_trip`
-- ✅ **Live cross-implementation interop with OpenSSL 3.6** (both directions) — [tests/integration/mlkem_openssl_interop.rs](../../tests/integration/mlkem_openssl_interop.rs)
+- ✅ **Live cross-implementation interop with OpenSSL 3.6** (both directions) — [tests/integration/mlkem_openssl_interop.rs](../../tests/integration/mlkem_openssl_interop.rs). Re-run 2026-10-23 against OpenSSL 4.0.3 under AWS-LC FIPS 4.2.0: 2 passed
 
 **Rust Crates:**
 
@@ -377,9 +385,9 @@ ML-DSA caveat below.
 
 - Wire ML-KEM into KRA transport-key escrow and EST encrypted key delivery
 - Finalize X.509 SubjectPublicKey/OID encoding per draft-ietf-lamps-kyber-certificates
-- Enable the `fips` feature for production once AWS-LC's FIPS module is certified
-  for ML-KEM on the target platform (note: `fips` is currently mutually exclusive
-  with the `unstable` feature our ML-DSA path needs)
+- Confirm the CMVP certificate for AWS-LC FIPS 4.2.0 (with ML-KEM in its
+  approved-algorithm list) for the target platform (POA&M). The `fips` feature
+  is already enabled workspace-wide.
 
 **Priority:** Medium (for future quantum resistance)
 
@@ -387,24 +395,45 @@ ML-DSA caveat below.
 
 ### FIPS 204: Module-Lattice-Based Digital Signature Algorithm (ML-DSA)
 
-**Status:** ⛔ **Removed from the build** (incompatible with the FIPS posture)
+**Status:** 🟡 **TLS verification only** (key generation, signing and X.509 issuance disabled)
 
-ML-DSA was previously implemented (ML-DSA-44/65/87) via `aws-lc-rs`'s `unstable`
-feature. To make all classical algorithms FIPS-backed, the workspace now enables
-`aws-lc-rs`'s **`fips`** feature, which is **mutually exclusive with `unstable`**
-(`#[cfg(all(feature = "unstable", not(feature = "fips")))]` in aws-lc-rs through
-1.17). AWS-LC's FIPS 140-3 module does not yet include ML-DSA, so there is no
-FIPS-validated ML-DSA path. Rather than ship a non-FIPS signature algorithm
-alongside FIPS-validated ones, ML-DSA key generation and signing have been
-removed from the software provider, and `ml_dsa_*` is no longer an allowed
-key type or signature algorithm (`crates/ostrich-x509/src/secure_defaults.rs`).
+**History.** ML-DSA-44/65/87 was once implemented through `aws-lc-rs`'s
+`unstable` feature. That feature cannot be combined with `fips` in aws-lc-rs up
+to 1.17, and the AWS-LC FIPS 3.x module had no ML-DSA. ML-DSA key generation and
+signing were therefore removed from the software provider, and `ml_dsa_*` is not
+an allowed key type or signature algorithm
+(`crates/ostrich-x509/src/secure_defaults.rs`).
 
-The `KeyType::MlDsa*` / `Algorithm::MlDsa*` enum variants and their CSOR OID
-mappings (`crates/ostrich-x509/src/signing.rs`) are retained as reserved
-metadata; attempting to generate or sign with them returns `UnsupportedAlgorithm`.
+**Since 2026-10-23 (AWS-LC FIPS 4.2.0):**
 
-POAM: restore ML-DSA (FIPS 204) once AWS-LC's FIPS module is certified for it and
-`aws-lc-rs` exposes it under the `fips` feature.
+- ML-DSA is part of the AWS-LC FIPS 4.2.0 module (`aws-lc-fips-sys` 0.14.2).
+  From aws-lc-rs 1.18 it is exposed under the `fips` feature
+  (`aws_lc_rs::signature::ML_DSA_*`); the old `unstable::signature` path is
+  deprecated. aws-lc-rs ML-DSA is pure mode with an empty context, and
+  private-key export is `to_pkcs8v1` (seed form).
+- **TLS verifies ML-DSA.** rustls 0.23.46 with the aws-lc-rs provider
+  advertises ML-DSA-44/65/87 in `signature_algorithms` and verifies ML-DSA
+  CertificateVerify signatures. rustls-webpki 0.103.16 verifies ML-DSA
+  certificate signatures during path building. Both report `fips() == true`.
+  This applies to every rustls endpoint: the `ostrich-common` TLS listener, the
+  web-ui and npe-portal backend clients, and the ACME TLS-ALPN-01 validator. As
+  a result, an mTLS peer whose chain uses ML-DSA and leads to a configured
+  trust anchor is now accepted; on AWS-LC 3.x it was rejected.
+- **User decision 2026-10-23: accepted.** ML-DSA was not ready in AWS-LC 3.x
+  and is in 4.2.0, so TLS accepts it. CA issuance policy is unchanged.
+- **Not changed:** ML-DSA key generation, signing, and certificate, CRL, or
+  OCSP issuance stay disabled (`secure_defaults.rs` tests assert
+  `ml_dsa_65` is not allowed). The `KeyType::MlDsa*` / `Algorithm::MlDsa*`
+  variants and their CSOR OID mappings (`crates/ostrich-x509/src/signing.rs`)
+  are reserved metadata; generating or signing with them returns
+  `UnsupportedAlgorithm`.
+- **No OstrichPKI test covers ML-DSA in TLS.** The behaviour was established
+  by the RFC and PQC reviewers from the rustls/webpki source.
+
+POAM: enable ML-DSA (FIPS 204) certificate issuance once CMVP confirms the
+AWS-LC FIPS 4.2.0 module certificate with ML-DSA in its approved-algorithm list.
+The blocker is validation status, not the API (`Cargo.toml` `aws-lc-rs`
+comment).
 
 **Publication Date:** August 2024 (finalized)
 
@@ -442,19 +471,20 @@ POAM: restore ML-DSA (FIPS 204) once AWS-LC's FIPS module is certified for it an
 
 **Implementation:**
 
-- [crates/ostrich-crypto/src/software/mod.rs](../../crates/ostrich-crypto/src/software/mod.rs) - ML-DSA keygen/sign/verify/SPKI export via aws-lc-rs (`generate_ml_dsa_key_pair`, `sign_ml_dsa`, `verify_ml_dsa`)
-- [crates/ostrich-x509/src/signing.rs](../../crates/ostrich-x509/src/signing.rs) - id-ml-dsa-* OIDs (NIST CSOR 2.16.840.1.101.3.4.3.17/.18/.19, parameters absent) wired into the X.509 AlgorithmIdentifier path
-- [crates/ostrich-crypto/src/hsm_validation.rs](../../crates/ostrich-crypto/src/hsm_validation.rs) - FCS_STG_EXT.1 exception permitting software-backed ML-DSA CA keys (no HSM supports ML-DSA yet; POAM)
+- [crates/ostrich-x509/src/signing.rs](../../crates/ostrich-x509/src/signing.rs) - id-ml-dsa-* OIDs (NIST CSOR 2.16.840.1.101.3.4.3.17/.18/.19, parameters absent) retained as reserved AlgorithmIdentifier metadata
+- [crates/ostrich-crypto/src/hsm_validation.rs](../../crates/ostrich-crypto/src/hsm_validation.rs) - FCS_STG_EXT.1 exception text for software-backed ML-DSA CA keys (dormant while issuance is disabled; POAM)
+- [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - TLS listener on the aws-lc-rs provider, which since rustls 0.23.46 includes ML-DSA in its verification algorithms (upstream behaviour, no OstrichPKI code)
 
 **Evidence:**
 
-- ✅ Algorithm types: `MlDsa44`, `MlDsa65`, `MlDsa87`
-- ✅ Signing/verification implemented and OpenSSL-verified (see above)
+- ✅ Algorithm types: `MlDsa44`, `MlDsa65`, `MlDsa87` (reserved)
+- ⛔ Key generation and signing: not present in `crates/ostrich-crypto/src/software/mod.rs` (an earlier revision of this section listed `generate_ml_dsa_key_pair` / `sign_ml_dsa` / `verify_ml_dsa`; those functions are no longer in the code)
+- 🟡 TLS verification: provided by rustls/rustls-webpki under `fips`; no project test
 - ⏳ Hybrid (classical+PQC) composite signatures: types defined, not implemented
 
-**Implementation library:** `aws-lc-rs` (`unstable` feature). RustCrypto
-`ml-dsa` was deliberately NOT used (AWS-LC's FIPS-track validation is the
-rationale).
+**Implementation library:** `aws-lc-rs` (`fips` feature, AWS-LC FIPS 4.2.0).
+RustCrypto `ml-dsa` was deliberately NOT used, so that ML-DSA comes from the
+AWS-LC FIPS module.
 
 **Compliance Notes:**
 
@@ -484,9 +514,10 @@ rationale).
 **Status:** ⛔ **No backend** (not implementable on the current crypto stack)
 
 AWS-LC has **no SLH-DSA implementation at all** — neither in the FIPS 140-3
-module (`aws-lc-fips-sys` 0.13.14 contains zero `slh_dsa`/`sphincs` symbols; its
-only PQC algorithm is ML-KEM) nor in the non-FIPS build (`aws-lc-sys` 0.41.0),
-and `aws-lc-rs` exposes no SLH-DSA API. Since the project standardized on
+module (the `aws-lc-fips-sys` 0.14.2 source, AWS-LC FIPS 4.2.0, contains no
+`slh_dsa`/`slhdsa`/`sphincs` identifiers; its PQC algorithms are ML-KEM and
+ML-DSA) nor in the non-FIPS build (`aws-lc-sys` 0.46.0, AWS-LC 5.11.0; same
+source search, 2026-10-23), and `aws-lc-rs` 1.18.2 exposes no SLH-DSA API. Since the project standardized on
 aws-lc-rs for cryptography, SLH-DSA cannot be produced. It has accordingly been
 removed from the CA's allowed signature algorithms and key types
 (`crates/ostrich-x509/src/secure_defaults.rs`). The `KeyType`/`Algorithm` enum
@@ -589,18 +620,55 @@ separate validated provider for hash-based signatures.
 
 **OstrichPKI Approach:**
 
-#### Software Cryptography (FIPS 140-2 Level 1)
+#### Software Cryptography (target: FIPS 140-3 Level 1)
 
-**Library:** `ring` v0.17+
+**Module:** **AWS-LC FIPS 4.2.0**, built from source by `aws-lc-fips-sys` 0.14.2
+(symbol prefix `aws_lc_fips_0_14_2`), used through `aws-lc-rs` 1.18.2 with the
+workspace `fips` feature.
 
-- **Status:** FIPS 140-2 validated (certificate #3678)
-- **Algorithms:** RSA, ECDSA, AES-GCM, SHA-2
-- **Usage:** Software crypto provider fallback
+- **Status:** 🟡 **CMVP certificate for 4.2.0 pending confirmation (POA&M).**
+  The 2026-10-23 review could not confirm a CMVP certificate for AWS-LC FIPS
+  4.2.0. Until it is confirmed, no document may describe this module as
+  "FIPS-validated".
+- **Previous module:** AWS-LC FIPS 3.3.0 (`aws-lc-fips-sys` 0.13.14), until
+  2026-10-23
+- **Change approval:** user decision 2026-10-23 (CM-3 / CM-4 note in
+  [NIST_800-53_MAPPING.md](NIST_800-53_MAPPING.md#cm-3-configuration-change-control)).
+  The update was required by the rustls 0.23.46 / rustls-webpki 0.103.16
+  advisory fixes. `aws-lc-fips-sys` is pinned at 0.14.2 rather than 0.14.3
+  because 0.14.3 builds with bindgen 0.73, which fails once syn 3 is in the
+  graph. Both releases ship AWS-LC 4.2.0.
+- **Module-source pin (CM-6):** [.cargo/config.toml](../../.cargo/config.toml)
+  sets `AWS_LC_FIPS_SYS_USE_SYSTEM = "0"` (`force = true`). Without it,
+  `aws-lc-fips-sys` 0.14 would auto-detect and link a system AWS-LC
+  (pkg-config / `OPENSSL_DIR`) instead of the bundled 4.2.0 source. The
+  2026-10-23 build log shows `Building with: CMake` (bundled source). The pin
+  does not override the target-suffixed `AWS_LC_FIPS_SYS_USE_SYSTEM_<target>`
+  variable. The container builder stages set the same variable (working tree,
+  not build-verified). The file must be committed for the pin to apply.
+- **Algorithms in the boundary (as used):** RSA, ECDSA P-256/P-384, Ed25519,
+  SHA-2, SP 800-90A DRBG, ML-KEM-512/768/1024, ML-DSA-44/65/87 (TLS
+  verification only), AES-GCM (TLS 1.3 record protection via rustls)
+- **Unchanged by the 4.2.0 update (PQC review 2026-10-23):** rustls `fips()`
+  logic; aws-lc-rs `kem.rs` (byte-identical 1.17 → 1.18.2); RSA/ECDSA/Ed25519
+  signing semantics; DRBG
 
 **Evidence:**
 
-- ✅ `ring` used for hashing (audit chain, JWK thumbprints)
-- 🔴 Software crypto provider not implemented yet
+- ✅ `aws_lc_module_reports_fips_mode` ([crates/ostrich-crypto/src/self_test.rs](../../crates/ostrich-crypto/src/self_test.rs)): `aws_lc_rs::try_fips_mode() == Ok(())` and a SHA-256 "abc" KAT through the module (passed 2026-10-23)
+- ✅ `load_builds_fips_config_with_alpn` ([crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs)): `ServerConfig::fips()` and the provider's `fips()` are `true` (passed 2026-10-23)
+- ✅ `fips_signature_openssl_interop` (1 passed) and `mlkem_openssl_interop` (2 passed) against OpenSSL 4.0.3, 2026-10-23
+- 🔴 No runtime FIPS-mode assertion at service start-up, and the module version is not logged. Services do not fail closed if `try_fips_mode()` returns an error (POA&M; PQC-002 / NIST-007)
+- 🔴 The existing FIPS self-test KATs in `self_test.rs` use RustCrypto `sha2`, and the integrity test checks only the hash length, so they do not exercise the AWS-LC module (PQC-005, pre-existing). The only test that exercises the module is the `aws_lc_module_reports_fips_mode` unit test above.
+
+**Outside the AWS-LC boundary (no CMVP certificate):**
+
+- `ring` 0.17: AES-256-GCM key wrapping in `crates/ostrich-kra/src/wrap.rs`, and
+  gRPC TLS through `tonic`'s `tls-ring` feature (workspace `Cargo.toml`). An
+  earlier revision of this section said `ring` was "FIPS 140-2 validated
+  (certificate #3678)". That was wrong: `ring` has no CMVP certificate.
+- RustCrypto `sha2`: audit hash chain (`crates/ostrich-audit/src/event.rs`) and
+  the self-test KATs above
 
 **Compliance:**
 
@@ -776,9 +844,12 @@ let random_bytes = drbg.generate(32)?;  // Generate 32 bytes of random data
 | **FIPS 180-4** | SHA-256/384/512 | 🟢 FIPS-backed | Active | aws-lc-rs `fips` | DONE |
 | **FIPS 202** | SHA-3 | ⚪ Optional | Not impl | sha3 | LOW |
 | **FIPS 203** | ML-KEM-512/768/1024 | 🟢 FIPS-backed | KeyGen/Encaps/Decaps (OpenSSL interop) | aws-lc-rs `kem` | MEDIUM |
-| **FIPS 204** | ML-DSA-44/65/87 | ⛔ Removed | Unavailable under `fips` (needs `unstable`) | — | DEFERRED |
+| **FIPS 204** | ML-DSA-44/65/87 | 🟡 TLS verify only | TLS peer/chain verification via rustls/webpki (accepted 2026-10-23); keygen, signing and issuance disabled | aws-lc-rs `fips` (AWS-LC FIPS 4.2.0) | DEFERRED (issuance) |
 | **FIPS 205** | SLH-DSA-SHA2 | ⛔ No backend | No AWS-LC impl (FIPS or otherwise) | — | DEFERRED |
 | **SP 800-90A** | DRBG | 🟢 FIPS-backed | `fips_random_bytes` + keygen entropy | aws-lc-rs `fips` | DONE |
+
+"FIPS-backed" = runs inside the AWS-LC FIPS 4.2.0 module (`aws-lc-fips-sys`
+0.14.2); CMVP certificate for 4.2.0 pending confirmation (POA&M).
 
 ---
 
@@ -871,7 +942,7 @@ fn test_sha256_cavp() {
 
 **OstrichPKI Validation Strategy:**
 
-1. **Software:** Use pre-validated `ring` library (certificate #3678)
+1. **Software:** AWS-LC FIPS module via `aws-lc-rs` `fips` (currently AWS-LC FIPS 4.2.0, `aws-lc-fips-sys` 0.14.2; CMVP certificate for 4.2.0 pending confirmation, POA&M). `ring` is not a validated module and must not be cited as one.
 2. **HSM:** Use pre-validated HSM (e.g., Thales Luna certificate #3839)
 3. **Documentation:** Reference validation certificates in Security Target
 
@@ -899,7 +970,7 @@ fn test_sha256_cavp() {
   - ECDSA P-256/384/521 key generation and signing
   - EdDSA Ed25519/448 key generation and signing
 - ✅ Implement software crypto provider fallback
-  - Use `ring` library (FIPS 140-2 validated)
+  - Now aws-lc-rs `fips` (AWS-LC FIPS module); originally planned on `ring`, which has no CMVP certificate
 - ✅ Implement AES-KW for key wrapping (FIPS 197)
 
 ### Phase 13 - Post-Quantum Crypto
@@ -993,6 +1064,7 @@ allowed_pqc_algorithms = [
 | 1.0 | 2026-01-03 | OstrichPKI Team | Initial FIPS compliance assessment based on v0.10.0 codebase |
 | 1.3 | 2026-06-29 | OstrichPKI Team | NPE portal vulnerability fixes reviewed for FIPS impact: access-control/session-binding changes only; no cryptographic algorithm, key-generation, signature, KEM, DRBG, or module-boundary changes. |
 | 1.4 | 2026-07-27 | OstrichPKI Team | Integration profile generates a P-384 CA key through the PKCS#11 abstraction using SoftHSM. SoftHSM is test emulation and is not represented as a FIPS-validated production module. |
+| 1.5 | 2026-10-23 | OstrichPKI Team | Module change AWS-LC FIPS 3.3.0 → 4.2.0 (`aws-lc-fips-sys` 0.13.14 → 0.14.2; aws-lc-rs 1.18.2; rustls 0.23.46), approved by the user 2026-10-23. CMVP certificate for 4.2.0 pending confirmation (POA&M). `.cargo/config.toml` module-source pin (CM-6). ML-DSA: TLS verification accepted (user decision 2026-10-23), issuance still disabled. Removed stale ML-DSA `unstable` and software-provider claims. Corrected the false "`ring` FIPS 140-2 validated (#3678)" statements. SLH-DSA source check updated to 0.14.2 / aws-lc-sys 0.46.0. No algorithm was added to CA issuance. |
 
 ---
 

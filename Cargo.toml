@@ -113,8 +113,10 @@ cms = "0.2"
 pem-rfc7468 = { version = "1", features = ["alloc"] }
 webpki-roots = "1.0"
 # ZIP reading for bulk certificate enrollment (Administrator "Submit Bulk").
-# Read-only + deflate is all the bulk-enroll handler needs.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# Read-only, in-memory; decompression only (zlib-rs backend, no zopfli). We never
+# call `extract()`, so RUSTSEC-2026-0367/0368/0369 are not reachable; bumped to
+# >=9.0.0 anyway (SI-2).
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # ACME client (RFC 8555) so the NPE portal auto-enrolls + renews its own TLS
 # server certificate. `fips` selects the aws-lc-rs FIPS crypto backend (matching
 # the rest of the project), `hyper-rustls` gives the default client + the
@@ -149,10 +151,16 @@ argon2 = { version = "0.5", features = ["std"] }
 #     is present in AWS-LC's FIPS module (aws-lc-fips-sys), so it is the
 #     FIPS-validatable PQC path today. >=1.16 is required for
 #     DecapsulationKey::key_bytes()/new() (private-key escrow round-trip).
-#   - ML-DSA is exposed only by the `unstable` feature, which is mutually
-#     exclusive with `fips` (AWS-LC's FIPS module does not yet include ML-DSA)
-#     and has no semver guarantee, so the version is pinned.
-# POAM: switch to the `fips` feature once AWS-LC ships FIPS-validated ML-DSA.
+#   - ML-DSA (FIPS 204) is present in the AWS-LC 4.2.0 FIPS module
+#     (aws-lc-fips-sys 0.14) and, from aws-lc-rs 1.18, is exposed under the
+#     `fips` feature (the old `unstable::signature` path is deprecated). No
+#     feature change is needed to use it.
+#   - TLS: rustls 0.23.46 on this provider now verifies ML-DSA peer signatures
+#     (accepted by decision of 2026-10-23; CA issuance policy unchanged).
+#   - X.509 issuance of ML-DSA certificates stays disabled
+#     (`crates/ostrich-x509/src/secure_defaults.rs`).
+# POAM: enable ML-DSA certificate issuance once CMVP confirms the AWS-LC 4.2.0
+# FIPS module certificate (the blocker is validation status, not the API).
 aws-lc-rs = { version = "1.16", features = ["fips"] }
 
 # PKCS#11

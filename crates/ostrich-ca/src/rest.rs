@@ -2320,8 +2320,23 @@ const MAX_ZIP_ENTRIES: usize = 1000;
 /// per-CSR and entry caps). 8 MiB is ample for 100 PEM CSRs + ZIP overhead.
 const MAX_BULK_UPLOAD_BYTES: usize = 8 * 1024 * 1024;
 
+/// Maximum length, in UTF-8 bytes, of a ZIP entry name accepted as a CSR source
+/// label. The name is stored and later shown in the portal, so it is bounded.
+const MAX_ZIP_ENTRY_NAME_BYTES: usize = 255;
+
 /// Extract the CSR-bearing entries from an uploaded ZIP, capped and size-bounded.
 /// Returns `(source_name, raw_bytes)` for each `.csr/.pem/.req/.der` file.
+// COMPLIANCE MAPPING:
+// - NIST 800-53: SI-10 (Information Input Validation); adapted to zip 9 (SI-2
+//   remediation recorded in Cargo.toml)
+// - NIAP PP-CA: FDP_CER_EXT.2 (CSR intake)
+// - No filesystem extraction; symlink/dir entries skipped via `is_file()`, and
+//   entry mode bits are never applied. zip 9 decodes entry names as UTF-8 (EFS
+//   flag) or else CP437, so every byte sequence decodes; the `name()` error
+//   mapping is defensive only. CSR entry names longer than
+//   `MAX_ZIP_ENTRY_NAME_BYTES`, containing control characters (CWE-117 /
+//   CWE-158), or containing bidi/zero-width format characters (CWE-451) are
+//   rejected before they are stored or echoed.
 fn extract_csr_entries(zip_bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     use std::io::Read;
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
@@ -2339,7 +2354,12 @@ fn extract_csr_entries(zip_bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         if !file.is_file() {
             continue;
         }
-        let name = file.name().to_string();
+        // zip 9: `name()` is fallible; the `Cow` borrows `file`, which `take()`
+        // consumes below, so take ownership now.
+        let name = file
+            .name()
+            .map_err(|e| Error::InvalidRequest(format!("invalid ZIP entry name: {e}")))?
+            .into_owned();
         let lower = name.to_ascii_lowercase();
         if !(lower.ends_with(".csr")
             || lower.ends_with(".pem")
@@ -2351,6 +2371,28 @@ fn extract_csr_entries(zip_bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         if entries.len() >= MAX_BULK_CSRS {
             return Err(Error::InvalidRequest(format!(
                 "archive contains more than {MAX_BULK_CSRS} certificate requests"
+            )));
+        }
+        // SI-10: the name becomes a stored, displayed label. Reject oversize
+        // names and any control character (NUL, CR, LF, ESC, DEL, C1) so it
+        // cannot break the DB sink or inject into logs/terminals. The raw name
+        // is deliberately not echoed in the error.
+        if name.len() > MAX_ZIP_ENTRY_NAME_BYTES {
+            return Err(Error::InvalidRequest(format!(
+                "ZIP entry {i} name exceeds {MAX_ZIP_ENTRY_NAME_BYTES} bytes"
+            )));
+        }
+        if name.chars().any(char::is_control) {
+            return Err(Error::InvalidRequest(format!(
+                "ZIP entry {i} name contains control characters"
+            )));
+        }
+        // CWE-451: bidi overrides / zero-width / BOM would let a displayed
+        // label differ from its stored bytes (e.g. RLO reversing an extension
+        // in front of an RA reviewer). Not echoed either.
+        if name.chars().any(is_deceptive_format_char) {
+            return Err(Error::InvalidRequest(format!(
+                "ZIP entry {i} name contains invisible or bidirectional formatting characters"
             )));
         }
         // SI-10 / anti zip-bomb: bound the read regardless of the entry's claimed
@@ -2367,6 +2409,25 @@ fn extract_csr_entries(zip_bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         entries.push((name, buf));
     }
     Ok(entries)
+}
+
+/// Unicode format characters that can make a displayed name differ from its
+/// stored bytes: Arabic letter mark, zero-width space/joiners and LRM/RLM,
+/// bidi embeddings/overrides, word joiner / invisible operators / bidi
+/// isolates, and the BOM / zero-width no-break space.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-10 (Information Input Validation)
+/// - CWE-451 (UI Misrepresentation of Critical Information)
+fn is_deceptive_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
 /// Validate one CSR entry (PEM or DER). Returns `(canonical_pem, subject_cn)` on
@@ -3861,5 +3922,454 @@ mod tests {
         assert_eq!(info.name, "TLS Server");
         assert_eq!(info.validity_days, 365);
         assert!(info.subject_alt_name_required);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bulk-enroll ZIP extraction (zip 9.x). NIST 800-53: SI-10, SI-2.
+    // -----------------------------------------------------------------------
+
+    use std::io::Write as _;
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
+
+    /// Assert the extractor rejected the input with `InvalidRequest` whose
+    /// message contains `needle` (so the test cannot pass for the wrong reason).
+    fn assert_invalid(bytes: &[u8], needle: &str) {
+        match extract_csr_entries(bytes) {
+            Err(Error::InvalidRequest(msg)) => {
+                assert!(msg.contains(needle), "unexpected message: {msg}");
+            }
+            other => panic!("expected InvalidRequest({needle}), got {other:?}"),
+        }
+    }
+
+    /// Build an in-memory ZIP of regular files with the given compression.
+    fn build_zip(files: &[(&str, &[u8], CompressionMethod)]) -> Vec<u8> {
+        let mut w = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, data, method) in files {
+            let opts = SimpleFileOptions::default().compression_method(*method);
+            w.start_file(*name, opts).expect("start_file");
+            w.write_all(data).expect("write entry");
+        }
+        w.finish().expect("finish zip").into_inner()
+    }
+
+    /// Deflated (zlib-rs backend) and Stored entries both round-trip byte-exact.
+    #[test]
+    fn extract_csr_entries_reads_deflated_and_stored_csr() {
+        let deflated = b"-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n".repeat(20);
+        let stored = b"-----BEGIN CERTIFICATE REQUEST-----\nBBBB\n".to_vec();
+        let zip_bytes = build_zip(&[
+            ("a.csr", &deflated, CompressionMethod::Deflated),
+            ("b.pem", &stored, CompressionMethod::Stored),
+        ]);
+        let entries = extract_csr_entries(&zip_bytes).expect("valid archive");
+        assert_eq!(
+            entries,
+            vec![
+                ("a.csr".to_string(), deflated),
+                ("b.pem".to_string(), stored)
+            ]
+        );
+    }
+
+    /// Symlink and directory entries are skipped and never resolved
+    /// (RUSTSEC-2026-0368/0369 class not reachable).
+    #[test]
+    fn extract_csr_entries_skips_symlink_and_dir() {
+        let mut w = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = SimpleFileOptions::default();
+        w.add_symlink("evil.pem", "/etc/passwd", opts)
+            .expect("add_symlink");
+        w.add_directory("d/", opts).expect("add_directory");
+        w.start_file("ok.csr", opts).expect("start_file");
+        w.write_all(b"csr").expect("write");
+        let zip_bytes = w.finish().expect("finish").into_inner();
+
+        let entries = extract_csr_entries(&zip_bytes).expect("valid archive");
+        assert_eq!(entries, vec![("ok.csr".to_string(), b"csr".to_vec())]);
+    }
+
+    #[test]
+    fn extract_csr_entries_ignores_non_csr_extensions() {
+        let zip_bytes = build_zip(&[
+            ("readme.txt", b"hello", CompressionMethod::Deflated),
+            ("x.REQ", b"req", CompressionMethod::Stored),
+            ("y.der", b"\x30\x00", CompressionMethod::Stored),
+        ]);
+        let entries = extract_csr_entries(&zip_bytes).expect("valid archive");
+        let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["x.REQ", "y.der"]);
+    }
+
+    /// Anti zip-bomb: an entry one byte over the per-CSR ceiling is rejected.
+    #[test]
+    fn extract_csr_entries_rejects_oversize_entry() {
+        let big = vec![b'A'; usize::try_from(MAX_CSR_BYTES).expect("fits") + 1];
+        let zip_bytes = build_zip(&[("big.csr", &big, CompressionMethod::Deflated)]);
+        assert_invalid(&zip_bytes, "per-CSR limit");
+    }
+
+    /// An entry exactly at the ceiling is accepted (boundary).
+    #[test]
+    fn extract_csr_entries_accepts_entry_at_limit() {
+        let exact = vec![b'A'; usize::try_from(MAX_CSR_BYTES).expect("fits")];
+        let zip_bytes = build_zip(&[("max.csr", &exact, CompressionMethod::Deflated)]);
+        let entries = extract_csr_entries(&zip_bytes).expect("at-limit entry accepted");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1.len(), exact.len());
+    }
+
+    #[test]
+    fn extract_csr_entries_rejects_too_many_csrs() {
+        let names: Vec<String> = (0..=MAX_BULK_CSRS).map(|i| format!("{i}.csr")).collect();
+        let files: Vec<(&str, &[u8], CompressionMethod)> = names
+            .iter()
+            .map(|n| (n.as_str(), &b"x"[..], CompressionMethod::Stored))
+            .collect();
+        let zip_bytes = build_zip(&files);
+        assert_invalid(&zip_bytes, "certificate requests");
+    }
+
+    #[test]
+    fn extract_csr_entries_rejects_too_many_entries() {
+        let names: Vec<String> = (0..=MAX_ZIP_ENTRIES).map(|i| format!("{i}.txt")).collect();
+        let files: Vec<(&str, &[u8], CompressionMethod)> = names
+            .iter()
+            .map(|n| (n.as_str(), &b""[..], CompressionMethod::Stored))
+            .collect();
+        let zip_bytes = build_zip(&files);
+        assert_invalid(&zip_bytes, "entries");
+    }
+
+    #[test]
+    fn extract_csr_entries_rejects_garbage() {
+        assert_invalid(b"not a zip", "invalid ZIP archive");
+        assert_invalid(b"", "invalid ZIP archive");
+    }
+
+    /// A SUID-mode entry comes back as plain bytes; mode bits are never applied
+    /// because nothing is written to the filesystem (RUSTSEC-2026-0367 class).
+    #[test]
+    fn extract_csr_entries_keeps_suid_entry_inert() {
+        let mut w = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = SimpleFileOptions::default().unix_permissions(0o4755);
+        w.start_file("suid.pem", opts).expect("start_file");
+        w.write_all(b"pem-bytes").expect("write");
+        let zip_bytes = w.finish().expect("finish").into_inner();
+
+        let entries = extract_csr_entries(&zip_bytes).expect("valid archive");
+        assert_eq!(
+            entries,
+            vec![("suid.pem".to_string(), b"pem-bytes".to_vec())]
+        );
+    }
+
+    // --- QA additions (SI-10 / SI-2, zip 9 + zlib-rs) ----------------------
+
+    /// Offset of the first central-directory header (`PK\x01\x02`).
+    fn central_dir_offset(bytes: &[u8]) -> usize {
+        bytes
+            .windows(4)
+            .position(|w| w == b"PK\x01\x02")
+            .expect("central directory present")
+    }
+
+    /// Replace every occurrence of `from` with `to` (same length) so the
+    /// local header and the central directory stay consistent.
+    fn patch_name(bytes: &mut [u8], from: &[u8], to: &[u8]) {
+        assert_eq!(from.len(), to.len(), "patch must keep length");
+        let mut hits = 0;
+        let mut i = 0;
+        while i + from.len() <= bytes.len() {
+            if &bytes[i..i + from.len()] == from {
+                bytes[i..i + from.len()].copy_from_slice(to);
+                hits += 1;
+                i += from.len();
+            } else {
+                i += 1;
+            }
+        }
+        assert_eq!(hits, 2, "name must appear in local header and central dir");
+    }
+
+    /// Path-traversal / absolute / Windows-drive names are returned verbatim
+    /// as inert labels: nothing is resolved or written to the filesystem, so
+    /// the name never reaches a path sink (CWE-22 not reachable).
+    #[test]
+    fn extract_csr_entries_treats_traversal_names_as_inert_labels() {
+        let names = [
+            "../../../../etc/cron.d/evil.csr",
+            "/etc/passwd.pem",
+            "C:\\Windows\\System32\\x.req",
+            "a/../../b.der",
+        ];
+        let files: Vec<(&str, &[u8], CompressionMethod)> = names
+            .iter()
+            .map(|n| (*n, &b"x"[..], CompressionMethod::Stored))
+            .collect();
+        let zip_bytes = build_zip(&files);
+        let entries = extract_csr_entries(&zip_bytes).expect("valid archive");
+        let got: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(got, names.to_vec());
+        assert!(
+            !std::path::Path::new("/etc/cron.d/evil.csr").exists(),
+            "extractor must never write to the filesystem"
+        );
+    }
+
+    /// A non-UTF-8 entry name (no EFS flag) is decoded as CP437 by zip 9 and
+    /// therefore accepted with a deterministic, valid-UTF-8 label; it is not a
+    /// panic or a lossy `?` replacement.
+    #[test]
+    fn extract_csr_entries_decodes_non_utf8_name_as_cp437() {
+        let mut zip_bytes = build_zip(&[("QQ.csr", b"x", CompressionMethod::Stored)]);
+        patch_name(&mut zip_bytes, b"QQ.csr", b"\x80\xff.csr");
+        let entries = extract_csr_entries(&zip_bytes).expect("CP437 name accepted");
+        assert_eq!(entries.len(), 1);
+        // CP437 0x80 = U+00C7 (C-cedilla), 0xFF = U+00A0 (no-break space).
+        assert_eq!(entries[0].0, "\u{00c7}\u{00a0}.csr");
+    }
+
+    /// A UTF-8 (EFS-flagged) non-ASCII name round-trips exactly.
+    #[test]
+    fn extract_csr_entries_keeps_utf8_name() {
+        let zip_bytes = build_zip(&[("zertifikat-\u{00e4}.pem", b"x", CompressionMethod::Stored)]);
+        let entries = extract_csr_entries(&zip_bytes).expect("valid archive");
+        assert_eq!(entries[0].0, "zertifikat-\u{00e4}.pem");
+    }
+
+    /// Assert rejection (as `assert_invalid`) and that no fragment of the raw
+    /// entry name is echoed back in the error message.
+    fn assert_invalid_no_echo(bytes: &[u8], needle: &str, name_fragment: &str) {
+        assert_invalid(bytes, needle);
+        match extract_csr_entries(bytes) {
+            Err(Error::InvalidRequest(msg)) => {
+                assert!(!msg.contains(name_fragment), "raw name echoed: {msg}");
+            }
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    /// True if the first local file header has general-purpose bit 11 (EFS,
+    /// UTF-8 name) set, so the name is decoded as UTF-8 rather than CP437.
+    fn first_entry_has_efs_flag(bytes: &[u8]) -> bool {
+        assert_eq!(&bytes[0..4], b"PK\x03\x04", "local file header first");
+        u16::from_le_bytes([bytes[6], bytes[7]]) & (1 << 11) != 0
+    }
+
+    /// A name with an embedded NUL is rejected (QA-001: PostgreSQL TEXT/JSONB
+    /// cannot store `\0`), and the raw name is not echoed in the error.
+    #[test]
+    fn extract_csr_entries_rejects_name_with_nul() {
+        let mut zip_bytes = build_zip(&[("aQb.csr", b"x", CompressionMethod::Stored)]);
+        patch_name(&mut zip_bytes, b"aQb.csr", b"a\0b.csr");
+        assert_invalid_no_echo(&zip_bytes, "control characters", "b.csr");
+    }
+
+    /// CR/LF in a name (log-line injection, CWE-117) is rejected, not echoed.
+    #[test]
+    fn extract_csr_entries_rejects_name_with_crlf() {
+        let mut zip_bytes = build_zip(&[("aQQb.csr", b"x", CompressionMethod::Stored)]);
+        patch_name(&mut zip_bytes, b"aQQb.csr", b"a\r\nb.csr");
+        assert_invalid_no_echo(&zip_bytes, "control characters", "b.csr");
+    }
+
+    /// ESC in a name (terminal escape injection) is rejected, not echoed.
+    #[test]
+    fn extract_csr_entries_rejects_name_with_esc() {
+        let mut zip_bytes = build_zip(&[("aQb.csr", b"x", CompressionMethod::Stored)]);
+        patch_name(&mut zip_bytes, b"aQb.csr", b"a\x1bb.csr");
+        assert_invalid_no_echo(&zip_bytes, "control characters", "b.csr");
+    }
+
+    /// DEL (0x7F) in a name is rejected, not echoed.
+    #[test]
+    fn extract_csr_entries_rejects_name_with_del() {
+        let mut zip_bytes = build_zip(&[("aQb.csr", b"x", CompressionMethod::Stored)]);
+        patch_name(&mut zip_bytes, b"aQb.csr", b"a\x7fb.csr");
+        assert_invalid_no_echo(&zip_bytes, "control characters", "b.csr");
+    }
+
+    /// A C1 control (U+0085 NEL, UTF-8 `C2 85`) in an EFS-flagged (UTF-8)
+    /// name is rejected, not echoed.
+    #[test]
+    fn extract_csr_entries_rejects_name_with_c1_control() {
+        let zip_bytes = build_zip(&[("a\u{0085}b.csr", b"x", CompressionMethod::Stored)]);
+        assert!(
+            first_entry_has_efs_flag(&zip_bytes),
+            "name must be UTF-8 flagged"
+        );
+        assert!(
+            zip_bytes.windows(2).any(|w| w == [0xC2, 0x85]),
+            "raw UTF-8 C1 bytes present"
+        );
+        assert_invalid_no_echo(&zip_bytes, "control characters", "b.csr");
+    }
+
+    /// RIGHT-TO-LEFT OVERRIDE (U+202E) would display `svc-prod\u{202E}rsc.pem`
+    /// as `svc-prodmep.csr` (CWE-451); rejected, not echoed.
+    #[test]
+    fn extract_csr_entries_rejects_name_with_rlo() {
+        let zip_bytes = build_zip(&[("svc-prod\u{202E}rsc.pem", b"x", CompressionMethod::Stored)]);
+        assert!(
+            first_entry_has_efs_flag(&zip_bytes),
+            "name must be UTF-8 flagged"
+        );
+        assert_invalid_no_echo(&zip_bytes, "bidirectional formatting", "svc-prod");
+    }
+
+    /// Every character in the rejected format-character set is classified as
+    /// deceptive; ordinary neighbours (including ZWJ-adjacent letters and
+    /// U+2070 superscript zero) are not.
+    #[test]
+    fn deceptive_format_char_set_boundaries() {
+        let rejected = [
+            '\u{061C}', '\u{200B}', '\u{200F}', '\u{202A}', '\u{202E}', '\u{2060}', '\u{2069}',
+            '\u{FEFF}',
+        ];
+        for c in rejected {
+            assert!(is_deceptive_format_char(c), "{:04X}", c as u32);
+        }
+        let allowed = [
+            '\u{061B}', '\u{061D}', '\u{200A}', '\u{2010}', '\u{2029}', '\u{202F}', '\u{205F}',
+            '\u{2070}', '\u{FEFE}', '\u{FF00}', 'a', '\u{00e4}',
+        ];
+        for c in allowed {
+            assert!(!is_deceptive_format_char(c), "{:04X}", c as u32);
+        }
+    }
+
+    /// A 256-byte name is rejected; a 255-byte name is accepted verbatim.
+    #[test]
+    fn extract_csr_entries_enforces_name_length_limit() {
+        let too_long = format!("{}.csr", "a".repeat(MAX_ZIP_ENTRY_NAME_BYTES + 1 - 4));
+        assert_eq!(too_long.len(), 256);
+        let zip_bytes = build_zip(&[(too_long.as_str(), b"x", CompressionMethod::Stored)]);
+        assert_invalid(&zip_bytes, "exceeds 255 bytes");
+
+        let at_limit = format!("{}.csr", "a".repeat(MAX_ZIP_ENTRY_NAME_BYTES - 4));
+        assert_eq!(at_limit.len(), 255);
+        let zip_bytes = build_zip(&[(at_limit.as_str(), b"x", CompressionMethod::Stored)]);
+        let entries = extract_csr_entries(&zip_bytes).expect("255-byte name accepted");
+        assert_eq!(entries[0].0, at_limit);
+    }
+
+    /// A directory entry whose name ends in `.csr/` is skipped (is_file()).
+    #[test]
+    fn extract_csr_entries_skips_directory_named_like_csr() {
+        let mut w = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        w.add_directory("trap.csr/", SimpleFileOptions::default())
+            .expect("add_directory");
+        let zip_bytes = w.finish().expect("finish").into_inner();
+        let entries = extract_csr_entries(&zip_bytes).expect("valid archive");
+        assert!(entries.is_empty());
+    }
+
+    /// Compression bomb: ~16 MiB of zeros deflates to a few KiB; the bounded
+    /// read through the zlib-rs backend stops at the per-CSR cap.
+    #[test]
+    fn extract_csr_entries_rejects_deflate_bomb() {
+        let bomb = vec![0u8; 16 * 1024 * 1024];
+        let zip_bytes = build_zip(&[("bomb.csr", &bomb, CompressionMethod::Deflated)]);
+        assert!(
+            zip_bytes.len() < 64 * 1024,
+            "bomb should compress well below the cap ({} bytes)",
+            zip_bytes.len()
+        );
+        assert_invalid(&zip_bytes, "per-CSR limit");
+    }
+
+    /// The entry header understates the uncompressed size (10 bytes) while the
+    /// deflate stream holds 200 KiB. Must fail closed: never return more than
+    /// the cap, never return a silently truncated entry as success.
+    #[test]
+    fn extract_csr_entries_rejects_lying_uncompressed_size() {
+        let payload = vec![b'A'; 200 * 1024];
+        let mut zip_bytes = build_zip(&[("lie.csr", &payload, CompressionMethod::Deflated)]);
+        let cd = central_dir_offset(&zip_bytes);
+        // Local header: uncompressed size at +22; central dir: at +24.
+        zip_bytes[22..26].copy_from_slice(&10u32.to_le_bytes());
+        zip_bytes[cd + 24..cd + 28].copy_from_slice(&10u32.to_le_bytes());
+        match extract_csr_entries(&zip_bytes) {
+            Err(Error::InvalidRequest(_)) => {}
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    /// A corrupted deflate stream / CRC mismatch fails closed.
+    #[test]
+    fn extract_csr_entries_rejects_corrupt_deflate_and_bad_crc() {
+        let payload = b"-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n".repeat(50);
+        // (a) CRC mismatch on an otherwise valid Stored entry.
+        let mut stored = build_zip(&[("crc.csr", &payload, CompressionMethod::Stored)]);
+        let cd = central_dir_offset(&stored);
+        // Local header: CRC-32 at +14; central dir: at +16.
+        for off in [14usize, cd + 16] {
+            stored[off] ^= 0xFF;
+        }
+        match extract_csr_entries(&stored) {
+            Err(Error::InvalidRequest(_)) => {}
+            other => panic!("CRC mismatch: expected InvalidRequest, got {other:?}"),
+        }
+        // (b) Garbage in the deflate body (local header is 30 + name bytes).
+        let mut deflated = build_zip(&[("bad.csr", &payload, CompressionMethod::Deflated)]);
+        let body = 30 + "bad.csr".len();
+        for b in &mut deflated[body..body + 8] {
+            *b = 0xFF;
+        }
+        match extract_csr_entries(&deflated) {
+            Err(Error::InvalidRequest(_)) => {}
+            other => panic!("corrupt deflate: expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    /// An entry flagged as encrypted (GP bit 0) is rejected, not read as
+    /// plaintext (no password support is compiled in).
+    #[test]
+    fn extract_csr_entries_rejects_encrypted_entry() {
+        let mut zip_bytes = build_zip(&[("enc.csr", b"secret", CompressionMethod::Stored)]);
+        let cd = central_dir_offset(&zip_bytes);
+        // GP flags: local header +6, central dir +8.
+        zip_bytes[6] |= 0x01;
+        zip_bytes[cd + 8] |= 0x01;
+        assert_invalid(&zip_bytes, "unreadable ZIP entry");
+    }
+
+    /// A compression method that is not compiled in (bzip2 = 12) fails closed.
+    #[test]
+    fn extract_csr_entries_rejects_unsupported_compression_method() {
+        let mut zip_bytes = build_zip(&[("m.csr", b"xxxx", CompressionMethod::Stored)]);
+        let cd = central_dir_offset(&zip_bytes);
+        // Method: local header +8, central dir +10.
+        zip_bytes[8..10].copy_from_slice(&12u16.to_le_bytes());
+        zip_bytes[cd + 10..cd + 12].copy_from_slice(&12u16.to_le_bytes());
+        match extract_csr_entries(&zip_bytes) {
+            Err(Error::InvalidRequest(_)) => {}
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    /// Exactly MAX_BULK_CSRS CSRs and exactly MAX_ZIP_ENTRIES entries are
+    /// accepted (boundary for the two count caps).
+    #[test]
+    fn extract_csr_entries_accepts_counts_at_limits() {
+        let mut names: Vec<String> = (0..MAX_BULK_CSRS).map(|i| format!("{i}.csr")).collect();
+        names.extend((MAX_BULK_CSRS..MAX_ZIP_ENTRIES).map(|i| format!("{i}.txt")));
+        assert_eq!(names.len(), MAX_ZIP_ENTRIES);
+        let files: Vec<(&str, &[u8], CompressionMethod)> = names
+            .iter()
+            .map(|n| (n.as_str(), &b"x"[..], CompressionMethod::Stored))
+            .collect();
+        let entries = extract_csr_entries(&build_zip(&files)).expect("at-limit archive");
+        assert_eq!(entries.len(), MAX_BULK_CSRS);
+    }
+
+    /// A truncated archive (central directory cut off) fails closed.
+    #[test]
+    fn extract_csr_entries_rejects_truncated_archive() {
+        let zip_bytes = build_zip(&[("t.csr", b"abcdef", CompressionMethod::Stored)]);
+        let cut = central_dir_offset(&zip_bytes);
+        assert_invalid(&zip_bytes[..cut], "invalid ZIP archive");
     }
 }

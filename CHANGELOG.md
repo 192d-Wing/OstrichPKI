@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+#### Dependency advisory remediation (cargo audit: 18 vulnerabilities, 4 warnings -> 0)
+
+##### workspace (Cargo.lock)
+
+- **rustls** 0.23.41 -> 0.23.46:
+  - RUSTSEC-2026-0285: TLS 1.3 handshake messages accepted across encryption-level boundaries
+  - RUSTSEC-2026-0346: `Debug` impls for client session values expose TLS secrets
+  - RUSTSEC-2026-0348: Brotli certificate decompression can allocate up to 1 GiB before authentication
+  - RUSTSEC-2026-0349: an unauthenticated ServerHello can downgrade later connections to classical key exchange
+- **rustls-webpki** 0.103.13 -> 0.103.16: RUSTSEC-2026-0382 (verification may accept distrusted intermediates)
+- **webpki-roots** 1.0.5 -> 1.0.11: RUSTSEC-2026-0381 (distrusted emSign intermediates). The 0.26.11 compatibility shim is unchanged.
+- **webpki-root-certs** 1.0.5 -> 1.0.11: RUSTSEC-2026-0383 (distrusted emSign intermediates)
+- **cryptoki** 0.11.0 -> 0.11.1: RUSTSEC-2026-0286 (out-of-bounds read when decoding `CKA_ALLOWED_MECHANISMS`, PKCS#11 / HSM path)
+- **ctutils** 0.4.2 -> 0.4.5: RUSTSEC-2026-0385 (non-constant-time mask generation and `u128` comparisons)
+- **h2** 0.4.15 -> 0.4.20: RUSTSEC-2026-0258 (unbounded empty DATA frames)
+- **quinn-proto** 0.11.15 -> 0.11.19:
+  - RUSTSEC-2026-0338: a zero-length STREAM frame during unordered reads can panic
+  - RUSTSEC-2026-0339: unbounded growth of pending connection-ID retirements
+  - RUSTSEC-2026-0340: the peer's minimum ACK delay can panic when ACK_FREQUENCY is enabled
+  - RUSTSEC-2026-0341: the stream reassembly memory-exhaustion guard can be bypassed
+  - RUSTSEC-2026-0342: zero-length DATAGRAM frames bypass the receive buffer limit
+- **tokio** 1.50.0 -> 1.54.1: RUSTSEC-2026-0386 (unsound: `AsyncFd::new` violates I/O safety; not called in this workspace)
+- **event-listener** 5.4.1 -> 5.4.2: RUSTSEC-2026-0221 (unsound: `!Send` tags can cross threads via `StackSlot`)
+- **chacha20** 0.10.0 -> 0.10.2 and **spin** 0.9.8 -> 0.9.9: replace yanked releases
+- Transitive updates required by the fixes: aws-lc-rs 1.17.0 -> 1.18.2, aws-lc-sys 0.41.0 -> 0.46.0,
+  tokio-macros 2.6.0 -> 2.7.2, mio 1.1.1 -> 1.2.4, socket2 0.6.1 -> 0.6.5, libc 0.2.179 -> 0.2.191
+- Each fix is a semver-compatible lockfile update made with `cargo update -p <crate> --precise <version>`.
+  No new ignores were added to `.cargo/audit.toml`.
+- **NIST 800-53**: SI-2 (Flaw Remediation), RA-5 (Vulnerability Monitoring and Scanning)
+
+##### ostrich-ca
+
+- **zip** 2.4.2 -> 9.0.5 (major bump): RUSTSEC-2026-0367 (SUID/SGID bits preserved on extraction),
+  RUSTSEC-2026-0368 (`extract` creates symlinks that point outside the destination) and
+  RUSTSEC-2026-0369 (`extract` applies Unix permissions through symlinks)
+  - None of these was reachable. Bulk enrollment (`/api/v1/bulk-enroll`) reads the archive in memory
+    and never calls `extract()`. The crate was bumped anyway.
+  - **NIST 800-53**: SI-2, SI-10
+
+### Changed
+
+#### AWS-LC FIPS module update and zip 9 migration
+
+##### workspace (Cargo.lock)
+
+- **FIPS crypto module**: aws-lc-fips-sys 0.13.14 -> 0.14.2 moves the module from AWS-LC-FIPS 3.3.0 to
+  **AWS-LC-FIPS 4.2.0**. The rustls/rustls-webpki fixes (via aws-lc-rs 1.18.2) require this change.
+  - The version is pinned to 0.14.2, not 0.14.3. 0.14.3 builds with bindgen 0.73, which does not compile
+    once syn 3 is in the dependency graph. Both releases ship AWS-LC 4.2.0.
+  - **POA&M**: the CMVP (FIPS 140-3) certificate status of AWS-LC-FIPS 4.2.0 has not been confirmed.
+    It must be confirmed before ATO. See `docs/compliance/FIPS_COMPLIANCE.md`.
+  - **NIST 800-53**: SC-13 (Cryptographic Protection). **NIAP PP-CA**: FCS_COP.1, FCS_CKM.1
+
+##### ostrich-ca
+
+- **zip 9 migration** (`src/rest.rs`, `extract_csr_entries`):
+  - zip now uses `default-features = false, features = ["deflate-flate2-zlib-rs"]`. This is
+    decompression only, so zopfli, arbitrary and derive_arbitrary leave the dependency graph.
+  - New transitive crates: typed-path, nix, zlib-rs, libz-rs-sys.
+  - Feature unification also switches flate2 to the zlib-rs backend for all its users in the workspace.
+  - Behaviour change: a ZIP entry name that cannot be decoded is now rejected with
+    `400 invalid ZIP entry name`. zip 2 decoded such names lossily. This fails closed (SI-10).
+  - Added 9 unit tests that cover stored/deflated CSRs, symlink and directory entries, extension
+    filtering, size, CSR-count and entry-count limits, garbage input, and SUID entries.
+
+### Fixed
+
+#### clippy `-D warnings` on stable Rust 1.99
+
+##### workspace (Cargo.lock)
+
+- **async-trait** 0.1.89 -> 0.1.92: `cargo clippy --workspace --all-targets -- -D warnings` now passes on
+  Rust 1.99. async-trait 0.1.89 added `#[must_use]` to every `async fn` in an `#[async_trait]` trait
+  definition. That triggered `clippy::double_must_use`: 25 errors in ostrich-common alone, and the same
+  trait pattern in ostrich-crypto, ostrich-db, ostrich-audit and ostrich-web-ui.
+  No source changes were needed.
+
+##### ostrich-web-ui
+
+- `src/server/auth/handlers.rs`: added `#[expect(clippy::result_large_err, reason = ...)]` on the `login`,
+  `callback` and `userinfo` handlers. The axum `Response` error type is converted immediately, so boxing
+  it would only add an allocation. No behaviour change.
+
 ## [0.15.0] - 2026-01-04
 
 ### Added

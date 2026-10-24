@@ -385,4 +385,284 @@ mod tests {
                 .optional_client_auth
         );
     }
+
+    // --- QA: rustls 0.23.46 / rustls-webpki 0.103.16 / AWS-LC FIPS 4.2.0 ---
+    // NIST 800-53: SC-8, SC-13, AC-17, IA-2; RFC 8446; RFC 5280 §6.
+
+    use rcgen::{
+        BasicConstraints, CertificateParams, CertifiedIssuer, DnType, ExtendedKeyUsagePurpose,
+        IsCa, KeyPair, KeyUsagePurpose,
+    };
+    use rustls::pki_types::ServerName;
+    use rustls::{ClientConfig, ClientConnection, ServerConnection};
+
+    struct Pki {
+        ca: CertifiedIssuer<'static, KeyPair>,
+    }
+
+    impl Pki {
+        fn new(cn: &str) -> Self {
+            let mut p = CertificateParams::new(Vec::<String>::new()).expect("ca params");
+            p.distinguished_name.push(DnType::CommonName, cn);
+            p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            p.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+            let key = KeyPair::generate().expect("ca key");
+            Self {
+                ca: CertifiedIssuer::self_signed(p, key).expect("ca cert"),
+            }
+        }
+
+        /// Issue a leaf; returns (cert PEM, key PEM).
+        fn leaf(&self, san: &str, eku: ExtendedKeyUsagePurpose) -> (String, String) {
+            let mut p = CertificateParams::new(vec![san.to_string()]).expect("leaf params");
+            p.distinguished_name.push(DnType::CommonName, san);
+            p.extended_key_usages = vec![eku];
+            let key = KeyPair::generate().expect("leaf key");
+            let cert = p.signed_by(&key, &self.ca).expect("leaf cert");
+            (cert.pem(), key.serialize_pem())
+        }
+    }
+
+    fn write_tmp(tag: &str, contents: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "ostrich-tls-qa-{}-{tag}-{:?}.pem",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, contents).expect("write temp pem");
+        path
+    }
+
+    fn pem_certs(pem: &str) -> Vec<CertificateDer<'static>> {
+        CertificateDer::pem_slice_iter(pem.as_bytes())
+            .collect::<std::result::Result<_, _>>()
+            .expect("parse pem certs")
+    }
+
+    /// Drive an in-memory TLS handshake; Err carries the first rustls error.
+    fn handshake(
+        server: ServerConfig,
+        client: ClientConfig,
+    ) -> std::result::Result<ServerConnection, rustls::Error> {
+        let mut s = ServerConnection::new(Arc::new(server))?;
+        let mut c = ClientConnection::new(
+            Arc::new(client),
+            ServerName::try_from("localhost").expect("name"),
+        )?;
+        for _ in 0..20 {
+            let mut buf = Vec::new();
+            while c.wants_write() {
+                c.write_tls(&mut buf).expect("client write");
+            }
+            let mut rd = &buf[..];
+            while !rd.is_empty() {
+                s.read_tls(&mut rd).expect("server read");
+            }
+            s.process_new_packets()?;
+            let mut buf = Vec::new();
+            while s.wants_write() {
+                s.write_tls(&mut buf).expect("server write");
+            }
+            let mut rd = &buf[..];
+            while !rd.is_empty() {
+                c.read_tls(&mut rd).expect("client read");
+            }
+            c.process_new_packets()?;
+            if !s.is_handshaking() && !c.is_handshaking() {
+                return Ok(s);
+            }
+        }
+        panic!("handshake did not complete");
+    }
+
+    fn client_config(
+        trust_pem: &str,
+        client_auth: Option<(&str, &str)>,
+        versions: &[&'static rustls::SupportedProtocolVersion],
+    ) -> ClientConfig {
+        let mut roots = RootCertStore::empty();
+        for c in pem_certs(trust_pem) {
+            roots.add(c).expect("add root");
+        }
+        let b = ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_protocol_versions(versions)
+        .expect("client versions")
+        .with_root_certificates(roots);
+        match client_auth {
+            Some((cert, key)) => b
+                .with_client_auth_cert(
+                    pem_certs(cert),
+                    PrivateKeyDer::from_pem_slice(key.as_bytes()).expect("client key"),
+                )
+                .expect("client auth cert"),
+            None => b.with_no_client_auth(),
+        }
+    }
+
+    /// Server PKI + mandatory-mTLS settings (client CA = `client_pki`).
+    fn mtls_settings(server_pki: &Pki, client_pki: &Pki, tag: &str) -> TlsSettings {
+        let (cert, key) = server_pki.leaf("localhost", ExtendedKeyUsagePurpose::ServerAuth);
+        TlsSettings {
+            cert_path: write_tmp(&format!("{tag}-srv-cert"), &cert),
+            key_path: write_tmp(&format!("{tag}-srv-key"), &key),
+            client_ca_path: Some(write_tmp(&format!("{tag}-cli-ca"), &client_pki.ca.pem())),
+            optional_client_auth: false,
+        }
+    }
+
+    /// `load()` yields a config backed by the FIPS AWS-LC module (SC-13).
+    #[test]
+    fn load_builds_fips_config_with_alpn() {
+        let pki = Pki::new("QA Server CA");
+        let (cert, key) = pki.leaf("localhost", ExtendedKeyUsagePurpose::ServerAuth);
+        let settings = TlsSettings {
+            cert_path: write_tmp("fips-cert", &cert),
+            key_path: write_tmp("fips-key", &key),
+            client_ca_path: None,
+            optional_client_auth: false,
+        };
+        let config = settings.load().expect("load tls config");
+        assert!(
+            config.fips(),
+            "ServerConfig must report FIPS mode (aws-lc-rs fips provider)"
+        );
+        assert!(rustls::crypto::aws_lc_rs::default_provider().fips());
+        assert_eq!(
+            config.alpn_protocols,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
+    }
+
+    /// A client chaining to the configured client CA completes a TLS 1.3
+    /// mTLS handshake and the server sees its certificate (AC-17, IA-2).
+    #[test]
+    fn mtls_handshake_accepts_trusted_client() {
+        let srv = Pki::new("QA Server CA");
+        let cli = Pki::new("QA Client CA");
+        let config = mtls_settings(&srv, &cli, "ok").load().expect("load");
+        let (c_cert, c_key) = cli.leaf("client.example", ExtendedKeyUsagePurpose::ClientAuth);
+        let conn = handshake(
+            config,
+            client_config(
+                &srv.ca.pem(),
+                Some((&c_cert, &c_key)),
+                &[&rustls::version::TLS13],
+            ),
+        )
+        .expect("trusted client handshake");
+        assert_eq!(
+            conn.protocol_version(),
+            Some(rustls::ProtocolVersion::TLSv1_3)
+        );
+        let peer = conn.peer_certificates().expect("peer cert present");
+        assert_eq!(peer[0].as_ref(), pem_certs(&c_cert)[0].as_ref());
+    }
+
+    /// A client certificate from an untrusted CA is rejected (fail secure).
+    #[test]
+    fn mtls_handshake_rejects_untrusted_client() {
+        let srv = Pki::new("QA Server CA");
+        let cli = Pki::new("QA Client CA");
+        let rogue = Pki::new("QA Rogue CA");
+        let config = mtls_settings(&srv, &cli, "rogue").load().expect("load");
+        let (c_cert, c_key) = rogue.leaf("client.example", ExtendedKeyUsagePurpose::ClientAuth);
+        let err = handshake(
+            config,
+            client_config(
+                &srv.ca.pem(),
+                Some((&c_cert, &c_key)),
+                &[&rustls::version::TLS13],
+            ),
+        )
+        .expect_err("untrusted client must be rejected");
+        assert!(
+            matches!(err, rustls::Error::InvalidCertificate(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// Mandatory mTLS: a client presenting no certificate is rejected.
+    #[test]
+    fn mtls_handshake_rejects_missing_client_cert() {
+        let srv = Pki::new("QA Server CA");
+        let cli = Pki::new("QA Client CA");
+        let config = mtls_settings(&srv, &cli, "nocert").load().expect("load");
+        let err = handshake(
+            config,
+            client_config(&srv.ca.pem(), None, &[&rustls::version::TLS13]),
+        )
+        .expect_err("missing client cert must be rejected");
+        assert!(
+            matches!(err, rustls::Error::NoCertificatesPresented),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// Optional client auth (bootstrap): no certificate is allowed, but a
+    /// presented untrusted certificate is still rejected.
+    #[test]
+    fn optional_mtls_allows_anonymous_but_rejects_untrusted() {
+        let srv = Pki::new("QA Server CA");
+        let cli = Pki::new("QA Client CA");
+        let rogue = Pki::new("QA Rogue CA");
+        let settings = mtls_settings(&srv, &cli, "opt").with_optional_client_auth(true);
+        let conn = handshake(
+            settings.load().expect("load"),
+            client_config(&srv.ca.pem(), None, &[&rustls::version::TLS13]),
+        )
+        .expect("anonymous client allowed");
+        assert!(conn.peer_certificates().is_none());
+
+        let (c_cert, c_key) = rogue.leaf("client.example", ExtendedKeyUsagePurpose::ClientAuth);
+        let err = handshake(
+            settings.load().expect("load"),
+            client_config(
+                &srv.ca.pem(),
+                Some((&c_cert, &c_key)),
+                &[&rustls::version::TLS13],
+            ),
+        )
+        .expect_err("untrusted presented cert must be rejected");
+        assert!(matches!(err, rustls::Error::InvalidCertificate(_)));
+    }
+
+    /// TLS 1.3-only policy: a TLS 1.2-only client cannot connect (SC-8).
+    #[test]
+    fn server_rejects_tls12_only_client() {
+        let srv = Pki::new("QA Server CA");
+        let (cert, key) = srv.leaf("localhost", ExtendedKeyUsagePurpose::ServerAuth);
+        let settings = TlsSettings {
+            cert_path: write_tmp("tls12-cert", &cert),
+            key_path: write_tmp("tls12-key", &key),
+            client_ca_path: None,
+            optional_client_auth: false,
+        };
+        let res = handshake(
+            settings.load().expect("load"),
+            client_config(&srv.ca.pem(), None, &[&rustls::version::TLS12]),
+        );
+        assert!(res.is_err(), "TLS 1.2-only client must not connect");
+    }
+
+    /// A client certificate without the clientAuth EKU (serverAuth only) is
+    /// rejected by the webpki client verifier (RFC 5280 §4.2.1.12).
+    #[test]
+    fn mtls_handshake_rejects_client_cert_with_server_only_eku() {
+        let srv = Pki::new("QA Server CA");
+        let cli = Pki::new("QA Client CA");
+        let config = mtls_settings(&srv, &cli, "eku").load().expect("load");
+        let (c_cert, c_key) = cli.leaf("client.example", ExtendedKeyUsagePurpose::ServerAuth);
+        let err = handshake(
+            config,
+            client_config(
+                &srv.ca.pem(),
+                Some((&c_cert, &c_key)),
+                &[&rustls::version::TLS13],
+            ),
+        )
+        .expect_err("wrong-EKU client must be rejected");
+        assert!(matches!(err, rustls::Error::InvalidCertificate(_)));
+    }
 }
