@@ -1,0 +1,21 @@
+# Workspace Cargo configuration (CM-6 baseline setting).
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: CM-6 (Configuration Settings), SC-13 (Cryptographic
+#   Protection), SI-7 (Software, Firmware, and Information Integrity)
+# - FIPS 140-3: cryptographic module identity. `aws-lc-fips-sys` >= 0.14 will
+#   auto-detect and link a system-installed AWS-LC (pkg-config / OPENSSL_DIR)
+#   unless told not to. A system library is not the module whose source and
+#   build procedure we pin in Cargo.lock, so it would silently change the FIPS
+#   module boundary. Pin the bundled, CMake-built FIPS module instead.
+#   With this set, also setting AWS_LC_FIPS_SYS_SYSTEM_DIR makes the build
+#   fail (contradictory settings) rather than linking an unpinned library.
+[env]
+# `force = true` makes this value win over a plain `AWS_LC_FIPS_SYS_USE_SYSTEM`
+# already set in the shell/CI environment. It does NOT cover the
+# target-suffixed form: aws-lc-fips-sys checks
+# `AWS_LC_FIPS_SYS_USE_SYSTEM_<target>` (e.g. `..._x86_64_unknown_linux_gnu`)
+# first, so an environment value of that variable still takes precedence.
+# Container builds additionally set the variable in the Dockerfile builder
+# stages; release pipelines must not set the target-suffixed variant.
+AWS_LC_FIPS_SYS_USE_SYSTEM = { value = "0", force = true }

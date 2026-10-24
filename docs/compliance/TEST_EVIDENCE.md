@@ -1,9 +1,9 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 1.0
-**Last Updated:** January 2026
+**Document Version:** 1.2
+**Last Updated:** 2026-10-23
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
-**Total Tests:** 256 unit tests passing
+**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 649 unit tests passed, 2026-10-23 (§2.3)
 
 ---
 
@@ -75,6 +75,74 @@ test result: ok. 256 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 | ostrich-scms | 11 | Pass | Token lifecycle |
 | ostrich-kra | 10 | Pass | Escrow, recovery |
 | ostrich-audit | 5+ | Pass | Events, sinks |
+
+### 2.3 Test Run 2026-10-23 (Dependency Advisory Remediation)
+
+**Scope:** branch `claude/audit-advisories-clippy` (uncommitted, based on
+`main` @ 88c10cd), covering dependency advisory fixes, the zip 9 migration,
+and clippy fixes.
+**Host:** macOS (Darwin 27.0.0, aarch64), rustc 1.99.1 stable, OpenSSL 4.0.3,
+cargo-audit 0.22.2, cargo-deny 0.20.2.
+**Not available on the host:** SoftHSM, PostgreSQL, Docker.
+**Sources:** `qa-report.md` (QA engineer) and `fixes-round-1.md` (re-run after
+the round-1 fixes), in `target/agent-workflow/20261023-185030-audit-advisories/`.
+A gate that did not execute is recorded as NOT RUN, even when the test harness
+printed `ok`.
+
+| Gate | Command | Result | Counts |
+|------|---------|--------|--------|
+| Format | `cargo fmt --all --check` | PASS | exit 0 |
+| Build | `cargo build --workspace` | PASS | exit 0 |
+| Lint | `make clippy` (`cargo clippy --workspace --all-targets --all-features -- -D warnings`) | PASS | exit 0 (rustc 1.99.1) |
+| Unit | `make test-unit` (`cargo test --workspace --all-features --lib`) | PASS | **649 passed, 0 failed** across 16 lib targets (after fixes, `fixes-round-1.md`). QA run before the fixes: 646 passed, 0 failed, 1 ignored |
+| Unit (scoped) | `cargo test -p ostrich-ca --lib` | PASS | 50 passed (after fixes); `extract_csr_entries` subset 21 passed in the QA run |
+| Unit (scoped) | `cargo test -p ostrich-common --lib tls::tests` | PASS | 12 passed (7 new rustls handshake tests) |
+| Unit (scoped) | `cargo test -p ostrich-crypto --lib self_test` | PASS | 11 passed (incl. new `aws_lc_module_reports_fips_mode`) |
+| Doc | `make test-doc` | FAIL (environment, pre-existing) | rustdoc binaries cannot load the AWS-LC FIPS dylib on macOS; reproduces on `main` (QA-003) |
+| Supply chain | `cargo audit` | PASS | 1351 advisories, 642 crates, **0 vulnerabilities, 0 warnings** (baseline on `main`: 18 vulnerabilities, 4 warnings) |
+| Supply chain | `cargo deny check` | FAIL (config, pre-existing) | `deny.toml` fails validation (5 removed keys); no policy evaluated (QA-002) |
+| Integration | `mtls_peercert_e2e` | PASS (executed) | 1 passed |
+| Integration | `fips_signature_openssl_interop` | PASS (executed) | 1 passed |
+| Integration | `mlkem_openssl_interop` | PASS (executed, OpenSSL 4.0.3) | 2 passed |
+| Integration | `csr_parsing_test` | PASS | 5 passed, 1 ignored |
+| Integration | `session_store_e2e`, `lockout_e2e`, `tamp_store_e2e`, `est_serverkeygen_e2e` | **NOT RUN** | Reported 14 "passed", but every test skipped early (no `DATABASE_URL` / database unreachable; QA-005) |
+| Integration | `acme_full_flow_test` | **NOT RUN** | 1 ignored (needs live `ACME_URL`) |
+| Integration | `est_e2e_test`, `ca_core_test`, `ocsp_e2e_test`, `acme_e2e_test` | **NOT RUN** (no Docker) | Health/readiness tests failed with `ConnectionRefused`; only `common::` helper tests passed |
+| Integration | `ocsp_revocation_test` (live part) | **NOT RUN** | 9 helper tests passed; `test_ocsp_good_then_revoked` ignored |
+| PKCS#11 | `cargo test -p ostrich-crypto --test pkcs11_integration_test -- --test-threads=1` | **NOT RUN** (no SoftHSM) | 0 passed, 19 failed, 1 ignored: every test panics with `SoftHSM library not found` |
+| Fuzz | — | **NOT RUN** | No fuzz target exists for `extract_csr_entries` |
+
+**QA-004: the cryptoki fix is untested.** cryptoki 0.11.0 → 0.11.1 fixes
+RUSTSEC-2026-0286 (out-of-bounds read decoding `CKA_ALLOWED_MECHANISMS`). No
+PKCS#11 test ran: SoftHSM was not installed, and no CI workflow runs
+`pkcs11_integration_test`. The PQC reviewer found that
+`crates/ostrich-crypto/src/pkcs11/mod.rs` never reads `AllowedMechanisms`. That
+is a code-review finding, not test evidence. There is no SA-11 evidence for the
+HSM path of this update (POA&M in NIAP_GAP_ANALYSIS.md §11).
+
+**New tests in this run:**
+
+- `crates/ostrich-ca/src/rest.rs` (`mod tests`): ZIP extraction under zip 9.
+  Covers deflate and stored entries, symlink and directory entries, size and
+  count limits (with boundaries), deflate bomb, lying sizes, bad CRC, encrypted
+  and unsupported entries, CP437 and UTF-8 names, traversal names as labels,
+  and entry-name rejection (NUL, CRLF, ESC, DEL, C1, Unicode bidi/zero-width
+  format characters such as RLO, and the 255-byte limit), with no-echo checks.
+  After fix round 2: `cargo test -p ostrich-ca --lib` 54 passed; `make test-unit`
+  653 passed, 0 failed, 1 ignored (`fixes-round-2.md`, re-run by orchestrator).
+- `crates/ostrich-common/src/tls.rs` (`mod tests`):
+  `load_builds_fips_config_with_alpn`, `mtls_handshake_accepts_trusted_client`,
+  `mtls_handshake_rejects_untrusted_client`,
+  `mtls_handshake_rejects_missing_client_cert`,
+  `optional_mtls_allows_anonymous_but_rejects_untrusted`,
+  `server_rejects_tls12_only_client`,
+  `mtls_handshake_rejects_client_cert_with_server_only_eku`.
+- `crates/ostrich-crypto/src/self_test.rs`: `aws_lc_module_reports_fips_mode`
+  (`try_fips_mode()` and a SHA-256 KAT through AWS-LC FIPS 4.2.0).
+
+**Not covered:** ML-DSA verification in TLS (no test); the PostgreSQL-backed
+paths; the live EST/ACME/CA/OCSP stack over rustls 0.23.46; and handler tests
+for the web-ui `login`/`callback`/`userinfo` attribute-only change.
 
 ---
 
@@ -411,12 +479,22 @@ $ cargo audit
 # 0 vulnerabilities found
 ```
 
+**2026-10-23 (latest recorded):** `cargo audit` with 1351 advisories loaded,
+642 crates scanned: **0 vulnerabilities, 0 warnings**, exit 0, after
+remediating 18 vulnerabilities and 4 warnings found on `main` @ 88c10cd (see
+§2.3 and NIST SI-2). The CI `cargo audit` job is advisory (non-blocking).
+
 ### 5.3 License Compliance
 
 ```bash
 $ cargo deny check
 # All dependencies have approved licenses
 ```
+
+**2026-10-23: this result can no longer be reproduced.** `cargo deny check`
+fails configuration validation under cargo-deny 0.20.2 (`deny.toml` uses 5
+removed keys), so no license, ban or advisory policy is evaluated (SEC-001 /
+QA-002; POA&M). The output above is historical.
 
 ### 5.4 Fuzzing Results
 
@@ -590,3 +668,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 |---------|------|--------|---------|
 | 1.0 | January 2026 | OstrichPKI Team | Initial test evidence package |
 | 1.1 | July 2026 | OstrichPKI Team | Added Helm-render and runtime certificate-lifecycle evidence requirements for the EST external-issuer integration profile. |
+| 1.2 | 2026-10-23 | OstrichPKI Team | Added §2.3, the dependency-advisory remediation test run: 649 unit tests passed; integration suites recorded as run or NOT RUN; PKCS#11 NOT RUN, so the cryptoki fix is untested (QA-004). §5.2: cargo audit 0 vulnerabilities (1351 advisories). §5.3: cargo deny marked not reproducible. |

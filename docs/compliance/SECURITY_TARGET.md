@@ -1,7 +1,7 @@
 # OstrichPKI Security Target
 
-**Document Version:** 1.1
-**Document Date:** January 2026
+**Document Version:** 1.2
+**Document Date:** January 2026 (revised 2026-10-23)
 **Protection Profile:** NIAP Protection Profile for Certification Authorities (PP-CA) v2.1
 **Common Criteria Version:** 3.1 Release 5
 **Assurance Level:** EAL2+ (ALC_FLR.2)
@@ -783,6 +783,7 @@ All SFR dependencies are satisfied per PP-CA v2.1 analysis.
 |---------|------|--------|---------|
 | 1.0 | January 2026 | OstrichPKI Team | Initial Security Target |
 | 1.1 | January 2026 | OstrichPKI Team | Added Assurance Measures (Section 10), Operational Environment (Section 11) |
+| 1.2 | 2026-10-23 | OstrichPKI Team | ALC_FLR.2 / AVA_VAN.2: `cargo audit` evidence marked advisory (non-blocking); 2026-10-23 scan result recorded; `cargo deny` noted as not effective (POA&M) |
 
 ---
 
@@ -918,6 +919,7 @@ This section describes how OstrichPKI satisfies each Security Assurance Requirem
 - SECURITY.md in repository root
 - GitHub Security Advisories enabled
 - Dependabot for dependency vulnerabilities
+- `cargo audit` CI job ([.github/workflows/audit.yml](../../.github/workflows/audit.yml)) — **advisory only** (`continue-on-error: true`): a finding does not fail CI or block a merge. Flaw-remediation time periods are proposed and pending AO approval. See NIST SI-2 / RA-5 in [NIST_800-53_MAPPING.md](NIST_800-53_MAPPING.md); POA&M to make the job blocking
 
 ### 10.4 Tests (ATE)
 
@@ -972,7 +974,8 @@ This section describes how OstrichPKI satisfies each Security Assurance Requirem
 
 **Evidence:**
 - Dependabot alerts enabled
-- `cargo audit` in CI pipeline
+- `cargo audit` in CI pipeline — **advisory, non-blocking** (`continue-on-error: true`). Last recorded result: 0 vulnerabilities, 0 warnings on 2026-10-23 (1351 advisories, 642 crates) after remediating 18 vulnerabilities and 4 warnings found on `main`
+- `cargo deny check` is not currently effective: `deny.toml` fails schema validation under cargo-deny 0.20 (POA&M)
 - Security review checklist
 
 ---

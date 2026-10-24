@@ -237,6 +237,10 @@ pub async fn internal_login(
 /// Login handler - initiates OAuth flow
 ///
 /// Redirects the user to the Keycloak authorization endpoint.
+#[expect(
+    clippy::result_large_err,
+    reason = "axum Response error is converted immediately; boxing adds an allocation for no benefit"
+)]
 pub async fn login(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -273,6 +277,10 @@ pub async fn login(
 ///
 /// Handles the redirect from Keycloak after user authentication.
 /// Exchanges the authorization code for tokens and creates a session.
+#[expect(
+    clippy::result_large_err,
+    reason = "axum Response error is converted immediately; boxing adds an allocation for no benefit"
+)]
 #[debug_handler]
 pub async fn callback(
     State(state): State<AppState>,
@@ -453,6 +461,10 @@ pub async fn logout_all(State(state): State<AppState>, jar: CookieJar) -> impl I
 /// User info handler
 ///
 /// Returns information about the currently authenticated user.
+#[expect(
+    clippy::result_large_err,
+    reason = "axum Response error is converted immediately; boxing adds an allocation for no benefit"
+)]
 pub async fn userinfo(
     State(state): State<AppState>,
     jar: CookieJar,

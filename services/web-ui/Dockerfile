@@ -72,6 +72,14 @@ RUN cargo chef prepare --recipe-path recipe.json
 # ==============================================================================
 FROM server-chef AS server-builder
 
+# COMPLIANCE MAPPING:
+# - NIST 800-53: CM-6 (Configuration Settings), SI-7 (Software Integrity)
+# - FIPS 140-3: module identity. Build the bundled, Cargo.lock-pinned AWS-LC
+#   FIPS module; never auto-link a system AWS-LC found via pkg-config (this
+#   stage installs pkg-config + libssl-dev). Mirrors .cargo/config.toml, which
+#   is not COPY'd into this stage. Applies to `cook` and `build` below.
+ENV AWS_LC_FIPS_SYS_USE_SYSTEM=0
+
 # Build scripts can run during `cook`: ostrich-protocol's build.rs compiles the
 # gRPC definitions in proto/, and ostrich-common include_str!s JSON schemas under
 # config/. Provide both before cooking so the dependency build never fails.

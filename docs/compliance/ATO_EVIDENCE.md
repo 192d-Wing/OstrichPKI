@@ -1,7 +1,7 @@
 # Authority to Operate (ATO) Evidence Collection Guide
 
-**Document Version:** 1.2
-**Generated:** 2026-01-04
+**Document Version:** 1.3
+**Generated:** 2026-01-04 (revised 2026-10-23)
 **OstrichPKI Version:** 0.15.0
 **Framework:** NIST Risk Management Framework (RMF)
 **Compliance Standards:** NIST 800-53 Rev 5, NIAP PP-CA v2.1, FIPS 140-2/140-3
@@ -802,6 +802,26 @@ Integration test INT-001 demonstrates successful implementation of certificate i
 - **cargo-audit:** 0 known vulnerabilities in dependencies
 - **clippy:** 0 warnings with strict lints
 - **OWASP ZAP:** No high/critical findings
+
+**Recorded result — 2026-10-23 (RA-5 / SI-2):**
+
+| Scan | Scope | Result |
+|------|-------|--------|
+| `cargo audit` (cargo-audit 0.22.2) | `main` @ 88c10cd, before remediation | **18 vulnerabilities, 4 warnings** (rustls ×4, rustls-webpki, webpki-roots, webpki-root-certs, cryptoki, ctutils, h2, quinn-proto ×5, zip ×3; warnings: tokio and event-listener unsound, chacha20 and spin yanked) |
+| `cargo audit` | branch `claude/audit-advisories-clippy`, after remediation | **0 vulnerabilities, 0 warnings**, exit 0; 1351 advisories loaded, 642 crates scanned. `.cargo/audit.toml` unchanged (no new ignores) |
+| `make clippy` (`cargo clippy --workspace --all-targets --all-features -- -D warnings`) | same branch, rustc 1.99.1 | exit 0 |
+| `cargo deny check` | same branch | **NOT RUN (config error):** `deny.toml` fails validation under cargo-deny 0.20.2 (5 removed keys); pre-existing on `main` (POA&M) |
+| OWASP ZAP | — | NOT RUN |
+
+Limits of this evidence:
+
+- The CI `cargo audit` job is advisory (`continue-on-error: true`) and does not block merges (POA&M)
+- The scan results above come from a local developer run recorded in
+  `target/agent-workflow/20261023-185030-audit-advisories/` (`audit-baseline.txt`,
+  `qa-report.md`). They are not a CI artifact. Copy that run record into the
+  evidence store (§5) to keep it
+- Per-advisory before/after versions: NIST SI-2 in
+  [NIST_800-53_MAPPING.md](NIST_800-53_MAPPING.md#si-2-flaw-remediation)
 
 **Remediation:**
 
@@ -1708,7 +1728,7 @@ SPA) authenticated by mTLS client certificate, with OID-derived roles.
 | AC-2 / AC-5, FMT_SMR.2 / FMT_MTD.1 | NIST / NIAP | CAA user management with self-action block (no self modify/disable/delete) and a role-assignment ceiling (NPE roles only). `crates/ostrich-ca/src/rest.rs` (`load_target_user_guarded`, `parse_roles`). |
 | CM-3, FMT_SMF.1 / FDP_ACF.1 | NIST / NIAP | CAA wildcard/namespace policy + system-config management, attributed + audited; config writes are known-key + type-validated. `crates/ostrich-ca/src/rest.rs`, migrations `00019`/`00020`. |
 | SC-12 / SI-12, FCS_CKM.1 / FCS_COP.1 | NIST / NIAP | EFS server-side keygen → encrypted PKCS#12 (RFC 7292) under a one-time password (verified against openssl 3.5). `crates/ostrich-x509/src/pkcs12.rs`, `crates/ostrich-est/src/rest.rs`. |
-| AC-3 / SI-10, FDP_CER_EXT.2 | NIST / NIAP | Administrator bulk enrollment (ZIP of CSRs): per-CSR validation + queued requests + durable per-CSR outcome; entry/size caps (anti zip-bomb). `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-db/src/repository/bulk_enrollment.rs`. |
+| AC-3 / SI-10, FDP_CER_EXT.2 | NIST / NIAP | Administrator bulk enrollment (ZIP of CSRs): per-CSR validation + queued requests + durable per-CSR outcome; entry/size caps (anti zip-bomb). `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-db/src/repository/bulk_enrollment.rs`. Since 2026-10-23: zip 9.0.5 (zlib-rs) plus entry-name validation, see "Bulk-enrollment ZIP hardening" below. AU-2 gap: `bulk_enroll` emits only `tracing` logs, no `ostrich-audit` event (POA&M). |
 | SA-10 / SI-7, SC-8 | NIST 800-53 | Reproducible container image (`Dockerfile` `npe-portal` target, CI-published) + Helm chart (2-replica active-active, mTLS, per-network ssl-passthrough ingress). `deploy/helm/ostrich-pki/`. |
 
 Test evidence:
@@ -1727,6 +1747,50 @@ EST external-issuer deployment evidence is defined in
 `docs/compliance/EST_ISSUER_INTEGRATION.md`. The Helm profile is an explicitly
 enabled, disposable test boundary; SoftHSM results do not constitute evidence
 of a production HSM's FIPS validation.
+
+### Bulk-enrollment ZIP hardening (2026-10-23, SI-10 / SI-2)
+
+`extract_csr_entries` in [crates/ostrich-ca/src/rest.rs](../../crates/ostrich-ca/src/rest.rs)
+reads the uploaded archive in memory with zip **9.0.5** (previously 2.4.2;
+decompression only, `deflate-flate2-zlib-rs` backend). It never calls
+`extract()` and writes nothing to the filesystem, so RUSTSEC-2026-0367/0368/0369
+were not reachable; the crate was upgraded anyway (SI-2).
+
+| Control / SFR | Framework | Evidence |
+|---------------|-----------|----------|
+| SI-10, FDP_CER_EXT.2 | NIST / NIAP | Limits unchanged: 100 CSRs, 1000 entries, 64 KiB per CSR (bounded read, regardless of the declared size), 8 MiB upload. Symlink and directory entries are skipped (`is_file()`); mode bits are never applied |
+| SI-10 (CWE-117 / CWE-158) | NIST 800-53 | **New:** CSR entry names longer than 255 bytes (`MAX_ZIP_ENTRY_NAME_BYTES`) or containing control characters (`char::is_control`: NUL, CR, LF, ESC, DEL, C1) are rejected with 400 `InvalidRequest` before they are read, stored or echoed. The error names the entry index, not the raw name |
+| SI-10 | NIST 800-53 | Name decoding: zip 9 decodes names as UTF-8 (EFS flag) or CP437, so every byte sequence decodes. The `name()` error mapping is defensive only. Traversal-style names (`../`, absolute, `C:\`) are returned as inert labels |
+| SI-2 | NIST 800-53 | zip 2.4.2 → 9.0.5; CHANGELOG `### Security` |
+
+Test evidence (`cargo test -p ostrich-ca --lib`, `mod tests` in `rest.rs`):
+
+```
+qa-report.md (2026-10-23):  cargo test -p ostrich-ca --lib extract_csr_entries  -> 21 passed
+fixes-round-1.md (2026-10-23): cargo test -p ostrich-ca --lib                    -> 50 passed, 0 failed
+                               make test-unit                                     -> 649 passed, 0 failed
+fixes-round-2.md (2026-10-23): cargo test -p ostrich-ca --lib                    -> 54 passed, 0 failed
+                               make test-unit (re-run by orchestrator)            -> 653 passed, 0 failed, 1 ignored
+```
+
+Covered: deflated and stored round-trip; symlink, directory and directory-named-like-CSR
+entries skipped; extension filter; 64 KiB + 1 rejected and exactly 64 KiB accepted;
+101 CSRs and 1001 entries rejected, and exactly 100 / 1000 accepted; garbage, empty and
+truncated archives; SUID entry inert; deflate bomb (16 MiB) stopped; lying
+uncompressed size; bad CRC and corrupt deflate; encrypted entry; unsupported
+compression method; CP437 and UTF-8 names; traversal names; and the name checks:
+NUL (no echo), CRLF, ESC, and the 256-byte limit (rejected) vs 255 bytes (accepted).
+
+Not claimed:
+
+- Round 2 adds a filter for Unicode bidirectional and zero-width format
+  characters (`is_deceptive_format_char`), with tests for DEL, C1 and RLO and
+  range boundaries; covered by the round-2 counts above.
+- No fuzz target exists for `extract_csr_entries`.
+- Bulk-enrollment persistence of entry names against PostgreSQL was not run
+  (no database available).
+- `bulk_enroll` does not emit an `ostrich-audit` AU-2 event for submissions or
+  rejections (pre-existing; POA&M in NIAP_GAP_ANALYSIS.md §11).
 
 ---
 

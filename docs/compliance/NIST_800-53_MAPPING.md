@@ -1,7 +1,7 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 1.8
-**Date:** 2026-01-07
+**Document Version:** 2.2
+**Date:** 2026-10-23
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
 **Compliance Status:** Enhanced (75-80%)
@@ -19,6 +19,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - CP (Contingency Planning)
 - IA (Identification and Authentication)
 - IR (Incident Response)
+- RA (Risk Assessment)
 - SC (System and Communications Protection)
 - SI (System and Information Integrity)
 
@@ -337,6 +338,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **NIAP Mapping:**
 
 - FTP_TRP.1 - Trusted Path
+- FTP_ITC.1 - Inter-TSF Trusted Channel
 - FCS_TLSS_EXT.1 - TLS Server Protocol
 
 **Implementation:**
@@ -357,10 +359,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - ✅ [crates/ostrich-common/src/auth/middleware.rs](../../crates/ostrich-common/src/auth/middleware.rs) - `TrustedProxyAuthLayer` bridges identity only when the peer cert subject is allow-listed; `is_bridgeable_role` caps bridged roles to NPE roles (AC-6 defense in depth)
 - ✅ [services/npe-portal/src/server/backend_client.rs](../../services/npe-portal/src/server/backend_client.rs) - portal presents its client certificate to the CA (mTLS)
 - ✅ Live verification: client cert + `caa_admin` → 200; no client cert → 401; client cert + `pki_sponsor` → 403 (see [docs/runbooks/npe-portal-ca-mtls-bridge.md](../runbooks/npe-portal-ca-mtls-bridge.md))
+- ✅ TLS 1.3 minimum is set explicitly in [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) (`with_protocol_versions(&[&TLS13])`), not left to rustls defaults. 2026-10-23 in-memory handshake tests (rustls 0.23.46): `server_rejects_tls12_only_client`, `mtls_handshake_rejects_untrusted_client`, `mtls_handshake_rejects_missing_client_cert`, `optional_mtls_allows_anonymous_but_rejects_untrusted` (see [TEST_EVIDENCE.md §2.3](TEST_EVIDENCE.md#23-test-run-2026-10-23-dependency-advisory-remediation))
 
 **Gaps:**
 
-- Enforcement of a TLS 1.3 minimum is delegated to the rustls builder defaults
 - Bearer/admin REST access is not yet mTLS-required (client auth is optional so
   the identity bridge and bearer clients can share the listener)
 
@@ -704,12 +706,32 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 - ✅ Code baseline in git version control
 - ✅ Database schema migrations tracked
+- ✅ Dependency baseline pinned in `Cargo.lock`; changes recorded in [CHANGELOG.md](../../CHANGELOG.md)
+- 🟡 **Build toolchain and crypto-module baseline (recorded 2026-10-23):**
+  - Toolchain: rustc **1.99.1** stable (host used for the 2026-10-23 gates);
+    workspace MSRV `rust-version = "1.94"`. CI installs
+    `dtolnay/rust-toolchain@stable`, which floats; there is no
+    `rust-toolchain.toml`, so the toolchain is recorded, not pinned.
+    `cargo clippy -D warnings` results depend on the toolchain version
+    (for example the `#[expect(clippy::result_large_err)]` attributes in
+    `services/web-ui/src/server/auth/handlers.rs`).
+  - FIPS cryptographic module: **AWS-LC FIPS 4.2.0** built from source by
+    `aws-lc-fips-sys` **0.14.2** (previously AWS-LC FIPS 3.3.0 via 0.13.14),
+    reached through `aws-lc-rs` 1.18.2 (`fips` feature). TLS: `rustls` 0.23.46,
+    `rustls-webpki` 0.103.16. CMVP certificate for 4.2.0 pending
+    confirmation (POA&M, see [FIPS_COMPLIANCE.md](FIPS_COMPLIANCE.md#fips-140-2--fips-140-3-security-requirements-for-cryptographic-modules)).
+  - Module-source pin: [.cargo/config.toml](../../.cargo/config.toml) sets
+    `AWS_LC_FIPS_SYS_USE_SYSTEM = "0"` (`force = true`) so the build uses the
+    bundled, `Cargo.lock`-pinned module and never auto-links a system AWS-LC
+    (see CM-6). As of 2026-10-23 this file is new and not yet committed; the
+    baseline only holds once it is in version control.
 - 🔴 No deployment baseline configuration documented
 
 **Gaps:**
 
 - No formal configuration baseline documentation
 - No configuration item inventory
+- Rust toolchain not pinned (`rust-toolchain.toml` absent; CI uses floating `stable`)
 
 **Remediation:** Phase 16 - Document baseline configuration for production deployment
 
@@ -744,6 +766,22 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   workflow; it is a developer-side review aid, not a substitute for human
   change approval
 - 🔴 No formal change approval process
+- 🟡 **Crypto-module changes need PQC/FIPS review:** any change to
+  `aws-lc-fips-sys`, `aws-lc-rs`, or the rustls crypto provider changes the
+  FIPS 140-3 module or its boundary. Such a change must be reviewed by the
+  PQC/FIPS crypto role (FIPS-mode and self-test behaviour) and approved by
+  the user before merge, and must be recorded in
+  [FIPS_COMPLIANCE.md](FIPS_COMPLIANCE.md).
+- 🟡 **CM-4 (Impact Analyses) note, 2026-10-23:** the module change AWS-LC
+  FIPS 3.3.0 → 4.2.0 (`aws-lc-fips-sys` 0.13.14 → 0.14.2) was required by the
+  rustls/rustls-webpki advisory fixes. Its security impact was analysed by the
+  PQC/FIPS reviewer (FIPS build from source confirmed, `fips()` logic and
+  ML-KEM code unchanged, ML-DSA newly verifiable in TLS). The user approved the
+  change on 2026-10-23, and on the same day accepted ML-DSA signature
+  verification in TLS. The record is in the run directory
+  `target/agent-workflow/20261023-185030-audit-advisories/` (`brief.md`,
+  `fix-request-round-1.md`, `findings-pqc.md`). No separate CM-4 section exists
+  in this document yet.
 
 **Gaps:**
 
@@ -769,6 +807,20 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **Evidence:**
 
 - ✅ Configuration structures defined
+- ✅ **Build setting `AWS_LC_FIPS_SYS_USE_SYSTEM = "0"`** in
+  [.cargo/config.toml](../../.cargo/config.toml) (`[env]`, `force = true`):
+  keeps the FIPS module identity fixed to the bundled AWS-LC FIPS 4.2.0 source
+  build (also SC-13, SI-7). Verified 2026-10-23: the `aws-lc-fips-sys` build
+  output shows `Environment Variable found 'AWS_LC_FIPS_SYS_USE_SYSTEM': '0'`
+  and `Building with: CMake` (`fixes-round-1.md`). Limits: `force = true`
+  overrides a plain environment value but not the target-suffixed
+  `AWS_LC_FIPS_SYS_USE_SYSTEM_<target>` variable, and the file is not yet
+  committed.
+- 🟡 Container builds: the working tree also sets
+  `ENV AWS_LC_FIPS_SYS_USE_SYSTEM=0` in the builder stages of `Dockerfile` and
+  `services/web-ui/Dockerfile`, because `.cargo/` is not copied into those
+  stages. No container build was run on 2026-10-23 (Docker not available), so
+  this is not verified.
 - 🔴 No documented secure baseline settings
 
 **Gaps:**
@@ -1012,6 +1064,52 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 ---
 
+## Risk Assessment (RA)
+
+### RA-5: Vulnerability Monitoring and Scanning
+
+**Control:** The organization monitors and scans for vulnerabilities in the system and hosted applications, analyzes scan reports, and remediates legitimate vulnerabilities in organization-defined response times.
+
+**Implementation Status:** 🟡 **Partial** (scan exists; it is advisory and response times are not yet approved)
+
+**NIAP Mapping:**
+
+- No PP-CA SFR. Supports the assurance measures AVA_VAN.2 and ALC_FLR.2 ([SECURITY_TARGET.md §10](SECURITY_TARGET.md#10-assurance-measures))
+
+**Implementation:**
+
+- [.github/workflows/audit.yml](../../.github/workflows/audit.yml) - `cargo audit` (`rustsec/audit-check@v2`) on pushes to `main` and pull requests that change `Cargo.toml`/`Cargo.lock`, plus a weekly schedule (Monday 06:00 UTC) and manual dispatch
+- [.github/dependabot.yml](../../.github/dependabot.yml) - Dependabot dependency-update PRs
+- [.cargo/audit.toml](../../.cargo/audit.toml) - **authoritative risk-acceptance record** for Rust advisories: 7 ignored advisories, each with a written rationale (RUSTSEC-2023-0071 `rsa` Marvin, RUSTSEC-2026-0118 `hickory-proto`, and 5 unmaintained/unsound warnings)
+
+**Evidence:**
+
+- ✅ 2026-10-23 scan of `main` @ 88c10cd: **18 vulnerabilities, 4 warnings** (baseline saved in the run record)
+- ✅ 2026-10-23 scan after remediation (branch `claude/audit-advisories-clippy`): `cargo audit` with 1351 advisories loaded, 642 crates scanned, **0 vulnerabilities, 0 warnings**, exit 0 (cargo-audit 0.22.2). See SI-2 and [ATO_EVIDENCE.md §2.3](ATO_EVIDENCE.md#23-vulnerability-scan-results)
+
+**Gaps:**
+
+- **The scan is advisory and does not block.** The job `cargo audit (advisory)` sets `continue-on-error: true`, so a vulnerable lockfile does not fail CI or block a merge
+- **Response times are not defined.** Exposure on `main` before the 2026-10-23 fix: h2 RUSTSEC-2026-0258 and quinn-proto RUSTSEC-2026-0339/0341/0342 (published 2026-08-17) were open 67 days. zip RUSTSEC-2026-0369 (CVSS 9.1, critical; published 2026-10-10) was open 13 days
+- Proposed remediation timeframes, **proposed — pending AO approval**: critical 15 days, high 30 days, medium and low 90 days, counted from advisory publication
+- `cargo deny check` cannot run: `deny.toml` uses keys removed in cargo-deny 0.20, so its license, ban, and advisory policy is not enforced (SEC-001 / QA-002)
+- The exception lists differ: `.cargo/audit.toml` ignores 7 advisories, while `deny.toml` ignores none. `.cargo/audit.toml` is the record of risk acceptance; `deny.toml` must mirror it once it can run (NIST-006)
+- Not verified: whether `rustsec/audit-check` can open issues with the workflow's `permissions: contents: read` token
+
+**Remediation (POA&M, see [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)):**
+
+- Make the `cargo audit` job blocking (remove `continue-on-error`) after AO approval of the timeframes
+- Migrate the `deny.toml` schema and mirror the `.cargo/audit.toml` exceptions
+- Track the `.cargo/audit.toml` POA&M notes (`rsa` RUSTSEC-2023-0071, `hickory-proto` RUSTSEC-2026-0118) as POA&M entries
+
+**Evidence Required for ATO:**
+
+- AO-approved remediation timeframes
+- Scan reports per release (cargo-audit JSON)
+- Risk-acceptance record for each ignored advisory
+
+---
+
 ## System and Communications Protection (SC)
 
 ### SC-4: Information in Shared Resources
@@ -1048,6 +1146,7 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 **NIAP Mapping:**
 
 - FTP_TRP.1 - Trusted Path
+- FTP_ITC.1 - Inter-TSF Trusted Channel
 - FCS_TLSS_EXT.1 - TLS Server Protocol
 - FCS_TLSC_EXT.2 - TLS Client Protocol
 
@@ -1075,8 +1174,10 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 - `crates/ostrich-common/src/grpc_client.rs:41-89` - GrpcClientConfig with TLS
 - `crates/ostrich-common/src/tls.rs` - Shared TLS 1.3 server module: rustls
-  (ring provider), optional mTLS client verification, fail-fast on partial
-  configuration, plain-HTTP fallback with prominent startup warning
+  with the explicitly selected aws-lc-rs provider (`fips` feature; AWS-LC FIPS
+  4.2.0 module, CMVP certificate for 4.2.0 pending confirmation), optional mTLS
+  client verification, fail-fast on partial configuration, plain-HTTP fallback
+  with prominent startup warning
 - `crates/ostrich-acme/src/ca_integration.rs:32-41` - CA client with mTLS
 - `crates/ostrich-est/src/ca_integration.rs:30-39` - EST client with mTLS
 - All seven service binaries (`services/*/src/main.rs`) accept
@@ -1095,6 +1196,24 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
   TLS) aborts startup instead of downgrading (CM-6)
 - ✅ Unit tests: `crates/ostrich-common/src/tls.rs` (partial-config rejection,
   missing-file rejection)
+
+**Dependency flaw remediation (2026-10-23, SI-2):**
+
+- ✅ rustls 0.23.41 → 0.23.46 fixes RUSTSEC-2026-0285 (TLS 1.3 handshake
+  messages accepted across encryption-level boundaries), RUSTSEC-2026-0349
+  (unauthenticated ServerHello downgrade to classical key exchange),
+  RUSTSEC-2026-0348 (pre-authentication Brotli allocation) and
+  RUSTSEC-2026-0346 (`Debug` output exposing TLS secrets). h2 0.4.20 fixes
+  RUSTSEC-2026-0258. See SI-2.
+- ✅ In-memory rustls handshake tests added in `crates/ostrich-common/src/tls.rs`
+  (12 `tls::tests` passed, per `qa-report.md`): `load()` yields a config with
+  `fips() == true`; trusted client accepted; untrusted, missing, and
+  serverAuth-only-EKU client certificates rejected; TLS 1.2-only client
+  rejected.
+- ℹ️ Under the `fips` feature, rustls offers only TLS_AES_256_GCM_SHA384 and
+  TLS_AES_128_GCM_SHA256 for TLS 1.3 (ChaCha20-Poly1305 is excluded). Since
+  0.23.46 the aws-lc-rs provider also advertises and verifies ML-DSA-44/65/87
+  peer signatures; the user accepted this on 2026-10-23 (see SC-13).
 
 **Web console transport-integrity hardening (SC-8 / SC-18 / SI-10):**
 
@@ -1130,6 +1249,9 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 - gRPC (tonic) listener TLS configuration on ca-server (REST is covered;
   gRPC mTLS via tonic TLS config or service mesh)
+- The workspace builds `tonic` with the `tls-ring` feature (`Cargo.toml`), so
+  gRPC TLS is not shown to use the AWS-LC FIPS provider. `ring` has no CMVP
+  certificate.
 - TLS scan results (deployment evidence)
 
 **Evidence Required for ATO:**
@@ -1283,7 +1405,9 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 **Evidence:**
 
-- ✅ **All classical algorithms run inside the AWS-LC FIPS 140-3 module** via
+- ✅ **All classical algorithms in `ostrich-crypto` run inside the AWS-LC FIPS
+  module** (AWS-LC FIPS 4.2.0 via `aws-lc-fips-sys` 0.14.2, since 2026-10-23;
+  CMVP certificate for 4.2.0 pending confirmation, POA&M) via
   `aws-lc-rs` (workspace `fips` feature): RSA (PKCS#1/PSS), ECDSA P-256/P-384,
   Ed25519, SHA-2, and the SP 800-90A DRBG. The non-FIPS `ring` and pure-Rust
   `rsa` backends were removed from `ostrich-crypto`
@@ -1291,10 +1415,23 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
   [verify.rs](../../crates/ostrich-crypto/src/verify.rs)). Verified by live
   OpenSSL interop for RSA-2048/3072 and ECDSA P-256/P-384
   ([tests/integration/fips_signature_openssl_interop.rs](../../tests/integration/fips_signature_openssl_interop.rs)).
-- ✅ ML-KEM-512/768/1024 (FIPS 203) key encapsulation, FIPS-validated via aws-lc-rs.
-- ⛔ ML-DSA (FIPS 204) **removed**: its aws-lc-rs `unstable` API is mutually
-  exclusive with `fips`, and AWS-LC's FIPS module does not yet include ML-DSA.
-  SLH-DSA (FIPS 205) remains unimplemented.
+- ✅ ML-KEM-512/768/1024 (FIPS 203) key encapsulation runs inside the AWS-LC
+  FIPS 4.2.0 module via aws-lc-rs (CMVP certificate for 4.2.0 pending
+  confirmation, POA&M). OpenSSL 4.0.3 interop passed 2026-10-23
+  (`mlkem_openssl_interop`, 2 tests).
+- ✅ Runtime module check: `aws_lc_module_reports_fips_mode`
+  ([crates/ostrich-crypto/src/self_test.rs](../../crates/ostrich-crypto/src/self_test.rs))
+  asserts `aws_lc_rs::try_fips_mode() == Ok(())` and a SHA-256 KAT through the
+  module (passed 2026-10-23, `qa-report.md`). This is a unit test. The services
+  do not yet assert FIPS mode at startup (POA&M).
+- 🟡 ML-DSA (FIPS 204): **TLS verification only.** ML-DSA is in the AWS-LC FIPS
+  4.2.0 module and, from aws-lc-rs 1.18, exposed under `fips`. rustls 0.23.46 /
+  rustls-webpki 0.103.16 therefore verify ML-DSA-44/65/87 peer signatures and
+  certificate chains on every rustls endpoint. The user accepted this on
+  2026-10-23. ML-DSA key generation, signing and X.509 issuance stay disabled
+  (`crates/ostrich-x509/src/secure_defaults.rs`). POA&M: enable issuance once
+  CMVP confirms the AWS-LC 4.2.0 module. SLH-DSA (FIPS 205) remains
+  unimplemented.
 - ✅ **NIST SP 800-90A Rev 1 CTR_DRBG (AES-256) fully implemented**
 - ✅ **FIPS 140-3 health tests (repetition count, adaptive proportion)**
 - ✅ **Certificate serial number generation with ≥20 bits random (RFC 5280)**
@@ -1350,6 +1487,14 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 
 - Post-quantum cryptography implementation pending (waiting for HSM vendor support)
 - EdDSA (Ed25519/Ed448) not universally supported in PKCS#11 HSMs
+- CMVP certificate for AWS-LC FIPS 4.2.0 not yet confirmed (POA&M, see
+  [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items))
+- `ring` (no CMVP certificate) is still used outside the AWS-LC module: AES-256-GCM
+  key wrapping in `crates/ostrich-kra/src/wrap.rs`, and gRPC TLS via `tonic`
+  `tls-ring`
+- The cryptoki 0.11.1 update (RUSTSEC-2026-0286) has no executed PKCS#11 test
+  evidence: SoftHSM was not available on 2026-10-23 and no CI job runs
+  `pkcs11_integration_test` (QA-004)
 
 **Remediation:** Phase 12+ - Add post-quantum cryptography when HSM vendors provide support
 
@@ -1431,6 +1576,11 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - ✅ Multiple profile types (Root CA, Intermediate CA, TLS Server, TLS Client, Code Signing, OCSP Signing)
 - ✅ Profile validation ensures CA certs have keyCertSign usage
 - ✅ All extensions properly marked as critical/non-critical per RFC 5280
+- ℹ️ TLS peer certificates (mTLS listeners and rustls clients) are validated by
+  rustls-webpki 0.103.16, not by `ostrich-x509`. That path additionally rejects
+  certificates whose SPKI is on webpki's built-in distrust list (emSign G3;
+  `CertDistrusted`), independent of configured trust anchors. It does no
+  CRL/OCSP revocation checking.
 
 **Gaps:**
 
@@ -1490,6 +1640,64 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 ---
 
 ## System and Information Integrity (SI)
+
+### SI-2: Flaw Remediation
+
+**Control:** The organization identifies, reports, and corrects system flaws, and installs security-relevant software updates within organization-defined time periods.
+
+**Implementation Status:** 🟡 **Partial** (flaws are corrected, but no approved time periods and no blocking gate)
+
+**NIAP Mapping:**
+
+- No PP-CA SFR. Supports ALC_FLR.2 ([SECURITY_TARGET.md §10](SECURITY_TARGET.md#10-assurance-measures))
+
+**Implementation:**
+
+- Flaws are found by RA-5 (`cargo audit`, Dependabot) and fixed by dependency updates, mostly `cargo update -p <crate> --precise <version>` (lockfile only)
+- Each fix is recorded in [CHANGELOG.md](../../CHANGELOG.md) (`### Security`) and reviewed through the CM-3 workflow
+
+**Evidence: 2026-10-23 remediation (RUSTSEC → fixed version)**
+
+| Advisory | Crate | Before → After | cargo-audit severity | Reachability note |
+|----------|-------|----------------|----------------------|-------------------|
+| RUSTSEC-2026-0285 | rustls | 0.23.41 → 0.23.46 | 5.3 (medium) | All rustls TLS endpoints |
+| RUSTSEC-2026-0346 | rustls | 0.23.41 → 0.23.46 | 4.0 (medium) | All rustls TLS endpoints |
+| RUSTSEC-2026-0348 | rustls | 0.23.41 → 0.23.46 | 3.7 (low) | All rustls TLS endpoints |
+| RUSTSEC-2026-0349 | rustls | 0.23.41 → 0.23.46 | 3.7 (low) | All rustls TLS endpoints |
+| RUSTSEC-2026-0382 | rustls-webpki | 0.103.13 → 0.103.16 | not scored | TLS peer path validation |
+| RUSTSEC-2026-0381 | webpki-roots | 1.0.5 → 1.0.11 | not scored | Transitive; the workspace-level declaration is unused by members (RFC-004) |
+| RUSTSEC-2026-0383 | webpki-root-certs | 1.0.5 → 1.0.11 | not scored | Transitive |
+| RUSTSEC-2026-0286 | cryptoki | 0.11.0 → 0.11.1 | not scored | PKCS#11 provider; `pkcs11/mod.rs` does not read `CKA_ALLOWED_MECHANISMS` (PQC review); no PKCS#11 test run (QA-004) |
+| RUSTSEC-2026-0385 | ctutils | 0.4.2 → 0.4.5 | not scored | sqlx-postgres SCRAM path only (PQC review) |
+| RUSTSEC-2026-0258 | h2 | 0.4.15 → 0.4.20 | not scored | HTTP/2 via hyper |
+| RUSTSEC-2026-0338 | quinn-proto | 0.11.15 → 0.11.19 | not scored | Target-specific transitive |
+| RUSTSEC-2026-0339 | quinn-proto | 0.11.15 → 0.11.19 | not scored | Target-specific transitive |
+| RUSTSEC-2026-0340 | quinn-proto | 0.11.15 → 0.11.19 | 7.5 (high) | Target-specific transitive |
+| RUSTSEC-2026-0341 | quinn-proto | 0.11.15 → 0.11.19 | 7.5 (high) | Target-specific transitive |
+| RUSTSEC-2026-0342 | quinn-proto | 0.11.15 → 0.11.19 | not scored | Target-specific transitive |
+| RUSTSEC-2026-0367 | zip | 2.4.2 → 9.0.5 | 7.3 (high) | Not reachable: bulk enrollment never calls `extract()` |
+| RUSTSEC-2026-0368 | zip | 2.4.2 → 9.0.5 | not scored | Not reachable (as above) |
+| RUSTSEC-2026-0369 | zip | 2.4.2 → 9.0.5 | 9.1 (critical) | Not reachable (as above) |
+| RUSTSEC-2026-0386 (unsound) | tokio | 1.50.0 → 1.54.1 | warning | `AsyncFd::new` not called in the workspace |
+| RUSTSEC-2026-0221 (unsound) | event-listener | 5.4.1 → 5.4.2 | warning | Transitive |
+| yanked | chacha20 | 0.10.0 → 0.10.2 | warning | Transitive |
+| yanked | spin | 0.9.8 → 0.9.9 | warning | Transitive |
+
+"Not scored" means the cargo-audit output on 2026-10-23 had no CVSS score for the advisory. Severity values are copied from that output, not assessed here.
+
+- ✅ Result: 0 vulnerabilities, 0 warnings (RA-5 evidence). No advisory was added to `.cargo/audit.toml`
+- ✅ zip 9 migration keeps the bulk-enrollment ZIP limits and adds entry-name validation (SI-10; [ATO_EVIDENCE.md](ATO_EVIDENCE.md#bulk-enrollment-zip-hardening-2026-10-23-si-10--si-2))
+- ✅ Required side effect: AWS-LC FIPS module 3.3.0 → 4.2.0 (`aws-lc-fips-sys` 0.14.2), approved by the user 2026-10-23 (CM-3 / CM-4 note; SC-13)
+
+**Gaps:**
+
+- No AO-approved flaw-remediation time periods (proposed values in RA-5, pending AO approval)
+- No blocking gate: a vulnerable dependency can be merged (RA-5)
+- The cryptoki fix has no executed PKCS#11 test evidence (QA-004)
+
+**Remediation:** see RA-5 and the POA&M in [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)
+
+---
 
 ### SI-7: Software, Firmware, and Information Integrity
 
@@ -1706,9 +1914,21 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 | CM (Configuration) | 3 | 0 | 3 | 0 | 50% |
 | CP (Contingency) | 2 | 0 | 1 | 1 | 25% |
 | IA (Identification/Auth) | 3 | 0 | 2 | 1 | 33% |
+| RA (Risk Assessment) | 1 | 0 | 1 | 0 | 50% |
 | SC (System Protection) | 7 | 2 | 4 | 1 | 43% |
-| SI (System Integrity) | 3 | 0 | 2 | 1 | 33% |
-| **TOTAL** | **35** | **6** | **18** | **11** | **40%** |
+| SI (System Integrity) | 4 | 0 | 3 | 1 | 38% |
+| **TOTAL** | **37** | **6** | **20** | **11** | **43%** |
+
+Compliance % = (Compliant + 0.5 × Partial) / Total. On 2026-10-23 only the
+RA row (new: RA-5, Partial), the SI row (SI-2 added as Partial) and the TOTAL
+row were recalculated. The SI row now counts 4 controls: SI-2 plus the 3
+previously counted. The previous TOTAL of 40% did not match its own counts
+((6 + 9) / 35 = 42.9%). The new TOTAL is (6 + 10) / 37 = 43.2%, of which the
+two added Partial controls contribute +0.3 points. The other rows have not been
+reconciled with the per-control statuses above (for example, SC-8 and SC-23 are
+marked Implemented in their sections, and SI-10, SI-12 and SI-17 have sections
+but only 3 SI controls were counted before). This table is not an assessed
+compliance figure.
 
 ---
 
@@ -1738,7 +1958,7 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 | FIA_PMG_EXT.1 | IA-5 |
 | FIA_UAU_EXT.1 | IA-2, IA-5 |
 | FIA_UIA_EXT.1 | IA-2 |
-| FIA_X509_EXT.1 | IA-5, SI-10 |
+| FIA_X509_EXT.1 | IA-5(2), SC-17, SI-10 |
 | FIA_X509_EXT.2 | IA-2, IA-5 |
 | FMT_MOF.1 | AC-3, AC-6 |
 | FMT_MTD.1 | AC-3 |
@@ -1751,6 +1971,7 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 | FPT_TST_EXT.2 | SI-7 |
 | FTA_SSL.3 | AC-12 |
 | FTA_SSL.4 | AC-12 |
+| FTP_ITC.1 | SC-8, AC-17 |
 | FTP_TRP.1 | SC-8, AC-17 |
 
 ---
@@ -1830,7 +2051,8 @@ implement the following controls:
   [crates/ostrich-tamp/src/manager.rs](../../crates/ostrich-tamp/src/manager.rs),
   [crates/ostrich-db/src/repository/tamp.rs](../../crates/ostrich-db/src/repository/tamp.rs).
 - **SC-13 (Cryptographic Protection):** messages protected with CMS `SignedData`
-  using FIPS-validated signing/verification (AWS-LC via `ostrich-crypto`).
+  using signing/verification in the AWS-LC FIPS 4.2.0 module via
+  `ostrich-crypto` (CMVP certificate for 4.2.0 pending confirmation, POA&M).
   [crates/ostrich-tamp/src/cms.rs](../../crates/ostrich-tamp/src/cms.rs).
 - **SC-23 (Session Authenticity):** monotonic per-signer sequence numbers with a
   transactional, row-locked check-and-advance reject replays (RFC 5934 §4.1).
@@ -1962,6 +2184,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 1.9 | 2026-06-26 | OstrichPKI Team | CM-6 secure config: serverAuth (TLS server) certificate profiles capped at 397 days in `ostrich-x509` secure-defaults validation (Apple/iOS / CA-Browser Forum); NPE portal surfaces the advisory 397-day warning. |
 | 2.0 | 2026-07-27 | OstrichPKI Team | CM-2/CM-6/IA-5/IA-7/SC-12/SC-17/SA-11: explicit SoftHSM-backed EST external-issuer integration profile and fail-closed CA bootstrap. See `EST_ISSUER_INTEGRATION.md`. |
 | 2.1 | 2026-10-23 | OstrichPKI Team | CM-3/SA-11: added multi-agent development workflow (`.claude/skills/ostrich-workflow`, `.claude/agents/`) with independent security, NIST 800-53/NIAP, PQC/FIPS, and RFC review roles and a recorded quality gate. CM-3 status unchanged (Partial). |
+| 2.2 | 2026-10-23 | OstrichPKI Team | Dependency advisory remediation (cargo audit 18 vulnerabilities + 4 warnings → 0/0). New RA-5 and SI-2 sections (both Partial: the scan is advisory and response times are proposed, pending AO approval). Summary table: RA row added, SI and TOTAL rows recalculated. AWS-LC FIPS 4.2.0 (`aws-lc-fips-sys` 0.14.2) recorded in CM-2/SC-8/SC-13/TAMP, with the CMVP certificate for 4.2.0 pending confirmation (POA&M). CM-3 crypto-module review rule and CM-4 approval note. CM-6 `.cargo/config.toml` module pin. ML-DSA verification in TLS accepted (issuance still disabled). AC-17 stale TLS 1.3 gap removed. Cross-references: FTP_ITC.1 → SC-8, AC-17; FIA_X509_EXT.1 → IA-5(2), SC-17, SI-10. No status changes to existing controls. |
 
 ---
 

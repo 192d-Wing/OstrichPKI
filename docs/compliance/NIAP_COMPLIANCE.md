@@ -1,7 +1,7 @@
 # NIAP Protection Profile for Certification Authorities v2.1 Compliance Matrix
 
-**Document Version:** 2.7
-**Date:** 2026-01-07
+**Document Version:** 3.0
+**Date:** 2026-10-23
 **OstrichPKI Version:** 0.15.0
 **Protection Profile:** NIAP PP-CA v2.1
 **Overall Compliance:** 98% (49/50 applicable SFRs Compliant, 1 selection-based N/A, 2 optional, 4 OE)
@@ -294,8 +294,9 @@ Organizations requiring external audit transmission can:
 
 - ✅ **Cryptographic Abstraction**: Complete `CryptoProvider` trait with `generate_key_pair()`, `sign()`, `verify()`, `wrap_key()`, `unwrap_key()`
 - ✅ **Classical Algorithms**: RSA-2048/3072/4096, ECDSA P-256/384/521, EdDSA Ed25519/448
-- ✅ **Post-Quantum Algorithms**: ML-DSA-44/65/87, SLH-DSA (SHA2-128/192/256), ML-KEM-512/768/1024
-- ✅ **Hybrid Algorithms**: ECDSA-P256+ML-DSA-44, ECDSA-P384+ML-DSA-65, Ed25519+ML-DSA-44
+- ✅ **Post-Quantum KEM**: ML-KEM-512/768/1024 (FIPS 203) in the AWS-LC FIPS 4.2.0 module (CMVP certificate for 4.2.0 pending confirmation, POA&M)
+- ⛔ **ML-DSA / SLH-DSA key generation**: not available. ML-DSA is disabled for issuance (TLS verification only since 2026-10-23); there is no SLH-DSA backend. Corrected 2026-10-23: earlier text listed both as implemented. See [FIPS_COMPLIANCE.md](FIPS_COMPLIANCE.md#fips-204-module-lattice-based-digital-signature-algorithm-ml-dsa)
+- ⏳ **Hybrid Algorithms**: ECDSA-P256+ML-DSA-44, ECDSA-P384+ML-DSA-65, Ed25519+ML-DSA-44: types defined, not implemented
 - ✅ **FIPS 140-3 Compliance**: NIST SP 800-90A CTR_DRBG with health tests
 - ✅ **HSM Support**: Full PKCS#11 integration for hardware-backed keys
 - ✅ **Software Fallback**: Ring-based provider for development/testing
@@ -333,7 +334,7 @@ cargo test --package ostrich-crypto
 - ✅ **RSA Key Generation**: RSA-2048, RSA-3072, RSA-4096 per FIPS 186-5
 - ✅ **ECDSA Key Generation**: P-256, P-384, P-521 curves per FIPS 186-5
 - ✅ **EdDSA Key Generation**: Ed25519, Ed448 per RFC 8032
-- ✅ **Post-Quantum Keys**: ML-DSA-44/65/87, SLH-DSA, ML-KEM per FIPS 203/204/205
+- ✅ **Post-Quantum Keys**: ML-KEM per FIPS 203 only. ML-DSA (FIPS 204) and SLH-DSA (FIPS 205) key generation are not available (corrected 2026-10-23; see FIPS_COMPLIANCE.md)
 - ✅ **FIPS-Compliant Entropy**: NIST SP 800-90A CTR_DRBG with AES-256
 - ✅ **HSM Integration**: PKCS#11 key generation in hardware
 - ✅ **Non-Extractable Keys**: HSM keys marked as CKA_EXTRACTABLE=false
@@ -435,7 +436,7 @@ cargo test --package ostrich-crypto -- test_key
 - ✅ RSA-PSS signature support (2048, 3072, 4096-bit keys)
 - ✅ ECDSA signature support (P-256, P-384, P-521)
 - ✅ EdDSA signature support (Ed25519, Ed448)
-- ✅ ML-DSA post-quantum signature support (ML-DSA-44, ML-DSA-65, ML-DSA-87) - FIPS 204
+- 🟡 ML-DSA (FIPS 204): signature **verification in TLS only** (rustls 0.23.46 / rustls-webpki 0.103.16 on AWS-LC FIPS 4.2.0, accepted by the user 2026-10-23). ML-DSA signing of certificates, CRLs and OCSP responses is disabled (`crates/ostrich-x509/src/secure_defaults.rs`). Corrected 2026-10-23: earlier text listed ML-DSA signing as supported
 - ✅ X.509 certificate signing fully implemented with DER encoding
 - ✅ CRL signing fully implemented with DER encoding
 - ✅ OCSP response signing implemented (RFC 6960)
@@ -463,7 +464,7 @@ cargo test --package ostrich-crypto -- test_key
 **Implementation:**
 
 - [crates/ostrich-audit/src/event.rs:145-150](../../crates/ostrich-audit/src/event.rs#L145-L150) - Hash computation for audit chain
-- Uses `ring::digest` (FIPS-validated)
+- Uses RustCrypto `sha2` (`crates/ostrich-audit/src/event.rs`). This is a FIPS 180-4 algorithm implementation outside any CMVP-validated module boundary. Corrected 2026-10-23: earlier text said `ring::digest` (FIPS-validated); `ring` is not used here and has no CMVP certificate
 
 **Evidence:**
 
@@ -555,14 +556,17 @@ cargo test --package ostrich-crypto --lib hsm_validation
 
 - [crates/ostrich-common/src/config.rs:166-186](../../crates/ostrich-common/src/config.rs#L166-L186) - TLS configuration struct
 - [crates/ostrich-common/src/grpc_client.rs](../../crates/ostrich-common/src/grpc_client.rs) - gRPC client with TLS
-- gRPC client uses `tonic` with rustls backend
-- REST clients use `reqwest` with rustls backend
+- gRPC client uses `tonic` with rustls backend (workspace feature `tls-ring`: ring crypto provider)
+- REST clients use `reqwest` with rustls backend (crypto provider not verified in the 2026-10-23 review)
+- Internal HTTPS clients `services/web-ui/src/server/backend_client.rs` and `services/npe-portal/src/server/backend_client.rs` use `hyper-rustls` on the aws-lc-rs FIPS provider
 
 **Evidence:**
 
 - ✅ **TLS 1.3 Default:** `min_version: "1.3"` configured as default (config.rs:351)
 - ✅ **Configurable TLS:** TlsConfig struct supports cert_file, key_file, ca_file, min_version, client_auth
-- ✅ **rustls Backend:** Both tonic and reqwest use rustls which is FIPS-validated
+- 🟡 **rustls Backend:** rustls is a TLS implementation, not a validated module. TLS clients on the aws-lc-rs FIPS provider use **rustls 0.23.46 with the aws-lc-rs FIPS provider** (AWS-LC FIPS 4.2.0 via `aws-lc-fips-sys` 0.14.2; CMVP certificate for 4.2.0 pending confirmation, POA&M). The `tonic` gRPC client uses the `ring` provider (no CMVP certificate). Corrected 2026-10-23: earlier text said "rustls which is FIPS-validated"
+- ✅ **Advisory fixes (2026-10-23):** rustls 0.23.41 → 0.23.46 (RUSTSEC-2026-0285/0346/0348/0349) and rustls-webpki 0.103.13 → 0.103.16 (RUSTSEC-2026-0382); see NIST SI-2
+- ℹ️ Since rustls 0.23.46 the aws-lc-rs provider also verifies ML-DSA-44/65/87 server signatures (accepted by the user 2026-10-23)
 - ✅ **Certificate Verification:** CA file configurable for server certificate validation
 - ✅ **mTLS Support:** client_auth mode configurable (none, optional, required)
 - ✅ **Configuration Schema:** JSON schema validates TLS settings at load time
@@ -596,7 +600,8 @@ pub struct TlsConfig {
 - [crates/ostrich-common/src/config.rs:166-186](../../crates/ostrich-common/src/config.rs#L166-L186) - TLS configuration struct
 - [docs/INSTALLATION_GUIDE.md §8](../INSTALLATION_GUIDE.md#8-tls-configuration) - TLS deployment guide
 - REST APIs use `axum` with rustls-tls feature
-- gRPC uses `tonic` server with rustls
+- [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - shared listener: aws-lc-rs provider selected explicitly, TLS 1.3 only (`with_protocol_versions(&[&TLS13])`), optional or mandatory mTLS via `WebPkiClientVerifier`
+- gRPC uses `tonic` server with rustls (workspace feature `tls-ring`: ring crypto provider)
 
 **Evidence:**
 
@@ -606,7 +611,9 @@ pub struct TlsConfig {
 - ✅ **CA Trust Store:** ca_file for client certificate verification
 - ✅ **Schema Validation:** JSON schema enforces valid TLS configuration
 - ✅ **Deployment Documentation:** INSTALLATION_GUIDE.md §8 covers TLS setup
-- ✅ **rustls Backend:** FIPS-validated TLS implementation
+- 🟡 **rustls Backend:** **rustls 0.23.46 using the aws-lc-rs FIPS provider** (AWS-LC FIPS 4.2.0 via `aws-lc-fips-sys` 0.14.2; CMVP certificate for 4.2.0 pending confirmation, POA&M). rustls itself is not a validated module. Corrected 2026-10-23: earlier text said "FIPS-validated TLS implementation"
+- ✅ **Handshake tests (2026-10-23, `qa-report.md`):** `load_builds_fips_config_with_alpn` (`fips() == true`), `mtls_handshake_accepts_trusted_client`, `mtls_handshake_rejects_untrusted_client`, `mtls_handshake_rejects_missing_client_cert`, `optional_mtls_allows_anonymous_but_rejects_untrusted`, `server_rejects_tls12_only_client`, `mtls_handshake_rejects_client_cert_with_server_only_eku` in `crates/ostrich-common/src/tls.rs`
+- ℹ️ Under `fips`, the TLS 1.3 suites are TLS_AES_256_GCM_SHA384 and TLS_AES_128_GCM_SHA256 only. Since 0.23.46, ML-DSA-44/65/87 client signatures are also verified (accepted by the user 2026-10-23)
 
 **Server TLS Configuration Example:**
 
@@ -1332,11 +1339,19 @@ Router::new()
 - ✅ Trust anchor provisioning via both API and config file
 - ✅ OCSP/CRL revocation checking framework
 
+**TLS peer certificate validation (mTLS listeners and rustls clients):**
+
+- Uses rustls-webpki **0.103.16** (via rustls 0.23.46), not the `ostrich-x509` validator above
+- RUSTSEC-2026-0382 fixed (verification could accept distrusted intermediates)
+- TLS peer path validation additionally rejects certificates whose SPKI is on webpki's built-in distrust list (emSign G3; `CertDistrusted`), independent of configured trust anchors
+- No CRL/OCSP revocation checking on this path (pre-existing gap; RFC 5280 §6.3 not applied to TLS peers)
+- Tests (2026-10-23): `mtls_handshake_rejects_untrusted_client`, `mtls_handshake_rejects_client_cert_with_server_only_eku` (RFC 5280 §4.2.1.12)
+
 **NIAP Annotation Required:** ✅ Complete
 
 **Related RFC:** RFC 5280 §6
 
-**Related NIST 800-53:** IA-5 (Authenticator Management), SC-17 (PKI Certificates)
+**Related NIST 800-53:** IA-5(2) (PKI-Based Authentication), SC-17 (PKI Certificates), SI-10 (Information Input Validation)
 
 ---
 
@@ -2326,6 +2341,7 @@ ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
 | 2.7 | 2026-06-26 | OstrichPKI Team | NPE Portal: FIA_UAU.1 / FIA_X509_EXT.1-.2 (mTLS cert auth), FMT_SMR.2 (4 NPE roles), FTA_SSL.1/.3 (30-min inactivity), FAU_GEN.1/.2 (auth audit), FMT_SMF.1 (consent/session mgmt) — `ostrich-npe-portal` |
 | 2.8 | 2026-06-29 | OstrichPKI Team | NPE Portal workflows: FDP_CER_EXT.3 / FDP_SEPP.1 (RA approval + override, engine-gated segregation), FMT_SMR.2 / FMT_MTD.1 (CAA user mgmt + self-action block + role ceiling), FMT_SMF.1 / FDP_ACF.1 (namespace + system-config mgmt), FCS_CKM.1 / FCS_COP.1 (EFS PKCS#12 delivery), FDP_CER_EXT.2 (bulk enrollment); container image + Helm chart |
 | 2.9 | 2026-07-27 | OstrichPKI Team | FCS_CKM.1/FCS_STG_EXT.1/FMT_SMF.1 test evidence: opt-in P-384 SoftHSM CA bootstrap and EST external-issuer integration profile. |
+| 3.0 | 2026-10-23 | OstrichPKI Team | Dependency advisory remediation. FCS_TLSC_EXT.2 / FCS_TLSS_EXT.1: "rustls … FIPS-validated" reworded to "rustls 0.23.46 using the aws-lc-rs FIPS provider (AWS-LC FIPS 4.2.0; CMVP certificate pending confirmation, POA&M)"; the tonic `tls-ring` provider is noted; handshake tests added as evidence; ML-DSA TLS verification noted (accepted 2026-10-23). FIA_X509_EXT.1: rustls-webpki 0.103.16 TLS-peer path, emSign SPKI distrust, no revocation on the TLS path; Related NIST changed to IA-5(2), SC-17, SI-10. FCS_CKM.1 / FCS_COP.1: corrected ML-DSA/SLH-DSA/hybrid overclaims. FCS_COP.1(2): corrected the `ring::digest` claim (RustCrypto `sha2`). No SFR status changes. |
 
 ---
 
