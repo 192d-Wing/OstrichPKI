@@ -1,7 +1,7 @@
 # FIPS Cryptographic Standards Compliance Matrix
 
-**Document Version:** 1.5
-**Date:** 2026-10-23
+**Document Version:** 1.9
+**Date:** 2026-10-24
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Enhanced (70-75%)
 
@@ -190,10 +190,11 @@ signing/verification/key-generation run inside the AWS-LC FIPS 140-3 module via
 
 **Usage in OstrichPKI:**
 
-1. **TLS Transport Encryption** (via rustls)
-   - AES-128-GCM
-   - AES-256-GCM
-   - ChaCha20-Poly1305 (not AES, but AEAD)
+1. **TLS Transport Encryption** (via rustls, aws-lc-rs provider, `fips` feature)
+   - AES-128-GCM (`TLS_AES_128_GCM_SHA256`)
+   - AES-256-GCM (`TLS_AES_256_GCM_SHA384`)
+   - ChaCha20-Poly1305 is **not** offered: rustls excludes it under `fips`
+     (corrected 2026-10-24; earlier revisions listed it)
 
 2. **KRA Key Escrow Wrapping** ✅ **Implemented**
    - [crates/ostrich-kra/src/wrap.rs](../../crates/ostrich-kra/src/wrap.rs) - AES-256-GCM (NIST SP 800-38D) via ring
@@ -205,22 +206,72 @@ signing/verification/key-generation run inside the AWS-LC FIPS 140-3 module via
      mismatch rejection, nonce uniqueness, KEK length validation
    - [crates/ostrich-crypto/src/provider.rs:83-91](../../crates/ostrich-crypto/src/provider.rs#L83-L91) - HSM `wrap_key()` interface (AES-KW per SP 800-38F) remains for PKCS#11-resident keys
 
-3. **TLS 1.3 Service Endpoints** ✅ **Implemented (FIPS provider, fail-closed)**
+3. **TLS 1.3 Service Endpoints** ✅ **Implemented (FIPS mode, fail-closed; scoped to HTTPS listeners)**
    - [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - rustls with the explicit `aws_lc_rs` provider, TLS 1.3 only
-   - The serving TLS stack runs inside AWS-LC's FIPS 140-3 module (rustls `fips`
-     feature), so the handshake AEAD, key-exchange, and the client/server
-     CertificateVerify signature checks all execute in the validated module —
-     not `ring` (which is not FIPS-validated). Restricted to FIPS-approved suites.
-   - `TlsSettings::load` asserts `ServerConfig::fips()` and **fails closed** if it
-     is not FIPS-compliant, so a build/feature regression cannot silently serve a
-     non-FIPS transport (SC-13). Shared by every service binary.
-   - Regression guard: `tls::tests::aws_lc_rs_provider_is_in_fips_mode` fails if
-     the `fips` feature is ever dropped.
+   - The serving TLS stack uses the AWS-LC FIPS 4.2.0 module (FIPS mode /
+     approved algorithms; CMVP certificate pending confirmation,
+     POAM-2026-10-23-01) through
+     the rustls `fips` feature. The handshake AEAD, key exchange and the
+     CertificateVerify signature checks run in that module, not in `ring`
+     (which has no FIPS mode and no CMVP certificate).
+   - **Fail-closed gate:** `ensure_fips(&ServerConfig)` returns
+     `Error::Config` unless `ServerConfig::fips()` is true, and logs the refusal
+     with `tracing::error!`. It is called from `TlsSettings::load` (defence in
+     depth) and as the first statement of `serve_with_config`, before anything
+     is bound. Every HTTPS listener served through `ostrich_common::tls`
+     (`serve` and `serve_with_config`) is therefore refused on a non-FIPS TLS
+     stack. That covers the nine service binaries that call
+     `TlsSettings::from_options` + `serve` (acme, ca, est, kra, npe-portal, ocsp,
+     scms, tamp, web-ui) and npe-portal ACME mode, which builds its own config
+     (`build_mtls_server_config`) and calls `ensure_fips` itself before spawning
+     the renewal task
+     ([services/npe-portal/src/main.rs](../../services/npe-portal/src/main.rs)),
+     then `serve_with_config`. The HTTPS startup logs carry `fips = true` and
+     `aws_lc_version` (from `aws_lc_rs::awslc_version()`). No live log value has
+     been captured yet.
+   - **Not covered** (POAM-2026-10-23-05, POAM-2026-10-23-08): plain-HTTP mode
+     (no certificate configured) and any process-level FIPS gate; rustls
+     `ClientConfig`s (web-ui and npe-portal backend clients, the ACME
+     tls-alpn-01 validator); tonic gRPC (clients use `tls-ring`; the ca-server
+     gRPC server has no TLS); no `ostrich-audit` event on refusal; self-test
+     KATs do not run through AWS-LC.
+   - **What `fips()` asserts** (rustls 0.23.46): `provider.fips() &&
+     require_ems`. The provider part requires every cipher suite, every
+     key-exchange group, the signature-verification algorithms, the secure RNG
+     and the key provider to report FIPS. For aws-lc-rs each of these reduces
+     to AWS-LC `FIPS_mode()` plus rustls's allowlist. In AWS-LC FIPS 4.2.0
+     `FIPS_mode()` is a build-time constant (1 when built with `BORINGSSL_FIPS`
+     and without ASAN), so the gate detects build and linkage problems: rustls
+     `fips` feature missing, a non-FIPS or ASAN AWS-LC linked, a non-approved
+     suite or group, or extended master secret disabled. It does **not** detect
+     a failed power-on self-test: on self-test failure the module calls
+     `AWS_LC_FIPS_failure()` and aborts the process (the module enforces its own
+     FIPS 140-3 error state). It does **not** check protocol versions: TLS 1.3-only comes from
+     `with_protocol_versions(&[&TLS13])` (test
+     `server_rejects_tls12_only_client`). It does not inspect the
+     client-certificate verifier, which `load` builds from the same provider.
+   - **Key-exchange groups offered:** X25519MLKEM768, P-256, P-384.
+     ChaCha20-Poly1305 and plain X25519 are excluded under `fips`. The hybrid
+     X25519MLKEM768 counts as approved because the ML-KEM share comes first and
+     rustls treats the FIPS-pending ML-KEM as approved. That status depends on
+     the AWS-LC 4.2.0 CMVP certificate covering ML-KEM (POAM-2026-10-23-01).
+   - **Tests (2026-10-24, `fixes-round-1.md`):**
+     `ensure_fips_rejects_non_fips_server_configs` (plain X25519 added →
+     `Err(Config)`; `require_ems = false` → `Err(Config)`),
+     `ensure_fips_accepts_loaded_config`,
+     `serve_with_config_refuses_non_fips_config` (returns `Err(Config)` without
+     binding), `load_builds_fips_config_with_alpn`,
+     `fips_server_config_kx_groups_exclude_x25519_keep_mlkem_hybrid` (asserts no
+     X25519, X25519MLKEM768 present, every group `fips()`), and npe-portal
+     `build_mtls_server_config_reports_fips_mode`
+     ([services/npe-portal/src/server/acme.rs](../../services/npe-portal/src/server/acme.rs)).
+     Mutation check: with `ensure_fips` forced to `Ok`, the first and third
+     tests fail.
 
 **Implementation:**
 
 - ✅ KRA escrow key wrapping: AES-256-GCM (the prior placeholder XOR stub is removed)
-- ✅ TLS uses AES-GCM inside the AWS-LC FIPS module (via rustls/aws-lc-rs `fips`); `ServerConfig::fips()` asserted at startup
+- ✅ TLS uses AES-GCM in the AWS-LC FIPS 4.2.0 module (FIPS mode; CMVP certificate pending confirmation, POAM-2026-10-23-01) via rustls/aws-lc-rs `fips`; `ServerConfig::fips()` enforced by `ensure_fips` before any HTTPS listener binds
 
 **Compliance Notes:**
 
@@ -252,8 +303,12 @@ signing/verification/key-generation run inside the AWS-LC FIPS 140-3 module via
 
 **Implementation:**
 
-- Uses `ring::digest` crate (FIPS 140-2 validated)
-- [crates/ostrich-audit/src/event.rs:145-150](../../crates/ostrich-audit/src/event.rs#L145-L150) - SHA-256 for audit chain
+- Audit chain and ACME JWK thumbprints use RustCrypto `sha2`, which is outside
+  the AWS-LC module and has no CMVP certificate (corrected 2026-10-24: earlier
+  text said "`ring::digest` (FIPS 140-2 validated)"; no `ring::digest` call
+  exists). SHA-2 inside `ostrich-crypto` and TLS runs in the AWS-LC FIPS 4.2.0
+  module (CMVP certificate pending confirmation, POAM-2026-10-23-01)
+- [crates/ostrich-audit/src/event.rs](../../crates/ostrich-audit/src/event.rs) - SHA-256 for audit chain (`compute_hash`)
 - [crates/ostrich-acme/src/jws.rs](../../crates/ostrich-acme/src/jws.rs) - SHA-256 for JWK thumbprints
 
 **Evidence:**
@@ -377,7 +432,7 @@ pending confirmation (POA&M).
 
 **Rust Crates:**
 
-- `aws-lc-rs` (≥1.16, `kem` module) - implementation in use (AWS-LC backend, FIPS-track)
+- `aws-lc-rs` (≥1.18 workspace requirement, 1.18.2 locked; `kem` module) - implementation in use (AWS-LC backend, FIPS-track)
 
 **Compliance Notes:**
 
@@ -681,7 +736,8 @@ workspace `fips` feature.
 - ✅ `aws_lc_module_reports_fips_mode` ([crates/ostrich-crypto/src/self_test.rs](../../crates/ostrich-crypto/src/self_test.rs)): `aws_lc_rs::try_fips_mode() == Ok(())` and a SHA-256 "abc" KAT through the module (passed 2026-10-23)
 - ✅ `load_builds_fips_config_with_alpn` ([crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs)): `ServerConfig::fips()` and the provider's `fips()` are `true` (passed 2026-10-23)
 - ✅ `fips_signature_openssl_interop` (1 passed) and `mlkem_openssl_interop` (2 passed) against OpenSSL 4.0.3, 2026-10-23
-- 🔴 No runtime FIPS-mode assertion at service start-up, and the module version is not logged. Services do not fail closed if `try_fips_mode()` returns an error (POA&M; PQC-002 / NIST-007)
+- ✅ `ensure_fips_rejects_non_fips_server_configs`, `ensure_fips_accepts_loaded_config`, `serve_with_config_refuses_non_fips_config` ([crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs)): the HTTPS fail-closed gate refuses non-FIPS configs and accepts the `load()` config (26 `tls::` tests passed 2026-10-24)
+- 🟡 **Runtime FIPS-mode assertion, scoped to HTTPS listeners (2026-10-24).** Every HTTPS listener served via `ostrich_common::tls` refuses to start unless `ServerConfig::fips()` is true (`ensure_fips`), and its startup log records `fips = true` and `aws_lc_version`. Still open (POAM-2026-10-23-05): no process-level gate, so plain-HTTP mode and other module users do not fail closed on a `try_fips_mode()` error; client configs and gRPC are not checked; no audit event on refusal. In ca-server the gRPC listener is spawned before the HTTPS gate runs, so on a non-FIPS build gRPC is briefly up before the process exits
 - 🔴 The existing FIPS self-test KATs in `self_test.rs` use RustCrypto `sha2`, and the integrity test checks only the hash length, so they do not exercise the AWS-LC module (PQC-005, pre-existing). The only test that exercises the module is the `aws_lc_module_reports_fips_mode` unit test above.
 
 **Outside the AWS-LC boundary (no CMVP certificate):**
@@ -692,6 +748,13 @@ workspace `fips` feature.
   (certificate #3678)". That was wrong: `ring` has no CMVP certificate.
 - RustCrypto `sha2`: audit hash chain (`crates/ostrich-audit/src/event.rs`) and
   the self-test KATs above
+- Non-FIPS `aws-lc-sys` 0.46.0 (2026-10-24, PQC-010): `aws-lc-rs` default
+  features pull it in. `cargo tree -i aws-lc-sys` lists rustls, rustls-webpki,
+  rcgen, instant-acme, ostrich-common and ostrich-crypto as dependents of
+  aws-lc-rs, and it is in `Cargo.lock`, so it is compiled alongside
+  `aws-lc-fips-sys` 0.14.2. With `fips` enabled it is not the backend and its
+  symbols are prefixed, but it is still a second, unvalidated AWS-LC copy in
+  the binary and the SBOM. Tracked under POAM-2026-10-23-05; no status change
 
 **Compliance:**
 
@@ -1113,6 +1176,7 @@ allowed_pqc_algorithms = [
 | 1.6 | 2026-10-23 | OstrichPKI Team | CI hardening. Build-environment baseline: `rust-toolchain.toml` 1.99.1; `rust:1.99.1-bookworm` in both Dockerfiles and GitLab (GitLab moved from `rust:1.92.0-trixie` and gained the FIPS build dependencies). Module-pin file recorded as committed. PKCS#11 SoftHSM test environment noted (RSA-PSS fails locally; Linux CI pending). **FIPS module unchanged** (AWS-LC FIPS 4.2.0, `aws-lc-fips-sys` 0.14.2); no algorithm, self-test or boundary change. |
 | 1.7 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix. RSASSA-PSS qualified (✅ → 🟡): provider level only, PKCS#11 "Fixed; local SoftHSM 2.7.0 28/0/1; Linux CI pending", not used for X.509 (RSA X.509 signing is PKCS#1 v1.5). Documented the PKCS#11 split boundary (host digest in AWS-LC; EMSA-PSS and private-key operation in the HSM) and the production-HSM policy check (POAM-21). HSM interface status corrected from "Designed, not implemented" / "stubbed" to implemented and SoftHSM-tested only. PSS salt-length note. **FIPS module unchanged** (AWS-LC FIPS 4.2.0); no algorithm added. |
 | 1.8 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): GitHub Actions run 40063317654, SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0. RSASSA-PSS split into two lines: provider level / via PKCS#11 🟡 → ✅ **scoped to SoftHSM** 2.6.1 / 2.7.0 and RSA-2048/3072/4096 (production HSM not validated, POAM-21); X.509 RSASSA-PSS stays 🟡 (POAM-20). PKCS#11 PSS interop evidence 🟡 → ✅ (SoftHSM only). HSM test environment and RSA-PSS digest-boundary status updated. AWS-LC 4.2.0 CMVP caveat kept. **FIPS module unchanged**; no algorithm, self-test or boundary change. |
+| 1.9 | 2026-10-24 | OstrichPKI Team | PR 152 (fail-closed FIPS TLS), branch `revive-fips-tls`. FIPS 197 TLS endpoints: "validated module" / "FIPS-validated" wording replaced by "AWS-LC FIPS 4.2.0 module (FIPS mode / approved algorithms; CMVP certificate pending confirmation, POAM-2026-10-23-01)"; scope corrected to every HTTPS listener served via `ostrich_common::tls` (`serve` and `serve_with_config`, including npe-portal ACME mode) through `ensure_fips`; added what `fips()` asserts (build and linkage only; a failed power-on self-test aborts inside the module and is not detected by the gate, PQC-009), offered groups and the hybrid ML-KEM approval basis; tests replaced (the removed `aws_lc_rs_provider_is_in_fips_mode` no longer cited). Self-contradictions fixed: ChaCha20-Poly1305 removed from the TLS suite list; runtime FIPS-mode evidence 🔴 → 🟡 **scoped to HTTPS listeners** (POAM-05 stays open); `ring::digest` "FIPS 140-2 validated" corrected to RustCrypto `sha2` (no CMVP certificate). aws-lc-rs requirement ≥1.16 → ≥1.18. Module boundary: the non-FIPS `aws-lc-sys` 0.46.0 recorded as a second, unvalidated AWS-LC copy in the build and SBOM (PQC-010, POAM-05; no status change). Header version 1.5 → 1.9 (1.6-1.8 had not updated it). **FIPS module unchanged** (AWS-LC FIPS 4.2.0); no algorithm added. |
 
 ---
 

@@ -248,7 +248,8 @@ impl ResolvesServerCert for AcmeCertResolver {
 /// using the aws-lc-rs/FIPS provider to load the signing key.
 ///
 /// COMPLIANCE MAPPING:
-/// - NIST 800-53: SC-13 (FIPS-validated crypto provider), SC-12
+/// - NIST 800-53: SC-13 (FIPS-mode aws-lc-rs provider; CMVP certificate
+///   pending confirmation, POAM-2026-10-23-01), SC-12
 /// - FIPS 140-3 (aws-lc-rs provider)
 pub fn certified_key_from_pem(
     cert_chain_pem: &str,
@@ -276,12 +277,16 @@ pub fn certified_key_from_pem(
 ///
 /// Mirrors `ostrich_common::tls` (same aws-lc-rs/FIPS provider, TLS 1.3 floor)
 /// but swaps the static `with_single_cert` for `with_cert_resolver` so the ACME
-/// renewal task can rotate the server cert in place.
+/// renewal task can rotate the server cert in place. The FIPS-mode check
+/// (`ostrich_common::tls::ensure_fips`) is applied by `serve_with_config`; the
+/// client-cert verifier is built from the same provider because
+/// `ServerConfig::fips()` does not inspect it.
 ///
 /// COMPLIANCE MAPPING:
 /// - NIST 800-53: SC-8 (TLS 1.3), SC-13 (FIPS provider), AC-17/IA-2 (mTLS client
 ///   authentication — every operator presents a verified client certificate)
-/// - NIAP PP-CA: FCS_TLSS_EXT (TLS server), FIA_X509_EXT (client cert validation)
+/// - NIAP PP-CA: FCS_TLSS_EXT.1 (TLS server), FIA_X509_EXT.1 (client cert
+///   validation)
 pub fn build_mtls_server_config(
     client_ca_pem_path: &str,
     resolver: Arc<AcmeCertResolver>,
@@ -622,6 +627,30 @@ mod tests {
         // Missing file path -> error (no client CA to verify against).
         let resolver = Arc::new(AcmeCertResolver::new());
         assert!(build_mtls_server_config("/nonexistent/ca.pem", resolver).is_err());
+    }
+
+    /// QA (SC-13): the ACME-mode mTLS config is built here rather than by
+    /// `TlsSettings::load`; `serve_with_config` refuses it via
+    /// `ostrich_common::tls::ensure_fips` if it is not in FIPS mode. Pin its
+    /// FIPS posture at construction so a regression fails in unit tests, not at
+    /// startup.
+    #[test]
+    fn build_mtls_server_config_reports_fips_mode() {
+        let (ca_pem, _key_pem) = self_signed_pem();
+        let path = std::env::temp_dir().join(format!(
+            "npe-acme-fips-ca-{}-{:?}.pem",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, ca_pem).unwrap();
+        let config =
+            build_mtls_server_config(path.to_str().unwrap(), Arc::new(AcmeCertResolver::new()))
+                .expect("build mtls config");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            config.fips(),
+            "ACME-mode ServerConfig must report FIPS mode"
+        );
     }
 
     #[test]
