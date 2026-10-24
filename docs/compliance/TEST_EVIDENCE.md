@@ -174,7 +174,7 @@ execute is recorded as NOT RUN.
 | SoftHSM token | `make install-softhsm` (scratch `HOME`/paths, run twice) | PASS | token `OstrichPKI-Test` created, second run idempotent, dirs `0700` |
 | PKCS#11 (as documented) | `make test-pkcs11` | FAIL (macOS environment) | `SIGSEGV` at test-thread exit; known SoftHSM/OpenSSL 4 issue on macOS, documented in the Makefile |
 | PKCS#11 (macOS workaround) | test binary run directly with `SOFTHSM2_CONF`, `PKCS11_MODULE_PATH`, `DYLD_LIBRARY_PATH` and `DYLD_INSERT_LIBRARIES` (non-standard invocation) | FAIL (3 known) | **16 passed, 3 failed, 1 ignored**. Failed: `test_rsa_pss_signing_and_verification`, `test_multiple_keys_same_provider`, `test_deterministic_signatures_rsa_pss` (RSA-PSS signing returns `CKR_GENERAL_ERROR`). Ignored: `test_key_wrapping_and_unwrapping` |
-| PKCS#11 (Linux CI) | `hsm-integration.yml` job `PKCS#11 suite (SoftHSM2)` | **NOT RUN** | needs a push; result decides whether the RSA-PSS tests get a POA&M. Later run recorded in §2.5 (16/3/1, exit 101) |
+| PKCS#11 (Linux CI) | `hsm-integration.yml` job `PKCS#11 suite (SoftHSM2)` | **NOT RUN** | needs a push; result decides whether the RSA-PSS tests get a POA&M. Later runs recorded in §2.5 (before the fix 16/3/1, exit 101; after the fix 28/0/1, exit 0, run 40063317654) |
 | GitHub / GitLab pipelines | — | **NOT RUN** | needs a push |
 | Docker builds | `docker build` | **NOT RUN** | Docker not available |
 | Integration | `make test-integration` | **NOT RUN** | PostgreSQL and live services not available |
@@ -185,14 +185,16 @@ uses a non-standard invocation on macOS and is not a substitute for the Linux
 CI result. RSA-PSS signing through PKCS#11 is not demonstrated. The run does
 not exercise the `CKA_ALLOWED_MECHANISMS` decode path fixed by
 RUSTSEC-2026-0286. POAM-2026-10-23-07 stays open until the Linux CI artifact
-`pkcs11-softhsm-results` is attached.
+`pkcs11-softhsm-results` is attached. (Update: attached and POAM-07 closed
+2026-10-23; see §2.5.)
 
 **Tests added:** none (no Rust source changed). The evidence is the
 configuration-level positive and negative checks above.
 
 ### 2.5 Test Run 2026-10-23 (PKCS#11 RSA-PSS Fix)
 
-**Scope:** branch `claude/ci-hardening` @ db09c14 plus uncommitted changes:
+**Scope:** branch `claude/ci-hardening` @ db09c14 plus the changes later
+committed as 44d560d (PR 181):
 `crates/ostrich-crypto/src/pkcs11/mod.rs`, `crates/ostrich-crypto/src/provider.rs`
 (doc comments only), `crates/ostrich-crypto/tests/pkcs11_integration_test.rs`,
 `.cargo/audit.toml` and `deny.toml` (RUSTSEC-2026-0387 ignore). No
@@ -200,8 +202,10 @@ configuration-level positive and negative checks above.
 **Host:** macOS (Darwin, arm64), rustc 1.99.1, SoftHSM 2.7.0 (Homebrew), fresh
 scratch token `OstrichPKI-Test`.
 **Sources:** `qa-report.md`, `fixes-round-1.md`, `impl-notes.md` and
-`ci-pkcs11-before.txt` in `target/agent-workflow/20261023-230002-pkcs11-rsa-pss/`.
-A gate that did not execute is recorded as NOT RUN.
+`ci-pkcs11-before.txt`, `ci-artifact-after/pkcs11.txt` and `gate.md` in
+`target/agent-workflow/20261023-230002-pkcs11-rsa-pss/`. The Linux CI rows come
+from the GitHub Actions job log artifact, not from `qa-report.md` (which records
+that gate as NOT RUN locally). A gate that did not execute is recorded as NOT RUN.
 
 | Gate | Command | Result | Counts |
 |------|---------|--------|--------|
@@ -217,8 +221,9 @@ A gate that did not execute is recorded as NOT RUN.
 | Supply chain | `cargo audit --deny warnings` | FAIL before the ignore; PASS after | before: 1 vulnerability (RUSTSEC-2026-0387, `crypto-bigint` 0.5.5, published 2026-10-23, `Cargo.lock` unchanged); after the user-approved ignore (POAM-2026-10-23-16): exit 0 |
 | Supply chain | `cargo deny check` | FAIL before the ignore; PASS after | before: `advisories FAILED, bans ok, licenses ok, sources ok`; after: exit 0. Ignore lists in `.cargo/audit.toml` and `deny.toml` identical (5 IDs) |
 | Compliance | `make compliance-check`, `make compliance-annotations` | PASS | run by QA before round-1 fixes |
-| PKCS#11 (Linux CI), **after fix** | `hsm-integration.yml` on the pushed fix commit | **NOT RUN** | needs a push. Close criterion for POAM-2026-10-23-17: SoftHSM 2.6.1, 0 failed, `test_rsa_pss_hsm_sign_software_verify ... ok`, exit 0, commit = pushed fix |
-| GitHub / GitLab dependency gate | `audit.yml` | **NOT RUN** | needs a push |
+| PKCS#11 (Linux CI), **after fix** | `hsm-integration.yml` (workflow `HSM integration`) job `PKCS#11 suite (SoftHSM2)`, GitHub Actions [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654); ubuntu24 image 20261012.334.1, SoftHSM 2.6.1, rustc 1.99.1; GitHub head SHA 44d560d (PR 181 head); the artifact's `commit:` line shows the PR merge ref c67c10e | PASS (exit 0) | **28 passed, 0 failed, 1 ignored** (29 tests). All six `test_rsa_pss_*` tests ok, including `test_rsa_pss_hsm_sign_software_verify`; `test_deterministic_signatures_rsa_pss` and `test_multiple_keys_same_provider` ok. Ignored: `test_key_wrapping_and_unwrapping`. Meets the POAM-2026-10-23-17 close criterion |
+| GitHub dependency gate | `audit.yml` jobs `cargo audit`, `cargo deny` (PR 181, run 40063317688) | PASS | both jobs green (`gh pr checks 181`: 12 of 12 checks pass) |
+| GitLab dependency gate | `security:audit`, `security:deny` | **NOT RUN** | no GitLab pipeline result recorded for this change |
 | Integration (Postgres), doc tests, fuzz | — | **NOT RUN** | not applicable to this change; no database available |
 
 **Tests added** (`crates/ostrich-crypto/tests/pkcs11_integration_test.rs`):
@@ -235,9 +240,14 @@ assert exactly `Ok(false)` (SEC-003). Unit tests in
 `rsa_pkcs1_input_is_message_unchanged`, `ecdsa_input_is_sha2_digest_of_message`,
 `unsupported_algorithms_fail_closed`, `only_signature_rvs_are_rejections`.
 
-**QA-004 (from §2.3/§2.4), narrowed again.** The Linux CI job has now run once
-(before the fix). RSA-PSS through PKCS#11 is **Fixed; local SoftHSM 2.7.0
-28 passed / 0 failed / 1 ignored; Linux CI pending**. QA-004 in this run (the
+**QA-004 (from §2.3/§2.4), narrowed again.** The Linux CI job has now run
+before the fix (16/3/1, exit 101) and after it ([run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654), 28/0/1, exit 0).
+RSA-PSS through PKCS#11 is **verified on SoftHSM 2.6.1 (Linux CI) and 2.7.0
+(local), RSA-2048/3072/4096; production HSM not yet validated
+(POAM-2026-10-23-21)**. POAM-2026-10-23-07 and POAM-2026-10-23-17 closed
+2026-10-23. The `CKA_ALLOWED_MECHANISMS` decode path fixed by RUSTSEC-2026-0286
+is still not exercised, because `ostrich-crypto/src/pkcs11` never reads that
+attribute. QA-004 in this run (the
 catch-all in `pkcs11_signature_input`) is fixed: the function returns an error
 for unsupported algorithms and has no pass-through default.
 
@@ -787,3 +797,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 1.2 | 2026-10-23 | OstrichPKI Team | Added §2.3, the dependency-advisory remediation test run: 649 unit tests passed; integration suites recorded as run or NOT RUN; PKCS#11 NOT RUN, so the cryptoki fix is untested (QA-004). §5.2: cargo audit 0 vulnerabilities (1351 advisories). §5.3: cargo deny marked not reproducible. |
 | 1.3 | 2026-10-23 | OstrichPKI Team | Added §2.4, the CI-hardening test run: 653 unit tests passed; `cargo audit --deny warnings` and `cargo deny check` pass locally with negative checks; PKCS#11 suite run locally on macOS (non-standard invocation) 16 passed / 3 RSA-PSS failed / 1 ignored; Linux CI, pipelines and actionlint NOT RUN. QA-004 narrowed. §5.2: audit job no longer advisory (not yet a required check). §5.3: cargo deny passes locally. |
 | 1.4 | 2026-10-23 | OstrichPKI Team | Added §2.5, the PKCS#11 RSA-PSS fix run: Linux CI before the fix 16 passed / 3 failed / 1 ignored (exit 101); local SoftHSM 2.7.0 after the fix 28 passed / 0 failed / 1 ignored; mutation checks; `ostrich-crypto` lib 65 passed; `make test-unit` 661 passed / 0 failed / 1 ignored; `cargo audit` / `cargo deny` failed on RUSTSEC-2026-0387 and pass after the risk-accepted ignore (POAM-16). Linux CI after the fix NOT RUN. §2.4 Linux row cross-referenced. |
+| 1.5 | 2026-10-23 | OstrichPKI Team | §2.5: recorded the after-fix Linux CI result, GitHub Actions run 40063317654 (`HSM integration` / `PKCS#11 suite (SoftHSM2)`, SoftHSM 2.6.1, rustc 1.99.1, head 44d560d, artifact `commit:` merge ref c67c10e): 28 passed / 0 failed / 1 ignored, exit 0 (NOT RUN → PASS). GitHub dependency gate NOT RUN → PASS (PR 181, 12/12 checks green); GitLab still NOT RUN. QA-004 text updated (POAM-07 and POAM-17 closed; `CKA_ALLOWED_MECHANISMS` still not exercised). §2.4 cross-references updated. |

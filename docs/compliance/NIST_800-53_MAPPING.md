@@ -647,13 +647,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - ✅ Audit events link actions to actors
 - ✅ **Live tamper-detection proof (mechanism)**: [crates/ostrich-audit/tests/signed_chain_tamper.rs](../../crates/ostrich-audit/tests/signed_chain_tamper.rs) writes signed records to Postgres, forges the last record's content and recomputes its `event_hash` (which fools the hash-only `verify_chain`), and shows `verify_signed_chain` still detects it because the stale signature no longer verifies over the forged hash.
 - ✅ **Live end-to-end proof (production wiring)**: [crates/ostrich-ca/src/audit_signing_e2e.rs](../../crates/ostrich-ca/src/audit_signing_e2e.rs) builds a `CertificateAuthority` backed by a SoftHSM (PKCS#11) ECDSA key, performs a real revocation, and asserts the resulting audit record is signed (`signature` non-null, `signing_key_id` = CA key) and that `verify_signed_chain` accepts it against the CA public key — and rejects it after a signature byte is corrupted.
-- 🟡 **RSA PKCS#11 CA keys (added 2026-10-23, NIST-005):** audit records are signed with `ca_key.algorithm` ([crates/ostrich-ca/src/ca.rs](../../crates/ostrich-ca/src/ca.rs), `CertificateAuthority::new`). For an RSA key generated through `Pkcs11Provider` that algorithm is `RsaPssSha256`. Before the 2026-10-23 fix, PKCS#11 RSA-PSS `C_Sign` failed (`CKR_GENERAL_ERROR`), so **audit-record signing with an RSA PKCS#11 CA key did not work**. X.509 certificate, CRL and OCSP signing with RSA CA keys uses PKCS#1 v1.5 (`recommended_signature_algorithm`, [crates/ostrich-x509/src/signing.rs](../../crates/ostrich-x509/src/signing.rs)) and was not affected. The provider fix is verified locally (SoftHSM 2.7.0: 28 passed / 0 failed / 1 ignored); the Linux CI result is pending (POAM-2026-10-23-17). `audit_signing_e2e` covers an EC P-256 CA key only; there is no RSA variant yet
+- 🟡 **RSA PKCS#11 CA keys (added 2026-10-23, NIST-005):** audit records are signed with `ca_key.algorithm` ([crates/ostrich-ca/src/ca.rs](../../crates/ostrich-ca/src/ca.rs), `CertificateAuthority::new`). For an RSA key generated through `Pkcs11Provider` that algorithm is `RsaPssSha256`. Before the 2026-10-23 fix, PKCS#11 RSA-PSS `C_Sign` failed (`CKR_GENERAL_ERROR`), so **audit-record signing with an RSA PKCS#11 CA key did not work**. X.509 certificate, CRL and OCSP signing with RSA CA keys uses PKCS#1 v1.5 (`recommended_signature_algorithm`, [crates/ostrich-x509/src/signing.rs](../../crates/ostrich-x509/src/signing.rs)) and was not affected. The provider fix is verified on SoftHSM 2.6.1 (Linux CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654): 28 passed / 0 failed / 1 ignored, exit 0) and SoftHSM 2.7.0 (local, 28/0/1); POAM-2026-10-23-17 closed 2026-10-23. SoftHSM is a test double; the production HSM is not yet validated (POAM-2026-10-23-21). `audit_signing_e2e` covers an EC P-256 CA key only; there is no RSA variant yet, so this bullet stays 🟡
 - 🔴 No CSR→Certificate linkage (missing request_id)
 
 **Gaps / POA&M:**
 
 - Cannot prove which CSR led to which certificate (Phase 15 - add request_id to certificates table)
-- No end-to-end test of signed audit records with an RSA (RSA-PSS) PKCS#11 CA key (NIST-005, follow-up). Until the Linux CI artifact for the RSA-PSS fix is attached, AU-10 with RSA HSM CA keys rests on local evidence only (POAM-2026-10-23-17)
+- No end-to-end test of signed audit records with an RSA (RSA-PSS) PKCS#11 CA key (NIST-005, follow-up). The RSA-PSS provider fix now has Linux CI evidence ([run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654); POAM-2026-10-23-17 closed 2026-10-23), but AU-10 with RSA HSM CA keys is demonstrated at the provider level on SoftHSM only, not end to end
 
 **Evidence Required for ATO:**
 
@@ -1458,7 +1458,7 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - ✅ **FIPS 140-3 health tests (repetition count, adaptive proportion)**
 - ✅ **Certificate serial number generation with ≥20 bits random (RFC 5280)**
 - ✅ PKCS#11 HSM integration complete with FIPS 140-3 module support
-- 🟡 RSA-PSS with SHA-256/384/512 at the provider level. Software provider: AWS-LC FIPS module. PKCS#11 provider: **Fixed; local SoftHSM 2.7.0 28 passed / 0 failed / 1 ignored; Linux CI pending** (POAM-2026-10-23-17). RSA-PSS is the default algorithm for RSA keys generated through `Pkcs11Provider`, and its only production user is AU-10 audit-record signing. X.509 certificates, CRLs and OCSP responses with RSA CA keys are signed with PKCS#1 v1.5, not PSS, and the X.509 layer cannot encode RSASSA-PSS parameters (POAM-2026-10-23-20)
+- ✅ RSA-PSS SHA-256/384/512 via PKCS#11 — verified on SoftHSM 2.6.1 (Linux CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654)) and 2.7.0 (local), RSA-2048/3072/4096; production HSM not yet validated (POAM-2026-10-23-21). Provider level only. Software provider: AWS-LC FIPS 4.2.0 module (CMVP certificate for 4.2.0 pending confirmation, POA&M). POAM-2026-10-23-17 closed 2026-10-23. RSA-PSS is the default algorithm for RSA keys generated through `Pkcs11Provider`, and its only production user is AU-10 audit-record signing. X.509 certificates, CRLs and OCSP responses with RSA CA keys are signed with PKCS#1 v1.5, not PSS, and the X.509 layer cannot encode RSASSA-PSS parameters (POAM-2026-10-23-20)
 - ✅ RSA PKCS#1 v1.5 with SHA-256/384/512 (legacy compatibility)
 - ✅ ECDSA with SHA-256/384/512
 - ✅ **Classical CA signing agility**: certificates, CRLs, and OCSP responses can be signed with RSA-PKCS1, ECDSA P-256/P-384, or Ed25519 CA keys (no longer RSA-only); declared and actual algorithms always match per RFC 5280 §4.1.1.2 (`crates/ostrich-x509/src/signing.rs`)
@@ -1470,12 +1470,12 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - ✅ PKCS#7/CMS message signing for EST protocol
 - ✅ Signature verification with tamper detection
 - ✅ Algorithm mismatch detection (RSA key with ECDSA algorithm fails gracefully)
-- 🟡 PKCS#11 integration suite `pkcs11_integration_test.rs`: 29 tests (28 run, 1 ignored). 2026-10-23 local SoftHSM 2.7.0: 28 passed, 0 failed, 1 ignored; Linux CI pending. (The earlier "18 + 21 = 39 tests" count could not be traced to current files and was removed)
+- ✅ PKCS#11 integration suite `pkcs11_integration_test.rs` (SoftHSM only): 29 tests (28 run, 1 ignored: `test_key_wrapping_and_unwrapping`). 2026-10-23 Linux CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654) (SoftHSM 2.6.1, rustc 1.99.1): 28 passed, 0 failed, 1 ignored, exit 0. Local SoftHSM 2.7.0: 28 passed, 0 failed, 1 ignored. (The earlier "18 + 21 = 39 tests" count could not be traced to current files and was removed)
 
 **Cryptographic Operations Implemented:**
 
 1. **Digital Signatures (FIPS 186-5)**:
-   - RSA-PSS 2048/3072/4096 with SHA-256/384/512 (provider level; through PKCS#11 tested locally only, Linux CI pending; not used for X.509 signing)
+   - RSA-PSS 2048/3072/4096 with SHA-256/384/512 (provider level; through PKCS#11 tested on SoftHSM 2.6.1 in Linux CI and SoftHSM 2.7.0 locally; not used for X.509 signing)
    - RSA PKCS#1 v1.5 with SHA-256/384/512
    - ECDSA P-256 with SHA-256
    - ECDSA P-384 with SHA-384
@@ -1525,16 +1525,20 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 - `ring` (no CMVP certificate) is still used outside the AWS-LC module: AES-256-GCM
   key wrapping in `crates/ostrich-kra/src/wrap.rs`, and gRPC TLS via `tonic`
   `tls-ring`
-- PKCS#11 test evidence is partial. The CI job `PKCS#11 suite (SoftHSM2)`
+- PKCS#11 test evidence is SoftHSM only (a test double, not a production
+  HSM). The CI job `PKCS#11 suite (SoftHSM2)`
   ([.github/workflows/hsm-integration.yml](../../.github/workflows/hsm-integration.yml))
   ran on Linux (SoftHSM 2.6.1) before the RSA-PSS fix: 16 passed, 3 failed,
   1 ignored, exit 101. The 3 failures were RSA-PSS signing (`CKR_GENERAL_ERROR`):
   raw `CKM_RSA_PKCS_PSS` was given the whole message instead of its digest.
-  RSA-PSS through PKCS#11 is now **Fixed; local SoftHSM 2.7.0 28 passed /
-  0 failed / 1 ignored; Linux CI pending** (non-standard macOS invocation: test
-  binary run directly with `DYLD_INSERT_LIBRARIES`). No run exercises the
-  `CKA_ALLOWED_MECHANISMS` path fixed by cryptoki 0.11.1 (RUSTSEC-2026-0286)
-  (POAM-2026-10-23-07, POAM-2026-10-23-17)
+  After the fix, Linux CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654) (PR head 44d560d; the artifact's `commit:`
+  line shows the PR merge ref c67c10e) gave 28 passed / 0 failed / 1 ignored,
+  exit 0; local SoftHSM 2.7.0 also gave 28/0/1 (non-standard macOS invocation:
+  test binary run directly with `DYLD_INSERT_LIBRARIES`). POAM-2026-10-23-07
+  and POAM-2026-10-23-17 closed 2026-10-23 with this caveat: no run exercises
+  the `CKA_ALLOWED_MECHANISMS` decode path fixed by cryptoki 0.11.1
+  (RUSTSEC-2026-0286), because `ostrich-crypto/src/pkcs11` never reads that
+  attribute
 - PKCS#11 RSA-PSS and ECDSA are split operations: the digest is computed in
   the AWS-LC FIPS module on the host; EMSA-PSS encoding and the private-key
   operation run in the HSM. The production HSM's security policy must approve
@@ -1554,8 +1558,8 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 - ⚠️  FIPS 140-2/140-3 validation certificates (production HSM vendor to provide)
 - ✅ Algorithm usage matrix (documented in algorithm.rs and Phase 10 summary)
 - ✅ DER encoding test results (completed in Phase 8)
-- 🟡 Signature generation/verification tests: `pkcs11_integration_test.rs` has 29 tests; after the 2026-10-23 RSA-PSS fix, local SoftHSM 2.7.0 run 28 passed, 0 failed, 1 ignored (before the fix: Linux CI 16 passed / 3 RSA-PSS failed / 1 ignored, exit 101)
-- 🟡 HSM integration test results: Linux CI result for the fix commit pending (`hsm-integration.yml`, artifact `pkcs11-softhsm-results`). Close criterion: SoftHSM 2.6.1, 0 failed, `test_rsa_pss_hsm_sign_software_verify ... ok`, exit 0, commit = pushed fix
+- ✅ Signature generation/verification tests (SoftHSM only): `pkcs11_integration_test.rs` has 29 tests; after the 2026-10-23 RSA-PSS fix, Linux CI (SoftHSM 2.6.1) and local SoftHSM 2.7.0 both ran 28 passed, 0 failed, 1 ignored (before the fix: Linux CI 16 passed / 3 RSA-PSS failed / 1 ignored, exit 101)
+- ✅ HSM integration test results (SoftHSM only; production HSM not yet validated, POAM-2026-10-23-21): `hsm-integration.yml` job `PKCS#11 suite (SoftHSM2)`, [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654), artifact `pkcs11-softhsm-results`: SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, all six `test_rsa_pss_*` tests ok including `test_rsa_pss_hsm_sign_software_verify`, exit 0, PR head 44d560d (artifact `commit:` = merge ref c67c10e). Meets the NIST-review close criterion
 
 ---
 
@@ -1717,7 +1721,7 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 | RUSTSEC-2026-0382 | rustls-webpki | 0.103.13 → 0.103.16 | not scored | TLS peer path validation |
 | RUSTSEC-2026-0381 | webpki-roots | 1.0.5 → 1.0.11 | not scored | Transitive; the workspace-level declaration is unused by members (RFC-004) |
 | RUSTSEC-2026-0383 | webpki-root-certs | 1.0.5 → 1.0.11 | not scored | Transitive |
-| RUSTSEC-2026-0286 | cryptoki | 0.11.0 → 0.11.1 | not scored | PKCS#11 provider; `pkcs11/mod.rs` does not read `CKA_ALLOWED_MECHANISMS` (PQC review); no PKCS#11 test run at remediation time (QA-004). Later on 2026-10-23: SoftHSM runs 16 passed / 3 RSA-PSS failed / 1 ignored (local macOS, and Linux CI on SoftHSM 2.6.1, exit 101); after the RSA-PSS fix, local SoftHSM 2.7.0 28 passed / 0 failed / 1 ignored; Linux CI pending |
+| RUSTSEC-2026-0286 | cryptoki | 0.11.0 → 0.11.1 | not scored | PKCS#11 provider; `pkcs11/mod.rs` does not read `CKA_ALLOWED_MECHANISMS` (PQC review); no PKCS#11 test run at remediation time (QA-004). Later on 2026-10-23: SoftHSM runs 16 passed / 3 RSA-PSS failed / 1 ignored (local macOS, and Linux CI on SoftHSM 2.6.1, exit 101); after the RSA-PSS fix, local SoftHSM 2.7.0 and Linux CI (SoftHSM 2.6.1, run 40063317654, exit 0) both 28 passed / 0 failed / 1 ignored; the `CKA_ALLOWED_MECHANISMS` decode path is still not exercised |
 | RUSTSEC-2026-0385 | ctutils | 0.4.2 → 0.4.5 | not scored | sqlx-postgres SCRAM path only (PQC review) |
 | RUSTSEC-2026-0258 | h2 | 0.4.15 → 0.4.20 | not scored | HTTP/2 via hyper |
 | RUSTSEC-2026-0338 | quinn-proto | 0.11.15 → 0.11.19 | not scored | Target-specific transitive |
@@ -1744,7 +1748,7 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 - No AO-approved flaw-remediation time periods (proposed values in RA-5, pending AO approval)
 - The dependency gate fails in CI, but merge-blocking is pending required checks on `main` (POAM-2026-10-23-14); until then a vulnerable dependency can still be merged past a red check (RA-5)
 - `rand` 0.8.5 (RUSTSEC-2026-0097) has a fix available but is not yet bumped (POAM-2026-10-23-11)
-- The cryptoki fix has partial PKCS#11 test evidence only. The SoftHSM CI job ran once on Linux before the RSA-PSS fix (16 passed / 3 RSA-PSS failed / 1 ignored, exit 101). After the fix, local SoftHSM 2.7.0 gives 28 passed / 0 failed / 1 ignored; the Linux CI result for the fix commit is pending (POAM-2026-10-23-07, POAM-2026-10-23-17). No run exercises the `CKA_ALLOWED_MECHANISMS` decode path
+- The cryptoki fix has SoftHSM test evidence only. The SoftHSM CI job ran on Linux before the RSA-PSS fix (16 passed / 3 RSA-PSS failed / 1 ignored, exit 101) and after it ([run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654): 28 passed / 0 failed / 1 ignored, exit 0); local SoftHSM 2.7.0 also gives 28/0/1. POAM-2026-10-23-07 and POAM-2026-10-23-17 closed 2026-10-23. No run exercises the `CKA_ALLOWED_MECHANISMS` decode path, because `ostrich-crypto/src/pkcs11` never reads that attribute
 - `crypto-bigint` 0.5.5 (RUSTSEC-2026-0387) has no compatible fix (≥0.7.6 needs the RustCrypto 0.3 migration, issue #21). It is ignored with risk acceptance (POAM-2026-10-23-16). It enters through `elliptic-curve` 0.13 (`p256`/`p384`) from `openidconnect` 4.0.1, a declared but unused dependency of `ostrich-web-ui` (no call sites), so no production code reaches it. In the integration-test crate, `p256` 0.13 is used only for ephemeral, test-only fixture keys ([tests/integration/common/fixtures.rs](../../tests/integration/common/fixtures.rs)). No production secret flows through the affected operations
 
 **Remediation:** see RA-5 and the POA&M in [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)
@@ -2239,6 +2243,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 2.2 | 2026-10-23 | OstrichPKI Team | Dependency advisory remediation (cargo audit 18 vulnerabilities + 4 warnings → 0/0). New RA-5 and SI-2 sections (both Partial: the scan is advisory and response times are proposed, pending AO approval). Summary table: RA row added, SI and TOTAL rows recalculated. AWS-LC FIPS 4.2.0 (`aws-lc-fips-sys` 0.14.2) recorded in CM-2/SC-8/SC-13/TAMP, with the CMVP certificate for 4.2.0 pending confirmation (POA&M). CM-3 crypto-module review rule and CM-4 approval note. CM-6 `.cargo/config.toml` module pin. ML-DSA verification in TLS accepted (issuance still disabled). AC-17 stale TLS 1.3 gap removed. Cross-references: FTP_ITC.1 → SC-8, AC-17; FIA_X509_EXT.1 → IA-5(2), SC-17, SI-10. No status changes to existing controls. |
 | 2.3 | 2026-10-23 | OstrichPKI Team | CI hardening (branch `claude/ci-hardening`, not yet merged). CM-2: toolchain pinned by `rust-toolchain.toml` (1.99.1; MSRV 1.94 unchanged), CI pin inventory added, "not pinned" gap removed; module-pin file recorded as committed (05ea47a). RA-5: dependency-gate description (`cargo audit --deny warnings` + `cargo deny check`, fails on new advisories), scan frequency, 4 ignores with `# POAM:` IDs; obsolete deny/ignore-mismatch gaps removed; required-check and CODEOWNERS caveats added. SI-2: gate fails in CI, merge-blocking pending required checks. SC-13: PKCS#11 CI job exists, local 16/3/1, Linux pending; HSM evidence items ✅ → 🟡. IA-7: test line reference corrected to `:80-106`. **No control status changes; RA-5, SI-2, CM-2 stay Partial; SI-7 unchanged.** Summary table not recalculated. |
 | 2.4 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix (branch `claude/ci-hardening`, uncommitted; run record `target/agent-workflow/20261023-230002-pkcs11-rsa-pss/`). SC-13: RSA-PSS ✅ → 🟡 with the impact corrected (X.509/CRL/OCSP RSA signing is PKCS#1 v1.5 and was not affected; the broken path was AU-10 audit-record signing with RSA PKCS#11 CA keys); PKCS#11 status "Fixed; local SoftHSM 2.7.0 28/0/1; Linux CI pending"; Linux CI before-fix result 16/3/1 (exit 101) recorded; stale `mod.rs` line references replaced by function names; new tests listed; split-boundary, algorithm-key binding and vendor-HSM gaps added; untraceable "39 tests" count removed. AU-10: RSA PKCS#11 audit-signing note and gap (NIST-005). RA-5 / SI-2: 5 ignored advisories (RUSTSEC-2026-0387 `crypto-bigint` 0.5.5 added, POAM-16; openidconnect recorded as declared but unused in web-ui). SI-10: RSASSA-PSS CSR parameter caveat (POAM-20). New "PKCS#11 RSA-PSS digest input" section. **No control status or percentage changed** (SC-13 stays 98%, AU-10 Compliant, RA-5 / SI-2 Partial). |
+| 2.5 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix, Linux CI evidence (commit 44d560d, PR 181). Recorded GitHub Actions run 40063317654 (`HSM integration` / `PKCS#11 suite (SoftHSM2)`; SoftHSM 2.6.1, rustc 1.99.1; 28 passed / 0 failed / 1 ignored, exit 0; artifact `commit:` = PR merge ref c67c10e). SC-13: RSA-PSS via PKCS#11 🟡 → ✅ **scoped to SoftHSM** 2.6.1 / 2.7.0 and RSA-2048/3072/4096; production HSM not validated (POAM-21); AWS-LC 4.2.0 CMVP caveat kept. SC-13 suite, signature-test and HSM-test evidence items 🟡 → ✅ (SoftHSM only). AU-10 RSA bullet stays 🟡 (no RSA end-to-end test). SI-2 cryptoki row and gap updated. POAM-07 and POAM-17 recorded as closed; `CKA_ALLOWED_MECHANISMS` caveat kept. **No control status or percentage changed** (SC-13 stays 🟢 98%, AU-10 Compliant, SI-2 Partial). |
 
 ---
 
@@ -2258,7 +2263,7 @@ the configured HSM boundary.
 ### PKCS#11 RSA-PSS digest input
 
 **Controls:** SC-13, AU-10
-**Status:** Fixed; local SoftHSM 2.7.0 28 passed / 0 failed / 1 ignored; Linux CI pending
+**Status:** ✅ Fixed; verified on SoftHSM 2.6.1 (Linux CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654)) and 2.7.0 (local), 28 passed / 0 failed / 1 ignored, RSA-2048/3072/4096; production HSM not yet validated (POAM-2026-10-23-21)
 
 `crates/ostrich-crypto/src/pkcs11/mod.rs` hashes RSA-PSS messages with the
 AWS-LC FIPS SHA-2 implementation and sends the digest to raw
@@ -2266,7 +2271,7 @@ AWS-LC FIPS SHA-2 implementation and sends the digest to raw
 the same pattern as ECDSA. Before 2026-10-23 the whole message was sent, and
 `C_Sign` failed. The affected production path was AU-10 audit-record signing
 with RSA PKCS#11 CA keys. X.509 certificate, CRL and OCSP RSA signing uses
-PKCS#1 v1.5 and was not affected (POAM-2026-10-23-17).
+PKCS#1 v1.5 and was not affected (POAM-2026-10-23-17, closed 2026-10-23).
 
 ### EST mTLS workload probes
 

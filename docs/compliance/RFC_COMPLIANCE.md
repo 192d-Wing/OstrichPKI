@@ -1611,6 +1611,7 @@ consumed by the TAMP messages above.
 | 2.1 | 2026-07-27 | OstrichPKI Team | Added Kubernetes integration profile for RFC 7030 §3.2.3 TLS-protected Basic bootstrap and §4.2 enrollment through an external cert-manager issuer. |
 | 2.2 | 2026-10-23 | OstrichPKI Team | Dependency advisory remediation (rustls 0.23.46, rustls-webpki 0.103.16, h2, quinn-proto, zip 9). RFC 8446 / RFC 9325: rewrote stale statements (TLS 1.3 minimum and mTLS are enforced in `tls.rs`; ChaCha20-Poly1305 is not offered under `fips`); status stays Partial (gRPC, revocation). RFC 5280 §6: added the TLS-peer path (webpki emSign SPKI distrust, no revocation). ML-DSA in X.509 is now RFC 9881: verification in TLS accepted by the user 2026-10-23, issuance disabled; status Designed → Partial (both 🟡, summary counts unchanged). Added RFC 9113/9000/1951 dependency fixes. |
 | 2.3 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix: added "RFC 8017 / RFC 4055 — RSASSA-PSS" note. PKCS#11 RSA-PSS now follows RFC 8017 §8.1/§9.1 (mHash = Hash(M) computed on the host), verified against an independent software verifier locally; Linux CI pending. Recorded the pre-existing RFC 4055 deviation: the X.509 layer does not encode or parse RSASSA-PSS-params (POAM-2026-10-23-20). No RFC section status changed. |
+| 2.4 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): "RFC 8017 / RFC 4055 — RSASSA-PSS" status updated with GitHub Actions run 40063317654 (SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0); scoped to SoftHSM and the PKCS#11 provider. RFC 4055 deviation (POAM-20) unchanged. No RFC section status changed. |
 
 ---
 
@@ -1629,8 +1630,11 @@ PKCS#11 RSA-PSS signing now computes mHash = Hash(M) on the host (RFC 8017
 §9.1, EMSA-PSS) and passes it to raw `CKM_RSA_PKCS_PSS`; the token performs
 the encoding with MGF1 using the same hash and a salt length equal to the hash
 length. HSM-produced signatures verify with an independent AWS-LC RSASSA-PSS
-verifier (`test_rsa_pss_hsm_sign_software_verify`). Status: Fixed; local
-SoftHSM 2.7.0 28 passed / 0 failed / 1 ignored; Linux CI pending.
+verifier (`test_rsa_pss_hsm_sign_software_verify`). Status: ✅ Fixed;
+verified on SoftHSM 2.6.1 (Linux CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654)) and 2.7.0 (local), 28 passed /
+0 failed / 1 ignored, RSA-2048/3072/4096 with SHA-256/384/512. Production HSM
+not yet validated (POAM-2026-10-23-21). This covers the PKCS#11 provider only;
+the RFC 4055 deviation below is unchanged.
 
 **Deviation (pre-existing, RFC 4055 §3.1):** RSA-PSS is not used for X.509
 signing. RSA CA keys sign certificates, CRLs and OCSP responses with

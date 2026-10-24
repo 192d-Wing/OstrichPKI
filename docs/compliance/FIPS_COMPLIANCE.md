@@ -53,7 +53,8 @@ signing/verification/key-generation run inside the AWS-LC FIPS 140-3 module via
 
 **Signature Schemes:**
 
-- 🟡 RSASSA-PSS: provider level only. Software provider (AWS-LC) ✅; PKCS#11 provider: Fixed; local SoftHSM 2.7.0 28 passed / 0 failed / 1 ignored; Linux CI pending. Not used for X.509 signing, and the X.509 layer does not encode RSASSA-PSS parameters (POAM-2026-10-23-20)
+- ✅ RSASSA-PSS SHA-256/384/512, provider level. Software provider: AWS-LC FIPS 4.2.0 module (CMVP certificate for 4.2.0 pending confirmation, POAM-2026-10-23-01). Via PKCS#11: verified on SoftHSM 2.6.1 (Linux CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654)) and 2.7.0 (local), RSA-2048/3072/4096; production HSM not yet validated (POAM-2026-10-23-21)
+- 🟡 RSASSA-PSS for X.509: not used for X.509 signing, and the X.509 layer does not encode RSASSA-PSS parameters (POAM-2026-10-23-20)
 - ✅ RSASSA-PKCS1-v1_5: used for all X.509 certificate, CRL and OCSP signing with RSA CA keys
 
 **Implementation:**
@@ -66,7 +67,7 @@ signing/verification/key-generation run inside the AWS-LC FIPS 140-3 module via
 - ✅ RSA PKCS#1 v1.5 and PSS (SHA-256/384/512) signing/verification via the AWS-LC FIPS module — [crates/ostrich-crypto/src/software/mod.rs](../../crates/ostrich-crypto/src/software/mod.rs) (`sign_rsa`/`verify_rsa`, `generate` keygen)
 - ✅ RSA-2048 (PKCS#1/SHA-256) and RSA-3072 (PKCS#1/SHA-384) signatures verified externally by OpenSSL 3.6
 - ✅ ECDSA P-256/P-384 and Ed25519 sign/verify/keygen via the FIPS module (ECDSA verified externally by OpenSSL)
-- 🟡 RSA-PSS SHA-256/384/512 through PKCS#11 (RSA-2048/3072/4096): HSM signatures verified by an independent AWS-LC verifier, and software signatures verified by the HSM (`pkcs11_integration_test.rs`; 2026-10-23 local SoftHSM 2.7.0, 28 passed / 0 failed / 1 ignored; Linux CI pending, POAM-2026-10-23-17). See "PKCS#11 split cryptographic boundary" below
+- ✅ RSA-PSS SHA-256/384/512 through PKCS#11 (RSA-2048/3072/4096, SoftHSM only): HSM signatures verified by an independent AWS-LC verifier, and software signatures verified by the HSM (`pkcs11_integration_test.rs`; 2026-10-23: Linux CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654) on SoftHSM 2.6.1 and local SoftHSM 2.7.0, both 28 passed / 0 failed / 1 ignored; POAM-2026-10-23-17 closed 2026-10-23). SoftHSM only; production HSM not yet validated (POAM-2026-10-23-21). See "PKCS#11 split cryptographic boundary" below
 - ✅ The AWS-LC FIPS 4.2.0 module's DRBG supplies all key-generation and signing entropy (passed RNG args are ignored by aws-lc-rs in favour of the module's DRBG; CMVP certificate for 4.2.0 pending confirmation)
 
 **Hash Functions (for RSA signatures):**
@@ -701,9 +702,10 @@ workspace `fips` feature.
   against the Ubuntu 24.04 `softhsm2` package
   ([.github/workflows/hsm-integration.yml](../../.github/workflows/hsm-integration.yml);
   first Linux run, SoftHSM 2.6.1, before the RSA-PSS fix: 16 passed, 3 RSA-PSS
-  failed, 1 ignored). RSA-PSS through PKCS#11 is now Fixed; local SoftHSM
-  2.7.0 28 passed / 0 failed / 1 ignored; Linux CI pending. SoftHSM is
-  test-only and is not represented as a FIPS-validated module
+  failed, 1 ignored, exit 101). After the RSA-PSS fix: Linux CI
+  [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654) (SoftHSM 2.6.1, rustc 1.99.1, PR head 44d560d) and local SoftHSM
+  2.7.0 both 28 passed / 0 failed / 1 ignored. SoftHSM is test-only and is not
+  represented as a FIPS-validated module
 
 **Implementation:**
 
@@ -1102,6 +1104,7 @@ allowed_pqc_algorithms = [
 | 1.5 | 2026-10-23 | OstrichPKI Team | Module change AWS-LC FIPS 3.3.0 → 4.2.0 (`aws-lc-fips-sys` 0.13.14 → 0.14.2; aws-lc-rs 1.18.2; rustls 0.23.46), approved by the user 2026-10-23. CMVP certificate for 4.2.0 pending confirmation (POA&M). `.cargo/config.toml` module-source pin (CM-6). ML-DSA: TLS verification accepted (user decision 2026-10-23), issuance still disabled. Removed stale ML-DSA `unstable` and software-provider claims. Corrected the false "`ring` FIPS 140-2 validated (#3678)" statements. SLH-DSA source check updated to 0.14.2 / aws-lc-sys 0.46.0. No algorithm was added to CA issuance. |
 | 1.6 | 2026-10-23 | OstrichPKI Team | CI hardening. Build-environment baseline: `rust-toolchain.toml` 1.99.1; `rust:1.99.1-bookworm` in both Dockerfiles and GitLab (GitLab moved from `rust:1.92.0-trixie` and gained the FIPS build dependencies). Module-pin file recorded as committed. PKCS#11 SoftHSM test environment noted (RSA-PSS fails locally; Linux CI pending). **FIPS module unchanged** (AWS-LC FIPS 4.2.0, `aws-lc-fips-sys` 0.14.2); no algorithm, self-test or boundary change. |
 | 1.7 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix. RSASSA-PSS qualified (✅ → 🟡): provider level only, PKCS#11 "Fixed; local SoftHSM 2.7.0 28/0/1; Linux CI pending", not used for X.509 (RSA X.509 signing is PKCS#1 v1.5). Documented the PKCS#11 split boundary (host digest in AWS-LC; EMSA-PSS and private-key operation in the HSM) and the production-HSM policy check (POAM-21). HSM interface status corrected from "Designed, not implemented" / "stubbed" to implemented and SoftHSM-tested only. PSS salt-length note. **FIPS module unchanged** (AWS-LC FIPS 4.2.0); no algorithm added. |
+| 1.8 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): GitHub Actions run 40063317654, SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0. RSASSA-PSS split into two lines: provider level / via PKCS#11 🟡 → ✅ **scoped to SoftHSM** 2.6.1 / 2.7.0 and RSA-2048/3072/4096 (production HSM not validated, POAM-21); X.509 RSASSA-PSS stays 🟡 (POAM-20). PKCS#11 PSS interop evidence 🟡 → ✅ (SoftHSM only). HSM test environment and RSA-PSS digest-boundary status updated. AWS-LC 4.2.0 CMVP caveat kept. **FIPS module unchanged**; no algorithm, self-test or boundary change. |
 
 ---
 
@@ -1121,8 +1124,10 @@ not represented as a FIPS-validated production module.
 RSA-PSS uses the same split as ECDSA: SHA-256, SHA-384 or SHA-512 is computed
 by the AWS-LC module, and the token performs EMSA-PSS encoding and the RSA
 private-key operation with `CKM_RSA_PKCS_PSS` (hashAlg = MGF1 hash = signature
-hash, sLen = hash length). Status: Fixed; local SoftHSM 2.7.0 28 passed /
-0 failed / 1 ignored; Linux CI pending.
+hash, sLen = hash length). Status: ✅ Fixed; verified on SoftHSM 2.6.1 (Linux
+CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654)) and 2.7.0 (local), 28 passed / 0 failed / 1 ignored,
+RSA-2048/3072/4096. Production HSM not yet validated (POAM-2026-10-23-21);
+CMVP certificate for AWS-LC 4.2.0 pending confirmation (POAM-2026-10-23-01).
 
 ### EST mTLS probe boundary
 

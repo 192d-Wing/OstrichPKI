@@ -908,14 +908,23 @@ tag-pinned (POAM-2026-10-23-15).
   20261012.334.1): 16 passed, 3 RSA-PSS failed, 1 ignored, exit 101. Local
   macOS result before the fix (non-standard invocation): the same. See
   [TEST_EVIDENCE.md §2.4](TEST_EVIDENCE.md#24-test-run-2026-10-23-ci-hardening)
-- After the RSA-PSS fix (2026-10-23): **Fixed; local SoftHSM 2.7.0 28 passed /
-  0 failed / 1 ignored; Linux CI pending**. New evidence includes
+- After the RSA-PSS fix (2026-10-23): **verified on SoftHSM 2.6.1 (Linux CI
+  [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654)) and 2.7.0 (local), 28 passed / 0 failed / 1 ignored,
+  RSA-2048/3072/4096; production HSM not yet validated (POAM-2026-10-23-21)**.
+  Linux CI: workflow `HSM integration`, job `PKCS#11 suite (SoftHSM2)`,
+  ubuntu24 image 20261012.334.1, rustc 1.99.1, exit 0; GitHub head SHA 44d560d
+  (PR 181 head), and the artifact's `commit:` line shows the PR merge ref
+  c67c10e. All six `test_rsa_pss_*` tests passed. New evidence includes
   `test_rsa_pss_hsm_sign_software_verify` (HSM RSA-PSS signatures accepted by
   an independent AWS-LC verifier over the exported SPKI) and
   `test_rsa_software_sign_hsm_verify` (the reverse direction). See
   [TEST_EVIDENCE.md §2.5](TEST_EVIDENCE.md#25-test-run-2026-10-23-pkcs11-rsa-pss-fix).
-  Attach the `pkcs11-softhsm-results` artifact for the pushed fix commit to
-  close POAM-2026-10-23-17
+  The `pkcs11-softhsm-results` artifact for this run is saved in the run
+  record (`ci-artifact-after/pkcs11.txt`); POAM-2026-10-23-07 and
+  POAM-2026-10-23-17 closed 2026-10-23. Limits: SoftHSM is a test double, and
+  no run exercises the `CKA_ALLOWED_MECHANISMS` decode path fixed by
+  RUSTSEC-2026-0286, because `ostrich-crypto/src/pkcs11` never reads that
+  attribute
 
 **Remediation:**
 
@@ -1765,7 +1774,7 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | RA-5 / SI-2 | `.github/workflows/audit.yml` (`cargo audit`, `cargo deny` jobs); `.cargo/audit.toml`; `deny.toml` | CI configuration and exception record; CI run logs pending (§2.3) |
 | CM-2 / SA-15 | `rust-toolchain.toml`; `.github/workflows/ci.yml` job `Toolchain pin consistency` | Configuration baseline (toolchain 1.99.1) and its CI check |
 | CM-6 | `.github/workflows/{ci,audit,hsm-integration}.yml` | CI secure defaults (§2.3 table) |
-| SA-11 / IA-7 / FCS_CKM.1 / FCS_COP.1 | `.github/workflows/hsm-integration.yml`, artifact `pkcs11-softhsm-results` | Test results (Linux run pending) |
+| SA-11 / IA-7 / FCS_CKM.1 / FCS_COP.1 | `.github/workflows/hsm-integration.yml`, artifact `pkcs11-softhsm-results` | Test results: Linux run 40063317654 (SoftHSM 2.6.1, PR 181 head 44d560d), 28 passed / 0 failed / 1 ignored, exit 0 |
 
 ### SC-8 / SC-18 — Web console CSP deployment capture
 
@@ -1907,7 +1916,7 @@ Not claimed:
 | Controls / SFR | Evidence | Expected result |
 |---|---|---|
 | SC-12, SC-13, FCS_COP.1 | `crates/ostrich-crypto/src/pkcs11/mod.rs`; SoftHSM integration lifecycle | FIPS AWS-LC SHA-2 digest followed by token-resident `CKM_ECDSA` signing; no dependency on optional combined mechanisms |
-| SC-13, AU-10, FCS_COP.1(1), FCO_NRO_EXT.2 | `crates/ostrich-crypto/src/pkcs11/mod.rs` (`pkcs11_signature_input`, `rsa_pss_profile`); `crates/ostrich-crypto/tests/pkcs11_integration_test.rs` | RSA-PSS: AWS-LC SHA-2 digest followed by token-resident `CKM_RSA_PKCS_PSS`; HSM signatures verify with a software RSASSA-PSS verifier. Status: Fixed; local SoftHSM 2.7.0 28/0/1; Linux CI pending |
+| SC-13, AU-10, FCS_COP.1(1), FCO_NRO_EXT.2 | `crates/ostrich-crypto/src/pkcs11/mod.rs` (`pkcs11_signature_input`, `rsa_pss_profile`); `crates/ostrich-crypto/tests/pkcs11_integration_test.rs` | RSA-PSS: AWS-LC SHA-2 digest followed by token-resident `CKM_RSA_PKCS_PSS`; HSM signatures verify with a software RSASSA-PSS verifier. Status: ✅ verified on SoftHSM 2.6.1 (Linux CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654)) and 2.7.0 (local), 28/0/1, RSA-2048/3072/4096; production HSM not yet validated (POAM-2026-10-23-21) |
 
 ### EST mTLS Kubernetes probes
 
