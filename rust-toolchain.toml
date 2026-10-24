@@ -1,0 +1,8 @@
+# NIST 800-53: CM-2 (Baseline Configuration), SA-15 (Development Tools) - pinned
+# toolchain. Must match the rust:<ver> images in Dockerfile,
+# services/web-ui/Dockerfile and .gitlab-ci.yml (enforced by ci.yml toolchain-pin).
+# MSRV is separate: workspace rust-version = "1.94".
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

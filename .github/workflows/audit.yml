@@ -1,30 +1,28 @@
-# Dependency vulnerability scan (cargo audit)
+# Dependency vulnerability + supply-chain policy gate (cargo audit, cargo deny)
 #
-# The scan only depends on the dependency set, so it runs when a manifest or the
-# lockfile changes, plus a weekly safety-net schedule that catches newly
-# disclosed advisories against unchanged dependencies. Keeping it out of ci.yml
-# removes its ~3-minute advisory-DB build from the per-PR critical path.
+# BLOCKING: a new RustSec advisory (vulnerability, unsound, unmaintained, yanked)
+# or a license/source policy violation fails this workflow. The only exception
+# path is a triaged entry in .cargo/audit.toml, mirrored in deny.toml
+# [advisories].ignore (license exceptions live in deny.toml [licenses]).
 #
-# Advisory (continue-on-error): Dependabot (.github/dependabot.yml) is the
-# primary channel for vuln-driven updates; this gives an in-CI signal on the
-# committed Cargo.lock.
+# Runs on every PR (no path filters) so it can be a required status check, on
+# pushes to main, and on a weekly schedule that catches advisories newly
+# published against an unchanged Cargo.lock. Tools are prebuilt, checksum-
+# verified binaries, so the gate costs about a minute.
 #
 # COMPLIANCE MAPPING:
 # - NIST 800-53: RA-5 (Vulnerability Monitoring and Scanning)
-# - NIST 800-53: SI-2 (Flaw Remediation) - surfaces vulnerable dependencies
+# - NIST 800-53: SI-2 (Flaw Remediation)
+# - NIST 800-53: SR-3 (Supply Chain Controls), SR-4 (Provenance) - cargo deny licenses/sources
+# - NIST 800-53: SR-11 / SA-15 - integrity of CI tooling (SHA-pinned actions, checksum-verified binaries); not TOE SI-7
+# - NIST 800-53: CM-6 - least-privilege token (contents: read), no secrets
 
-name: cargo audit
+name: dependency gate
 
 on:
   push:
     branches: [main]
-    paths:
-      - '**/Cargo.toml'
-      - 'Cargo.lock'
   pull_request:
-    paths:
-      - '**/Cargo.toml'
-      - 'Cargo.lock'
   # Weekly safety net: advisories can be published against dependencies that
   # have not changed, so scan on a schedule too.
   schedule:
@@ -34,17 +32,50 @@ on:
 permissions:
   contents: read
 
+# Only superseded PR runs are cancelled; push-to-main and scheduled scans always
+# run to completion so every scan leaves a result (RA-5, AU-6).
 concurrency:
   group: audit-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   audit:
-    name: cargo audit (advisory)
-    runs-on: ubuntu-latest
-    continue-on-error: true
+    name: cargo audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: rustsec/audit-check@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+      # `cargo audit` goes through the rustup cargo proxy, which resolves
+      # rust-toolchain.toml; install it explicitly (no reliance on rustup
+      # auto-install) so the version is logged.
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version && cargo --version
+      # fallback: none - fail rather than fall back to cargo-binstall (which
+      # would receive github.token and skip the manifest checksum).
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
+      - name: cargo audit --deny warnings (exceptions only via .cargo/audit.toml)
+        run: cargo audit --deny warnings
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # cargo deny runs `cargo metadata`, which resolves rust-toolchain.toml;
+      # install it explicitly so the version is logged.
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version && cargo --version
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-deny@0.20.2
+          fallback: none
+      - name: cargo deny check (advisories, bans, licenses, sources)
+        run: cargo deny check

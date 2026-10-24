@@ -65,7 +65,8 @@ pub trait CryptoProvider: Send + Sync {
     /// # Arguments
     /// * `key` - Handle to the signing key
     /// * `algorithm` - Signature algorithm to use
-    /// * `data` - Data to sign
+    /// * `data` - Message to sign (e.g. DER tbsCertificate). The provider (or
+    ///   its token) hashes it per `algorithm`; callers must not pre-hash.
     ///
     /// # Returns
     /// The signature bytes
@@ -80,14 +81,18 @@ pub trait CryptoProvider: Send + Sync {
     /// # Arguments
     /// * `key` - Handle to the verification key
     /// * `algorithm` - Signature algorithm used
-    /// * `data` - Original data that was signed
+    /// * `data` - Original message that was signed (e.g. DER tbsCertificate).
+    ///   The provider (or its token) hashes it per `algorithm`; callers must
+    ///   not pre-hash.
     /// * `signature` - Signature to verify
     ///
     /// # Returns
-    /// `Ok(true)` if signature is valid, `Ok(false)` if invalid
+    /// `Ok(true)` if signature is valid, `Ok(false)` if invalid. Provider or
+    /// module faults are returned as `Err`; callers must treat `Err` as a
+    /// failed verification (fail closed).
     ///
     /// FIPS 186-5: Digital signature verification
-    /// NIAP PP-CA: FCS_COP.1(2) - Cryptographic operation (verification)
+    /// NIAP PP-CA: FCS_COP.1(1) - Cryptographic operation (verification)
     async fn verify(
         &self,
         key: &KeyHandle,

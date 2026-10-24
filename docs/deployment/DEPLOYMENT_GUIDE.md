@@ -30,7 +30,7 @@ This document provides comprehensive deployment procedures for OstrichPKI in pro
 
 ### Software Dependencies
 
-- **Rust**: 1.92+ (for building from source)
+- **Rust**: 1.94+ (workspace MSRV, for building from source). CI and release images use 1.99.1, pinned by `rust-toolchain.toml`; rustup selects it automatically inside the repository
 - **PostgreSQL**: 15+
 - **Redis**: 7+ (optional, for session caching)
 - **Docker**: 24+ (for containerized deployment)

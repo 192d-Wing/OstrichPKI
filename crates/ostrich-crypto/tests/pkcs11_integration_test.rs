@@ -7,7 +7,7 @@
 //! Environment setup:
 //! ```bash
 //! # Initialize SoftHSM token (if not already done)
-//! softhsm2-util --init-token --slot 0 --label "OstrichPKI-Test" --so-pin 12345678 --pin 1234
+//! softhsm2-util --init-token --free --label "OstrichPKI-Test" --so-pin 12345678 --pin 1234
 //!
 //! # Set PKCS11_MODULE_PATH to SoftHSM library
 //! export PKCS11_MODULE_PATH=/usr/local/lib/softhsm/libsofthsm2.so  # macOS
@@ -20,7 +20,8 @@
 //! cargo test --test pkcs11_integration_test -- --test-threads=1
 //! ```
 //!
-//! NIST 800-53: CA-8 - Penetration testing (cryptographic module validation)
+//! NIST 800-53: SA-11 (Developer Testing), IA-7 (Cryptographic Module Authentication),
+//! SC-12/SC-13 (key generation and signing through the PKCS#11 provider)
 
 use ostrich_crypto::key::ProviderId;
 use ostrich_crypto::pkcs11::Pkcs11Provider;
@@ -237,15 +238,140 @@ async fn test_rsa_pss_signing_and_verification() {
 
     // Verify with tampered message should fail
     let tampered = b"The quick brown fox jumps over the lazy cat";
-    let is_valid = provider
+    let result = provider
         .verify(&key_handle, Algorithm::RsaPssSha256, tampered, &signature)
-        .await
-        .expect("Failed to verify signature");
+        .await;
 
     assert!(
-        !is_valid,
+        matches!(result, Ok(false)),
         "Signature verification should fail for tampered message"
     );
+}
+
+/// Verify `signature` over `message` with a SOFTWARE RSA-PSS verifier
+/// (AWS-LC FIPS via aws-lc-rs) using the SPKI exported from the HSM. aws-lc-rs
+/// takes the PKCS#1 RSAPublicKey, which is the SPKI subjectPublicKey contents.
+fn software_verify_rsa_pss(
+    spki_der: &[u8],
+    algorithm: Algorithm,
+    message: &[u8],
+    signature: &[u8],
+) -> bool {
+    use aws_lc_rs::signature::{self, UnparsedPublicKey, VerificationAlgorithm};
+
+    let spki = spki::SubjectPublicKeyInfoOwned::try_from(spki_der).expect("exported SPKI parses");
+    assert_eq!(
+        spki.algorithm.oid.to_string(),
+        "1.2.840.113549.1.1.1",
+        "exported SPKI must be rsaEncryption"
+    );
+    let rsa_public_key = spki
+        .subject_public_key
+        .as_bytes()
+        .expect("SPKI BIT STRING is octet-aligned");
+
+    let verifier: &'static dyn VerificationAlgorithm = match algorithm {
+        Algorithm::RsaPssSha256 => &signature::RSA_PSS_2048_8192_SHA256,
+        Algorithm::RsaPssSha384 => &signature::RSA_PSS_2048_8192_SHA384,
+        Algorithm::RsaPssSha512 => &signature::RSA_PSS_2048_8192_SHA512,
+        other => panic!("not an RSA-PSS algorithm: {other:?}"),
+    };
+    UnparsedPublicKey::new(verifier, rsa_public_key)
+        .verify(message, signature)
+        .is_ok()
+}
+
+#[tokio::test]
+async fn test_rsa_pss_hsm_sign_software_verify() {
+    // Interop: an HSM-produced RSA-PSS signature must be a standard RFC 8017
+    // RSASSA-PSS signature over the MESSAGE (not over a double hash), so an
+    // independent software verifier accepts it via the exported SPKI.
+    // NIST 800-53: SC-13; NIAP PP-CA: FCS_COP.1
+    // FIPS 186-5 §5.4 (RSASSA-PSS); RFC 8017 §8.1; PKCS#11 v3.0 §2.1.14
+    let provider = init_test_provider().await;
+
+    let key_handle = provider
+        .generate_key_pair(KeyType::Rsa2048, "test-rsa-pss-interop", false)
+        .await
+        .expect("Failed to generate RSA key pair");
+    let spki = provider
+        .export_public_key(&key_handle)
+        .await
+        .expect("Failed to export public key");
+
+    let message = b"HSM RSA-PSS interop message";
+    let tampered = b"HSM RSA-PSS interop messagf";
+
+    for algorithm in [
+        Algorithm::RsaPssSha256,
+        Algorithm::RsaPssSha384,
+        Algorithm::RsaPssSha512,
+    ] {
+        let signature = provider
+            .sign(&key_handle, algorithm, message)
+            .await
+            .unwrap_or_else(|e| panic!("HSM {algorithm:?} signing failed: {e}"));
+        assert_eq!(signature.len(), 256, "{algorithm:?}: RSA-2048 signature");
+
+        // Software verifier accepts the HSM signature.
+        assert!(
+            software_verify_rsa_pss(&spki, algorithm, message, &signature),
+            "{algorithm:?}: software verifier must accept HSM signature"
+        );
+        // HSM verify path agrees.
+        assert!(
+            provider
+                .verify(&key_handle, algorithm, message, &signature)
+                .await
+                .expect("HSM verify"),
+            "{algorithm:?}: HSM verify must accept its own signature"
+        );
+
+        // Wrong message is rejected by both verifiers.
+        assert!(
+            !software_verify_rsa_pss(&spki, algorithm, tampered, &signature),
+            "{algorithm:?}: software verifier must reject wrong message"
+        );
+        assert!(
+            matches!(
+                provider
+                    .verify(&key_handle, algorithm, tampered, &signature)
+                    .await,
+                Ok(false)
+            ),
+            "{algorithm:?}: HSM verify must reject wrong message"
+        );
+
+        // Tampered signature is rejected by both verifiers.
+        let mut bad_sig = signature.clone();
+        if let Some(last) = bad_sig.last_mut() {
+            *last ^= 0x01;
+        }
+        assert!(
+            !software_verify_rsa_pss(&spki, algorithm, message, &bad_sig),
+            "{algorithm:?}: software verifier must reject tampered signature"
+        );
+        assert!(
+            matches!(
+                provider
+                    .verify(&key_handle, algorithm, message, &bad_sig)
+                    .await,
+                Ok(false)
+            ),
+            "{algorithm:?}: HSM verify must reject tampered signature"
+        );
+
+        // A signature under one hash must not verify under another.
+        let other = if algorithm == Algorithm::RsaPssSha256 {
+            Algorithm::RsaPssSha384
+        } else {
+            Algorithm::RsaPssSha256
+        };
+        assert!(
+            !software_verify_rsa_pss(&spki, other, message, &signature),
+            "{algorithm:?} signature must not verify as {other:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -319,18 +445,17 @@ async fn test_ecdsa_p256_signing_and_verification() {
 
     // Verify with tampered message should fail
     let tampered = b"Tampered message for ECDSA P-256 signature";
-    let is_valid = provider
+    let result = provider
         .verify(
             &key_handle,
             Algorithm::EcdsaP256Sha256,
             tampered,
             &signature,
         )
-        .await
-        .expect("Failed to verify signature");
+        .await;
 
     assert!(
-        !is_valid,
+        matches!(result, Ok(false)),
         "Signature verification should fail for tampered message"
     );
 }
@@ -586,6 +711,88 @@ async fn test_signature_with_wrong_algorithm_fails() {
 }
 
 #[tokio::test]
+async fn test_verify_token_fault_is_error_not_rejection() {
+    // SEC-002 / QA-001: a token fault must surface as Err - fail closed and
+    // observable - never as Ok(false), which is reserved for
+    // CKR_SIGNATURE_INVALID / CKR_SIGNATURE_LEN_RANGE. The fault is induced
+    // with an RSA public-key object whose CKA_VERIFY is false, so
+    // C_VerifyInit fails with CKR_KEY_FUNCTION_NOT_PERMITTED.
+    // NIST 800-53: SI-11, AU-2; PKCS#11 v3.0 §5.13
+    use ostrich_crypto::software::SoftwareProvider;
+
+    let sw = SoftwareProvider::new();
+    let sw_key = sw
+        .generate_key_pair(KeyType::Rsa2048, "test-verify-fault-sw", false)
+        .await
+        .expect("software keygen");
+    let spki = sw.export_public_key(&sw_key).await.expect("software SPKI");
+    let message = b"verify fault classification";
+    let sig = sw
+        .sign(&sw_key, Algorithm::RsaPssSha256, message)
+        .await
+        .expect("software sign");
+
+    let no_verify_id = sw.generate_random_bytes(16).await.expect("random CKA_ID");
+    let no_verify_label = "test-verify-fault-no-verify";
+    import_rsa_public_key_into_token_with(&spki, &no_verify_id, no_verify_label, false);
+    let ok_id = sw.generate_random_bytes(16).await.expect("random CKA_ID");
+    let ok_label = "test-verify-fault-control";
+    import_rsa_public_key_into_token(&spki, &ok_id, ok_label);
+
+    let provider = init_test_provider().await;
+    let ProviderId::Pkcs11 { slot_id } = provider.provider_id() else {
+        panic!("expected PKCS#11 provider id");
+    };
+    let handle = |id: Vec<u8>, label: &str| {
+        ostrich_crypto::KeyHandle::new(
+            ProviderId::Pkcs11 { slot_id },
+            id,
+            KeyType::Rsa2048,
+            Algorithm::RsaPssSha256,
+            label.to_string(),
+        )
+    };
+    let no_verify = handle(no_verify_id, no_verify_label);
+    let control = handle(ok_id, ok_label);
+
+    for (msg, what) in [
+        (&message[..], "valid"),
+        (&b"other message"[..], "wrong-message"),
+    ] {
+        let result = provider
+            .verify(&no_verify, Algorithm::RsaPssSha256, msg, &sig)
+            .await;
+        assert!(
+            matches!(result, Err(ostrich_crypto::Error::Pkcs11(_))),
+            "{what}: token fault must be Err(Pkcs11), got {result:?}"
+        );
+    }
+
+    // Control: the same key material with CKA_VERIFY = true gives exactly
+    // Ok(true) for the valid signature and Ok(false) for a wrong message.
+    let result = provider
+        .verify(&control, Algorithm::RsaPssSha256, message, &sig)
+        .await;
+    assert!(matches!(result, Ok(true)), "control valid: got {result:?}");
+    let result = provider
+        .verify(&control, Algorithm::RsaPssSha256, b"other message", &sig)
+        .await;
+    assert!(
+        matches!(result, Ok(false)),
+        "control wrong message: got {result:?}"
+    );
+
+    provider
+        .destroy_key(&no_verify)
+        .await
+        .expect("destroy imported public key");
+    provider
+        .destroy_key(&control)
+        .await
+        .expect("destroy imported public key");
+}
+
+#[tokio::test]
 async fn test_concurrent_operations() {
     // Test thread safety of PKCS#11 provider with concurrent operations
     use tokio::task::JoinSet;
@@ -707,4 +914,386 @@ async fn test_key_lifecycle_list_and_destroy() {
             .any(|k| k.label == "test-lifecycle-rsa2048" || k.label == "test-lifecycle-ecp384"),
         "both destroyed keys must be gone from the listing"
     );
+}
+
+// ---------------------------------------------------------------------------
+// QA gap coverage for the RSA-PSS host-side digest fix (PKCS#11 v3.0 §2.1.14).
+// NIST 800-53: SA-11, SC-13; NIAP PP-CA: FCS_COP.1; FIPS 186-5 §5.4; RFC 8017.
+// ---------------------------------------------------------------------------
+
+const ALL_RSA_PSS: [Algorithm; 3] = [
+    Algorithm::RsaPssSha256,
+    Algorithm::RsaPssSha384,
+    Algorithm::RsaPssSha512,
+];
+
+const ALL_RSA_PKCS1: [Algorithm; 3] = [
+    Algorithm::RsaPkcs1Sha256,
+    Algorithm::RsaPkcs1Sha384,
+    Algorithm::RsaPkcs1Sha512,
+];
+
+/// Sign `message` on the HSM with every algorithm in `algorithms` and check the
+/// signature length, software (AWS-LC) acceptance, HSM acceptance, and that a
+/// one-byte message change is rejected by both verifiers.
+async fn hsm_sign_and_cross_verify(
+    provider: &Pkcs11Provider,
+    key_handle: &ostrich_crypto::KeyHandle,
+    algorithms: &[Algorithm],
+    modulus_bytes: usize,
+    message: &[u8],
+) {
+    let spki = provider
+        .export_public_key(key_handle)
+        .await
+        .expect("export public key");
+    let mut wrong = message.to_vec();
+    match wrong.last_mut() {
+        Some(b) => *b ^= 0x01,
+        None => wrong.push(0x00),
+    }
+
+    for &algorithm in algorithms {
+        let signature = provider
+            .sign(key_handle, algorithm, message)
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{:?} {algorithm:?} sign ({} byte msg) failed: {e}",
+                    key_handle.key_type,
+                    message.len()
+                )
+            });
+        assert_eq!(
+            signature.len(),
+            modulus_bytes,
+            "{:?} {algorithm:?}: signature length must equal modulus length",
+            key_handle.key_type
+        );
+
+        // Independent software verification via the public SPKI verifier.
+        assert!(
+            ostrich_crypto::verify_with_spki(&spki, algorithm, message, &signature, false)
+                .expect("software verify runs"),
+            "{:?} {algorithm:?}: software verifier must accept HSM signature",
+            key_handle.key_type
+        );
+        assert!(
+            provider
+                .verify(key_handle, algorithm, message, &signature)
+                .await
+                .expect("HSM verify runs"),
+            "{:?} {algorithm:?}: HSM verify must accept HSM signature",
+            key_handle.key_type
+        );
+
+        assert!(
+            !ostrich_crypto::verify_with_spki(&spki, algorithm, &wrong, &signature, false)
+                .expect("software verify runs"),
+            "{:?} {algorithm:?}: software verifier must reject wrong message",
+            key_handle.key_type
+        );
+        assert!(
+            matches!(
+                provider
+                    .verify(key_handle, algorithm, &wrong, &signature)
+                    .await,
+                Ok(false)
+            ),
+            "{:?} {algorithm:?}: HSM verify must reject wrong message",
+            key_handle.key_type
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_rsa_pss_all_hashes_rsa3072_rsa4096() {
+    // FIPS 186-5 §5.4: RSASSA-PSS with SHA-256/384/512 on 3072/4096-bit moduli
+    // through the public CryptoProvider::sign/verify API (not only the helper),
+    // cross-checked by an independent software verifier.
+    let provider = init_test_provider().await;
+    for (key_type, label, modulus_bytes) in [
+        (KeyType::Rsa3072, "test-qa-pss-rsa3072", 384),
+        (KeyType::Rsa4096, "test-qa-pss-rsa4096", 512),
+    ] {
+        let key = provider
+            .generate_key_pair(key_type, label, false)
+            .await
+            .unwrap_or_else(|e| panic!("generate {key_type:?}: {e}"));
+        hsm_sign_and_cross_verify(
+            &provider,
+            &key,
+            &ALL_RSA_PSS,
+            modulus_bytes,
+            b"QA RSA-PSS large modulus",
+        )
+        .await;
+        provider.destroy_key(&key).await.expect("destroy key");
+    }
+}
+
+#[tokio::test]
+async fn test_rsa_pss_empty_message() {
+    // RFC 8017 §9.1.1: M may be empty; mHash = Hash("") is still hashLen octets.
+    let provider = init_test_provider().await;
+    let key = provider
+        .generate_key_pair(KeyType::Rsa2048, "test-qa-pss-empty", false)
+        .await
+        .expect("generate RSA-2048");
+    hsm_sign_and_cross_verify(&provider, &key, &ALL_RSA_PSS, 256, b"").await;
+    hsm_sign_and_cross_verify(&provider, &key, &ALL_RSA_PKCS1, 256, b"").await;
+    provider.destroy_key(&key).await.expect("destroy key");
+}
+
+#[tokio::test]
+async fn test_rsa_pss_large_message() {
+    // > 1 MiB message: the host digests it, so only hashLen octets reach the
+    // token for PSS. PKCS#1 v1.5 (combined mechanism) is exercised too.
+    let provider = init_test_provider().await;
+    let key = provider
+        .generate_key_pair(KeyType::Rsa2048, "test-qa-pss-large", false)
+        .await
+        .expect("generate RSA-2048");
+    let message: Vec<u8> = (0..(1024 * 1024 + 4099)).map(|i| (i % 251) as u8).collect();
+    assert!(message.len() > 1024 * 1024);
+    hsm_sign_and_cross_verify(&provider, &key, &ALL_RSA_PSS, 256, &message).await;
+    hsm_sign_and_cross_verify(&provider, &key, &ALL_RSA_PKCS1, 256, &message).await;
+    provider.destroy_key(&key).await.expect("destroy key");
+}
+
+#[tokio::test]
+async fn test_rsa_pkcs1_all_hashes_hsm_sign_software_verify() {
+    // Regression guard: PKCS#1 v1.5 (combined CKM_SHAx_RSA_PKCS) is untouched by
+    // the fix and still produces standard RFC 8017 §8.2 signatures.
+    let provider = init_test_provider().await;
+    let key = provider
+        .generate_key_pair(KeyType::Rsa2048, "test-qa-pkcs1-interop", false)
+        .await
+        .expect("generate RSA-2048");
+    hsm_sign_and_cross_verify(
+        &provider,
+        &key,
+        &ALL_RSA_PKCS1,
+        256,
+        b"QA PKCS#1 v1.5 interop",
+    )
+    .await;
+    provider.destroy_key(&key).await.expect("destroy key");
+}
+
+/// Create a token-resident RSA public-key object holding `spki_der`'s key under
+/// CKA_ID `key_id`, using a separate PKCS#11 context. Must run before the
+/// provider under test is initialised (one live context per process).
+fn import_rsa_public_key_into_token(spki_der: &[u8], key_id: &[u8], label: &str) {
+    import_rsa_public_key_into_token_with(spki_der, key_id, label, true);
+}
+
+/// As [`import_rsa_public_key_into_token`], with an explicit `CKA_VERIFY`.
+/// `verify = false` makes `C_VerifyInit` fail with a token error
+/// (`CKR_KEY_FUNCTION_NOT_PERMITTED`) rather than a signature rejection.
+fn import_rsa_public_key_into_token_with(
+    spki_der: &[u8],
+    key_id: &[u8],
+    label: &str,
+    verify: bool,
+) {
+    use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
+    use cryptoki::object::{Attribute, KeyType as CkKeyType, ObjectClass};
+    use cryptoki::session::UserType;
+    use cryptoki::types::AuthPin;
+    use rsa::pkcs8::DecodePublicKey;
+    use rsa::traits::PublicKeyParts;
+
+    let public = rsa::RsaPublicKey::from_public_key_der(spki_der).expect("software SPKI is RSA");
+
+    let ctx = Pkcs11::new(get_softhsm_path()).expect("load PKCS#11 module");
+    ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
+        .expect("C_Initialize");
+    let slot = ctx
+        .get_slots_with_token()
+        .expect("slots")
+        .into_iter()
+        .find(|s| {
+            ctx.get_token_info(*s)
+                .map(|i| i.label().trim() == "OstrichPKI-Test")
+                .unwrap_or(false)
+        })
+        .expect("OstrichPKI-Test token present");
+    let session = ctx.open_rw_session(slot).expect("open RW session");
+    session
+        .login(UserType::User, Some(&AuthPin::new("1234".into())))
+        .expect("C_Login");
+    session
+        .create_object(&[
+            Attribute::Class(ObjectClass::PUBLIC_KEY),
+            Attribute::KeyType(CkKeyType::RSA),
+            Attribute::Token(true),
+            Attribute::Verify(verify),
+            Attribute::Modulus(public.n().to_bytes_be()),
+            Attribute::PublicExponent(public.e().to_bytes_be()),
+            Attribute::Id(key_id.to_vec()),
+            Attribute::Label(label.as_bytes().to_vec()),
+        ])
+        .expect("C_CreateObject RSA public key");
+    let _ = session.logout();
+}
+
+#[tokio::test]
+async fn test_rsa_software_sign_hsm_verify() {
+    // Reverse interop: signatures made by the SOFTWARE provider (AWS-LC) verify
+    // through the HSM verify path. Proves the host-side digest + raw
+    // CKM_RSA_PKCS_PSS verify accepts standard RSASSA-PSS from another
+    // implementation, for every hash, and that PKCS#1 v1.5 still interoperates.
+    use ostrich_crypto::software::SoftwareProvider;
+
+    let sw = SoftwareProvider::new();
+    let mut cases = Vec::new();
+    for (key_type, modulus_bytes) in [(KeyType::Rsa2048, 256usize), (KeyType::Rsa3072, 384)] {
+        let sw_key = sw
+            .generate_key_pair(key_type, "qa-sw-rsa", false)
+            .await
+            .expect("software keygen");
+        let spki = sw.export_public_key(&sw_key).await.expect("software SPKI");
+        let key_id = sw.generate_random_bytes(16).await.expect("random CKA_ID");
+        let label = format!("test-qa-sw-import-{key_type:?}");
+        import_rsa_public_key_into_token(&spki, &key_id, &label);
+        cases.push((sw_key, key_type, modulus_bytes, key_id, label));
+    }
+
+    let provider = init_test_provider().await;
+    let ProviderId::Pkcs11 { slot_id } = provider.provider_id() else {
+        panic!("expected PKCS#11 provider id");
+    };
+
+    let message = b"QA software-signed, HSM-verified";
+    let wrong = b"QA software-signed, HSM-verifiee";
+    for (sw_key, key_type, modulus_bytes, key_id, label) in cases {
+        let hsm_handle = ostrich_crypto::KeyHandle::new(
+            ProviderId::Pkcs11 { slot_id },
+            key_id,
+            key_type,
+            Algorithm::RsaPssSha256,
+            label,
+        );
+        for algorithm in ALL_RSA_PSS.iter().chain(ALL_RSA_PKCS1.iter()).copied() {
+            let sig = sw
+                .sign(&sw_key, algorithm, message)
+                .await
+                .unwrap_or_else(|e| panic!("software sign {algorithm:?}: {e}"));
+            assert_eq!(sig.len(), modulus_bytes);
+            assert!(
+                provider
+                    .verify(&hsm_handle, algorithm, message, &sig)
+                    .await
+                    .expect("HSM verify runs"),
+                "{key_type:?} {algorithm:?}: HSM must accept software signature"
+            );
+            assert!(
+                matches!(
+                    provider.verify(&hsm_handle, algorithm, wrong, &sig).await,
+                    Ok(false)
+                ),
+                "{key_type:?} {algorithm:?}: HSM must reject wrong message"
+            );
+            let mut bad = sig.clone();
+            bad[modulus_bytes / 2] ^= 0x80;
+            assert!(
+                matches!(
+                    provider.verify(&hsm_handle, algorithm, message, &bad).await,
+                    Ok(false)
+                ),
+                "{key_type:?} {algorithm:?}: HSM must reject tampered signature"
+            );
+        }
+        // Cross-hash confusion is rejected by the HSM path (fail secure).
+        let sig256 = sw
+            .sign(&sw_key, Algorithm::RsaPssSha256, message)
+            .await
+            .expect("software sign");
+        for other in [
+            Algorithm::RsaPssSha384,
+            Algorithm::RsaPssSha512,
+            Algorithm::RsaPkcs1Sha256,
+        ] {
+            assert!(
+                matches!(
+                    provider.verify(&hsm_handle, other, message, &sig256).await,
+                    Ok(false)
+                ),
+                "{key_type:?}: PSS-SHA256 signature must not verify as {other:?}"
+            );
+        }
+        // Cleanup: no private object exists; destroy_key is idempotent per class.
+        provider
+            .destroy_key(&hsm_handle)
+            .await
+            .expect("destroy imported public key");
+    }
+}
+
+#[tokio::test]
+async fn test_rsa_pss_verify_malformed_signature_denies() {
+    // SI-10 / fail secure: truncated, oversized, empty, and all-zero signatures
+    // must yield Ok(false) or Err - never Ok(true).
+    let provider = init_test_provider().await;
+    let key = provider
+        .generate_key_pair(KeyType::Rsa2048, "test-qa-pss-malformed", false)
+        .await
+        .expect("generate RSA-2048");
+    let message = b"QA malformed signature";
+    let good = provider
+        .sign(&key, Algorithm::RsaPssSha256, message)
+        .await
+        .expect("sign");
+    let mut oversized = good.clone();
+    oversized.push(0);
+    let candidates: [(&str, Vec<u8>); 4] = [
+        ("empty", Vec::new()),
+        ("truncated", good[..good.len() - 1].to_vec()),
+        ("oversized", oversized),
+        ("all-zero", vec![0u8; good.len()]),
+    ];
+    for algorithm in ALL_RSA_PSS {
+        for (name, sig) in &candidates {
+            let result = provider.verify(&key, algorithm, message, sig).await;
+            assert!(
+                !matches!(result, Ok(true)),
+                "{algorithm:?}: {name} signature must not verify"
+            );
+        }
+    }
+    provider.destroy_key(&key).await.expect("destroy key");
+}
+
+#[tokio::test]
+async fn test_pqc_algorithms_fail_closed_on_pkcs11() {
+    // Fail secure: the PKCS#11 provider does not implement ML-DSA / SLH-DSA
+    // (FIPS 204/205) yet, so sign/verify must return Err - never a signature
+    // and never Ok(true) - including through the new host-digest helper path.
+    let provider = init_test_provider().await;
+    let key = provider
+        .generate_key_pair(KeyType::Rsa2048, "test-qa-pqc-fail-closed", false)
+        .await
+        .expect("generate RSA-2048");
+    let message = b"QA PQC fail closed";
+    for algorithm in [
+        Algorithm::MlDsa44,
+        Algorithm::MlDsa65,
+        Algorithm::MlDsa87,
+        Algorithm::SlhDsaSha2_128s,
+        Algorithm::SlhDsaSha2_256f,
+    ] {
+        assert!(
+            provider.sign(&key, algorithm, message).await.is_err(),
+            "{algorithm:?}: PKCS#11 sign must fail closed"
+        );
+        assert!(
+            provider
+                .verify(&key, algorithm, message, &[0u8; 64])
+                .await
+                .is_err(),
+            "{algorithm:?}: PKCS#11 verify must fail closed"
+        );
+    }
+    provider.destroy_key(&key).await.expect("destroy key");
 }

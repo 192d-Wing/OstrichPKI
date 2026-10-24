@@ -74,8 +74,8 @@ check: ## Quick compile check
 # ==============================================================================
 
 .PHONY: audit
-audit: ## Run security audit
-	cargo audit
+audit: ## Run security audit (same --deny warnings policy as the CI gate)
+	cargo audit --deny warnings
 
 .PHONY: audit-fix
 audit-fix: ## Try to fix security vulnerabilities
@@ -189,19 +189,65 @@ install-tools: ## Install development tools
 	cargo install sqlx-cli --no-default-features --features postgres
 	@echo "✓ Development tools installed"
 
+# SoftHSM test token (throwaway test PINs; NOT for any real key material).
+# Label/PINs match crates/ostrich-crypto/tests/pkcs11_integration_test.rs.
+# NIST 800-53: SA-11 (developer testing parity with CI hsm-integration.yml)
+SOFTHSM_DIR        ?= $(HOME)/.softhsm2
+SOFTHSM2_CONF_PATH ?= $(HOME)/.config/softhsm2/softhsm2.conf
+SOFTHSM_LABEL      ?= OstrichPKI-Test
+SOFTHSM_PIN        ?= 1234
+SOFTHSM_SO_PIN     ?= 12345678
+ifeq ($(shell uname),Darwin)
+SOFTHSM_MODULE     ?= $(shell brew --prefix softhsm 2>/dev/null)/lib/softhsm/libsofthsm2.so
+else
+SOFTHSM_MODULE     ?= /usr/lib/softhsm/libsofthsm2.so
+endif
+
 .PHONY: install-softhsm
-install-softhsm: ## Install and configure SoftHSM for testing
+install-softhsm: ## Install SoftHSM and create the test token the PKCS#11 suite expects
 	@echo "Installing SoftHSM..."
 	@if [ "$$(uname)" = "Darwin" ]; then \
 		brew install softhsm; \
 	elif [ "$$(uname)" = "Linux" ]; then \
 		sudo apt-get update && sudo apt-get install -y softhsm2; \
 	fi
-	@mkdir -p ~/.config/softhsm2
-	@echo "directories.tokendir = $$HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
-	@mkdir -p ~/.softhsm2/tokens
-	@softhsm2-util --init-token --slot 0 --label "ostrich-dev" --pin 1234 --so-pin 5678
-	@echo "✓ SoftHSM installed and configured"
+	@mkdir -p "$(SOFTHSM_DIR)/tokens" "$(dir $(SOFTHSM2_CONF_PATH))"
+	@chmod 700 "$(SOFTHSM_DIR)" "$(SOFTHSM_DIR)/tokens"
+# Never clobber an existing SoftHSM config: (re)write it only if it is absent
+# or already points at our tokendir; otherwise warn and leave it.
+	@conf="$(SOFTHSM2_CONF_PATH)"; want="$(SOFTHSM_DIR)/tokens"; \
+	have="$$( [ -f "$$conf" ] && sed -n 's/^[[:space:]]*directories\.tokendir[[:space:]]*=[[:space:]]*//p' "$$conf" | sed 's/[[:space:]]*$$//' | tail -n 1 )"; \
+	if [ ! -e "$$conf" ] || [ "$$have" = "$$want" ]; then \
+		( umask 077; printf 'directories.tokendir = %s\nobjectstore.backend = file\nobjectstore.umask = 0077\nlog.level = ERROR\n' \
+			"$$want" > "$$conf" ); \
+	else \
+		echo "WARNING: $$conf already exists with directories.tokendir = '$$have'"; \
+		echo "         (expected '$$want'); leaving it unchanged. The test token is created"; \
+		echo "         in that tokendir. To use a separate config, re-run with"; \
+		echo "         SOFTHSM2_CONF_PATH=<new path>."; \
+	fi
+	@if SOFTHSM2_CONF="$(SOFTHSM2_CONF_PATH)" softhsm2-util --show-slots | grep -Eq "Label:[[:space:]]+$(SOFTHSM_LABEL)[[:space:]]*$$"; then \
+		echo "Token '$(SOFTHSM_LABEL)' already exists"; \
+	else \
+		SOFTHSM2_CONF="$(SOFTHSM2_CONF_PATH)" softhsm2-util --init-token --free \
+			--label "$(SOFTHSM_LABEL)" --pin "$(SOFTHSM_PIN)" --so-pin "$(SOFTHSM_SO_PIN)"; \
+	fi
+	@echo "✓ SoftHSM configured. SoftHSM only reads this config when SOFTHSM2_CONF is set:"
+	@echo "  export SOFTHSM2_CONF=$(SOFTHSM2_CONF_PATH)"
+	@echo "  export PKCS11_MODULE_PATH=$(SOFTHSM_MODULE)"
+
+# Mirrors .github/workflows/hsm-integration.yml; Linux is the authoritative
+# environment. macOS note: with Homebrew SoftHSM 2.7.0 (linked against
+# openssl@4's libcrypto.4.dylib) the test process segfaults at thread exit when
+# run through `cargo test`, with or without DYLD_INSERT_LIBRARIES. It runs only
+# when the test binary is invoked directly with both
+#   DYLD_LIBRARY_PATH=<target>/debug/build/aws-lc-fips-sys-*/out/build/artifacts
+#   DYLD_INSERT_LIBRARIES=$(brew --prefix openssl@4)/lib/libcrypto.4.dylib
+# (observed: 16 pass, 3 RSA-PSS fail with CKR_GENERAL_ERROR, 1 ignored).
+.PHONY: test-pkcs11
+test-pkcs11: ## Run the PKCS#11 suite against the SoftHSM test token (Linux; see macOS note)
+	SOFTHSM2_CONF="$(SOFTHSM2_CONF_PATH)" PKCS11_MODULE_PATH="$(SOFTHSM_MODULE)" \
+		cargo test -p ostrich-crypto --test pkcs11_integration_test --locked -- --test-threads=1
 
 .PHONY: setup
 setup: install-tools install-softhsm db-setup ## Complete development environment setup

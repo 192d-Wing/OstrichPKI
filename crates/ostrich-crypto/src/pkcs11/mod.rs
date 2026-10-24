@@ -17,24 +17,208 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use zeroize::Zeroizing;
 
-/// Prepare PKCS#11 ECDSA input using the FIPS-validated AWS-LC SHA-2
-/// implementation. PKCS#11 guarantees `CKM_ECDSA`, while combined
-/// `CKM_ECDSA_SHA*` mechanisms are optional.
+/// RSASSA-PSS profile used for one `Algorithm`: the host-side message digest
+/// and the matching `CK_RSA_PKCS_PSS_PARAMS`.
+///
+/// This is the single source of truth for both halves of an RSA-PSS operation,
+/// so the digest computed on the host can never drift from the `hashAlg` /
+/// MGF1 hash / `sLen` sent to the token.
+///
+/// COMPLIANCE MAPPING:
+/// - FIPS 186-5 §5.4 - RSASSA-PSS: MGF1 hash = message hash, sLen = hLen
+/// - RFC 8017 §9.1 (EMSA-PSS); RFC 4055 §3.1 (RSASSA-PSS-params)
+/// - PKCS#11 v3.0 §2.1.14 (`CK_RSA_PKCS_PSS_PARAMS`)
+#[derive(Clone, Copy)]
+struct RsaPssProfile {
+    /// Host digest (AWS-LC) applied to the message before raw `CKM_RSA_PKCS_PSS`
+    digest: &'static aws_lc_rs::digest::Algorithm,
+    /// PSS parameters passed to the token; `hash_alg` names `digest`
+    params: cryptoki::mechanism::rsa::PkcsPssParams,
+}
+
+/// Return the [`RsaPssProfile`] for an RSA-PSS `algorithm`.
+///
+/// # Errors
+/// `Error::UnsupportedAlgorithm` if `algorithm` is not an RSA-PSS variant.
+fn rsa_pss_profile(algorithm: Algorithm) -> Result<RsaPssProfile> {
+    use aws_lc_rs::digest::{SHA256, SHA384, SHA512};
+    use cryptoki::mechanism::MechanismType;
+    use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
+
+    // Salt length = hash output length (FIPS 186-5 §5.4, RFC 4055 §3.1).
+    let (digest, hash_alg, mgf, s_len) = match algorithm {
+        Algorithm::RsaPssSha256 => (&SHA256, MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, 32),
+        Algorithm::RsaPssSha384 => (&SHA384, MechanismType::SHA384, PkcsMgfType::MGF1_SHA384, 48),
+        Algorithm::RsaPssSha512 => (&SHA512, MechanismType::SHA512, PkcsMgfType::MGF1_SHA512, 64),
+        other => {
+            return Err(Error::UnsupportedAlgorithm(format!(
+                "{other:?} is not an RSA-PSS algorithm"
+            )));
+        }
+    };
+    Ok(RsaPssProfile {
+        digest,
+        params: PkcsPssParams {
+            hash_alg,
+            mgf,
+            s_len: s_len.into(),
+        },
+    })
+}
+
+/// Select the PKCS#11 signature mechanism for `algorithm`.
+///
+/// Shared by [`Pkcs11Provider::sign`] and [`Pkcs11Provider::verify`] so both
+/// directions always use the same mechanism and parameters. The match is
+/// exhaustive (no wildcard): a new `Algorithm` variant does not compile until
+/// a mechanism decision is made here and in [`pkcs11_signature_input`].
+///
+/// # Errors
+/// `Error::UnsupportedAlgorithm` for EdDSA, ML-DSA, SLH-DSA and hybrid
+/// algorithms, which this provider does not implement (fail closed).
+fn pkcs11_signature_mechanism(
+    algorithm: Algorithm,
+) -> Result<cryptoki::mechanism::Mechanism<'static>> {
+    use cryptoki::mechanism::Mechanism;
+
+    match algorithm {
+        // Raw CKM_RSA_PKCS_PSS over the host digest from `pkcs11_signature_input`.
+        Algorithm::RsaPssSha256 | Algorithm::RsaPssSha384 | Algorithm::RsaPssSha512 => {
+            Ok(Mechanism::RsaPkcsPss(rsa_pss_profile(algorithm)?.params))
+        }
+
+        // RSA PKCS#1 v1.5 (legacy compatibility): combined mechanisms hash in the token.
+        Algorithm::RsaPkcs1Sha256 => Ok(Mechanism::Sha256RsaPkcs),
+        Algorithm::RsaPkcs1Sha384 => Ok(Mechanism::Sha384RsaPkcs),
+        Algorithm::RsaPkcs1Sha512 => Ok(Mechanism::Sha512RsaPkcs),
+
+        // Combined CKM_ECDSA_SHA* mechanisms are optional. Hash through FIPS
+        // AWS-LC and pass the digest to raw CKM_ECDSA, which is interoperable
+        // with SoftHSM and hardware tokens.
+        Algorithm::EcdsaP256Sha256 | Algorithm::EcdsaP384Sha384 | Algorithm::EcdsaP521Sha512 => {
+            Ok(Mechanism::Ecdsa)
+        }
+
+        // EdDSA not supported in PKCS#11
+        Algorithm::Ed25519 | Algorithm::Ed448 => Err(Error::UnsupportedAlgorithm(format!(
+            "{algorithm:?} not supported by PKCS#11"
+        ))),
+
+        // Post-quantum and hybrid not yet supported
+        Algorithm::MlDsa44
+        | Algorithm::MlDsa65
+        | Algorithm::MlDsa87
+        | Algorithm::SlhDsaSha2_128s
+        | Algorithm::SlhDsaSha2_128f
+        | Algorithm::SlhDsaSha2_192s
+        | Algorithm::SlhDsaSha2_192f
+        | Algorithm::SlhDsaSha2_256s
+        | Algorithm::SlhDsaSha2_256f
+        | Algorithm::EcdsaP256MlDsa44
+        | Algorithm::EcdsaP384MlDsa65
+        | Algorithm::Ed25519MlDsa44 => Err(Error::UnsupportedAlgorithm(format!(
+            "{algorithm:?} not yet implemented"
+        ))),
+    }
+}
+
+/// Prepare the input passed to `C_Sign` / `C_Verify` for `algorithm`.
+///
+/// `data` is always the message (e.g. DER tbsCertificate), never a digest.
+/// The raw single-part mechanisms this provider selects for ECDSA and RSA-PSS
+/// operate on a pre-computed message digest, not on the message:
+///
+/// - `CKM_ECDSA` (PKCS#11 v3.0 §2.3.6) signs the hash value. It is mandatory,
+///   whereas the combined `CKM_ECDSA_SHA*` mechanisms are optional.
+/// - `CKM_RSA_PKCS_PSS` (PKCS#11 v2.40/v3.0 §2.1.14) takes the message hash
+///   `mHash` and performs only EMSA-PSS encoding plus the RSA private-key
+///   operation; its input length MUST equal the output length of
+///   `CK_RSA_PKCS_PSS_PARAMS.hashAlg` (32/48/64 octets). Passing the whole
+///   message makes tokens fail `C_Sign` (SoftHSM: `CKR_GENERAL_ERROR`).
+///   Hashing here rather than using the combined `CKM_SHAx_RSA_PKCS_PSS`
+///   keeps the ECDSA and PSS paths uniform and works on tokens that only
+///   implement the raw mechanism. The digest comes from [`rsa_pss_profile`],
+///   the same profile that supplies the token's PSS parameters.
+///
+/// PKCS#1 v1.5 uses the combined `CKM_SHAx_RSA_PKCS` mechanisms, which hash
+/// inside the token, so its input is the message unchanged. Every other
+/// algorithm is rejected here; nothing passes through by default.
+///
+/// Cryptographic boundary: this is a split operation. The message digest is
+/// computed on the host in the AWS-LC FIPS module (FIPS 140-3; CMVP
+/// certificate for 4.2.0 pending, see NIAP_GAP_ANALYSIS §11). EMSA-PSS
+/// encoding (RSA-PSS) and the private-key operation (RSA-PSS and ECDSA) run
+/// inside the HSM. The production HSM's FIPS 140-3 security policy must
+/// approve the raw `CKM_RSA_PKCS_PSS` / `CKM_ECDSA` mechanisms with
+/// host-supplied digests.
 ///
 /// COMPLIANCE MAPPING:
 /// - NIST 800-53: SC-13 - Cryptographic protection
-/// - NIAP PP-CA: FCS_COP.1 - Signature generation and verification
-/// - FIPS 180-4 - SHA-2 message digest
-/// - FIPS 186-5 - ECDSA signs the message digest
-fn pkcs11_signature_input(algorithm: Algorithm, data: &[u8]) -> Vec<u8> {
+/// - NIAP PP-CA: FCS_COP.1(1) - Signature generation and verification
+/// - NIAP PP-CA: FCS_COP.1(2) - Cryptographic hashing (FIPS 180-4 SHA-2)
+/// - FIPS 186-5 §5.4 - RSASSA-PSS; §6.4 - ECDSA signs the message digest
+/// - RFC 8017 §8.1 (RSASSA-PSS) / §9.1 (EMSA-PSS: mHash = Hash(M))
+/// - PKCS#11 v3.0 §2.1.14 (`CKM_RSA_PKCS_PSS`), §2.3.6 (`CKM_ECDSA`)
+///
+/// # Errors
+/// `Error::UnsupportedAlgorithm` for algorithms with no PKCS#11 mechanism.
+fn pkcs11_signature_input(algorithm: Algorithm, data: &[u8]) -> Result<Vec<u8>> {
     use aws_lc_rs::digest::{SHA256, SHA384, SHA512, digest};
 
-    match algorithm {
-        Algorithm::EcdsaP256Sha256 => digest(&SHA256, data).as_ref().to_vec(),
-        Algorithm::EcdsaP384Sha384 => digest(&SHA384, data).as_ref().to_vec(),
-        Algorithm::EcdsaP521Sha512 => digest(&SHA512, data).as_ref().to_vec(),
-        _ => data.to_vec(),
-    }
+    let host_digest = match algorithm {
+        Algorithm::RsaPssSha256 | Algorithm::RsaPssSha384 | Algorithm::RsaPssSha512 => {
+            rsa_pss_profile(algorithm)?.digest
+        }
+        Algorithm::EcdsaP256Sha256 => &SHA256,
+        Algorithm::EcdsaP384Sha384 => &SHA384,
+        Algorithm::EcdsaP521Sha512 => &SHA512,
+
+        // Combined CKM_SHAx_RSA_PKCS: the token hashes the message.
+        Algorithm::RsaPkcs1Sha256 | Algorithm::RsaPkcs1Sha384 | Algorithm::RsaPkcs1Sha512 => {
+            return Ok(data.to_vec());
+        }
+
+        // No PKCS#11 mechanism: reject rather than pass the message through.
+        Algorithm::Ed25519
+        | Algorithm::Ed448
+        | Algorithm::MlDsa44
+        | Algorithm::MlDsa65
+        | Algorithm::MlDsa87
+        | Algorithm::SlhDsaSha2_128s
+        | Algorithm::SlhDsaSha2_128f
+        | Algorithm::SlhDsaSha2_192s
+        | Algorithm::SlhDsaSha2_192f
+        | Algorithm::SlhDsaSha2_256s
+        | Algorithm::SlhDsaSha2_256f
+        | Algorithm::EcdsaP256MlDsa44
+        | Algorithm::EcdsaP384MlDsa65
+        | Algorithm::Ed25519MlDsa44 => {
+            return Err(Error::UnsupportedAlgorithm(format!(
+                "{algorithm:?} has no PKCS#11 signature input profile"
+            )));
+        }
+    };
+    Ok(digest(host_digest, data).as_ref().to_vec())
+}
+
+/// Classify a `C_Verify` error.
+///
+/// Only `CKR_SIGNATURE_INVALID` and `CKR_SIGNATURE_LEN_RANGE` mean "the
+/// token checked the signature and rejected it". Every other return value
+/// (device error, mechanism or key misuse, data length, session state) is a
+/// module fault and must surface as an error rather than look like a forged
+/// signature.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-11 (Error Handling), AU-2 (Event Logging)
+/// - PKCS#11 v3.0 §5.13 (`C_Verify` return values)
+fn is_signature_rejection(err: &cryptoki::error::Error) -> bool {
+    use cryptoki::error::{Error as CkError, RvError};
+
+    matches!(
+        err,
+        CkError::Pkcs11(RvError::SignatureInvalid | RvError::SignatureLenRange, _)
+    )
 }
 
 /// PKCS#11 provider that interfaces with HSMs
@@ -559,7 +743,7 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
         getrandom::fill(&mut key_id)
             .map_err(|e| Error::Entropy(format!("Failed to generate key id: {}", e)))?;
 
-        // NIST 800-53: AU-3 - Audit key generation
+        // NIST 800-53: SI-4 - Operational log; audit record emitted by caller
         tracing::info!(
             event = "key_pair_generation_started",
             key_type = ?key_type,
@@ -624,7 +808,7 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
         // Logout session
         let _ = session.logout();
 
-        // NIST 800-53: AU-3 - Audit successful key generation
+        // NIST 800-53: SI-4 - Operational log; audit record emitted by caller
         tracing::info!(
             event = "key_pair_generated",
             key_type = ?key_type,
@@ -647,27 +831,32 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
     ///
     /// # Compliance
     /// - NIST 800-53: SC-13 - Cryptographic protection using FIPS 140-3 module
-    /// - NIAP PP-CA: FCS_COP.1(2) - Cryptographic signature generation
+    /// - NIAP PP-CA: FCS_COP.1(1) - Cryptographic signature generation
     /// - FIPS 186-5: Digital signature generation
     ///
     /// # Arguments
     /// * `key` - Handle to the private key in the HSM
     /// * `algorithm` - Signature algorithm to use
-    /// * `data` - Data to sign (typically a hash for certificates/CRLs)
+    /// * `data` - Message to sign (e.g. DER tbsCertificate). The provider (or
+    ///   token) hashes it per `algorithm`; do not pre-hash.
     ///
     /// # Errors
-    /// Returns error if key not found, algorithm mismatch, or signing fails
+    /// Returns error if key not found, algorithm unsupported, or signing fails
     async fn sign(&self, key: &KeyHandle, algorithm: Algorithm, data: &[u8]) -> Result<Vec<u8>> {
-        use cryptoki::mechanism::Mechanism;
         use cryptoki::object::{Attribute, ObjectClass};
 
-        // NIST 800-53: AU-3 - Audit signing operation
+        // NIST 800-53: SI-4 - Operational log; audit record emitted by caller
         tracing::debug!(
             key_label = %key.label,
             algorithm = ?algorithm,
             data_len = data.len(),
             "Signing data with HSM key"
         );
+
+        // Select the mechanism and derive the token input before touching the
+        // HSM; unsupported algorithms fail closed here.
+        let mechanism = pkcs11_signature_mechanism(algorithm)?;
+        let signature_input = pkcs11_signature_input(algorithm, data)?;
 
         let session = self.open_session()?;
 
@@ -690,66 +879,8 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
 
         let private_key_handle = objects[0];
 
-        // Select PKCS#11 mechanism based on algorithm
-        let mechanism = match algorithm {
-            // RSA-PSS (preferred for new signatures)
-            Algorithm::RsaPssSha256 => {
-                use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
-                Mechanism::RsaPkcsPss(PkcsPssParams {
-                    hash_alg: cryptoki::mechanism::MechanismType::SHA256,
-                    mgf: PkcsMgfType::MGF1_SHA256,
-                    s_len: 32.into(), // Salt length = hash length
-                })
-            }
-            Algorithm::RsaPssSha384 => {
-                use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
-                Mechanism::RsaPkcsPss(PkcsPssParams {
-                    hash_alg: cryptoki::mechanism::MechanismType::SHA384,
-                    mgf: PkcsMgfType::MGF1_SHA384,
-                    s_len: 48.into(),
-                })
-            }
-            Algorithm::RsaPssSha512 => {
-                use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
-                Mechanism::RsaPkcsPss(PkcsPssParams {
-                    hash_alg: cryptoki::mechanism::MechanismType::SHA512,
-                    mgf: PkcsMgfType::MGF1_SHA512,
-                    s_len: 64.into(),
-                })
-            }
-
-            // RSA PKCS#1 v1.5 (legacy compatibility)
-            Algorithm::RsaPkcs1Sha256 => Mechanism::Sha256RsaPkcs,
-            Algorithm::RsaPkcs1Sha384 => Mechanism::Sha384RsaPkcs,
-            Algorithm::RsaPkcs1Sha512 => Mechanism::Sha512RsaPkcs,
-
-            // Combined CKM_ECDSA_SHA* mechanisms are optional. Hash through
-            // FIPS AWS-LC below and pass the digest to raw CKM_ECDSA, which is
-            // interoperable with SoftHSM and hardware tokens.
-            Algorithm::EcdsaP256Sha256
-            | Algorithm::EcdsaP384Sha384
-            | Algorithm::EcdsaP521Sha512 => Mechanism::Ecdsa,
-
-            // EdDSA not supported in PKCS#11
-            Algorithm::Ed25519 | Algorithm::Ed448 => {
-                return Err(Error::UnsupportedAlgorithm(format!(
-                    "{:?} not supported by PKCS#11",
-                    algorithm
-                )));
-            }
-
-            // Post-quantum not yet supported
-            _ => {
-                return Err(Error::UnsupportedAlgorithm(format!(
-                    "{:?} not yet implemented",
-                    algorithm
-                )));
-            }
-        };
-
         // Perform signing operation
         // FIPS 186-5: Digital signature generation in FIPS 140-3 module
-        let signature_input = pkcs11_signature_input(algorithm, data);
         let signature = session
             .sign(&mechanism, private_key_handle, &signature_input)
             .map_err(|e| Error::Signing(format!("HSM signing failed: {}", e)))?;
@@ -757,7 +888,7 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
         // Logout session
         let _ = session.logout();
 
-        // NIST 800-53: AU-3 - Audit successful signing
+        // NIST 800-53: SI-4 - Operational log; audit record emitted by caller
         tracing::info!(
             event = "signature_generated",
             key_label = %key.label,
@@ -773,17 +904,23 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
     ///
     /// # Compliance
     /// - NIST 800-53: SC-13 - Cryptographic protection
-    /// - NIAP PP-CA: FCS_COP.1(3) - Cryptographic signature verification
+    /// - NIAP PP-CA: FCS_COP.1(1) - Cryptographic signature verification
     /// - FIPS 186-5: Digital signature verification
     ///
     /// # Arguments
     /// * `key` - Handle to the public key in the HSM
     /// * `algorithm` - Signature algorithm used
-    /// * `data` - Original data that was signed
+    /// * `data` - Original message that was signed (e.g. DER tbsCertificate).
+    ///   The provider (or token) hashes it per `algorithm`; do not pre-hash.
     /// * `signature` - Signature to verify
     ///
     /// # Returns
-    /// `Ok(true)` if signature is valid, `Ok(false)` if invalid
+    /// `Ok(true)` if the signature is valid, `Ok(false)` only if the token
+    /// rejects it (`CKR_SIGNATURE_INVALID` / `CKR_SIGNATURE_LEN_RANGE`)
+    ///
+    /// # Errors
+    /// Returns error if the key is not found, the algorithm is unsupported, or
+    /// the token fails with any other return value (fail closed)
     async fn verify(
         &self,
         key: &KeyHandle,
@@ -791,7 +928,6 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
         data: &[u8],
         signature: &[u8],
     ) -> Result<bool> {
-        use cryptoki::mechanism::Mechanism;
         use cryptoki::object::{Attribute, ObjectClass};
 
         tracing::debug!(
@@ -801,6 +937,10 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
             signature_len = signature.len(),
             "Verifying signature with HSM key"
         );
+
+        // Same mechanism and input derivation as `sign`.
+        let mechanism = pkcs11_signature_mechanism(algorithm)?;
+        let signature_input = pkcs11_signature_input(algorithm, data)?;
 
         let session = self.open_session()?;
 
@@ -823,61 +963,38 @@ impl crate::provider::CryptoProvider for Pkcs11Provider {
 
         let public_key_handle = objects[0];
 
-        // Select PKCS#11 mechanism (same as signing)
-        let mechanism = match algorithm {
-            Algorithm::RsaPssSha256 => {
-                use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
-                Mechanism::RsaPkcsPss(PkcsPssParams {
-                    hash_alg: cryptoki::mechanism::MechanismType::SHA256,
-                    mgf: PkcsMgfType::MGF1_SHA256,
-                    s_len: 32.into(),
-                })
-            }
-            Algorithm::RsaPssSha384 => {
-                use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
-                Mechanism::RsaPkcsPss(PkcsPssParams {
-                    hash_alg: cryptoki::mechanism::MechanismType::SHA384,
-                    mgf: PkcsMgfType::MGF1_SHA384,
-                    s_len: 48.into(),
-                })
-            }
-            Algorithm::RsaPssSha512 => {
-                use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
-                Mechanism::RsaPkcsPss(PkcsPssParams {
-                    hash_alg: cryptoki::mechanism::MechanismType::SHA512,
-                    mgf: PkcsMgfType::MGF1_SHA512,
-                    s_len: 64.into(),
-                })
-            }
-            Algorithm::RsaPkcs1Sha256 => Mechanism::Sha256RsaPkcs,
-            Algorithm::RsaPkcs1Sha384 => Mechanism::Sha384RsaPkcs,
-            Algorithm::RsaPkcs1Sha512 => Mechanism::Sha512RsaPkcs,
-            // Hash through FIPS AWS-LC below, matching the sign path.
-            Algorithm::EcdsaP256Sha256
-            | Algorithm::EcdsaP384Sha384
-            | Algorithm::EcdsaP521Sha512 => Mechanism::Ecdsa,
-            Algorithm::Ed25519 | Algorithm::Ed448 => {
-                return Err(Error::UnsupportedAlgorithm(format!(
-                    "{:?} not supported by PKCS#11",
-                    algorithm
-                )));
-            }
-            _ => {
-                return Err(Error::UnsupportedAlgorithm(format!(
-                    "{:?} not yet implemented",
-                    algorithm
-                )));
-            }
-        };
-
-        // Perform verification
-        let signature_input = pkcs11_signature_input(algorithm, data);
-        let is_valid = session
-            .verify(&mechanism, public_key_handle, &signature_input, signature)
-            .is_ok();
+        // Perform verification. Only an explicit signature rejection from the
+        // token is `Ok(false)`; any other token failure is an error (fail
+        // closed, NIST 800-53 SI-11) so a module fault is not mistaken for a
+        // forged signature.
+        let outcome = session.verify(&mechanism, public_key_handle, &signature_input, signature);
 
         // Logout session
         let _ = session.logout();
+
+        let is_valid = match outcome {
+            Ok(()) => true,
+            Err(e) if is_signature_rejection(&e) => false,
+            Err(e) => {
+                let rv = match &e {
+                    cryptoki::error::Error::Pkcs11(rv, _) => Some(*rv),
+                    _ => None,
+                };
+                // NIST 800-53: SI-4 - Operational log; the AU-3 audit record
+                // for the failed operation is emitted by the caller.
+                tracing::warn!(
+                    event = "signature_verification_error",
+                    key_label = %key.label,
+                    algorithm = ?algorithm,
+                    rv = ?rv,
+                    error = %e,
+                    "HSM signature verification failed with a token error"
+                );
+                return Err(Error::Pkcs11(format!(
+                    "HSM signature verification failed: {e}"
+                )));
+            }
+        };
 
         tracing::debug!(
             key_label = %key.label,
@@ -1378,5 +1495,213 @@ fn default_algorithm_for(key_type: KeyType) -> Algorithm {
         KeyType::EcP384 => Algorithm::EcdsaP384Sha384,
         KeyType::EcP521 => Algorithm::EcdsaP521Sha512,
         _ => Algorithm::EcdsaP256Sha256,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aws_lc_rs::digest::{SHA256, SHA384, SHA512, digest};
+    use cryptoki::context::Function;
+    use cryptoki::error::{Error as CkError, RvError};
+    use cryptoki::mechanism::{Mechanism, MechanismType};
+
+    const MSG: &[u8] = b"PKCS#11 signature input test vector";
+
+    const RSA_PSS: [Algorithm; 3] = [
+        Algorithm::RsaPssSha256,
+        Algorithm::RsaPssSha384,
+        Algorithm::RsaPssSha512,
+    ];
+
+    /// Every variant with no PKCS#11 signature mechanism (fail closed).
+    const UNSUPPORTED: [Algorithm; 14] = [
+        Algorithm::Ed25519,
+        Algorithm::Ed448,
+        Algorithm::MlDsa44,
+        Algorithm::MlDsa65,
+        Algorithm::MlDsa87,
+        Algorithm::SlhDsaSha2_128s,
+        Algorithm::SlhDsaSha2_128f,
+        Algorithm::SlhDsaSha2_192s,
+        Algorithm::SlhDsaSha2_192f,
+        Algorithm::SlhDsaSha2_256s,
+        Algorithm::SlhDsaSha2_256f,
+        Algorithm::EcdsaP256MlDsa44,
+        Algorithm::EcdsaP384MlDsa65,
+        Algorithm::Ed25519MlDsa44,
+    ];
+
+    fn input(alg: Algorithm, msg: &[u8]) -> Vec<u8> {
+        match pkcs11_signature_input(alg, msg) {
+            Ok(v) => v,
+            Err(e) => panic!("{alg:?}: unexpected error {e}"),
+        }
+    }
+
+    // PKCS#11 v3.0 §2.1.14: CKM_RSA_PKCS_PSS input is the hashAlg digest, so its
+    // length must be exactly the hash output length (32/48/64 octets).
+    #[test]
+    fn rsa_pss_input_is_sha2_digest_of_message() {
+        for (alg, hash, len) in [
+            (Algorithm::RsaPssSha256, &SHA256, 32),
+            (Algorithm::RsaPssSha384, &SHA384, 48),
+            (Algorithm::RsaPssSha512, &SHA512, 64),
+        ] {
+            let input = input(alg, MSG);
+            assert_eq!(input.len(), len, "{alg:?} digest length");
+            assert_eq!(input, digest(hash, MSG).as_ref(), "{alg:?} digest value");
+        }
+    }
+
+    // A message that already happens to be digest-sized is still hashed: the
+    // helper never guesses whether the caller pre-hashed.
+    #[test]
+    fn rsa_pss_input_hashes_digest_sized_message() {
+        let msg = [0xA5u8; 32];
+        let input = input(Algorithm::RsaPssSha256, &msg);
+        assert_eq!(input, digest(&SHA256, &msg).as_ref());
+        assert_ne!(input, msg);
+    }
+
+    // PQC-003: the host digest, hashAlg, MGF1 hash and sLen all come from one
+    // profile and agree (FIPS 186-5 §5.4: MGF1 hash = message hash, sLen = hLen).
+    #[test]
+    fn rsa_pss_profile_is_internally_consistent() {
+        for (alg, hash_alg, mgf) in [
+            (
+                Algorithm::RsaPssSha256,
+                MechanismType::SHA256,
+                cryptoki::mechanism::rsa::PkcsMgfType::MGF1_SHA256,
+            ),
+            (
+                Algorithm::RsaPssSha384,
+                MechanismType::SHA384,
+                cryptoki::mechanism::rsa::PkcsMgfType::MGF1_SHA384,
+            ),
+            (
+                Algorithm::RsaPssSha512,
+                MechanismType::SHA512,
+                cryptoki::mechanism::rsa::PkcsMgfType::MGF1_SHA512,
+            ),
+        ] {
+            let profile = match rsa_pss_profile(alg) {
+                Ok(p) => p,
+                Err(e) => panic!("{alg:?}: {e}"),
+            };
+            assert_eq!(profile.params.hash_alg, hash_alg, "{alg:?} hashAlg");
+            assert_eq!(profile.params.mgf, mgf, "{alg:?} MGF1 hash");
+            let s_len: u64 = profile.params.s_len.into();
+            assert_eq!(s_len, profile.digest.output_len() as u64, "{alg:?} sLen");
+            // The token input is exactly the profile digest.
+            assert_eq!(input(alg, MSG), digest(profile.digest, MSG).as_ref());
+            // The mechanism carries the same parameters.
+            match pkcs11_signature_mechanism(alg) {
+                Ok(Mechanism::RsaPkcsPss(p)) => {
+                    assert_eq!(p.hash_alg, profile.params.hash_alg, "{alg:?}");
+                    assert_eq!(p.mgf, profile.params.mgf, "{alg:?}");
+                    let m_len: u64 = p.s_len.into();
+                    assert_eq!(m_len, s_len, "{alg:?}");
+                }
+                other => panic!("{alg:?}: unexpected mechanism {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rsa_pss_profile_rejects_non_pss() {
+        for alg in [Algorithm::RsaPkcs1Sha256, Algorithm::EcdsaP256Sha256] {
+            assert!(
+                matches!(rsa_pss_profile(alg), Err(Error::UnsupportedAlgorithm(_))),
+                "{alg:?}"
+            );
+        }
+    }
+
+    // PKCS#1 v1.5 uses combined CKM_SHAx_RSA_PKCS (token hashes), so the
+    // message passes through unchanged.
+    #[test]
+    fn rsa_pkcs1_input_is_message_unchanged() {
+        for alg in [
+            Algorithm::RsaPkcs1Sha256,
+            Algorithm::RsaPkcs1Sha384,
+            Algorithm::RsaPkcs1Sha512,
+        ] {
+            assert_eq!(input(alg, MSG), MSG, "{alg:?}");
+        }
+    }
+
+    // Raw CKM_ECDSA: input is the SHA-2 digest matching the curve's hash.
+    #[test]
+    fn ecdsa_input_is_sha2_digest_of_message() {
+        for (alg, hash, len) in [
+            (Algorithm::EcdsaP256Sha256, &SHA256, 32),
+            (Algorithm::EcdsaP384Sha384, &SHA384, 48),
+            (Algorithm::EcdsaP521Sha512, &SHA512, 64),
+        ] {
+            let input = input(alg, MSG);
+            assert_eq!(input.len(), len, "{alg:?} digest length");
+            assert_eq!(input, digest(hash, MSG).as_ref(), "{alg:?} digest value");
+        }
+    }
+
+    // QA-004: algorithms with no PKCS#11 mechanism never pass the message
+    // through; both the input and mechanism selection fail closed.
+    #[test]
+    fn unsupported_algorithms_fail_closed() {
+        for alg in UNSUPPORTED {
+            assert!(
+                matches!(
+                    pkcs11_signature_input(alg, MSG),
+                    Err(Error::UnsupportedAlgorithm(_))
+                ),
+                "{alg:?} input"
+            );
+            assert!(
+                matches!(
+                    pkcs11_signature_mechanism(alg),
+                    Err(Error::UnsupportedAlgorithm(_))
+                ),
+                "{alg:?} mechanism"
+            );
+        }
+        for alg in RSA_PSS {
+            assert!(
+                matches!(
+                    pkcs11_signature_mechanism(alg),
+                    Ok(Mechanism::RsaPkcsPss(_))
+                ),
+                "{alg:?}"
+            );
+        }
+    }
+
+    // SEC-002 / QA-001: only CKR_SIGNATURE_INVALID / CKR_SIGNATURE_LEN_RANGE are
+    // a signature rejection (Ok(false)); every other token error is a fault.
+    #[test]
+    fn only_signature_rvs_are_rejections() {
+        for rv in [RvError::SignatureInvalid, RvError::SignatureLenRange] {
+            assert!(
+                is_signature_rejection(&CkError::Pkcs11(rv, Function::Verify)),
+                "{rv:?}"
+            );
+        }
+        for rv in [
+            RvError::GeneralError,
+            RvError::DeviceError,
+            RvError::DataLenRange,
+            RvError::MechanismInvalid,
+            RvError::MechanismParamInvalid,
+            RvError::KeyTypeInconsistent,
+            RvError::ArgumentsBad,
+            RvError::SessionHandleInvalid,
+            RvError::UserNotLoggedIn,
+        ] {
+            assert!(
+                !is_signature_rejection(&CkError::Pkcs11(rv, Function::Verify)),
+                "{rv:?} must not be treated as a signature rejection"
+            );
+        }
+        assert!(!is_signature_rejection(&CkError::NotSupported));
     }
 }
