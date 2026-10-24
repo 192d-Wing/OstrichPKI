@@ -226,9 +226,17 @@ async fn serve_with_acme(
     // background renewal task (swaps the cert in place — no restart).
     let server_config =
         std::sync::Arc::new(build_mtls_server_config(client_ca_path, resolver.clone())?);
+    // Fail closed before spawning the renewal task or logging `fips = true`;
+    // serve_with_config re-checks (NIST 800-53: SC-13, SC-24).
+    ostrich_common::tls::ensure_fips(&server_config)?;
     tokio::spawn(renewal_loop(acme, store, resolver, not_after));
 
-    info!(%addr, "Serving HTTPS (TLS 1.3, mTLS) with ACME-managed certificate");
+    info!(
+        %addr,
+        fips = true,
+        aws_lc_version = ostrich_common::tls::aws_lc_module_version(),
+        "Serving HTTPS (TLS 1.3, mTLS) with ACME-managed certificate"
+    );
     ostrich_common::tls::serve_with_config(addr, app, server_config, shutdown_signal()).await?;
     Ok(())
 }

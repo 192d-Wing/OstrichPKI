@@ -117,11 +117,16 @@ impl TlsSettings {
         let key = PrivateKeyDer::from_pem_file(&self.key_path)
             .map_err(|e| tls_err("read private key", &self.key_path, e))?;
 
-        // Explicitly select the aws-lc-rs (FIPS) provider so the TLS stack uses
-        // the same FIPS-validated crypto module as the rest of the project,
-        // regardless of which rustls provider features other dependencies enable
-        // (SC-13). ring is deliberately NOT used here: it is not FIPS-validated,
-        // and a NIAP/FIPS deployment must terminate mTLS on the validated module.
+        // Explicitly select the aws-lc-rs provider (FIPS mode, approved
+        // algorithms only: AWS-LC FIPS 4.2.0; CMVP certificate pending
+        // confirmation, POAM-2026-10-23-01) so the TLS stack uses the same crypto
+        // module as the rest of the project, regardless of which rustls provider
+        // features other dependencies enable (SC-13). ring is deliberately NOT used here: it has
+        // no FIPS mode, and a NIAP/FIPS deployment must terminate mTLS on the
+        // FIPS-mode AWS-LC module. The client-cert verifier below is built from
+        // this same provider: `ServerConfig::fips()` does not inspect the
+        // verifier, so keeping it on `provider` is what keeps signature
+        // verification of client certificates inside the module.
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 
         // TLS 1.3 only per project policy (NIST 800-53: SC-8, RFC 8446)
@@ -161,9 +166,86 @@ impl TlsSettings {
         let mut config = builder
             .with_single_cert(certs, key)
             .map_err(|e| Error::Config(format!("TLS certificate/key rejected: {e}")))?;
+
+        // Defence in depth: `serve_with_config` re-checks, but failing here
+        // reports the problem before any listener work starts.
+        ensure_fips(&config)?;
+
         config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Ok(config)
     }
+}
+
+/// Refuse a rustls [`ServerConfig`] that does not report FIPS mode.
+///
+/// Called by [`TlsSettings::load`] and at the top of [`serve_with_config`], so
+/// every HTTPS listener — including callers that build their own config, such
+/// as the npe-portal ACME mode — fails closed on a non-FIPS TLS stack. Public so
+/// a service that builds a config early (before spawning background work) can
+/// check it at construction time as well.
+///
+/// What `ServerConfig::fips()` checks (rustls 0.23.46): `provider.fips() &&
+/// require_ems`, where `provider.fips()` requires every cipher suite, every
+/// key-exchange group, the signature-verification algorithms, the secure RNG
+/// and the key provider to report FIPS mode — each of which, for the aws-lc-rs
+/// provider, reduces to AWS-LC's `FIPS_mode()` plus rustls's allowlist
+/// (ChaCha20-Poly1305 and plain X25519 are excluded). In AWS-LC FIPS 4.2.0
+/// `FIPS_mode()` is a build-time property: it is false if the `fips` feature is
+/// missing, a non-FIPS AWS-LC is linked, or AWS-LC was built without
+/// `BORINGSSL_FIPS` (including ASAN/sanitizer builds). A power-on self-test
+/// failure does not make it false: the module aborts the process in-module
+/// (`AWS_LC_FIPS_failure`) rather than reporting a non-FIPS status. Under rustls's
+/// FIPS-pending interpretation the ML-KEM hybrid group `X25519MLKEM768`
+/// (ML-KEM share first) counts as FIPS. `require_ems` only has an effect while
+/// rustls's `tls12` feature is enabled; it is still part of the predicate.
+///
+/// It does NOT check protocol versions: the TLS 1.3-only floor is enforced
+/// separately by `with_protocol_versions(&[&TLS13])` (tested by
+/// `server_rejects_tls12_only_client`). Nor does it inspect a custom
+/// client-certificate verifier; that must be built from the same provider.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SC-13 (Cryptographic Protection) - approved algorithms only,
+///   FIPS-mode AWS-LC FIPS 4.2.0 (CMVP certificate pending confirmation,
+///   POAM-2026-10-23-01)
+/// - NIST 800-53: SC-8 (Transmission Confidentiality and Integrity)
+/// - NIST 800-53: CM-6 (Configuration Settings) - no toggle; secure default only
+/// - NIST 800-53: SC-24 (Fail in Known State) - refuse to serve, never degrade
+/// - NIAP PP-CA: FCS_COP.1, FCS_TLSS_EXT.1, FPT_FLS.1
+// POAM: POAM-2026-10-23-05 - this guard covers rustls ServerConfigs served via
+// `serve`/`serve_with_config` only. Still uncovered: plain-HTTP mode (no cert
+// configured) and the absence of a process-level FIPS gate at startup; rustls
+// ClientConfigs (web-ui and npe-portal backend clients, the ACME tls-alpn-01
+// validator); tonic gRPC: the CA gRPC server is plaintext (no ServerTlsConfig,
+// ca-server main.rs) and gRPC clients use the `tls-ring` provider
+// (POAM-2026-10-23-08); ca-server spawns its gRPC listener before the HTTPS
+// guard runs; no `ostrich-audit` event is emitted on refusal (error log only);
+// and the project's crypto KATs do not run through AWS-LC.
+pub fn ensure_fips(config: &ServerConfig) -> Result<()> {
+    if config.fips() {
+        return Ok(());
+    }
+    // NIST 800-53: SC-24 / AU-2 - log the refusal at the point it happens.
+    tracing::error!(
+        require_ems = config.require_ems,
+        provider_fips = config.crypto_provider().fips(),
+        "Refusing to serve TLS: ServerConfig is not in FIPS mode"
+    );
+    Err(Error::Config(
+        "TLS configuration is not in FIPS mode; refusing to serve. Possible causes: \
+         the rustls `fips` feature is missing, a non-FIPS AWS-LC is linked, \
+         AWS-LC was built without BORINGSSL_FIPS (incl. ASAN/sanitizer builds), \
+         or a non-approved suite/group or disabled extended master secret was \
+         configured."
+            .to_string(),
+    ))
+}
+
+/// Version of the linked AWS-LC library (e.g. `"4.2.0"` for the FIPS 4.2.0
+/// module), for startup logs. Identifies the build only; it does not by itself
+/// establish FIPS mode or CMVP status (see [`ensure_fips`]).
+pub fn aws_lc_module_version() -> &'static str {
+    aws_lc_rs::awslc_version()
 }
 
 /// Request extension carrying the verified TLS client (peer) certificate —
@@ -264,6 +346,8 @@ pub async fn serve(
                 cert = %settings.cert_path.display(),
                 mtls = settings.client_ca_path.is_some(),
                 optional_mtls = settings.optional_client_auth,
+                fips = true,
+                aws_lc_version = aws_lc_module_version(),
                 "Serving HTTPS (TLS 1.3)"
             );
             serve_with_config(addr, app, Arc::new(config), shutdown).await
@@ -300,12 +384,18 @@ pub async fn serve(
 /// resolver is consulted per TLS handshake, so a caller that swaps the resolved
 /// certificate (e.g. ACME auto-renewal) takes effect on new connections without
 /// a restart. NIST 800-53: SC-8.
+///
+/// Fails closed: the config is checked with [`ensure_fips`] before anything is
+/// bound, so a caller-built config (e.g. npe-portal ACME mode) cannot serve on a
+/// non-FIPS TLS stack. NIST 800-53: SC-13, SC-24.
 pub async fn serve_with_config(
     addr: SocketAddr,
     app: axum::Router,
     config: Arc<ServerConfig>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
+    ensure_fips(&config)?;
+
     let handle = axum_server::Handle::new();
     let shutdown_handle = handle.clone();
     tokio::spawn(async move {
@@ -532,6 +622,169 @@ mod tests {
         assert_eq!(
             config.alpn_protocols,
             vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
+    }
+
+    /// QA (SC-13 fail-closed): the exact predicate [`ensure_fips`] gates on
+    /// (`ServerConfig::fips()`) flips to false when a load()-built config has
+    /// extended master secret disabled, so the guard is not vacuously true.
+    /// `load()` itself hardcodes the FIPS provider and leaves `require_ems` at
+    /// the builder default; the `Err` branch is exercised through
+    /// `ensure_fips` directly (see `ensure_fips_rejects_non_fips_server_configs`).
+    #[test]
+    fn fips_predicate_false_when_extended_master_secret_not_required() {
+        let pki = Pki::new("QA Server CA");
+        let (cert, key) = pki.leaf("localhost", ExtendedKeyUsagePurpose::ServerAuth);
+        let settings = TlsSettings {
+            cert_path: write_tmp("ems-cert", &cert),
+            key_path: write_tmp("ems-key", &key),
+            client_ca_path: None,
+            optional_client_auth: false,
+        };
+        let mut config = settings.load().expect("load tls config");
+        assert!(config.require_ems, "FIPS builder must default require_ems");
+        assert!(config.fips());
+        config.require_ems = false;
+        assert!(
+            !config.fips(),
+            "ServerConfig::fips() must be false without extended master secret"
+        );
+    }
+
+    /// QA (SC-13 fail-closed): a server config built exactly like `load()` but
+    /// with a non-FIPS key-exchange group (X25519, not SP 800-56A approved)
+    /// reports `fips() == false`, i.e. [`ensure_fips`] (called from `load()`
+    /// and `serve_with_config`) would reject it.
+    #[test]
+    fn fips_predicate_false_with_non_fips_kx_group() {
+        let pki = Pki::new("QA Server CA");
+        let (cert, key) = pki.leaf("localhost", ExtendedKeyUsagePurpose::ServerAuth);
+        let mut provider = rustls::crypto::aws_lc_rs::default_provider();
+        assert!(provider.fips(), "baseline provider must be FIPS");
+        provider
+            .kx_groups
+            .push(rustls::crypto::aws_lc_rs::kx_group::X25519);
+        assert!(!provider.fips(), "X25519 must not be FIPS-approved");
+        let config = ServerConfig::builder_with_provider(Arc::new(provider))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("tls13")
+            .with_no_client_auth()
+            .with_single_cert(
+                pem_certs(&cert),
+                PrivateKeyDer::from_pem_slice(key.as_bytes()).expect("key"),
+            )
+            .expect("single cert");
+        assert!(
+            !config.fips(),
+            "ServerConfig with a non-FIPS kx group must not report FIPS"
+        );
+    }
+
+    /// Build a ServerConfig on `provider` exactly like `load()` (TLS 1.3 only,
+    /// no client auth) without going through `load()`'s own guard.
+    fn server_config_with_provider(provider: rustls::crypto::CryptoProvider) -> ServerConfig {
+        let pki = Pki::new("Guard Server CA");
+        let (cert, key) = pki.leaf("localhost", ExtendedKeyUsagePurpose::ServerAuth);
+        ServerConfig::builder_with_provider(Arc::new(provider))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("tls13")
+            .with_no_client_auth()
+            .with_single_cert(
+                pem_certs(&cert),
+                PrivateKeyDer::from_pem_slice(key.as_bytes()).expect("key"),
+            )
+            .expect("single cert")
+    }
+
+    /// SC-13 / SC-24 fail-closed: `ensure_fips` refuses a config whose
+    /// provider offers a non-approved group (plain X25519) and one with
+    /// extended master secret disabled, with a `Config` error.
+    #[test]
+    fn ensure_fips_rejects_non_fips_server_configs() {
+        let mut provider = rustls::crypto::aws_lc_rs::default_provider();
+        provider
+            .kx_groups
+            .push(rustls::crypto::aws_lc_rs::kx_group::X25519);
+        let non_fips_kx = server_config_with_provider(provider);
+        assert!(
+            matches!(ensure_fips(&non_fips_kx), Err(Error::Config(_))),
+            "non-FIPS kx group must be refused"
+        );
+
+        let mut no_ems = server_config_with_provider(rustls::crypto::aws_lc_rs::default_provider());
+        assert!(ensure_fips(&no_ems).is_ok(), "baseline must pass");
+        no_ems.require_ems = false;
+        assert!(
+            matches!(ensure_fips(&no_ems), Err(Error::Config(_))),
+            "require_ems = false must be refused"
+        );
+    }
+
+    /// The guard accepts the config `load()` builds (no false refusals).
+    #[test]
+    fn ensure_fips_accepts_loaded_config() {
+        let pki = Pki::new("QA Server CA");
+        let (cert, key) = pki.leaf("localhost", ExtendedKeyUsagePurpose::ServerAuth);
+        let settings = TlsSettings {
+            cert_path: write_tmp("guard-ok-cert", &cert),
+            key_path: write_tmp("guard-ok-key", &key),
+            client_ca_path: None,
+            optional_client_auth: false,
+        };
+        let config = settings.load().expect("load tls config");
+        assert!(ensure_fips(&config).is_ok());
+    }
+
+    /// `serve_with_config` (the path npe-portal ACME mode uses) refuses a
+    /// non-FIPS config before binding, instead of serving it.
+    #[tokio::test]
+    async fn serve_with_config_refuses_non_fips_config() {
+        let mut provider = rustls::crypto::aws_lc_rs::default_provider();
+        provider
+            .kx_groups
+            .push(rustls::crypto::aws_lc_rs::kx_group::X25519);
+        let config = Arc::new(server_config_with_provider(provider));
+        let addr: SocketAddr = "127.0.0.1:0".parse().expect("addr");
+        let res = tokio::time::timeout(
+            Duration::from_secs(5),
+            serve_with_config(addr, axum::Router::new(), config, std::future::pending()),
+        )
+        .await
+        .expect("serve_with_config must return immediately on a non-FIPS config");
+        assert!(matches!(res, Err(Error::Config(_))), "got {res:?}");
+    }
+
+    /// QA (SC-13 / FIPS 203 posture): the FIPS-mode server config offers only
+    /// approved groups — no bare X25519 — and keeps the ML-KEM hybrid
+    /// (X25519MLKEM768, ML-KEM share first per SP 800-56C ordering).
+    #[test]
+    fn fips_server_config_kx_groups_exclude_x25519_keep_mlkem_hybrid() {
+        let pki = Pki::new("QA Server CA");
+        let (cert, key) = pki.leaf("localhost", ExtendedKeyUsagePurpose::ServerAuth);
+        let settings = TlsSettings {
+            cert_path: write_tmp("kx-cert", &cert),
+            key_path: write_tmp("kx-key", &key),
+            client_ca_path: None,
+            optional_client_auth: false,
+        };
+        let config = settings.load().expect("load tls config");
+        let groups: Vec<rustls::NamedGroup> = config
+            .crypto_provider()
+            .kx_groups
+            .iter()
+            .map(|g| g.name())
+            .collect();
+        assert!(
+            !groups.contains(&rustls::NamedGroup::X25519),
+            "groups: {groups:?}"
+        );
+        assert!(
+            groups.contains(&rustls::NamedGroup::X25519MLKEM768),
+            "groups: {groups:?}"
+        );
+        assert!(
+            config.crypto_provider().kx_groups.iter().all(|g| g.fips()),
+            "groups: {groups:?}"
         );
     }
 

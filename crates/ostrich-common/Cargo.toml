@@ -68,6 +68,9 @@ rustls-pki-types = { workspace = true }
 axum-server = { workspace = true }
 # Surface the verified mTLS client certificate to handlers (custom Accept).
 tokio-rustls = { workspace = true }
+# Version query only (`awslc_version()`) for the TLS startup log; all TLS
+# crypto still goes through the rustls aws-lc-rs provider.
+aws-lc-rs = { workspace = true }
 
 [dev-dependencies]
 # Generate real self-signed certificates for certificate-auth tests.

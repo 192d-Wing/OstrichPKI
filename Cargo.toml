@@ -161,7 +161,9 @@ argon2 = { version = "0.5", features = ["std"] }
 #     (`crates/ostrich-x509/src/secure_defaults.rs`).
 # POAM: enable ML-DSA certificate issuance once CMVP confirms the AWS-LC 4.2.0
 # FIPS module certificate (the blocker is validation status, not the API).
-aws-lc-rs = { version = "1.16", features = ["fips"] }
+#   - >=1.18 also provides `awslc_version()`, logged by ostrich-common's TLS
+#     listener at startup (NIST 800-53: AU-3/CM-6 module-version evidence).
+aws-lc-rs = { version = "1.18", features = ["fips"] }
 
 # PKCS#11
 cryptoki = "0.11"

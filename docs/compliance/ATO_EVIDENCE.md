@@ -1,7 +1,7 @@
 # Authority to Operate (ATO) Evidence Collection Guide
 
 **Document Version:** 1.3
-**Generated:** 2026-01-04 (revised 2026-10-23)
+**Generated:** 2026-01-04 (revised 2026-10-24)
 **OstrichPKI Version:** 0.15.0
 **Framework:** NIST Risk Management Framework (RMF)
 **Compliance Standards:** NIST 800-53 Rev 5, NIAP PP-CA v2.1, FIPS 140-2/140-3
@@ -1760,6 +1760,8 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | FMT_SMR.2 | `evidence/sar/test_results/rbac_tests.log` | Test results |
 | SC-8 | `crates/ostrich-common/src/tls.rs` | Code implementation (TLS 1.3 serving, all services) |
 | SC-8 | `services/*/src/main.rs` (TLS_CERT_FILE/TLS_KEY_FILE wiring) | Configuration |
+| SC-13 / SC-24 / FCS_TLSS_EXT.1 / FPT_FLS.1 | `crates/ostrich-common/src/tls.rs` (`ensure_fips`, called by `TlsSettings::load` and first in `serve_with_config`); `services/npe-portal/src/main.rs` (ACME mode calls `ensure_fips` before spawning the renewal task) | Code implementation (2026-10-24, PR 152): every HTTPS listener served via `ostrich_common::tls` refuses to start unless `ServerConfig::fips()` is true; startup log records `fips = true` and `aws_lc_version`. AWS-LC FIPS 4.2.0 module, FIPS mode / approved algorithms; CMVP certificate pending confirmation (POAM-2026-10-23-01). Scope: HTTPS listeners only. Plain-HTTP mode, client configs and gRPC are not covered (POAM-2026-10-23-05, -08) |
+| SC-13 / SC-24 | `tls::tests`: `ensure_fips_rejects_non_fips_server_configs`, `ensure_fips_accepts_loaded_config`, `serve_with_config_refuses_non_fips_config`, `load_builds_fips_config_with_alpn`, `fips_server_config_kx_groups_exclude_x25519_keep_mlkem_hybrid`; npe-portal `build_mtls_server_config_reports_fips_mode` | Test results: `cargo test -p ostrich-common --lib tls::` 26 passed / 0 failed; service `--bins` 58 passed / 0 failed; mutation check (gate forced to `Ok`) fails the refusal tests (TEST_EVIDENCE.md §2.6) |
 | SC-8 / SC-18 / SI-10 | `services/web-ui/src/server/middleware/csp.rs` | Code implementation (per-request nonce CSP + hardening headers on the web console). `script-src` is nonce-strict + `'wasm-unsafe-eval'`; `default-src`/`connect-src`/`base-uri`/`form-action` are `'self'`; `frame-ancestors 'none'`; `upgrade-insecure-requests`. Unit tests (3) cover nonce generation and header contents. |
 | SC-8 / SC-18 | `services/web-ui/src/server/middleware/csp.rs` deployment header capture (`/next`, image `web-ui:sha-4f64ef4`, 2026-06-24) | Deployment evidence — see CSP capture below |
 | SC-12 / FCS_COP.1 | `crates/ostrich-kra/src/wrap.rs` | Code implementation (AES-256-GCM KEK wrapping) |
