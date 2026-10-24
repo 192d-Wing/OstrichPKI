@@ -362,10 +362,12 @@ cargo test --package ostrich-crypto -- test_key
   [crates/ostrich-crypto/tests/pkcs11_integration_test.rs](../../crates/ostrich-crypto/tests/pkcs11_integration_test.rs),
   which now has a CI job,
   [.github/workflows/hsm-integration.yml](../../.github/workflows/hsm-integration.yml)
-  (`PKCS#11 suite (SoftHSM2)`, ubuntu-24.04; added 2026-10-23, Linux result
-  pending). Local macOS run 2026-10-23 (non-standard invocation): the 6
-  key-generation tests passed; suite total 16 passed, 3 failed (RSA-PSS
-  signing), 1 ignored. SoftHSM is a test double, not a validated module
+  (`PKCS#11 suite (SoftHSM2)`, ubuntu-24.04; added 2026-10-23). Before the
+  RSA-PSS fix, the Linux CI run (SoftHSM 2.6.1) and the local macOS run both
+  gave 16 passed, 3 failed (RSA-PSS signing), 1 ignored; the 6 key-generation
+  tests passed. After the fix (2026-10-23, local SoftHSM 2.7.0, non-standard
+  invocation): 28 passed, 0 failed, 1 ignored; Linux CI result for the fix
+  pending. SoftHSM is a test double, not a validated module
 
 **Related FIPS:** FIPS 186-5 (DSS), FIPS 203 (ML-KEM), FIPS 204 (ML-DSA), FIPS 205 (SLH-DSA), NIST SP 800-90A (DRBG)
 
@@ -443,8 +445,9 @@ cargo test --package ostrich-crypto -- test_key
 
 **Evidence:**
 
-- 🟡 RSA-PSS signature support (2048, 3072, 4096-bit keys). Through PKCS#11 it is **not demonstrated**: the 3 RSA-PSS tests in `pkcs11_integration_test.rs` fail on SoftHSM 2.7.0 with `CKR_GENERAL_ERROR` (local macOS run, 2026-10-23); the Linux CI result from [hsm-integration.yml](../../.github/workflows/hsm-integration.yml) is pending (POAM-2026-10-23-07)
-- 🟡 HSM-path signing test evidence: `pkcs11_integration_test.rs` (RSA PKCS#1 v1.5, ECDSA P-256/P-384/P-521 sign/verify passed locally on 2026-10-23; RSA-PSS failed), CI job `PKCS#11 suite (SoftHSM2)` added, Linux result pending
+- 🟡 RSA-PSS SHA-256/384/512 (RSA-2048/3072/4096) at the provider level. Through PKCS#11: **Fixed; local SoftHSM 2.7.0 28 passed / 0 failed / 1 ignored; Linux CI pending** (POAM-2026-10-23-17). The provider now hashes the message in the AWS-LC FIPS module and passes the digest to raw `CKM_RSA_PKCS_PSS` (`pkcs11_signature_input`, `rsa_pss_profile` in [crates/ostrich-crypto/src/pkcs11/mod.rs](../../crates/ostrich-crypto/src/pkcs11/mod.rs)). HSM signatures are verified by an independent AWS-LC verifier (`test_rsa_pss_hsm_sign_software_verify`, `test_rsa_pss_all_hashes_rsa3072_rsa4096`) and software signatures by HSM verify (`test_rsa_software_sign_hsm_verify`, RSA-2048/3072). Before the fix, the Linux CI run (SoftHSM 2.6.1) gave 16 passed / 3 RSA-PSS failed / 1 ignored, exit 101
+- ℹ️ Impact of the pre-fix RSA-PSS failure (corrected 2026-10-23): X.509 certificate, CRL and OCSP signing with RSA CA keys uses PKCS#1 v1.5 ([crates/ostrich-x509/src/signing.rs](../../crates/ostrich-x509/src/signing.rs) `recommended_signature_algorithm`) and was **not** affected. The affected path was AU-10 audit-record signing (FCO_NRO_EXT.2) with RSA PKCS#11 CA keys, which uses the key's default algorithm `RsaPssSha256`. The X.509 layer does not encode RSASSA-PSS parameters, so PSS is not claimed for X.509 signing (POAM-2026-10-23-20)
+- 🟡 HSM-path signing test evidence: `pkcs11_integration_test.rs` (29 tests: RSA PSS and PKCS#1 v1.5, ECDSA P-256/P-384/P-521; 28 passed / 0 failed / 1 ignored locally on 2026-10-23), CI job `PKCS#11 suite (SoftHSM2)`, Linux result for the fix pending. `verify` now returns `Ok(false)` only for a rejected signature and `Err` for token faults (`test_verify_token_fault_is_error_not_rejection`)
 - ✅ ECDSA signature support (P-256, P-384, P-521)
 - ✅ EdDSA signature support (Ed25519, Ed448)
 - 🟡 ML-DSA (FIPS 204): signature **verification in TLS only** (rustls 0.23.46 / rustls-webpki 0.103.16 on AWS-LC FIPS 4.2.0, accepted by the user 2026-10-23). ML-DSA signing of certificates, CRLs and OCSP responses is disabled (`crates/ostrich-x509/src/secure_defaults.rs`). Corrected 2026-10-23: earlier text listed ML-DSA signing as supported
@@ -458,6 +461,8 @@ cargo test --package ostrich-crypto -- test_key
 **Gaps:**
 
 - PKCS#11 HSM signing operations not yet implemented (Phase 10)
+- PKCS#11 `sign`/`verify` do not bind the requested algorithm to the key type; keys are generated without `CKA_ALLOWED_MECHANISMS` (POAM-2026-10-23-18)
+- The production HSM's security policy must approve raw `CKM_RSA_PKCS_PSS` / `CKM_ECDSA` with host-supplied digests (POAM-2026-10-23-21)
 - Hardware-backed key storage not yet available (software keys only)
 
 **Remediation Plan:** Phase 10 - Complete PKCS#11 HSM integration for hardware-backed signing
@@ -481,7 +486,8 @@ cargo test --package ostrich-crypto -- test_key
 
 - ✅ SHA-256 used for audit event hashing
 - ✅ SHA-256 used for JWK thumbprints (ACME)
-- ✅ ring library is FIPS 140-2 validated
+- 🟡 PKCS#11 RSA-PSS and ECDSA: the message digest (SHA-256/384/512) is computed on the host by the AWS-LC FIPS module (`pkcs11_signature_input`, [crates/ostrich-crypto/src/pkcs11/mod.rs](../../crates/ostrich-crypto/src/pkcs11/mod.rs); CMVP certificate for AWS-LC 4.2.0 pending, POAM-2026-10-23-01). Unit tests check digest length and value (`rsa_pss_input_is_sha2_digest_of_message`, `ecdsa_input_is_sha2_digest_of_message`)
+- ~~ring library is FIPS 140-2 validated~~ Removed 2026-10-23: `ring` has no CMVP certificate and is not used for this hashing (see Implementation above)
 
 **Related FIPS:** FIPS 180-4 (Secure Hash Standard), FIPS 202 (SHA-3)
 
@@ -2177,9 +2183,11 @@ pub async fn verify_csr_signature(
 **Supported Algorithms:**
 
 - RSA PKCS#1 v1.5 (SHA-256, SHA-384, SHA-512)
-- RSA-PSS (SHA-256, SHA-384, SHA-512)
+- RSA-PSS (SHA-256 only in practice: the parser maps id-RSASSA-PSS to `RsaPssSha256` without reading RSASSA-PSS-params, POAM-2026-10-23-20)
 - ECDSA (P-256, P-384, P-521)
 - EdDSA (Ed25519, Ed448)
+
+**Signed audit records (AU-10):** audit records are signed with the CA key's algorithm. For RSA PKCS#11 CA keys that is RSA-PSS SHA-256, which failed in the PKCS#11 provider before 2026-10-23. The fix is verified locally (SoftHSM 2.7.0, 28/0/1); Linux CI pending (POAM-2026-10-23-17). The end-to-end audit-signing test covers EC P-256 only.
 
 **NIAP Annotation:** `crates/ostrich-x509/src/parser.rs` lines 536-565
 
@@ -2354,10 +2362,12 @@ ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
 | 2.9 | 2026-07-27 | OstrichPKI Team | FCS_CKM.1/FCS_STG_EXT.1/FMT_SMF.1 test evidence: opt-in P-384 SoftHSM CA bootstrap and EST external-issuer integration profile. |
 | 3.0 | 2026-10-23 | OstrichPKI Team | Dependency advisory remediation. FCS_TLSC_EXT.2 / FCS_TLSS_EXT.1: "rustls … FIPS-validated" reworded to "rustls 0.23.46 using the aws-lc-rs FIPS provider (AWS-LC FIPS 4.2.0; CMVP certificate pending confirmation, POA&M)"; the tonic `tls-ring` provider is noted; handshake tests added as evidence; ML-DSA TLS verification noted (accepted 2026-10-23). FIA_X509_EXT.1: rustls-webpki 0.103.16 TLS-peer path, emSign SPKI distrust, no revocation on the TLS path; Related NIST changed to IA-5(2), SC-17, SI-10. FCS_CKM.1 / FCS_COP.1: corrected ML-DSA/SLH-DSA/hybrid overclaims. FCS_COP.1(2): corrected the `ring::digest` claim (RustCrypto `sha2`). No SFR status changes. |
 | 3.1 | 2026-10-23 | OstrichPKI Team | CI hardening. FCS_CKM.1 / FCS_COP.1(1): `hsm-integration.yml` (SoftHSM PKCS#11 suite in CI) added as test evidence, Linux result pending; local macOS result recorded (16 passed / 3 RSA-PSS failed / 1 ignored). RSA-PSS evidence qualified (✅ → 🟡: not demonstrated through PKCS#11). No SFR status changes. |
+| 3.2 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix. FCS_COP.1(1): RSA-PSS through PKCS#11 recorded as "Fixed; local SoftHSM 2.7.0 28/0/1; Linux CI pending" (stays 🟡); Linux CI before-fix result (16/3/1, exit 101) recorded; impact corrected (X.509/CRL/OCSP RSA signing is PKCS#1 v1.5 and was not affected; AU-10 audit-record signing with RSA PKCS#11 CA keys was); new tests; algorithm-key binding and HSM-policy gaps (POAM-18, POAM-21). FCS_COP.1(2): host-side AWS-LC hashing for PKCS#11 PSS/ECDSA; removed the false "ring FIPS 140-2 validated" bullet. FCS_CKM.1 suite counts updated. FCO_NRO_EXT.2: RSA-PSS CSR parameter caveat (POAM-20) and audit-signing note. New "PKCS#11 RSA-PSS digest input" section. **No SFR status or percentage changes.** |
 
 ---
 
 **Next Review Date:** 2026-02-01 (or upon completion of Phase 21)
+
 ### PKCS#11 ECDSA interoperability evidence
 
 **SFR:** FCS_COP.1
@@ -2366,6 +2376,17 @@ ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
 ECDSA signing and verification use FIPS AWS-LC SHA-2 preprocessing followed by
 the required PKCS#11 `CKM_ECDSA` primitive. This supports conformant tokens that
 do not implement the optional combined hash-and-sign mechanisms.
+
+### PKCS#11 RSA-PSS digest input
+
+**SFRs:** FCS_COP.1(1), FCS_COP.1(2), FCO_NRO_EXT.2
+**Status:** Fixed; local SoftHSM 2.7.0 28 passed / 0 failed / 1 ignored; Linux CI pending
+
+RSA-PSS signing and verification hash the message in the AWS-LC FIPS module
+and pass the digest to raw `CKM_RSA_PKCS_PSS`; EMSA-PSS encoding and the
+private-key operation stay in the token. Status moves to Tested only when the
+Linux CI artifact for the fix commit is green (POAM-2026-10-23-17).
+
 ### EST mTLS workload probes
 
 **SFRs:** FTP_ITC.1, FPT_TST_EXT.1
@@ -2373,6 +2394,7 @@ do not implement the optional combined hash-and-sign mechanisms.
 Liveness and readiness checks use a TCP socket when client-certificate
 authentication is configured. The EST TLS handshake continues to require a
 trusted client certificate for every HTTP request.
+
 ### EST Basic bootstrap authentication
 
 **SFRs:** FIA_UAU.5, FTP_ITC.1

@@ -13,13 +13,35 @@ ignore = [
     # --- No fixed upgrade available ---
 
     # RSA "Marvin" timing side-channel (PKCS#1 v1.5 decryption). The pure-Rust
-    # `rsa` crate has no patched release. Our usage is RSA signature VERIFICATION
-    # (OIDC, via openidconnect) and JWS SIGNING (ACME account keys) — neither
-    # exposes an RSA *decryption* oracle over attacker-chosen ciphertexts, which
-    # is what the attack requires. Risk accepted; revisit if `rsa` ships a fix.
+    # `rsa` crate has no patched release. Production use: ostrich-acme
+    # (`crates/ostrich-acme/src/jws.rs`) only builds an RsaPublicKey from an
+    # ACME account JWK (n, e) and encodes it to SPKI DER for JWS verification -
+    # public-key data only, no private-key operation. openidconnect (which also
+    # pulls in `rsa`) is a declared but unused dependency of ostrich-web-ui (no
+    # call sites), so no production code reaches `rsa` through it. RSA private
+    # keys in tests/benches (integration-test fixtures, ostrich-crypto/ostrich-kra
+    # dev-deps, ostrich-benches) are ephemeral test-only keys. No RSA decryption
+    # oracle over attacker-chosen ciphertexts is exposed and no production secret
+    # flows through the affected operations. Risk accepted; revisit if `rsa`
+    # ships a fix.
     # POAM: POAM-2026-10-23-09 - risk acceptance; re-evaluate when `rsa` ships a
     # constant-time fix.
     "RUSTSEC-2023-0071",
+
+    # crypto-bigint 0.5.5: timing variability in operations intended to be
+    # constant-time. Enters only via elliptic-curve 0.13 (p256/p384) from
+    # openidconnect 4.0.1 (latest release; web-ui) and the integration-test
+    # crate (tests/Cargo.toml p256 0.13). The fix exists only in
+    # crypto-bigint >= 0.7.6, part of the blocked RustCrypto 0.3 migration
+    # (issue #21). openidconnect is a declared but unused dependency of
+    # ostrich-web-ui (no call sites; OIDC login in server/auth/oidc.rs is
+    # implemented directly over reqwest), so no production code reaches
+    # crypto-bigint. In the test crate p256 is used only for ephemeral
+    # test-only fixture keys (tests/integration/common/fixtures.rs). No
+    # production secret flows through the affected operations. Risk accepted.
+    # POAM: POAM-2026-10-23-16 - remove when openidconnect / p256 / p384 move
+    # to crypto-bigint >= 0.7.6 (RustCrypto 0.3 migration, issue #21).
+    "RUSTSEC-2026-0387",
 
     # --- Unmaintained / unsound (warnings; all transitive, no direct use) ---
     # POAM: POAM-2026-10-23-12 - SA-22 unmaintained-component acceptance; replace

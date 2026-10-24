@@ -1610,21 +1610,43 @@ consumed by the TAMP messages above.
 | 2.0 | 2026-06-29 | OstrichPKI Team | RFC 7030 §4.4 + RFC 7292: EFS server-side key generation delivers the key + certificate as an encrypted PKCS#12 (PBES2 PBKDF2-HMAC-SHA256 / AES-256-CBC + HMAC-SHA256 MAC) under a one-time password — `crates/ostrich-x509/src/pkcs12.rs`. The EFS portal flow uses a CSR-free JSON `/serverkeygen` input (subject from the mTLS identity; no untrusted PKCS#10 parsed) alongside the standard §4.4.1 CSR path. RFC 5754 (SHA-2 AlgorithmIdentifiers omit NULL params) observed in the PKCS#12 structure. |
 | 2.1 | 2026-07-27 | OstrichPKI Team | Added Kubernetes integration profile for RFC 7030 §3.2.3 TLS-protected Basic bootstrap and §4.2 enrollment through an external cert-manager issuer. |
 | 2.2 | 2026-10-23 | OstrichPKI Team | Dependency advisory remediation (rustls 0.23.46, rustls-webpki 0.103.16, h2, quinn-proto, zip 9). RFC 8446 / RFC 9325: rewrote stale statements (TLS 1.3 minimum and mTLS are enforced in `tls.rs`; ChaCha20-Poly1305 is not offered under `fips`); status stays Partial (gRPC, revocation). RFC 5280 §6: added the TLS-peer path (webpki emSign SPKI distrust, no revocation). ML-DSA in X.509 is now RFC 9881: verification in TLS accepted by the user 2026-10-23, issuance disabled; status Designed → Partial (both 🟡, summary counts unchanged). Added RFC 9113/9000/1951 dependency fixes. |
+| 2.3 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix: added "RFC 8017 / RFC 4055 — RSASSA-PSS" note. PKCS#11 RSA-PSS now follows RFC 8017 §8.1/§9.1 (mHash = Hash(M) computed on the host), verified against an independent software verifier locally; Linux CI pending. Recorded the pre-existing RFC 4055 deviation: the X.509 layer does not encode or parse RSASSA-PSS-params (POAM-2026-10-23-20). No RFC section status changed. |
 
 ---
 
 **Next Review Date:** 2026-02-01 (or upon completion of Phase 15)
+
 ### RFC 5758 §3.2 — ECDSA with SHA-2
 
 PKCS#11 ECDSA operations hash the complete signed input with the SHA-2 function
 selected by the certificate signature algorithm, then submit that digest to
 `CKM_ECDSA`. The returned fixed-width `r || s` value continues through the
 existing X.509 DER conversion path.
+
+### RFC 8017 / RFC 4055 — RSASSA-PSS
+
+PKCS#11 RSA-PSS signing now computes mHash = Hash(M) on the host (RFC 8017
+§9.1, EMSA-PSS) and passes it to raw `CKM_RSA_PKCS_PSS`; the token performs
+the encoding with MGF1 using the same hash and a salt length equal to the hash
+length. HSM-produced signatures verify with an independent AWS-LC RSASSA-PSS
+verifier (`test_rsa_pss_hsm_sign_software_verify`). Status: Fixed; local
+SoftHSM 2.7.0 28 passed / 0 failed / 1 ignored; Linux CI pending.
+
+**Deviation (pre-existing, RFC 4055 §3.1):** RSA-PSS is not used for X.509
+signing. RSA CA keys sign certificates, CRLs and OCSP responses with
+sha256WithRSAEncryption (PKCS#1 v1.5). The X.509 layer cannot encode
+RSASSA-PSS-params, and the parser and path validator map id-RSASSA-PSS to
+RSA-PSS SHA-256 without reading the parameters
+([parser.rs](../../crates/ostrich-x509/src/parser.rs),
+[path_validator.rs](../../crates/ostrich-x509/src/validation/path_validator.rs)).
+POA&M: POAM-2026-10-23-20.
+
 ### RFC 7030 mTLS health-probe boundary
 
 When EST client-certificate authentication is configured, Kubernetes uses TCP
 socket probes because native HTTP probes cannot supply an enrollment client
 certificate. RFC 7030 authentication remains enforced for all HTTP requests.
+
 ### RFC 7030 §3.2.3 — HTTP Basic bootstrap
 
 With Basic bootstrap explicitly enabled, the EST TLS listener requests but does

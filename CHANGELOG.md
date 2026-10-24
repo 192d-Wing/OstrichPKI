@@ -67,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - RUSTSEC-2024-0436.
   - RUSTSEC-2025-0134.
   - RUSTSEC-2026-0097: POA&M, remove after the rand 0.8.6 lockfile bump.
+  - RUSTSEC-2026-0387: risk acceptance, POAM-2026-10-23-16 (see below).
 - Removed stale ignores: RUSTSEC-2026-0118, RUSTSEC-2025-0141 and RUSTSEC-2024-0370 no longer match the
   dependency graph.
 - `deny.toml` was rewritten for the cargo-deny 0.18+ schema, which removed five keys. `cargo deny check`
@@ -80,6 +81,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `persist-credentials: false`. The GitLab `cargo install` steps pin cargo-audit 0.22.2 and
   cargo-deny 0.20.2.
 - **NIST 800-53**: RA-5, SI-2, SR-3, SR-4, SR-11, SI-7, CM-6
+
+#### RUSTSEC-2026-0387 (crypto-bigint 0.5.5) accepted with a POA&M item
+
+##### workspace (Cargo.lock)
+
+- RUSTSEC-2026-0387 is now ignored in `.cargo/audit.toml` and `deny.toml`. The two lists still match.
+  The advisory reports timing variability in crypto-bigint 0.5.5 operations that are meant to be
+  constant-time.
+- There is no upgrade path. crypto-bigint 0.5.5 comes in only through elliptic-curve 0.13
+  (p256/p384), from two places:
+  - openidconnect 4.0.1, the latest release, used by ostrich-web-ui;
+  - the integration-test crate (`tests/Cargo.toml`, p256 0.13).
+- The fix is only in crypto-bigint 0.7.6 and later. That version is part of the blocked
+  RustCrypto 0.3 migration (issue #21).
+- Exposure: openidconnect is a declared but unused dependency of ostrich-web-ui (it has no call
+  sites), so no production code reaches crypto-bigint. In the test crate, p256 is used only for
+  ephemeral test fixture keys. No production secret passes through the affected operations.
+- Tracked as `POAM-2026-10-23-16`. Remove the ignore when openidconnect, p256 and p384 move to
+  crypto-bigint 0.7.6 or later.
+- **NIST 800-53**: RA-5, SI-2, CA-5 (POA&M)
 
 ### Changed
 
@@ -158,6 +179,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `src/server/auth/handlers.rs`: added `#[expect(clippy::result_large_err, reason = ...)]` on the `login`,
   `callback` and `userinfo` handlers. The axum `Response` error type is converted immediately, so boxing
   it would only add an allocation. No behaviour change.
+
+#### PKCS#11 RSA-PSS sign and verify
+
+##### ostrich-crypto
+
+- `Pkcs11Provider` RSA-PSS signing and verification (`RsaPssSha256`, `RsaPssSha384`, `RsaPssSha512`)
+  now works. Before this fix the provider passed the whole unhashed message to raw
+  `CKM_RSA_PKCS_PSS`. That mechanism expects a digest whose length matches `hashAlg` (PKCS#11
+  §2.1.14), so `C_Sign` failed with `CKR_GENERAL_ERROR` (SoftHSM 2.6.1 and 2.7.0).
+- The message is now hashed on the host with SHA-256/384/512 in the AWS-LC FIPS module, which is
+  the same approach the ECDSA path uses. The HSM still does the EMSA-PSS encoding and the
+  private-key operation, with `hashAlg`/MGF1 matching the digest and `sLen` equal to the hash length
+  (RFC 8017 §8.1/§9.1, FIPS 186-5 §5.4). One `rsa_pss_profile()` drives the digest, the
+  mechanism parameters and the mechanism choice for both sign and verify.
+- Impact: HSM-backed AU-10 audit-record signing with RSA keys failed, because RSA-PSS SHA-256 is
+  the provider's default for RSA keys. X.509 certificate and CRL signing with RSA keys uses
+  PKCS#1 v1.5 and was not affected. ECDSA and PKCS#1 v1.5 inputs are unchanged.
+- `verify` now fails closed on token faults. It returns `Ok(false)` only for
+  `CKR_SIGNATURE_INVALID` and `CKR_SIGNATURE_LEN_RANGE`. Any other PKCS#11 error now returns `Err`
+  and logs a warning with the return value; it used to return `Ok(false)`. The only non-test
+  caller (`path_validator.rs`) already treats `Err` as a validation failure.
+- The `sign`/`verify` docs on `Pkcs11Provider` and the `CryptoProvider` trait now state that the
+  input is the message (for example, the DER TBS). The provider hashes it as `algorithm`
+  requires, so callers must not pre-hash.
+- Tests: unit tests for the signature input and mechanism profile. New SoftHSM2 integration
+  tests check that HSM RSA-PSS signatures (SHA-256/384/512) verify with a software RSA-PSS
+  verifier (aws-lc-rs) against the exported SPKI. They also check that a tampered signature or
+  the wrong message gives exactly `Ok(false)`, and that a token fault gives `Err`.
+- **NIST 800-53**: SC-13, AU-10, SI-7. **NIAP PP-CA**: FCS_COP.1(1), FCS_COP.1(2)
 
 ## [0.15.0] - 2026-01-04
 

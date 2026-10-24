@@ -858,6 +858,29 @@ Limits of this evidence:
   gate as merge-blocking until POAM-2026-10-23-14 closes
 - The gate files have no `CODEOWNERS` review (POAM-2026-10-23-13)
 
+**Recorded result — 2026-10-23, PKCS#11 RSA-PSS fix (RA-5 / SI-2):**
+
+Same branch, later the same day. Run record
+`target/agent-workflow/20261023-230002-pkcs11-rsa-pss/` (`qa-report.md`,
+`fix-request-round-1.md`, `fixes-round-1.md`).
+
+| Scan | Command | Result |
+|------|---------|--------|
+| Advisories (gate form) | `cargo audit --deny warnings` | before the ignore: **1 vulnerability**, RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5, published 2026-10-23; `Cargo.lock` unchanged); after the ignore: exit 0 |
+| Supply-chain policy | `cargo deny check` | before: `advisories FAILED, bans ok, licenses ok, sources ok`; after: exit 0 |
+| Exception parity | RUSTSEC IDs in `.cargo/audit.toml` and `deny.toml` | identical, 5 IDs: RUSTSEC-2023-0071, -2024-0436, -2025-0134, -2026-0097, -2026-0387 |
+
+Risk acceptance for RUSTSEC-2026-0387 (user decision 2026-10-23,
+POAM-2026-10-23-16): no compatible fix (≥0.7.6 needs the RustCrypto 0.3
+migration, issue #21). `crypto-bigint` 0.5.5 enters through `elliptic-curve`
+0.13 (`p256`/`p384`) from `openidconnect` 4.0.1, a declared but unused
+dependency of `ostrich-web-ui` (no call sites), so no production code reaches
+it. In the integration-test crate, `p256` 0.13 is used only for ephemeral,
+test-only fixture keys. No production secret flows through the affected
+operations. Removing the unused dependency is tracked as POAM-2026-10-23-22.
+
+Limits: local run only; no CI run of the gate recorded for this change.
+
 **CM-6: CI workflow secure defaults (2026-10-23, CI hardening):**
 
 | Setting | Where | Value |
@@ -881,9 +904,18 @@ tag-pinned (POAM-2026-10-23-15).
   test log, with commit, runner image, SoftHSM and rustc versions and the exit
   status, as artifact `pkcs11-softhsm-results` (`if: always()`, 90-day
   retention)
-- Linux result: **pending** (no run yet). Local macOS result (non-standard
-  invocation): 16 passed, 3 RSA-PSS failed, 1 ignored. See
+- First Linux result, before the RSA-PSS fix (SoftHSM 2.6.1, ubuntu24 image
+  20261012.334.1): 16 passed, 3 RSA-PSS failed, 1 ignored, exit 101. Local
+  macOS result before the fix (non-standard invocation): the same. See
   [TEST_EVIDENCE.md §2.4](TEST_EVIDENCE.md#24-test-run-2026-10-23-ci-hardening)
+- After the RSA-PSS fix (2026-10-23): **Fixed; local SoftHSM 2.7.0 28 passed /
+  0 failed / 1 ignored; Linux CI pending**. New evidence includes
+  `test_rsa_pss_hsm_sign_software_verify` (HSM RSA-PSS signatures accepted by
+  an independent AWS-LC verifier over the exported SPKI) and
+  `test_rsa_software_sign_hsm_verify` (the reverse direction). See
+  [TEST_EVIDENCE.md §2.5](TEST_EVIDENCE.md#25-test-run-2026-10-23-pkcs11-rsa-pss-fix).
+  Attach the `pkcs11-softhsm-results` artifact for the pushed fix commit to
+  close POAM-2026-10-23-17
 
 **Remediation:**
 
@@ -1869,11 +1901,14 @@ Not claimed:
 ---
 
 **End of ATO Evidence Collection Guide**
+
 ### PKCS#11 ECDSA token portability
 
 | Controls / SFR | Evidence | Expected result |
 |---|---|---|
 | SC-12, SC-13, FCS_COP.1 | `crates/ostrich-crypto/src/pkcs11/mod.rs`; SoftHSM integration lifecycle | FIPS AWS-LC SHA-2 digest followed by token-resident `CKM_ECDSA` signing; no dependency on optional combined mechanisms |
+| SC-13, AU-10, FCS_COP.1(1), FCO_NRO_EXT.2 | `crates/ostrich-crypto/src/pkcs11/mod.rs` (`pkcs11_signature_input`, `rsa_pss_profile`); `crates/ostrich-crypto/tests/pkcs11_integration_test.rs` | RSA-PSS: AWS-LC SHA-2 digest followed by token-resident `CKM_RSA_PKCS_PSS`; HSM signatures verify with a software RSASSA-PSS verifier. Status: Fixed; local SoftHSM 2.7.0 28/0/1; Linux CI pending |
+
 ### EST mTLS Kubernetes probes
 
 | Controls / SFRs | Evidence | Expected result |
