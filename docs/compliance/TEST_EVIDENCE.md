@@ -1,9 +1,9 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 1.2
-**Last Updated:** 2026-10-23
+**Document Version:** 1.6
+**Last Updated:** 2026-10-24
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
-**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 649 unit tests passed, 2026-10-23 (§2.3)
+**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 667 unit tests passed, 0 failed, 1 ignored, 2026-10-24 (§2.6)
 
 ---
 
@@ -256,6 +256,54 @@ for unsupported algorithms and has no pass-through default.
 RSA-4096 software-sign → HSM-verify; the `CKA_ALLOWED_MECHANISMS` path;
 provider-level audit events for sign/verify failures (QA-003); an RSA variant
 of `audit_signing_e2e` (NIST-005).
+
+### 2.6 Test Run 2026-10-24 (PR 152, Fail-Closed FIPS TLS)
+
+**Scope:** branch `revive-fips-tls`, head 396680c (PR 152 rebased onto `main`
+@ 9000cb4) plus uncommitted round-1 fixes:
+`crates/ostrich-common/src/tls.rs` (`ensure_fips`, `aws_lc_module_version`,
+gate calls in `load` and `serve_with_config`, tests),
+`crates/ostrich-common/Cargo.toml` (direct `aws-lc-rs` dependency, version
+query only), workspace `Cargo.toml` (`aws-lc-rs` requirement 1.16 → 1.18; lock
+already 1.18.2), `Cargo.lock` (new dependency edge only),
+`services/npe-portal/src/main.rs`, `services/npe-portal/src/server/acme.rs`.
+**Sources:** `qa-report.md` (before the fixes), `fixes-round-1.md` (after the
+fixes) and `gate.md` in `target/agent-workflow/20261024-000214-pr152-fips-tls/`.
+A gate that did not execute is recorded as NOT RUN.
+
+| Gate | Command | Result | Counts |
+|------|---------|--------|--------|
+| Unit (TLS module) | `cargo test -p ostrich-common --lib tls::` | PASS | **26 passed, 0 failed** (QA before the fixes: 24 passed; +3 new tests, −1 redundant test removed) |
+| Unit | `make test-unit` (`cargo test --workspace --all-features --lib`) | PASS | **667 passed, 0 failed, 1 ignored** (pre-existing ignore). QA before the fixes: 665 / 0 / 1 |
+| Service binaries | `cargo test --all-features --bins -p ostrich-npe-portal -p ostrich-ca-server -p ostrich-est-server -p ostrich-web-ui` | PASS | **58 passed, 0 failed**, including `build_mtls_server_config_reports_fips_mode` |
+| Integration (mTLS) | `cargo test -p ostrich-integration-tests --test mtls_peercert_e2e` | PASS | 1 passed, 0 failed |
+| Mutation check | `ensure_fips` changed to `if true \|\| config.fips()` (always `Ok`) | FAIL as intended | `ensure_fips_rejects_non_fips_server_configs` and `serve_with_config_refuses_non_fips_config` failed (the second hit its 5 s timeout because it started serving); 24 others passed. Source restored, re-run 26 / 0 |
+| Mutation check (QA, before the fixes) | non-FIPS key-exchange group injected into `load` | FAIL as intended | 9 `load` tests fail with a `Config` error. The PR's original test `aws_lc_rs_provider_is_in_fips_mode` stayed green, so it was removed as redundant |
+| Format | `cargo fmt --all --check` | PASS | exit 0 |
+| Lint | `make clippy`; `cargo clippy -p ostrich-common -p ostrich-npe-portal --all-targets --all-features -- -D warnings` | PASS | exit 0 |
+| Supply chain | `cargo deny check` | PASS | exit 0 (advisories, bans, licenses, sources ok) |
+| Supply chain | `cargo audit --deny warnings` | PASS | exit 0 |
+| PR CI | `gh pr checks 152` (rebased head 396680c, **before** the round-1 fixes) | PASS (partial) | 10 pass; CodeQL rust pending at review time. The round-1 fixes are uncommitted: **CI NOT RUN** on them |
+| Integration (Postgres), doc tests, fuzz, live service start-up | — | **NOT RUN** | No live startup log was captured, so the `aws_lc_version` value is not observed |
+
+**Tests added or changed** (`crates/ostrich-common/src/tls.rs` `mod tests`):
+`ensure_fips_rejects_non_fips_server_configs` (plain X25519 group → `Err(Config)`;
+`require_ems = false` → `Err(Config)`), `ensure_fips_accepts_loaded_config`,
+`serve_with_config_refuses_non_fips_config` (tokio; `Err(Config)` without
+binding, 5 s timeout), plus QA's `fips_predicate_false_when_extended_master_secret_not_required`,
+`fips_predicate_false_with_non_fips_kx_group` and
+`fips_server_config_kx_groups_exclude_x25519_keep_mlkem_hybrid`. In
+`services/npe-portal/src/server/acme.rs`: `build_mtls_server_config_reports_fips_mode`.
+Removed: `aws_lc_rs_provider_is_in_fips_mode` (duplicated
+`load_builds_fips_config_with_alpn`).
+
+**QA-005 (open, not on the POA&M):** `make test-unit` runs `--lib` only and
+skips the service binary tests. They were run separately here (58 passed).
+
+**Not covered:** a refusal through a real non-FIPS build (the tests build
+non-FIPS configs from the FIPS provider); a failed AWS-LC power-on self-test
+(the module aborts the process, outside the gate); plain-HTTP mode; rustls
+client configs; gRPC (POAM-2026-10-23-05, -08).
 
 ---
 
@@ -798,3 +846,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 1.3 | 2026-10-23 | OstrichPKI Team | Added §2.4, the CI-hardening test run: 653 unit tests passed; `cargo audit --deny warnings` and `cargo deny check` pass locally with negative checks; PKCS#11 suite run locally on macOS (non-standard invocation) 16 passed / 3 RSA-PSS failed / 1 ignored; Linux CI, pipelines and actionlint NOT RUN. QA-004 narrowed. §5.2: audit job no longer advisory (not yet a required check). §5.3: cargo deny passes locally. |
 | 1.4 | 2026-10-23 | OstrichPKI Team | Added §2.5, the PKCS#11 RSA-PSS fix run: Linux CI before the fix 16 passed / 3 failed / 1 ignored (exit 101); local SoftHSM 2.7.0 after the fix 28 passed / 0 failed / 1 ignored; mutation checks; `ostrich-crypto` lib 65 passed; `make test-unit` 661 passed / 0 failed / 1 ignored; `cargo audit` / `cargo deny` failed on RUSTSEC-2026-0387 and pass after the risk-accepted ignore (POAM-16). Linux CI after the fix NOT RUN. §2.4 Linux row cross-referenced. |
 | 1.5 | 2026-10-23 | OstrichPKI Team | §2.5: recorded the after-fix Linux CI result, GitHub Actions run 40063317654 (`HSM integration` / `PKCS#11 suite (SoftHSM2)`, SoftHSM 2.6.1, rustc 1.99.1, head 44d560d, artifact `commit:` merge ref c67c10e): 28 passed / 0 failed / 1 ignored, exit 0 (NOT RUN → PASS). GitHub dependency gate NOT RUN → PASS (PR 181, 12/12 checks green); GitLab still NOT RUN. QA-004 text updated (POAM-07 and POAM-17 closed; `CKA_ALLOWED_MECHANISMS` still not exercised). §2.4 cross-references updated. |
+| 1.6 | 2026-10-24 | OstrichPKI Team | Added §2.6, the PR 152 fail-closed FIPS TLS run: `tls::` 26 passed / 0 failed; `make test-unit` 667 / 0 / 1; service `--bins` 58 / 0; `mtls_peercert_e2e` 1 / 0; fmt, clippy, `cargo deny`, `cargo audit` pass; mutation check fails both refusal tests as intended. CI on the uncommitted round-1 fixes, Postgres integration and live start-up NOT RUN. QA-005 (`make test-unit` skips service bins) recorded. Header version 1.2 → 1.6 (1.3-1.5 had not updated it). |

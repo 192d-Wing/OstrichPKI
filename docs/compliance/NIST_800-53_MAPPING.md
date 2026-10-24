@@ -1,7 +1,7 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 2.2
-**Date:** 2026-10-23
+**Document Version:** 2.6
+**Date:** 2026-10-24
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
 **Compliance Status:** Enhanced (75-80%)
@@ -1199,12 +1199,16 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
   with the explicitly selected aws-lc-rs provider (`fips` feature; AWS-LC FIPS
   4.2.0 module, CMVP certificate for 4.2.0 pending confirmation), optional mTLS
   client verification, fail-fast on partial configuration, plain-HTTP fallback
-  with prominent startup warning
+  with prominent startup warning, and the fail-closed FIPS gate `ensure_fips`
+  (called by `TlsSettings::load` and first in `serve_with_config`)
 - `crates/ostrich-acme/src/ca_integration.rs:32-41` - CA client with mTLS
 - `crates/ostrich-est/src/ca_integration.rs:30-39` - EST client with mTLS
-- All seven service binaries (`services/*/src/main.rs`) accept
-  `TLS_CERT_FILE`/`TLS_KEY_FILE`/`TLS_CLIENT_CA_FILE` and serve HTTPS via
-  `ostrich_common::tls::serve`
+- Nine service binaries (acme, ca, est, kra, npe-portal, ocsp, scms, tamp,
+  web-ui; `services/*/src/main.rs`) build `TlsSettings::from_options` and serve
+  HTTPS via `ostrich_common::tls::serve` (corrected 2026-10-24: earlier text
+  said "all seven ... via `serve`"). npe-portal ACME mode builds its own
+  `ServerConfig` (`build_mtls_server_config`) and serves it via
+  `ostrich_common::tls::serve_with_config`
 
 **Implementation Update (Phase 14):**
 
@@ -1232,6 +1236,22 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
   `fips() == true`; trusted client accepted; untrusted, missing, and
   serverAuth-only-EKU client certificates rejected; TLS 1.2-only client
   rejected.
+- ✅ **Fail-closed FIPS-mode gate on HTTPS listeners (2026-10-24, PR 152,
+  branch `revive-fips-tls`):** `ensure_fips` in
+  [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs)
+  returns `Error::Config` unless `ServerConfig::fips()` is true. It runs in
+  `TlsSettings::load` and before any bind in `serve_with_config`, so every
+  HTTPS listener served through `ostrich_common::tls` (`serve` and
+  `serve_with_config`, including npe-portal ACME mode, which also calls it
+  before spawning its renewal task) refuses to start on a non-FIPS TLS stack.
+  The startup log records `fips = true` and `aws_lc_version`. Tests:
+  `ensure_fips_rejects_non_fips_server_configs`,
+  `ensure_fips_accepts_loaded_config`,
+  `serve_with_config_refuses_non_fips_config`, npe-portal
+  `build_mtls_server_config_reports_fips_mode` (see SC-13, SC-24). Not covered:
+  plain-HTTP mode, rustls client configs, and gRPC: the ca-server gRPC server
+  has no TLS and gRPC clients use tonic `tls-ring` (POAM-2026-10-23-05,
+  POAM-2026-10-23-08).
 - ℹ️ Under the `fips` feature, rustls offers only TLS_AES_256_GCM_SHA384 and
   TLS_AES_128_GCM_SHA256 for TLS 1.3 (ChaCha20-Poly1305 is excluded). Since
   0.23.46 the aws-lc-rs provider also advertises and verifies ML-DSA-44/65/87
@@ -1444,8 +1464,26 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - ✅ Runtime module check: `aws_lc_module_reports_fips_mode`
   ([crates/ostrich-crypto/src/self_test.rs](../../crates/ostrich-crypto/src/self_test.rs))
   asserts `aws_lc_rs::try_fips_mode() == Ok(())` and a SHA-256 KAT through the
-  module (passed 2026-10-23, `qa-report.md`). This is a unit test. The services
-  do not yet assert FIPS mode at startup (POA&M).
+  module (passed 2026-10-23, `qa-report.md`). This is a unit test.
+- 🟡 **Start-up FIPS-mode assertion, scoped to HTTPS listeners (2026-10-24,
+  PR 152):** `ostrich_common::tls::ensure_fips` refuses to serve any HTTPS
+  listener served via `ostrich_common::tls` (`serve`, `serve_with_config`,
+  including npe-portal ACME mode) unless `ServerConfig::fips()` is true, in the
+  AWS-LC FIPS 4.2.0 module (FIPS mode / approved algorithms; CMVP certificate
+  pending confirmation, POAM-2026-10-23-01). `fips()` reflects build and
+  linkage (AWS-LC `FIPS_mode()` is a build-time constant in 4.2.0) plus the
+  rustls allowlist and `require_ems`. It does not detect a failed power-on
+  self-test; the module aborts the process itself in that case. Tests: 26
+  `tls::` unit tests passed, including
+  `ensure_fips_rejects_non_fips_server_configs`,
+  `ensure_fips_accepts_loaded_config`,
+  `serve_with_config_refuses_non_fips_config` and
+  `fips_server_config_kx_groups_exclude_x25519_keep_mlkem_hybrid`. Mutation
+  check (gate forced to `Ok`): two of these fail. Still open
+  (POAM-2026-10-23-05): no process-level gate (plain-HTTP mode and other module
+  users), no client-config or gRPC check, no audit event on refusal, KATs not
+  through AWS-LC. In ca-server the gRPC listener is spawned before the HTTPS
+  gate runs, so on a non-FIPS build gRPC is briefly up before the process exits.
 - 🟡 ML-DSA (FIPS 204): **TLS verification only.** ML-DSA is in the AWS-LC FIPS
   4.2.0 module and, from aws-lc-rs 1.18, exposed under `fips`. rustls 0.23.46 /
   rustls-webpki 0.103.16 therefore verify ML-DSA-44/65/87 peer signatures and
@@ -1690,6 +1728,32 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 - [services/web-ui/src/server/auth/handlers.rs:73](../../services/web-ui/src/server/auth/handlers.rs#L73) - CSRF state cookie
 
 **Remediation:** None required - session authenticity fully implemented
+
+---
+
+### SC-24: Fail in Known State
+
+**Control:** The information system fails to a known state for defined failure types, preserving defined system state information.
+
+**Implementation Status:** 🟡 **Partial** (added 2026-10-24; covers HTTPS listeners only)
+
+**NIAP Mapping:**
+
+- FPT_FLS.1 - Failure with Preservation of Secure State
+
+**Implementation:**
+
+- [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - `ensure_fips`: a `ServerConfig` that does not report FIPS mode is refused with `Error::Config` and a `tracing::error!` record; the listener never binds (refuse to serve, never degrade). Called from `TlsSettings::load` and first in `serve_with_config`; npe-portal ACME mode also calls it before spawning background work ([services/npe-portal/src/main.rs](../../services/npe-portal/src/main.rs))
+
+**Evidence:**
+
+- ✅ `ensure_fips_rejects_non_fips_server_configs`, `serve_with_config_refuses_non_fips_config` (returns `Err(Config)` without binding), `ensure_fips_accepts_loaded_config`; 26 `tls::` tests passed 2026-10-24; mutation check: forcing the gate to `Ok` fails the first two
+
+**Gaps (POAM-2026-10-23-05):**
+
+- Only TLS server configs served via `ostrich_common::tls` are covered. Plain-HTTP mode, rustls client configs and gRPC are not
+- ca-server spawns its plaintext gRPC listener before the HTTPS gate runs, so on a non-FIPS build gRPC is briefly reachable before the process exits (not a fully known failure state)
+- No `ostrich-audit` event on refusal (error log only)
 
 ---
 
@@ -1971,9 +2035,9 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 | CP (Contingency) | 2 | 0 | 1 | 1 | 25% |
 | IA (Identification/Auth) | 3 | 0 | 2 | 1 | 33% |
 | RA (Risk Assessment) | 1 | 0 | 1 | 0 | 50% |
-| SC (System Protection) | 7 | 2 | 4 | 1 | 43% |
+| SC (System Protection) | 8 | 2 | 5 | 1 | 56% |
 | SI (System Integrity) | 4 | 0 | 3 | 1 | 38% |
-| **TOTAL** | **37** | **6** | **20** | **11** | **43%** |
+| **TOTAL** | **38** | **6** | **21** | **11** | **43%** |
 
 Compliance % = (Compliant + 0.5 × Partial) / Total. On 2026-10-23 only the
 RA row (new: RA-5, Partial), the SI row (SI-2 added as Partial) and the TOTAL
@@ -1985,6 +2049,13 @@ reconciled with the per-control statuses above (for example, SC-8 and SC-23 are
 marked Implemented in their sections, and SI-10, SI-12 and SI-17 have sections
 but only 3 SI controls were counted before). This table is not an assessed
 compliance figure.
+
+On 2026-10-24 SC-24 (new, Partial) was added to the SC row and TOTAL. SC row:
+(2 + 0.5 × 5) / 8 = 56.3%. The previous 43% did not match its own counts
+((2 + 0.5 × 4) / 7 = 57.1%); with the new Partial control the row is 56%. No
+other SC status changed, and the SC row is still not reconciled with the SC
+sections (SC-8 and SC-23 marked Implemented). TOTAL: (6 + 0.5 × 21) / 38 =
+16.5 / 38 = 43.4%, shown as 43% (was 43.2%).
 
 ---
 
@@ -2019,7 +2090,7 @@ compliance figure.
 | FMT_MOF.1 | AC-3, AC-6 |
 | FMT_MTD.1 | AC-3 |
 | FMT_SMR.2 | AC-2, AC-5 |
-| FPT_FLS.1 | SI-13 (Predictable Failure Prevention) |
+| FPT_FLS.1 | SC-24 (Fail in Known State), SI-13 (Predictable Failure Prevention), SI-17 (Fail-Safe Procedures) |
 | FPT_KST_EXT.1 | SC-12 |
 | FPT_KST_EXT.2 | SC-12 |
 | FPT_STM.1 | AU-8 |
@@ -2244,6 +2315,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 2.3 | 2026-10-23 | OstrichPKI Team | CI hardening (branch `claude/ci-hardening`, not yet merged). CM-2: toolchain pinned by `rust-toolchain.toml` (1.99.1; MSRV 1.94 unchanged), CI pin inventory added, "not pinned" gap removed; module-pin file recorded as committed (05ea47a). RA-5: dependency-gate description (`cargo audit --deny warnings` + `cargo deny check`, fails on new advisories), scan frequency, 4 ignores with `# POAM:` IDs; obsolete deny/ignore-mismatch gaps removed; required-check and CODEOWNERS caveats added. SI-2: gate fails in CI, merge-blocking pending required checks. SC-13: PKCS#11 CI job exists, local 16/3/1, Linux pending; HSM evidence items ✅ → 🟡. IA-7: test line reference corrected to `:80-106`. **No control status changes; RA-5, SI-2, CM-2 stay Partial; SI-7 unchanged.** Summary table not recalculated. |
 | 2.4 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix (branch `claude/ci-hardening`, uncommitted; run record `target/agent-workflow/20261023-230002-pkcs11-rsa-pss/`). SC-13: RSA-PSS ✅ → 🟡 with the impact corrected (X.509/CRL/OCSP RSA signing is PKCS#1 v1.5 and was not affected; the broken path was AU-10 audit-record signing with RSA PKCS#11 CA keys); PKCS#11 status "Fixed; local SoftHSM 2.7.0 28/0/1; Linux CI pending"; Linux CI before-fix result 16/3/1 (exit 101) recorded; stale `mod.rs` line references replaced by function names; new tests listed; split-boundary, algorithm-key binding and vendor-HSM gaps added; untraceable "39 tests" count removed. AU-10: RSA PKCS#11 audit-signing note and gap (NIST-005). RA-5 / SI-2: 5 ignored advisories (RUSTSEC-2026-0387 `crypto-bigint` 0.5.5 added, POAM-16; openidconnect recorded as declared but unused in web-ui). SI-10: RSASSA-PSS CSR parameter caveat (POAM-20). New "PKCS#11 RSA-PSS digest input" section. **No control status or percentage changed** (SC-13 stays 98%, AU-10 Compliant, RA-5 / SI-2 Partial). |
 | 2.5 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix, Linux CI evidence (commit 44d560d, PR 181). Recorded GitHub Actions run 40063317654 (`HSM integration` / `PKCS#11 suite (SoftHSM2)`; SoftHSM 2.6.1, rustc 1.99.1; 28 passed / 0 failed / 1 ignored, exit 0; artifact `commit:` = PR merge ref c67c10e). SC-13: RSA-PSS via PKCS#11 🟡 → ✅ **scoped to SoftHSM** 2.6.1 / 2.7.0 and RSA-2048/3072/4096; production HSM not validated (POAM-21); AWS-LC 4.2.0 CMVP caveat kept. SC-13 suite, signature-test and HSM-test evidence items 🟡 → ✅ (SoftHSM only). AU-10 RSA bullet stays 🟡 (no RSA end-to-end test). SI-2 cryptoki row and gap updated. POAM-07 and POAM-17 recorded as closed; `CKA_ALLOWED_MECHANISMS` caveat kept. **No control status or percentage changed** (SC-13 stays 🟢 98%, AU-10 Compliant, SI-2 Partial). |
+| 2.6 | 2026-10-24 | OstrichPKI Team | PR 152 (fail-closed FIPS TLS, branch `revive-fips-tls`, uncommitted round-1 fixes; run record `target/agent-workflow/20261024-000214-pr152-fips-tls/`). SC-8: fail-closed FIPS gate (`ensure_fips`) added as evidence; "all seven service binaries ... via `serve`" corrected to nine binaries via `from_options` + `serve` plus npe-portal ACME mode via `serve_with_config` (now gated). SC-13: "services do not assert FIPS mode at startup" rescoped to a 🟡 HTTPS-listener-only assertion; `fips()` reflects build and linkage, not a failed self-test (PQC-009); gRPC ordering gap in ca-server recorded. New SC-24 section (🟡 Partial, HTTPS listeners only). Cross-reference FPT_FLS.1 → SC-24, SI-13, SI-17 (SI-17 already mapped FPT_FLS.1 in its own section). Summary table: SC row 7/2/4/1 43% → 8/2/5/1 56% and TOTAL 37 → 38 controls, 43% → 43% (arithmetic under the table). **No existing control status raised** (SC-8 Implemented, SC-13 🟢 98% unchanged). Header version 2.2 → 2.6 (2.3-2.5 had not updated it). |
 
 ---
 

@@ -1,7 +1,7 @@
 # NIAP Protection Profile for Certification Authorities v2.1 Compliance Matrix
 
-**Document Version:** 3.0
-**Date:** 2026-10-23
+**Document Version:** 3.4
+**Date:** 2026-10-24
 **OstrichPKI Version:** 0.15.0
 **Protection Profile:** NIAP PP-CA v2.1
 **Overall Compliance:** 98% (49/50 applicable SFRs Compliant, 1 selection-based N/A, 2 optional, 4 OE)
@@ -620,7 +620,7 @@ pub struct TlsConfig {
 - [docs/INSTALLATION_GUIDE.md §8](../INSTALLATION_GUIDE.md#8-tls-configuration) - TLS deployment guide
 - REST APIs use `axum` with rustls-tls feature
 - [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - shared listener: aws-lc-rs provider selected explicitly, TLS 1.3 only (`with_protocol_versions(&[&TLS13])`), optional or mandatory mTLS via `WebPkiClientVerifier`
-- gRPC uses `tonic` server with rustls (workspace feature `tls-ring`: ring crypto provider)
+- gRPC: the ca-server `tonic` gRPC **server** has no TLS configured (no `ServerTlsConfig`; [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs), `tonic::transport::Server::builder()`), so it is plaintext unless fronted by a mesh. The acme/est → CA gRPC **clients** use tonic's `tls-ring` feature (ring provider; TLS 1.2 allowed). Neither is in FCS_TLSS_EXT.1 scope evidence (POAM-2026-10-23-08). Corrected 2026-10-24: earlier text said "gRPC uses `tonic` server with rustls"
 
 **Evidence:**
 
@@ -632,7 +632,8 @@ pub struct TlsConfig {
 - ✅ **Deployment Documentation:** INSTALLATION_GUIDE.md §8 covers TLS setup
 - 🟡 **rustls Backend:** **rustls 0.23.46 using the aws-lc-rs FIPS provider** (AWS-LC FIPS 4.2.0 via `aws-lc-fips-sys` 0.14.2; CMVP certificate for 4.2.0 pending confirmation, POA&M). rustls itself is not a validated module. Corrected 2026-10-23: earlier text said "FIPS-validated TLS implementation"
 - ✅ **Handshake tests (2026-10-23, `qa-report.md`):** `load_builds_fips_config_with_alpn` (`fips() == true`), `mtls_handshake_accepts_trusted_client`, `mtls_handshake_rejects_untrusted_client`, `mtls_handshake_rejects_missing_client_cert`, `optional_mtls_allows_anonymous_but_rejects_untrusted`, `server_rejects_tls12_only_client`, `mtls_handshake_rejects_client_cert_with_server_only_eku` in `crates/ostrich-common/src/tls.rs`
-- ℹ️ Under `fips`, the TLS 1.3 suites are TLS_AES_256_GCM_SHA384 and TLS_AES_128_GCM_SHA256 only. Since 0.23.46, ML-DSA-44/65/87 client signatures are also verified (accepted by the user 2026-10-23)
+- ✅ **Fail-closed FIPS-mode gate (2026-10-24, PR 152):** `ensure_fips` in `crates/ostrich-common/src/tls.rs` refuses (`Error::Config`, error log) any `ServerConfig` whose `fips()` is false. It runs in `TlsSettings::load` and before any bind in `serve_with_config`, so every HTTPS listener served through `ostrich_common::tls` (`serve`, `serve_with_config`, including npe-portal ACME mode) is covered. AWS-LC FIPS 4.2.0 module, FIPS mode / approved algorithms; CMVP certificate pending confirmation (POAM-2026-10-23-01). `fips()` checks suites, key-exchange groups, signature-verification algorithms, RNG, key provider and `require_ems`. It does not check protocol versions (TLS 1.3-only is enforced separately) and does not detect a failed power-on self-test (the module aborts). Tests: `ensure_fips_rejects_non_fips_server_configs`, `ensure_fips_accepts_loaded_config`, `serve_with_config_refuses_non_fips_config`, `fips_server_config_kx_groups_exclude_x25519_keep_mlkem_hybrid`, npe-portal `build_mtls_server_config_reports_fips_mode`. Not covered: plain-HTTP mode and gRPC (POAM-2026-10-23-05, -08)
+- ℹ️ Under `fips`, the TLS 1.3 suites are TLS_AES_256_GCM_SHA384 and TLS_AES_128_GCM_SHA256 only; offered groups are X25519MLKEM768, P-256 and P-384 (plain X25519 excluded). Since 0.23.46, ML-DSA-44/65/87 client signatures are also verified (accepted by the user 2026-10-23)
 
 **Server TLS Configuration Example:**
 
@@ -650,7 +651,7 @@ pub struct TlsConfig {
 
 **NIAP Annotation:** `crates/ostrich-common/src/config.rs` lines 166-186, INSTALLATION_GUIDE.md §8
 
-**Related NIST 800-53:** SC-8 (Transmission Confidentiality), SC-23 (Session Authenticity)
+**Related NIST 800-53:** SC-8 (Transmission Confidentiality), SC-23 (Session Authenticity), AC-17 (Remote Access)
 
 ---
 
@@ -1670,6 +1671,7 @@ impl Role {
 - ✅ **Fail-Secure Audit:** Audit operations emit `EventOutcome::Failure` on errors, preserving record
 - ✅ **Rust Safety Guarantees:** Compiler-enforced error propagation prevents silent failures
 - ✅ **Self-Test Protection:** `SELF_TEST_PASSED` flag blocks cryptographic operations until startup tests pass
+- 🟡 **TLS fail-closed (2026-10-24, HTTPS listeners only):** `ostrich_common::tls::ensure_fips` refuses to serve a non-FIPS `ServerConfig` instead of degrading (SC-24). Plain-HTTP mode and gRPC are not covered, and ca-server starts its plaintext gRPC listener before the HTTPS gate runs (POAM-2026-10-23-05). No SFR status change
 
 **Code Patterns:**
 
@@ -1688,7 +1690,7 @@ pub async fn issue_certificate(&self, request: IssuanceRequest) -> Result<Certif
 
 **NIAP Annotation:** Rust's ownership and Result types provide compile-time failure handling enforcement
 
-**Related NIST 800-53:** SI-17 (Fail-Safe Procedures), CP-10 (System Recovery)
+**Related NIST 800-53:** SC-24 (Fail in Known State), SI-13 (Predictable Failure Prevention), SI-17 (Fail-Safe Procedures), CP-10 (System Recovery)
 
 ---
 
@@ -2366,6 +2368,7 @@ ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
 | 3.1 | 2026-10-23 | OstrichPKI Team | CI hardening. FCS_CKM.1 / FCS_COP.1(1): `hsm-integration.yml` (SoftHSM PKCS#11 suite in CI) added as test evidence, Linux result pending; local macOS result recorded (16 passed / 3 RSA-PSS failed / 1 ignored). RSA-PSS evidence qualified (✅ → 🟡: not demonstrated through PKCS#11). No SFR status changes. |
 | 3.2 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix. FCS_COP.1(1): RSA-PSS through PKCS#11 recorded as "Fixed; local SoftHSM 2.7.0 28/0/1; Linux CI pending" (stays 🟡); Linux CI before-fix result (16/3/1, exit 101) recorded; impact corrected (X.509/CRL/OCSP RSA signing is PKCS#1 v1.5 and was not affected; AU-10 audit-record signing with RSA PKCS#11 CA keys was); new tests; algorithm-key binding and HSM-policy gaps (POAM-18, POAM-21). FCS_COP.1(2): host-side AWS-LC hashing for PKCS#11 PSS/ECDSA; removed the false "ring FIPS 140-2 validated" bullet. FCS_CKM.1 suite counts updated. FCO_NRO_EXT.2: RSA-PSS CSR parameter caveat (POAM-20) and audit-signing note. New "PKCS#11 RSA-PSS digest input" section. **No SFR status or percentage changes.** |
 | 3.3 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): GitHub Actions run 40063317654, SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0. FCS_COP.1(1): RSA-PSS via PKCS#11 🟡 → ✅ **scoped to SoftHSM** 2.6.1 / 2.7.0 and RSA-2048/3072/4096; production HSM not validated (POAM-21); AWS-LC 4.2.0 CMVP caveat kept. HSM-path signing test evidence 🟡 → ✅ (SoftHSM only). FCS_CKM.1 Linux after-fix result recorded. FCO_NRO_EXT.2 audit-signing note updated (EC-only e2e caveat kept). "PKCS#11 RSA-PSS digest input" status updated; POAM-17 closed. **No SFR status or percentage changes** (FCS_COP.1(1) stays 🟢 75%). |
+| 3.4 | 2026-10-24 | OstrichPKI Team | PR 152 (fail-closed FIPS TLS, branch `revive-fips-tls`). FCS_TLSS_EXT.1: `ensure_fips` gate added as evidence (all HTTPS listeners via `ostrich_common::tls`, including npe-portal ACME mode; CMVP certificate pending confirmation, POAM-01) with test references; offered groups noted; corrected "gRPC uses `tonic` server with rustls" (the ca-server gRPC server has no TLS; gRPC clients use tonic `tls-ring`, POAM-08); Related NIST adds AC-17 to match the NIST cross-reference. FPT_FLS.1: 🟡 TLS fail-closed evidence bullet (HTTPS listeners only); Related NIST adds SC-24 and SI-13 to match the NIST cross-reference. **No SFR status or percentage changes** (FCS_TLSS_EXT.1 and FPT_FLS.1 stay 🟢 Compliant). Header version 3.0 → 3.4 (3.1-3.3 had not updated it). |
 
 ---
 
