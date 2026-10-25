@@ -918,6 +918,16 @@ workspace `fips` feature.
 
 - ✅ FCS_RBG_EXT.1 - Random Bit Generation: **CLOSED**
 - ✅ FDP_CER_EXT.1.3 - Serial number randomness: **READY**
+- 🟡 **Gap (pre-existing, recorded 2026-10-24, PQC-001, POAM-2026-10-23-24):**
+  not every CSP comes from the AWS-LC DRBG. These are drawn from `rand` 0.10
+  `ThreadRng` (ChaCha12, OS-seeded), which is not an SP 800-90A DRBG in the
+  module: Shamir KEK share coefficients (`crates/ostrich-kra/src/shamir.rs`),
+  `secure_random_bytes` in `crates/ostrich-common/src/util/random.rs` (PKCS#12
+  PBES2 salt and IV), the EST PKCS#12 one-time password and enrollment token
+  (`crates/ostrich-est/src/rest.rs`), and web session tokens
+  (`crates/ostrich-common/src/auth/session.rs`). CA serial numbers use
+  `fips_random_bytes` (`aws_lc_rs::rand::fill`, `crates/ostrich-crypto/src/drbg.rs`).
+  Status above not changed
 
 **Implementation Reference:**
 
@@ -954,7 +964,7 @@ let random_bytes = drbg.generate(32)?;  // Generate 32 bytes of random data
 | **FIPS 203** | ML-KEM-512/768/1024 | 🟢 FIPS-backed | KeyGen/Encaps/Decaps (OpenSSL interop) | aws-lc-rs `kem` | MEDIUM |
 | **FIPS 204** | ML-DSA-44/65/87 | 🟡 TLS verify only | TLS peer/chain verification via rustls/webpki (accepted 2026-10-23); keygen, signing and issuance disabled | aws-lc-rs `fips` (AWS-LC FIPS 4.2.0) | DEFERRED (issuance) |
 | **FIPS 205** | SLH-DSA-SHA2 | ⛔ No backend | No AWS-LC impl (FIPS or otherwise) | — | DEFERRED |
-| **SP 800-90A** | DRBG | 🟢 FIPS-backed | `fips_random_bytes` + keygen entropy | aws-lc-rs `fips` | DONE |
+| **SP 800-90A** | DRBG | 🟢 FIPS-backed | `fips_random_bytes` + keygen entropy; gap: some CSPs still from `rand` `ThreadRng` (POAM-2026-10-23-24) | aws-lc-rs `fips` | DONE |
 
 "FIPS-backed" = runs inside the AWS-LC FIPS 4.2.0 module (`aws-lc-fips-sys`
 0.14.2); CMVP certificate for 4.2.0 pending confirmation (POA&M).
@@ -1177,6 +1187,7 @@ allowed_pqc_algorithms = [
 | 1.7 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix. RSASSA-PSS qualified (✅ → 🟡): provider level only, PKCS#11 "Fixed; local SoftHSM 2.7.0 28/0/1; Linux CI pending", not used for X.509 (RSA X.509 signing is PKCS#1 v1.5). Documented the PKCS#11 split boundary (host digest in AWS-LC; EMSA-PSS and private-key operation in the HSM) and the production-HSM policy check (POAM-21). HSM interface status corrected from "Designed, not implemented" / "stubbed" to implemented and SoftHSM-tested only. PSS salt-length note. **FIPS module unchanged** (AWS-LC FIPS 4.2.0); no algorithm added. |
 | 1.8 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): GitHub Actions run 40063317654, SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0. RSASSA-PSS split into two lines: provider level / via PKCS#11 🟡 → ✅ **scoped to SoftHSM** 2.6.1 / 2.7.0 and RSA-2048/3072/4096 (production HSM not validated, POAM-21); X.509 RSASSA-PSS stays 🟡 (POAM-20). PKCS#11 PSS interop evidence 🟡 → ✅ (SoftHSM only). HSM test environment and RSA-PSS digest-boundary status updated. AWS-LC 4.2.0 CMVP caveat kept. **FIPS module unchanged**; no algorithm, self-test or boundary change. |
 | 1.9 | 2026-10-24 | OstrichPKI Team | PR 152 (fail-closed FIPS TLS), branch `revive-fips-tls`. FIPS 197 TLS endpoints: "validated module" / "FIPS-validated" wording replaced by "AWS-LC FIPS 4.2.0 module (FIPS mode / approved algorithms; CMVP certificate pending confirmation, POAM-2026-10-23-01)"; scope corrected to every HTTPS listener served via `ostrich_common::tls` (`serve` and `serve_with_config`, including npe-portal ACME mode) through `ensure_fips`; added what `fips()` asserts (build and linkage only; a failed power-on self-test aborts inside the module and is not detected by the gate, PQC-009), offered groups and the hybrid ML-KEM approval basis; tests replaced (the removed `aws_lc_rs_provider_is_in_fips_mode` no longer cited). Self-contradictions fixed: ChaCha20-Poly1305 removed from the TLS suite list; runtime FIPS-mode evidence 🔴 → 🟡 **scoped to HTTPS listeners** (POAM-05 stays open); `ring::digest` "FIPS 140-2 validated" corrected to RustCrypto `sha2` (no CMVP certificate). aws-lc-rs requirement ≥1.16 → ≥1.18. Module boundary: the non-FIPS `aws-lc-sys` 0.46.0 recorded as a second, unvalidated AWS-LC copy in the build and SBOM (PQC-010, POAM-05; no status change). Header version 1.5 → 1.9 (1.6-1.8 had not updated it). **FIPS module unchanged** (AWS-LC FIPS 4.2.0); no algorithm added. |
+| 2.0 | 2026-10-24 | OstrichPKI Team | Dependency cleanup (branch `claude/deps-cleanup`). SP 800-90A: added a pre-existing gap (PQC-001, POAM-2026-10-23-24): Shamir KEK coefficients, `secure_random_bytes` (PKCS#12 salt/IV), EST one-time password and enrollment token, and session tokens use `rand` `ThreadRng`, not the AWS-LC DRBG. No status changed. The non-FIPS `aws-lc-sys` note was re-checked with `cargo tree -i aws-lc-sys -e normal` (aws-lc-rs dependents still rustls, rustls-webpki, rcgen, instant-acme, ostrich-common, ostrich-crypto); no edit needed. Removing `openidconnect`, `p256` and `crypto-bigint` 0.5.5 changes no algorithm, module or boundary statement |
 
 ---
 

@@ -41,7 +41,6 @@ hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
 
 # OIDC/OAuth
-openidconnect = { workspace = true }
 oauth2 = { workspace = true }
 cookie = { workspace = true }
 

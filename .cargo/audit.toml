@@ -16,11 +16,10 @@ ignore = [
     # `rsa` crate has no patched release. Production use: ostrich-acme
     # (`crates/ostrich-acme/src/jws.rs`) only builds an RsaPublicKey from an
     # ACME account JWK (n, e) and encodes it to SPKI DER for JWS verification -
-    # public-key data only, no private-key operation. openidconnect (which also
-    # pulls in `rsa`) is a declared but unused dependency of ostrich-web-ui (no
-    # call sites), so no production code reaches `rsa` through it. RSA private
-    # keys in tests/benches (integration-test fixtures, ostrich-crypto/ostrich-kra
-    # dev-deps, ostrich-benches) are ephemeral test-only keys. No RSA decryption
+    # public-key data only, no private-key operation; this is the only
+    # production path to `rsa`. RSA private keys in tests/benches
+    # (integration-test fixtures, ostrich-crypto dev-dependency,
+    # ostrich-benches) are ephemeral test-only keys. No RSA decryption
     # oracle over attacker-chosen ciphertexts is exposed and no production secret
     # flows through the affected operations. Risk accepted; revisit if `rsa`
     # ships a fix.
@@ -28,28 +27,9 @@ ignore = [
     # constant-time fix.
     "RUSTSEC-2023-0071",
 
-    # crypto-bigint 0.5.5: timing variability in operations intended to be
-    # constant-time. Enters only via elliptic-curve 0.13 (p256/p384) from
-    # openidconnect 4.0.1 (latest release; web-ui) and the integration-test
-    # crate (tests/Cargo.toml p256 0.13). The fix exists only in
-    # crypto-bigint >= 0.7.6, part of the blocked RustCrypto 0.3 migration
-    # (issue #21). openidconnect is a declared but unused dependency of
-    # ostrich-web-ui (no call sites; OIDC login in server/auth/oidc.rs is
-    # implemented directly over reqwest), so no production code reaches
-    # crypto-bigint. In the test crate p256 is used only for ephemeral
-    # test-only fixture keys (tests/integration/common/fixtures.rs). No
-    # production secret flows through the affected operations. Risk accepted.
-    # POAM: POAM-2026-10-23-16 - remove when openidconnect / p256 / p384 move
-    # to crypto-bigint >= 0.7.6 (RustCrypto 0.3 migration, issue #21).
-    "RUSTSEC-2026-0387",
-
     # --- Unmaintained / unsound (warnings; all transitive, no direct use) ---
     # POAM: POAM-2026-10-23-12 - SA-22 unmaintained-component acceptance; replace
     # when upstream (cryptoki, axum-server) drops the dependency.
     "RUSTSEC-2024-0436", # paste unmaintained (transitive proc-macro dep)
     "RUSTSEC-2025-0134", # rustls-pemfile unmaintained (transitive)
-    # rand 0.8.5: `rand::thread_rng` is unsound only when a custom `log` logger
-    # itself draws from ThreadRng; our loggers (tracing) do not.
-    # POAM: POAM-2026-10-23-11 - remove after bumping rand to 0.8.6 (patched).
-    "RUSTSEC-2026-0097",
 ]

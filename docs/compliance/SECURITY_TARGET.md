@@ -785,6 +785,7 @@ All SFR dependencies are satisfied per PP-CA v2.1 analysis.
 | 1.1 | January 2026 | OstrichPKI Team | Added Assurance Measures (Section 10), Operational Environment (Section 11) |
 | 1.2 | 2026-10-23 | OstrichPKI Team | ALC_FLR.2 / AVA_VAN.2: `cargo audit` evidence marked advisory (non-blocking); 2026-10-23 scan result recorded; `cargo deny` noted as not effective (POA&M) |
 | 1.3 | 2026-10-23 | OstrichPKI Team | CI hardening. ALC_FLR.2 / AVA_VAN.2: dependency gate fails on new advisories; `cargo deny` passes locally; not yet a required check, AO timeframes still pending. ALC_CMC.2: branch-protection claim corrected to "planned, not configured" (verified via GitHub API). ALC_CMS.2: `rust-toolchain.toml` added as a configuration item. No assurance-level change |
+| 1.4 | 2026-10-24 | OstrichPKI Team | Dependency cleanup. ALC_FLR.2 / AVA_VAN.2: latest local `cargo audit --deny warnings` result recorded (exit 0, 614 crates, 3 accepted advisories; RUSTSEC-2026-0097 and RUSTSEC-2026-0387 no longer ignored). No assurance claim changed |
 
 ---
 
@@ -980,7 +981,7 @@ This section describes how OstrichPKI satisfies each Security Assurance Requirem
 **Evidence:**
 
 - Dependabot alerts enabled
-- `cargo audit --deny warnings` in the CI dependency gate — fails the workflow on new advisories; not yet a required check (POA&M). Last recorded result: 0 vulnerabilities, 0 warnings on 2026-10-23 (642 crates; local run) after remediating 18 vulnerabilities and 4 warnings found on `main`
+- `cargo audit --deny warnings` in the CI dependency gate — fails the workflow on new advisories; not yet a required check (POA&M). Last recorded result: 0 vulnerabilities, 0 warnings on 2026-10-23 (642 crates; local run) after remediating 18 vulnerabilities and 4 warnings found on `main`. Latest local result: 2026-10-24 (dependency cleanup, not yet in CI), exit 0, 614 crates, with 3 accepted advisories (RUSTSEC-2023-0071, RUSTSEC-2024-0436, RUSTSEC-2025-0134)
 - `cargo deny check` (cargo-deny 0.20.2) passes locally on 2026-10-23 (`advisories ok, bans ok, licenses ok, sources ok`) with crate-scoped license exceptions; first CI run pending (POA&M POAM-2026-10-23-06, closed pending CI)
 - Security review checklist
 

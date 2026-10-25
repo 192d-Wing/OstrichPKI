@@ -35,18 +35,24 @@ pub fn generate_test_rsa_spki() -> Vec<u8> {
 
 /// Generate a test ECDSA P-256 public key as DER-encoded SubjectPublicKeyInfo
 ///
+/// The throwaway key is generated through the `CryptoProvider` abstraction
+/// (software provider, AWS-LC FIPS module) and its SPKI exported by the
+/// provider; the private key is dropped with the provider.
+///
 /// COMPLIANCE MAPPING:
 /// - FIPS 186-5: ECDSA P-256 key generation (test fixture)
 /// - RFC 5480: ECC SubjectPublicKeyInfo format
-pub fn generate_test_p256_spki() -> Vec<u8> {
-    use p256::pkcs8::EncodePublicKey;
-    let secret_key = p256::SecretKey::random(&mut rand::thread_rng());
-    secret_key
-        .public_key()
-        .to_public_key_der()
-        .expect("Failed to encode P-256 SubjectPublicKeyInfo")
-        .as_bytes()
-        .to_vec()
+pub async fn generate_test_p256_spki() -> Vec<u8> {
+    use ostrich_crypto::{CryptoProviderFactory, KeyType};
+    let provider = CryptoProviderFactory::create_software_provider();
+    let key = provider
+        .generate_key_pair(KeyType::EcP256, "test-p256-fixture", false)
+        .await
+        .expect("Failed to generate P-256 key");
+    provider
+        .export_public_key(&key)
+        .await
+        .expect("Failed to export P-256 SubjectPublicKeyInfo")
 }
 
 /// Generate a test Ed25519 public key as DER-encoded SubjectPublicKeyInfo
