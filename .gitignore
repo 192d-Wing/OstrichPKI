@@ -36,5 +36,11 @@ deploy/cluster/
 /cj*.txt
 /*.cookies
 
+# Locally generated certificates and keys. Never commit key material.
+/certs/
+# DEV ONLY CA gRPC mTLS material from `make dev-grpc-certs` (kept outside
+# ./certs, which docker-compose.yml mounts wholesale into ca/est/ocsp).
+/.dev-grpc-certs/
+
 # Helm dependency archives are reproducibly restored from Chart.lock.
 /deploy/helm/ostrich-pki/charts/

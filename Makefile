@@ -249,6 +249,17 @@ test-pkcs11: ## Run the PKCS#11 suite against the SoftHSM test token (Linux; see
 	SOFTHSM2_CONF="$(SOFTHSM2_CONF_PATH)" PKCS11_MODULE_PATH="$(SOFTHSM_MODULE)" \
 		cargo test -p ostrich-crypto --test pkcs11_integration_test --locked -- --test-threads=1
 
+# DEV ONLY CA gRPC mTLS material for docker compose and the live integration
+# tests (throwaway 30-day ECDSA P-384 PKI, gitignored, in .dev-grpc-certs/ -
+# deliberately outside ./certs, which docker-compose.yml mounts wholesale).
+# NIST 800-53: SC-8, AC-17 (compose runs the CA gRPC channel over mTLS); CM-6.
+# Pass extra flags with e.g. `make dev-grpc-certs GRPC_CERT_ARGS="--force"`.
+GRPC_CERT_ARGS ?=
+
+.PHONY: dev-grpc-certs
+dev-grpc-certs: ## Generate DEV ONLY CA gRPC mTLS certs into .dev-grpc-certs (run before docker compose up)
+	./scripts/gen-dev-grpc-certs.sh $(GRPC_CERT_ARGS) .dev-grpc-certs
+
 .PHONY: setup
 setup: install-tools install-softhsm db-setup ## Complete development environment setup
 	@echo "✓ Development environment ready"

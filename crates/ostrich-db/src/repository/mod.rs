@@ -45,7 +45,10 @@ pub mod users;
 
 pub use acme::AcmeRepository;
 pub use approval::ApprovalRepository;
-pub use audit::AuditRepository;
+pub use audit::{
+    AUDIT_CHAIN_IDLE_TIMEOUT_MS, AUDIT_CHAIN_LOCK_KEY, AUDIT_CHAIN_LOCK_TIMEOUT_MS,
+    AUDIT_CHAIN_STATEMENT_TIMEOUT_MS, AuditAppendTx, AuditRepository,
+};
 pub use bulk_enrollment::BulkEnrollmentRepository;
 pub use ca::CaRepository;
 pub use certificate::{CertificateRepository, CertificateStatusCounts};

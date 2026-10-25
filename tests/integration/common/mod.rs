@@ -34,12 +34,12 @@ impl Default for TestConfig {
                 .unwrap_or_else(|_| "http://localhost:8081".to_string()),
             ca_http_base_url: std::env::var("CA_HTTP_BASE_URL")
                 .unwrap_or_else(|_| "http://localhost:8082".to_string()),
-            // The CA gRPC service is currently served as plaintext HTTP/2 inside the
-            // docker-compose test network (see tests/integration/docker-compose.yml,
-            // CA_GRPC_ADDRESS). Accept CA_GRPC_URL as an alias for convenience.
+            // The CA gRPC service requires TLS 1.3 mTLS (see
+            // tests/integration/common/ca_grpc.rs::connect_ca for the client
+            // certificate env vars). Accept CA_GRPC_URL as an alias.
             ca_grpc_endpoint: std::env::var("CA_GRPC_ENDPOINT")
                 .or_else(|_| std::env::var("CA_GRPC_URL"))
-                .unwrap_or_else(|_| "http://localhost:50051".to_string()),
+                .unwrap_or_else(|_| "https://localhost:50051".to_string()),
             // Certificate profile used for issuance tests. Must name a profile
             // registered in the CA under test (ProfileType::as_str naming).
             ca_profile_name: std::env::var("CA_TEST_PROFILE")

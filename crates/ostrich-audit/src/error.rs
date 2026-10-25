@@ -39,6 +39,11 @@ pub enum Error {
     /// Record signing / signature verification error (AU-10)
     #[error("Audit signing error: {0}")]
     Signing(String),
+
+    /// An audit write step did not finish in time; nothing was written
+    /// (fail closed). NIST 800-53: AU-5 (response to audit processing failure)
+    #[error("Audit write timed out: {0}")]
+    Timeout(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

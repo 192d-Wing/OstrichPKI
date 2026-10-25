@@ -362,6 +362,8 @@ impl PasswordAuthProvider {
                 ip_address: None,
                 reason: Some("invalid_password".to_string()),
                 actor: None,
+                resource: None,
+                details: None,
             })
             .await;
             if outcome.now_locked {
@@ -381,6 +383,8 @@ impl PasswordAuthProvider {
                     ip_address: None,
                     reason: Some(reason.to_string()),
                     actor: None,
+                    resource: None,
+                    details: None,
                 })
                 .await;
             }
@@ -518,6 +522,8 @@ impl AuthProvider for PasswordAuthProvider {
             ip_address: None,
             reason: None,
             actor: Some("system".to_string()),
+            resource: None,
+            details: None,
         })
         .await;
         Ok(())

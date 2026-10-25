@@ -1,7 +1,7 @@
 # NIAP Protection Profile for Certification Authorities v2.1 Compliance Matrix
 
-**Document Version:** 3.4
-**Date:** 2026-10-24
+**Document Version:** 3.7
+**Date:** 2026-10-25
 **OstrichPKI Version:** 0.15.0
 **Protection Profile:** NIAP PP-CA v2.1
 **Overall Compliance:** 98% (49/50 applicable SFRs Compliant, 1 selection-based N/A, 2 optional, 4 OE)
@@ -77,10 +77,21 @@ This document tracks OstrichPKI's compliance with the NIAP Protection Profile fo
 - ✅ Request ID for correlation
 - ✅ Additional context in `details` field
 - ✅ Session lifecycle audit generation verified end-to-end (`tests/integration/session_store_e2e.rs::session_create_emits_audit_event`)
+- ✅ **CA gRPC listener events (2026-10-25, branch `claude/grpc-mtls`, uncommitted)**, via `AuthAuditAdapter` ([auth_hook.rs](../../crates/ostrich-audit/src/auth_hook.rs)) or ca-server `audit_grpc_listener`:
+  - `access_denied` (Authorization / Failure; actor = peer DN or `unknown`; target = gRPC method; `details.reason` = `subject_not_allowlisted`, `unparsable_certificate`, `no_client_certificate`, `missing_client_auth_eku` or `subscriber_issuing_ca`)
+  - `access_denied_suppressed` (summary `{count, window_secs, window_start, window_end, distinct_sources, distinct_sources_capped}`)
+  - `tls_handshake_failed` (Authentication / Failure; `details.reason` such as `untrusted_client_certificate`, `client_certificate_wrong_eku`, `expired_client_certificate`, `peer_incompatible`, `no_application_protocol`, `handshake_timeout`, `per_source_handshake_limit`, `no_alpn_h2`) — the PP-CA "failure to establish a TLS session" event for this listener
+  - `tls_handshake_failures_suppressed` (summary, same fields)
+  - `grpc_listener_started` (System / Success; mode, TLS 1.3, `fips: true`, AWS-LC version, allowed subjects)
+  - `grpc_insecure_dev_plaintext_enabled` (ConfigurationChange; debug builds only)
+  - `grpc_listener_refused` (ConfigurationChange / Failure; `{check: "client_ca_trust_anchor_separation", reason}`) when the ca-server trust-anchor check or CA-database ancestor walk refuses startup; best effort (a failed write is logged, the refusal still applies). Test `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal`
+
+  Failure records are limited to 60 per 60 s per listener with timer- and shutdown-flushed summaries. Tests: `grpc_mtls_e2e` 21/21 (incl. `access_denied_audit_is_rate_limited_and_summarised`, `handshake_failure_audit_is_rate_limited`, `stalled_handshake_times_out_and_is_audited`); 4 new `auth_hook` tests and ca-server bin tests (`start_grpc_listener_mtls_audits_start`, `start_grpc_listener_insecure_audits_dev_mode`), all passed 2026-10-25
+- 🟡 Not generated: the FIPS gate refusal and the gRPC configuration refusals before the database connects are error logs only (POAM-2026-10-23-05 (d), narrowed: the trust-anchor refusal is now audited). Detached denial-audit tasks are not tracked at process exit, so a few in-flight `access_denied` records can be lost at shutdown (SEC-015 residual). The issuance/revocation `actor` on the gRPC path is the client-asserted `requestor` (POAM-2026-10-23-25)
 
 **NIAP Annotation Required:** ✅ Phase 15 Task
 
-**Related NIST 800-53:** AU-2, AU-3, AU-9(3)
+**Related NIST 800-53:** AU-2, AU-3, AU-9(3), AU-12
 
 ---
 
@@ -241,6 +252,7 @@ async fn update(&self, _event: &AuditEvent) -> Result<AuditEvent> {
 - ✅ Alert escalation procedures defined
 - ✅ Archival procedures documented
 - ✅ Operations blocked at capacity to preserve audit integrity
+- ℹ️ Audit write failures (2026-10-25, branch `claude/grpc-mtls`, uncommitted; not a capacity mechanism, status unchanged): audit-chain appends are time-bounded (lock 5 s, statement 10 s, idle-in-transaction 7 s; begin / sign / commit 10 s / 5 s / 10 s), fail closed (record not written, `alert="audit_write_failed"`; a commit timeout is logged as `outcome=unknown`). Postgres tests NOT RUN (POAM-2026-10-23-31). The audit signing key is the CA key and SLH-DSA is refused for it (POAM-2026-10-23-34)
 
 **NIAP Annotation:** ADMIN_GUIDE.md Appendix B.4
 
@@ -582,8 +594,8 @@ cargo test --package ostrich-crypto --lib hsm_validation
 **Implementation:**
 
 - [crates/ostrich-common/src/config.rs:166-186](../../crates/ostrich-common/src/config.rs#L166-L186) - TLS configuration struct
-- [crates/ostrich-common/src/grpc_client.rs](../../crates/ostrich-common/src/grpc_client.rs) - gRPC client with TLS
-- gRPC client uses `tonic` with rustls backend (workspace feature `tls-ring`: ring crypto provider)
+- [crates/ostrich-common/src/grpc_client.rs](../../crates/ostrich-common/src/grpc_client.rs) - gRPC client: `plan_channel` (mTLS needs an `https://` endpoint and all three files; plaintext only with an explicit flag in a debug build; partial material refused), `read_private_key_pem` (`Zeroizing`)
+- [crates/ostrich-common/src/grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs) - `grpc_client_config` + `GrpcTlsConnector` (2026-10-25, branch `claude/grpc-mtls`, uncommitted): rustls on `grpc_crypto_provider` (aws-lc-rs FIPS), TLS 1.3 only, client certificate presented, server chain verified against `CA_GRPC_CA_CERT_FILE` and the server name (URL host or `CA_GRPC_SERVER_NAME`), ALPN `h2` required, `ensure_fips_client` asserted. tonic is built with `features = ["channel"]` only (no `tls-ring`). Callers: acme-server and est-server ([ca_integration.rs](../../crates/ostrich-acme/src/ca_integration.rs), [ca_integration.rs](../../crates/ostrich-est/src/ca_integration.rs))
 - REST clients use `reqwest` with rustls backend (crypto provider not verified in the 2026-10-23 review)
 - Internal HTTPS clients `services/web-ui/src/server/backend_client.rs` and `services/npe-portal/src/server/backend_client.rs` use `hyper-rustls` on the aws-lc-rs FIPS provider
 
@@ -591,12 +603,13 @@ cargo test --package ostrich-crypto --lib hsm_validation
 
 - ✅ **TLS 1.3 Default:** `min_version: "1.3"` configured as default (config.rs:351)
 - ✅ **Configurable TLS:** TlsConfig struct supports cert_file, key_file, ca_file, min_version, client_auth
-- 🟡 **rustls Backend:** rustls is a TLS implementation, not a validated module. TLS clients on the aws-lc-rs FIPS provider use **rustls 0.23.46 with the aws-lc-rs FIPS provider** (AWS-LC FIPS 4.2.0 via `aws-lc-fips-sys` 0.14.2; CMVP certificate for 4.2.0 pending confirmation, POA&M). The `tonic` gRPC client uses the `ring` provider (no CMVP certificate). Corrected 2026-10-23: earlier text said "rustls which is FIPS-validated"
+- 🟡 **rustls Backend:** rustls is a TLS implementation, not a validated module. TLS clients on the aws-lc-rs FIPS provider use **rustls 0.23.46 with the aws-lc-rs FIPS provider** (AWS-LC FIPS 4.2.0 via `aws-lc-fips-sys` 0.14.2; CMVP certificate for 4.2.0 pending confirmation, POA&M). Since 2026-10-25 the gRPC client also uses this provider (it previously used tonic's `ring` provider, no CMVP certificate). Corrected 2026-10-23: earlier text said "rustls which is FIPS-validated"
 - ✅ **Advisory fixes (2026-10-23):** rustls 0.23.41 → 0.23.46 (RUSTSEC-2026-0285/0346/0348/0349) and rustls-webpki 0.103.13 → 0.103.16 (RUSTSEC-2026-0382); see NIST SI-2
 - ℹ️ Since rustls 0.23.46 the aws-lc-rs provider also verifies ML-DSA-44/65/87 server signatures (accepted by the user 2026-10-23)
 - ✅ **Certificate Verification:** CA file configurable for server certificate validation
 - ✅ **mTLS Support:** client_auth mode configurable (none, optional, required)
 - ✅ **Configuration Schema:** JSON schema validates TLS settings at load time
+- ✅ **gRPC client mutual authentication (2026-10-25):** `grpc_mtls_e2e` 21/21 passed (re-run by the compliance scribe): `allowed_subject_issue_ok`, `client_rejects_server_name_mismatch`, `server_and_client_configs_report_fips`, `x25519_only_client_rejected`, `p384_chain_end_to_end_with_fips_hybrid_group`. Release builds refuse plaintext client channels (acme `CA_GRPC_INSECURE`, EST `--ca-insecure` and the EST loopback exception). Not asserted: rustls client configs outside gRPC (POAM-2026-10-23-05)
 
 **TLS Configuration:**
 
@@ -628,7 +641,7 @@ pub struct TlsConfig {
 - [docs/INSTALLATION_GUIDE.md §8](../INSTALLATION_GUIDE.md#8-tls-configuration) - TLS deployment guide
 - REST APIs use `axum` with rustls-tls feature
 - [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - shared listener: aws-lc-rs provider selected explicitly, TLS 1.3 only (`with_protocol_versions(&[&TLS13])`), optional or mandatory mTLS via `WebPkiClientVerifier`
-- gRPC: the ca-server `tonic` gRPC **server** has no TLS configured (no `ServerTlsConfig`; [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs), `tonic::transport::Server::builder()`), so it is plaintext unless fronted by a mesh. The acme/est → CA gRPC **clients** use tonic's `tls-ring` feature (ring provider; TLS 1.2 allowed). Neither is in FCS_TLSS_EXT.1 scope evidence (POAM-2026-10-23-08). Corrected 2026-10-24: earlier text said "gRPC uses `tonic` server with rustls"
+- gRPC (2026-10-25, branch `claude/grpc-mtls`, uncommitted): the ca-server gRPC listener is served through `grpc_server_config` + `bind_mtls_incoming` in [grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs): aws-lc-rs FIPS provider, TLS 1.3 only, mandatory client authentication, ALPN `h2` only, `ensure_fips` asserted; see FCS_TLSS_EXT.2. Corrected: until this change the gRPC server had no TLS (plaintext) and the clients used tonic `tls-ring` (POAM-2026-10-23-08, now narrowed). Corrected 2026-10-24: earlier text said "gRPC uses `tonic` server with rustls"
 
 **Evidence:**
 
@@ -660,6 +673,37 @@ pub struct TlsConfig {
 **NIAP Annotation:** `crates/ostrich-common/src/config.rs` lines 166-186, INSTALLATION_GUIDE.md §8
 
 **Related NIST 800-53:** SC-8 (Transmission Confidentiality), SC-23 (Session Authenticity), AC-17 (Remote Access)
+
+---
+
+### FCS_TLSS_EXT.2 - TLS Server Protocol with Mutual Authentication
+
+**Status:** 🟡 **Partial** (added 2026-10-25; CA gRPC listener only. Mutual-authentication elements Tested; revocation Not Started)
+
+**Scope note:** this SFR is cited by the new code annotations but is not in the summary table, [NIAP_SFR_MATRIX.md](NIAP_SFR_MATRIX.md) or [SECURITY_TARGET.md](SECURITY_TARGET.md), and is **not counted** in the 49/50 figure. Whether the ST claims it is an ST-author decision, not made here. Recorded for traceability.
+
+**Requirement:** The TSF shall support mutual authentication of TLS clients using X.509v3 certificates, and shall not establish a trusted channel if the client certificate is invalid.
+
+**Implementation (branch `claude/grpc-mtls`, uncommitted):**
+
+- [crates/ostrich-common/src/grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs) `grpc_server_config`: refuses settings without a client CA or with optional client authentication; TLS 1.3 only on `grpc_crypto_provider` (aws-lc-rs FIPS); ALPN `h2` only; `ensure_fips` asserted
+- `bind_mtls_incoming`: each handshake in its own task, 10 s timeout, 256 in flight per listener, 8 per source (IPv4 address or IPv6 /64); connections without `h2` are closed with a best-effort `close_notify` and audited
+- `SubjectAllowlistLayer` / `authorize_peer`: after the handshake, the leaf must carry an extendedKeyUsage extension that includes `clientAuth` (stricter than webpki, which checks the EKU only when present, and than RFC 5280 §4.2.1.12) and its subject DN must be allow-listed; otherwise `PERMISSION_DENIED` plus an audit record
+- `ensure_dedicated_client_ca` + [services/ca-server/src/main.rs](../../services/ca-server/src/main.rs): after walking the issuing CA's ancestors in the CA database (`walk_ca_ancestors`, fails closed on a missing row, a cycle or depth > 16), ca-server refuses to start the listener if a client-CA anchor has the issuing certificate's SPKI or subject (subject alone), was issued by it (issuer name or AKI = SKI), is its issuer, or matches (SPKI or subject) a database ancestor; the refusal is audited (`grpc_listener_refused`); warns on more than one anchor. Per call, leaves issued directly by the issuing CA or an ancestor are denied (`subscriber_issuing_ca`)
+- Narrowed signature set on the client chain and CertificateVerify: ECDSA P-256/SHA-256, ECDSA P-384/SHA-384, RSA-PSS (2048-8192, SHA-256/384/512), ML-DSA-44/65/87. RSA PKCS#1 v1.5, curve/hash mismatches, P-521 and Ed25519 are refused (documented deviation: narrower than the rustls FIPS default)
+
+**Evidence:**
+
+- ✅ `tests/integration/grpc_mtls_e2e.rs` 21/21 passed 2026-10-25 (re-run by the compliance scribe on the final working tree): `no_client_cert_handshake_fails`, `untrusted_ca_client_cert_handshake_fails`, `server_only_eku_client_cert_rejected`, `leaf_without_eku_is_permission_denied`, `tls12_client_rejected`, `non_h2_alpn_client_rejected`, `disallowed_subject_permission_denied_and_audited`, `allowed_subject_issue_ok`, `refuses_to_start_without_config`
+- ✅ 41 `grpc_tls::tests` unit tests passed 2026-10-25 (re-run by the compliance scribe; incl. `dedicated_client_ca_refuses_chain_relatives`, `issued_by_checks_cover_name_and_key_id_independently`, `authorize_peer_refuses_subscriber_issuing_ca_leaf`); ca-server bin tests incl. `grpc_client_ca_must_not_be_the_issuing_ca`, `walk_ca_ancestors_follows_parent_ca_id_and_fails_closed`, `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal` (13 passed, coder-reported after round 3)
+
+**Gaps:**
+
+- 🔴 No revocation checking of client certificates (POAM-2026-10-23-27)
+- 🟡 Allowlist not issuer/SPKI bound; the trust-anchor guard covers the CA-database lineage only (sibling subordinate CAs, grandchildren and roots outside the lineage are not detected) (POAM-2026-10-23-28)
+- 🟡 REST listeners: mTLS is optional (identity bridge) or absent; not in this SFR's evidence
+
+**Related NIST 800-53:** SC-8, AC-17, IA-3, IA-5(2)
 
 ---
 
@@ -1372,8 +1416,9 @@ Router::new()
 - Uses rustls-webpki **0.103.16** (via rustls 0.23.46), not the `ostrich-x509` validator above
 - RUSTSEC-2026-0382 fixed (verification could accept distrusted intermediates)
 - TLS peer path validation additionally rejects certificates whose SPKI is on webpki's built-in distrust list (emSign G3; `CertDistrusted`), independent of configured trust anchors
-- No CRL/OCSP revocation checking on this path (pre-existing gap; RFC 5280 §6.3 not applied to TLS peers)
+- 🔴 No CRL/OCSP revocation checking on this path (pre-existing gap; RFC 5280 §6.3 not applied to TLS peers). Applies to the REST mTLS listeners and, since 2026-10-25, the CA gRPC listener (POAM-2026-10-23-27)
 - Tests (2026-10-23): `mtls_handshake_rejects_untrusted_client`, `mtls_handshake_rejects_client_cert_with_server_only_eku` (RFC 5280 §4.2.1.12)
+- CA gRPC listener (2026-10-25, branch `claude/grpc-mtls`, uncommitted): `WebPkiClientVerifier` and the client root verifier on `grpc_crypto_provider` (aws-lc-rs FIPS) with a narrowed signature set (ECDSA P-256/SHA-256, P-384/SHA-384, RSA-PSS, ML-DSA-44/65/87). ca-server additionally requires the clientAuth EKU **extension** on the leaf (webpki checks EKU only when present) and refuses a client CA from its own chain: the issuing certificate's SPKI or subject, a CA it issued, its issuer, or a CA-database ancestor (trust-anchor separation; refusal audited); per call it denies leaves issued directly by the issuing CA or an ancestor (`subscriber_issuing_ca`). Not done: revocation; detection of sibling CAs, grandchildren and roots outside the database lineage; name-constraint processing of directoryName (webpki rejects such chains); policy processing. Tests: `grpc_mtls_e2e` 21/21 passed 2026-10-25
 
 **NIAP Annotation Required:** ✅ Complete
 
@@ -1487,6 +1532,8 @@ let username = extract_cn_from_subject(&cert.subject)?;
 - Certificate profiles - Requires `Permission::ManageProfiles` (Administrator role)
 - Configuration data - Requires `Permission::ModifyConfiguration` (Administrator role)
 - User management - Requires `Permission::ManageUsers` (Administrator role)
+- **CA gRPC path (2026-10-25, branch `claude/grpc-mtls`, uncommitted):** gRPC `IssueCertificate`, `RevokeCertificate` and `GenerateCrl` are not RBAC-checked per `Permission`. Access is restricted listener-wide to allow-listed service identities (`SubjectAllowlistLayer`, FDP_ACC.1 / FDP_ACF.1), so the RBAC statements above for revocation and CRL data do not hold on this path for ACME/EST (POAM-2026-10-23-26)
+- **gRPC listener TSF data** (client-subject allowlist, client trust anchor, server key and certificate) is managed only through deployment configuration (`CA_GRPC_*` env / files, Helm secrets) by the platform operator and takes effect at restart; there is no runtime management interface. The listener start record (`grpc_listener_started`) records the effective allowlist
 
 **Authorization Middleware:**
 
@@ -1679,7 +1726,8 @@ impl Role {
 - ✅ **Fail-Secure Audit:** Audit operations emit `EventOutcome::Failure` on errors, preserving record
 - ✅ **Rust Safety Guarantees:** Compiler-enforced error propagation prevents silent failures
 - ✅ **Self-Test Protection:** `SELF_TEST_PASSED` flag blocks cryptographic operations until startup tests pass
-- 🟡 **TLS fail-closed (2026-10-24, HTTPS listeners only):** `ostrich_common::tls::ensure_fips` refuses to serve a non-FIPS `ServerConfig` instead of degrading (SC-24). Plain-HTTP mode and gRPC are not covered, and ca-server starts its plaintext gRPC listener before the HTTPS gate runs (POAM-2026-10-23-05). No SFR status change
+- 🟡 **TLS fail-closed (2026-10-24, HTTPS listeners only):** `ostrich_common::tls::ensure_fips` refuses to serve a non-FIPS `ServerConfig` instead of degrading (SC-24). Plain-HTTP mode and gRPC were not covered at that time (POAM-2026-10-23-05). No SFR status change
+- 🟡 **Start-up gate and CA gRPC fail-closed (2026-10-25, branch `claude/grpc-mtls`, uncommitted):** `fips_gate` exits every service before database, NATS, listeners or clients if AWS-LC or the process-default provider is not FIPS; ca-server exits before the database on missing, partial or ambiguous gRPC configuration, an empty or unparsable allowlist, or the dev plaintext flag in a release build; exits after the CA loads (writing a `grpc_listener_refused` record) if the CA-database ancestor walk fails or a client-CA anchor belongs to its own chain; a CA with an SLH-DSA key does not start because the audit sink refuses SLH-DSA audit signing (POAM-2026-10-23-34); a failed or timed-out audit-chain write is not written (fail closed); acme/est refuse plaintext and partial client configuration in release builds; allowlist failures always deny. The ca-server gRPC listener no longer starts before the gate. Tests: `fips_gate_preinstalled` 1/1, `grpc_mtls_e2e` 21/21 (re-run on the final code), ca-server bin tests 13 (coder-reported after round 3) (2026-10-25). Still open: plain-HTTP REST mode, no audit record for the pre-database refusals (POAM-2026-10-23-05). No SFR status change
 
 **Code Patterns:**
 
@@ -1945,6 +1993,7 @@ async fn import_key(
 - ✅ Global SELF_TEST_PASSED flag blocks operations until tests pass
 - ✅ On-demand self-test via `ostrich-admin self-test run`
 - ✅ 10 unit tests covering all self-test functionality
+- ℹ️ The process-level `fips_gate` (2026-10-25, branch `claude/grpc-mtls`, uncommitted) **supports** this SFR: at the start of every service it checks that the AWS-LC module reports FIPS mode and that the process-default rustls provider is FIPS. It does not run self-tests itself (AWS-LC runs its own power-on self-tests and aborts the process on failure), and the project KATs above do not run through AWS-LC (POAM-2026-10-23-05 (e))
 
 **NIAP Annotation:** ADMIN_GUIDE.md Appendix B.3
 
@@ -2378,6 +2427,8 @@ ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
 | 3.3 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): GitHub Actions run 40063317654, SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0. FCS_COP.1(1): RSA-PSS via PKCS#11 🟡 → ✅ **scoped to SoftHSM** 2.6.1 / 2.7.0 and RSA-2048/3072/4096; production HSM not validated (POAM-21); AWS-LC 4.2.0 CMVP caveat kept. HSM-path signing test evidence 🟡 → ✅ (SoftHSM only). FCS_CKM.1 Linux after-fix result recorded. FCO_NRO_EXT.2 audit-signing note updated (EC-only e2e caveat kept). "PKCS#11 RSA-PSS digest input" status updated; POAM-17 closed. **No SFR status or percentage changes** (FCS_COP.1(1) stays 🟢 75%). |
 | 3.4 | 2026-10-24 | OstrichPKI Team | PR 152 (fail-closed FIPS TLS, branch `revive-fips-tls`). FCS_TLSS_EXT.1: `ensure_fips` gate added as evidence (all HTTPS listeners via `ostrich_common::tls`, including npe-portal ACME mode; CMVP certificate pending confirmation, POAM-01) with test references; offered groups noted; corrected "gRPC uses `tonic` server with rustls" (the ca-server gRPC server has no TLS; gRPC clients use tonic `tls-ring`, POAM-08); Related NIST adds AC-17 to match the NIST cross-reference. FPT_FLS.1: 🟡 TLS fail-closed evidence bullet (HTTPS listeners only); Related NIST adds SC-24 and SI-13 to match the NIST cross-reference. **No SFR status or percentage changes** (FCS_TLSS_EXT.1 and FPT_FLS.1 stay 🟢 Compliant). Header version 3.0 → 3.4 (3.1-3.3 had not updated it). |
 | 3.5 | 2026-10-24 | OstrichPKI Team | Dependency cleanup (branch `claude/deps-cleanup`). FCS_RBG_EXT.1: added a pre-existing gap note (PQC-001, POAM-2026-10-23-24; some CSPs from `rand` `ThreadRng`). No SFR status changed. |
+| 3.6 | 2026-10-25 | OstrichPKI Team | CA gRPC behind mTLS (branch `claude/grpc-mtls`, uncommitted; run record `target/agent-workflow/20261024-225627-grpc-mtls/`). FCS_TLSC_EXT.2: gRPC client moved from tonic `tls-ring` to the aws-lc-rs FIPS provider (TLS 1.3, client certificate, `fips()` asserted; plaintext refused in release builds); stale `tls-ring` text corrected. FCS_TLSS_EXT.1: stale "gRPC server has no TLS" text corrected. New FCS_TLSS_EXT.2 section (🟡 Partial, CA gRPC listener; not counted in the SFR total). FAU_GEN.1: CA gRPC events (`access_denied`, `access_denied_suppressed`, `tls_handshake_failed` incl. `handshake_timeout`, `per_source_handshake_limit`, `no_alpn_h2`, `peer_incompatible`; `tls_handshake_failures_suppressed`; `grpc_listener_started`; `grpc_insecure_dev_plaintext_enabled`; `missing_client_auth_eku` reason) and gaps (no refusal audit; client-asserted actor). FIA_X509_EXT.1: gRPC peer validation (narrowed signature set, clientAuth EKU required, trust-anchor separation) and revocation gap (POAM-27). FMT_MTD.1: gRPC path not RBAC-checked per permission (POAM-26); gRPC TSF data managed by deployment configuration. FPT_FLS.1: start-up gate and gRPC fail-closed evidence. FPT_TST_EXT.1: `fips_gate` recorded as supporting, not meeting. **No SFR status or overall percentage changed** (49/50 unchanged). Header version 3.4 → 3.6 (3.5 had not updated it) |
+| 3.7 | 2026-10-25 | OstrichPKI Team | CA gRPC mTLS final refresh after fix round 3 (same branch). FAU_GEN.1: `grpc_listener_refused` and `subscriber_issuing_ca` added, summary fields, pre-database refusals still log-only, SEC-015 shutdown residual. FCS_TLSS_EXT.2 / FIA_X509_EXT.1: trust-anchor guard over the CA-database lineage (subject alone, issued-by, issuer, ancestors; refusal audited), per-call `subscriber_issuing_ca`; residual siblings / grandchildren / external roots (POAM-28). FPT_FLS.1: trust-anchor and SLH-DSA refusals. FAU_STG.4: audit-write timeout note (informational). Test counts `grpc_mtls_e2e` 21/21, 41 `grpc_tls::tests`. **No SFR status or overall percentage changed** |
 
 ---
 

@@ -51,10 +51,6 @@ spec:
             {{- include "ostrich-pki.commonEnv" . | nindent 12 }}
             - name: OCSP_BIND_ADDRESS
               value: "0.0.0.0:8081"
-            - name: CA_GRPC_URL
-              value: {{ include "ostrich-pki.caGrpcUrl" . | quote }}
-            - name: CA_GRPC_INSECURE
-              value: "true"
             {{- if .Values.ocsp.signing.certFile }}
             - name: OCSP_SIGNING_CERT
               value: {{ .Values.ocsp.signing.certFile | quote }}

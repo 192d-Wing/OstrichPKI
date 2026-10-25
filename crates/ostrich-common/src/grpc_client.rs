@@ -1,23 +1,36 @@
 //! gRPC client infrastructure with resilience patterns
 //!
 //! COMPLIANCE MAPPING:
-//! - NIST 800-53: SC-8 (Transmission confidentiality via mTLS)
+//! - NIST 800-53: SC-8 (Transmission confidentiality via mTLS, TLS 1.3 only)
+//! - NIST 800-53: SC-13 (aws-lc-rs FIPS provider, `fips()` asserted)
 //! - NIST 800-53: SC-23 (Session authenticity)
 //! - NIST 800-53: SI-10 (Information input validation)
+//! - NIST 800-53: SI-12 (client private key held in `Zeroizing`)
+//! - NIAP PP-CA: FCS_TLSC_EXT.2, FTP_ITC.1
 
+use crate::grpc_tls::{GrpcTlsConnector, endpoint_host, grpc_client_config};
 use crate::{Error, Result};
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tonic::Status;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
+use tonic::transport::{Channel, Endpoint};
+use zeroize::Zeroizing;
 
 /// gRPC client configuration
 ///
+/// mTLS material is all-or-nothing: either all three PEMs are set (TLS 1.3
+/// mutual TLS, `https://` endpoint) or none are and `allow_plaintext` is set
+/// (development only, `http://` endpoint). Anything else is rejected by
+/// [`CaGrpcClient::new`].
+///
 /// COMPLIANCE MAPPING:
 /// - NIST 800-53: SC-8(1) - Cryptographic protection for transmission
-#[derive(Debug, Clone)]
+/// - NIST 800-53: SI-12 - the private key is zeroized on drop and never
+///   printed by `Debug`
+#[derive(Clone)]
 pub struct GrpcClientConfig {
     /// CA gRPC server endpoint (e.g., "https://ca.example.com:50051")
     pub endpoint: String,
@@ -25,11 +38,21 @@ pub struct GrpcClientConfig {
     /// mTLS client certificate (PEM-encoded)
     pub client_cert_pem: String,
 
-    /// mTLS client private key (PEM-encoded)
-    pub client_key_pem: String,
+    /// mTLS client private key (PEM-encoded). Zeroized on drop; redacted
+    /// from `Debug`.
+    pub client_key_pem: Zeroizing<String>,
 
     /// CA certificate for server verification (PEM-encoded)
     pub ca_cert_pem: String,
+
+    /// TLS server name the CA's certificate must be valid for. Defaults to
+    /// the endpoint URL host.
+    pub server_name: Option<String>,
+
+    /// Allow a plaintext (no TLS) channel when no mTLS material is configured.
+    /// Development only; defaults to `false` (fail closed). Refused in release
+    /// builds (`CaGrpcClient::new` errors when it would be used).
+    pub allow_plaintext: bool,
 
     /// Connection timeout in milliseconds
     pub connect_timeout_ms: u64,
@@ -53,13 +76,44 @@ pub struct GrpcClientConfig {
     pub circuit_breaker_timeout_ms: u64,
 }
 
+impl fmt::Debug for GrpcClientConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // NIST 800-53: SI-12 / IA-5 - never print the private key.
+        let key = if self.client_key_pem.is_empty() {
+            "<none>"
+        } else {
+            "<redacted>"
+        };
+        f.debug_struct("GrpcClientConfig")
+            .field("endpoint", &self.endpoint)
+            .field("client_cert_pem_len", &self.client_cert_pem.len())
+            .field("client_key_pem", &key)
+            .field("ca_cert_pem_len", &self.ca_cert_pem.len())
+            .field("server_name", &self.server_name)
+            .field("allow_plaintext", &self.allow_plaintext)
+            .field("connect_timeout_ms", &self.connect_timeout_ms)
+            .field("request_timeout_ms", &self.request_timeout_ms)
+            .field("max_retries", &self.max_retries)
+            .field("retry_initial_backoff_ms", &self.retry_initial_backoff_ms)
+            .field("retry_max_backoff_ms", &self.retry_max_backoff_ms)
+            .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
+            .field(
+                "circuit_breaker_timeout_ms",
+                &self.circuit_breaker_timeout_ms,
+            )
+            .finish()
+    }
+}
+
 impl Default for GrpcClientConfig {
     fn default() -> Self {
         Self {
             endpoint: "https://localhost:50051".to_string(),
             client_cert_pem: String::new(),
-            client_key_pem: String::new(),
+            client_key_pem: Zeroizing::new(String::new()),
             ca_cert_pem: String::new(),
+            server_name: None,
+            allow_plaintext: false,
             connect_timeout_ms: 5000,
             request_timeout_ms: 30000,
             max_retries: 3,
@@ -69,6 +123,117 @@ impl Default for GrpcClientConfig {
             circuit_breaker_timeout_ms: 60000,
         }
     }
+}
+
+/// How [`CaGrpcClient::new`] will connect, after validating the config.
+#[derive(Debug, PartialEq, Eq)]
+enum ChannelPlan {
+    /// TLS 1.3 mTLS, verifying the server against this name.
+    Mtls { server_name: String },
+    /// Plaintext HTTP/2 (explicitly allowed, `http://` endpoint).
+    Plaintext,
+}
+
+/// Validate the transport settings of a client config (fail closed).
+///
+/// NIST 800-53: SC-8 / AC-17 / CM-6 - partial material, plaintext without the
+/// explicit flag, plaintext in a release build (`release_build`), and
+/// scheme/material mismatches are all errors.
+fn plan_channel(
+    config: &GrpcClientConfig,
+    uri: &tonic::codegen::http::Uri,
+    release_build: bool,
+) -> Result<ChannelPlan> {
+    let present = [
+        !config.client_cert_pem.is_empty(),
+        !config.client_key_pem.is_empty(),
+        !config.ca_cert_pem.is_empty(),
+    ];
+    let scheme = uri.scheme_str().unwrap_or_default();
+    match present.iter().filter(|p| **p).count() {
+        3 => {
+            if scheme != "https" {
+                return Err(Error::InvalidConfiguration(format!(
+                    "gRPC mTLS requires an https:// endpoint, got '{}'",
+                    config.endpoint
+                )));
+            }
+            let server_name = match config.server_name.as_deref().map(str::trim) {
+                Some(name) if !name.is_empty() => name.to_string(),
+                _ => endpoint_host(uri).ok_or_else(|| {
+                    Error::InvalidConfiguration(format!(
+                        "gRPC endpoint '{}' has no host to use as TLS server name",
+                        config.endpoint
+                    ))
+                })?,
+            };
+            Ok(ChannelPlan::Mtls { server_name })
+        }
+        0 => {
+            if !config.allow_plaintext {
+                return Err(Error::InvalidConfiguration(format!(
+                    "refusing a plaintext gRPC channel to '{}': configure the mTLS client \
+                     certificate, client key and CA certificate (NIST 800-53: SC-8, AC-17)",
+                    config.endpoint
+                )));
+            }
+            if release_build {
+                return Err(Error::InvalidConfiguration(format!(
+                    "refusing a plaintext gRPC channel to '{}': plaintext is a development \
+                     escape hatch and is not available in release builds; configure the mTLS \
+                     client certificate, client key and CA certificate (NIST 800-53: SC-8, \
+                     AC-17, CM-6)",
+                    config.endpoint
+                )));
+            }
+            if scheme != "http" {
+                return Err(Error::InvalidConfiguration(format!(
+                    "plaintext gRPC requires an http:// endpoint, got '{}'",
+                    config.endpoint
+                )));
+            }
+            Ok(ChannelPlan::Plaintext)
+        }
+        _ => Err(Error::InvalidConfiguration(
+            "partial gRPC mTLS configuration: client certificate, client key and CA \
+             certificate are all required"
+                .to_string(),
+        )),
+    }
+}
+
+/// Read a private-key PEM file directly into zeroize-on-drop memory.
+///
+/// The buffer is pre-sized from the file length so it does not reallocate
+/// (which would leave unzeroized copies of partial key text behind). The error
+/// names the path only, never contents.
+///
+/// NIST 800-53: SI-12 (Information Handling), SC-12, IA-5.
+pub fn read_private_key_pem(path: &std::path::Path) -> Result<Zeroizing<String>> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| Error::Config(format!("Failed to open key file {}: {e}", path.display())))?;
+    let len = file
+        .metadata()
+        .map(|m| usize::try_from(m.len()).unwrap_or(0))
+        .unwrap_or(0);
+    let mut buf = Zeroizing::new(String::with_capacity(len.saturating_add(1)));
+    file.read_to_string(&mut buf)
+        .map_err(|e| Error::Config(format!("Failed to read key file {}: {e}", path.display())))?;
+    Ok(buf)
+}
+
+/// Render an error with its source chain (the TLS cause sits in the sources).
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut msg = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        msg.push_str(": ");
+        msg.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    msg
 }
 
 /// Circuit breaker states
@@ -177,49 +342,56 @@ pub struct CaGrpcClient {
 impl CaGrpcClient {
     /// Create a new CA gRPC client
     ///
+    /// With mTLS material the channel is TLS 1.3 only, uses the aws-lc-rs FIPS
+    /// provider (`fips()` asserted on the exact config used), presents the
+    /// client certificate, verifies the server against `server_name` (default:
+    /// the URL host) and requires ALPN `h2`. Without material it connects in
+    /// plaintext only when `allow_plaintext` is set and the endpoint is
+    /// `http://`. The connection is established eagerly, so a TLS failure
+    /// surfaces here.
+    ///
     /// COMPLIANCE MAPPING:
     /// - NIST 800-53: SC-8(1) - Establish mTLS connection
     /// - NIST 800-53: IA-5(2) - PKI-based authentication
+    /// - NIST 800-53: SC-13 - FIPS provider asserted
+    /// - NIAP PP-CA: FCS_TLSC_EXT.2, FTP_ITC.1
     pub async fn new(config: GrpcClientConfig) -> Result<Self> {
-        let mut endpoint = Channel::from_shared(config.endpoint.clone())
+        let endpoint = Endpoint::from_shared(config.endpoint.clone())
             .map_err(|e| Error::InvalidConfiguration(format!("Invalid endpoint: {}", e)))?
             .connect_timeout(Duration::from_millis(config.connect_timeout_ms))
             .timeout(Duration::from_millis(config.request_timeout_ms));
 
-        // Configure mTLS when certificate material is provided.
-        //
-        // NIST 800-53: SC-8(1) / AC-17 - mTLS is the production posture for
-        // inter-service channels. Plaintext is permitted only when no
-        // certificates are configured (dev/E2E) and is warned about loudly.
-        // Previously this built a TLS config from empty PEM strings
-        // unconditionally, which failed at startup for every plaintext
-        // deployment.
-        let has_mtls = !config.client_cert_pem.is_empty()
-            && !config.client_key_pem.is_empty()
-            && !config.ca_cert_pem.is_empty();
-        if has_mtls {
-            let client_identity =
-                Identity::from_pem(&config.client_cert_pem, &config.client_key_pem);
-            let ca_cert = Certificate::from_pem(&config.ca_cert_pem);
-            let tls_config = ClientTlsConfig::new()
-                .identity(client_identity)
-                .ca_certificate(ca_cert)
-                .domain_name("ostrich-ca"); // SNI hostname
-            endpoint = endpoint
-                .tls_config(tls_config)
-                .map_err(|e| Error::InvalidConfiguration(format!("TLS config error: {}", e)))?;
-        } else {
-            tracing::warn!(
-                endpoint = %config.endpoint,
-                "gRPC channel WITHOUT mTLS - configure client_cert_pem/client_key_pem/\
-                 ca_cert_pem for production (NIST 800-53: SC-8, AC-17)"
-            );
+        let channel = match plan_channel(&config, endpoint.uri(), !cfg!(debug_assertions))? {
+            ChannelPlan::Mtls { server_name } => {
+                let tls = grpc_client_config(
+                    &config.client_cert_pem,
+                    &config.client_key_pem,
+                    &config.ca_cert_pem,
+                )?;
+                let connector = GrpcTlsConnector::new(tls, &server_name)?;
+                tracing::info!(
+                    endpoint = %config.endpoint,
+                    server_name = %server_name,
+                    fips = true,
+                    tls = "1.3",
+                    mtls = true,
+                    "Connecting to CA gRPC service"
+                );
+                endpoint.connect_with_connector(connector).await
+            }
+            ChannelPlan::Plaintext => {
+                tracing::warn!(
+                    endpoint = %config.endpoint,
+                    "gRPC channel WITHOUT TLS (allow_plaintext) - development only; \
+                     configure client_cert_pem/client_key_pem/ca_cert_pem for production \
+                     (NIST 800-53: SC-8, AC-17)"
+                );
+                endpoint.connect().await
+            }
         }
-
-        let channel = endpoint
-            .connect()
-            .await
-            .map_err(|e| Error::ServiceUnavailable(format!("Failed to connect: {}", e)))?;
+        .map_err(|e| {
+            Error::ServiceUnavailable(format!("Failed to connect: {}", error_chain(&e)))
+        })?;
 
         // Create circuit breaker
         let circuit_breaker = Arc::new(CircuitBreaker::new(
@@ -364,6 +536,123 @@ mod tests {
         assert_eq!(config.max_retries, 3);
         assert_eq!(config.circuit_breaker_threshold, 5);
         assert_eq!(config.connect_timeout_ms, 5000);
+        assert!(!config.allow_plaintext, "plaintext must be opt-in");
+        assert!(config.server_name.is_none());
+    }
+
+    const KEY_TEXT: &str =
+        "-----BEGIN PRIVATE KEY-----\nSECRETKEYMATERIAL\n-----END PRIVATE KEY-----";
+
+    fn cfg(endpoint: &str, cert: bool, key: bool, ca: bool, plaintext: bool) -> GrpcClientConfig {
+        GrpcClientConfig {
+            endpoint: endpoint.to_string(),
+            client_cert_pem: if cert { "CERT".into() } else { String::new() },
+            client_key_pem: Zeroizing::new(if key { KEY_TEXT.into() } else { String::new() }),
+            ca_cert_pem: if ca { "CA".into() } else { String::new() },
+            allow_plaintext: plaintext,
+            ..Default::default()
+        }
+    }
+
+    /// SI-12: `Debug` never prints the private key.
+    #[test]
+    fn debug_redacts_private_key() {
+        let printed = format!("{:?}", cfg("https://ca:50051", true, true, true, false));
+        assert!(!printed.contains("SECRETKEYMATERIAL"), "{printed}");
+        assert!(!printed.contains("PRIVATE KEY"), "{printed}");
+        assert!(printed.contains("<redacted>"));
+    }
+
+    fn plan(c: &GrpcClientConfig) -> Result<ChannelPlan> {
+        let uri: tonic::codegen::http::Uri = c.endpoint.parse().expect("uri");
+        plan_channel(c, &uri, false)
+    }
+
+    /// CM-6 / SC-8: a release build refuses the plaintext channel even with
+    /// `allow_plaintext`, and still plans mTLS.
+    #[test]
+    fn plan_channel_refuses_plaintext_in_release_builds() {
+        let plain = cfg("http://127.0.0.1:50051", false, false, false, true);
+        let uri: tonic::codegen::http::Uri = plain.endpoint.parse().expect("uri");
+        let err = plan_channel(&plain, &uri, true).expect_err("release plaintext");
+        assert!(err.to_string().contains("release builds"), "{err}");
+        let mtls = cfg("https://ca-service:50051", true, true, true, true);
+        let uri: tonic::codegen::http::Uri = mtls.endpoint.parse().expect("uri");
+        assert!(matches!(
+            plan_channel(&mtls, &uri, true),
+            Ok(ChannelPlan::Mtls { .. })
+        ));
+    }
+
+    /// SC-8 / CM-6: the transport plan fails closed.
+    #[test]
+    fn plan_channel_truth_table() {
+        assert_eq!(
+            plan(&cfg("https://ca-service:50051", true, true, true, false)).expect("mtls"),
+            ChannelPlan::Mtls {
+                server_name: "ca-service".to_string()
+            }
+        );
+        let mut named = cfg("https://10.0.0.5:50051", true, true, true, false);
+        named.server_name = Some("ca-service".to_string());
+        assert_eq!(
+            plan(&named).expect("named"),
+            ChannelPlan::Mtls {
+                server_name: "ca-service".to_string()
+            }
+        );
+        assert_eq!(
+            plan(&cfg("http://127.0.0.1:50051", false, false, false, true)).expect("plain"),
+            ChannelPlan::Plaintext
+        );
+        // partial material
+        assert!(plan(&cfg("https://ca:50051", true, false, true, false)).is_err());
+        assert!(plan(&cfg("https://ca:50051", false, true, false, true)).is_err());
+        // no material without allow_plaintext
+        assert!(plan(&cfg("http://ca:50051", false, false, false, false)).is_err());
+        // https + plaintext
+        assert!(plan(&cfg("https://ca:50051", false, false, false, true)).is_err());
+        // http + material
+        assert!(plan(&cfg("http://ca:50051", true, true, true, false)).is_err());
+    }
+
+    #[test]
+    fn read_private_key_pem_reads_and_reports_path_only() {
+        let path = std::env::temp_dir().join(format!("ostrich-keypem-{}.pem", std::process::id()));
+        std::fs::write(&path, KEY_TEXT).expect("write");
+        assert_eq!(
+            read_private_key_pem(&path).expect("read").as_str(),
+            KEY_TEXT
+        );
+        std::fs::remove_file(&path).expect("rm");
+        let err = read_private_key_pem(&path)
+            .expect_err("missing")
+            .to_string();
+        assert!(err.contains("ostrich-keypem"));
+    }
+
+    /// `CaGrpcClient::new` rejects invalid transport configs before dialling.
+    #[tokio::test]
+    async fn new_rejects_invalid_transport_configs() {
+        for c in [
+            cfg("https://ca:50051", true, false, true, false),
+            cfg("http://ca:50051", false, false, false, false),
+            cfg("https://ca:50051", false, false, false, true),
+            cfg("http://ca:50051", true, true, true, false),
+        ] {
+            let err = CaGrpcClient::new(c).await.err().expect("must fail");
+            assert!(
+                matches!(err, Error::InvalidConfiguration(_)),
+                "unexpected error: {err}"
+            );
+            assert!(!err.to_string().contains("SECRETKEYMATERIAL"));
+        }
+        // Material present but not valid PEM: a config error, never the key text.
+        let err = CaGrpcClient::new(cfg("https://ca:50051", true, true, true, false))
+            .await
+            .err()
+            .expect("bad pem");
+        assert!(!err.to_string().contains("SECRETKEYMATERIAL"), "{err}");
     }
 
     #[test]

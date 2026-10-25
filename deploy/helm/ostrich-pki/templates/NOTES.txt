@@ -15,8 +15,10 @@ Getting Started
    kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-ca 8080:{{ .Values.ca.rest.service.port }} -n {{ .Release.Namespace }}
    curl http://localhost:8080/health
 
-3. Access the CA gRPC API:
+3. Access the CA gRPC API (TLS 1.3 mTLS: client cert from an allow-listed subject required):
    kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-ca 50051:{{ .Values.ca.grpc.service.port }} -n {{ .Release.Namespace }}
+   Allowed client subjects: {{ include "ostrich-pki.caGrpcAllowedSubjects" . }}
+   NetworkPolicy admits only acme/est pods to this port in-cluster; see docs/runbooks/ca-grpc-mtls.md
 
 {{- end }}
 
@@ -59,5 +61,15 @@ Security Notes
 2. Set strong database passwords (never use defaults)
 3. Review Network Policies are enabled for your environment
 4. Configure appropriate RBAC for CA administrative operations
+5. CA gRPC mTLS secrets in use (rotate before expiry; see docs/runbooks/ca-grpc-mtls.md):
+{{- if .Values.ca.enabled }}
+   - CA server:   {{ .Values.ca.grpc.tls.existingSecret }} (tls.crt, tls.key, client-ca.crt)
+{{- end }}
+{{- if .Values.acme.enabled }}
+   - ACME client: {{ .Values.acme.caGrpc.clientTls.existingSecret }} (tls.crt, tls.key, ca.crt)
+{{- end }}
+{{- if .Values.est.enabled }}
+   - EST client:  {{ .Values.est.caGrpc.clientTls.existingSecret }} (tls.crt, tls.key, ca.crt)
+{{- end }}
 
 For more information, visit: https://github.com/ostrich-pki/ostrich-pki

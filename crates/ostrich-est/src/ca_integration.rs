@@ -97,11 +97,18 @@ impl EstCaClient {
     /// issuance requests, so it MUST be mutually authenticated in production. This
     /// constructor fails closed: a non-loopback endpoint without TLS client
     /// material is rejected unless `allow_insecure` is explicitly set (a
-    /// dev/E2E escape hatch). Previously the channel silently degraded to
+    /// dev/E2E escape hatch). In release builds both `allow_insecure` and the
+    /// loopback exception are refused (see `plaintext_policy`). Previously the channel silently degraded to
     /// plaintext with only a warning, letting anyone on the network path read
     /// CSRs and forge issuance calls directly to the CA.
+    ///
+    /// With TLS material the channel is TLS 1.3 mutual TLS on the aws-lc-rs
+    /// FIPS provider (`fips()` asserted) via `CaGrpcClient`. The CA itself
+    /// refuses plaintext gRPC in release builds, so the loopback/dev plaintext
+    /// path only works against a debug-build CA started with
+    /// `CA_GRPC_INSECURE_DEV_PLAINTEXT` (or an in-process test server).
     pub async fn new(
-        config: GrpcClientConfig,
+        mut config: GrpcClientConfig,
         db_pool: DatabasePool,
         allow_insecure: bool,
     ) -> Result<Self> {
@@ -110,16 +117,13 @@ impl EstCaClient {
             && !config.ca_cert_pem.is_empty();
         let is_loopback = endpoint_is_loopback(&config.endpoint);
 
-        if !has_tls_material && !is_loopback && !allow_insecure {
-            // NIST 800-53: SI-17 - fail secure rather than expose a plaintext
-            // issuance channel to a non-loopback CA endpoint.
-            return Err(Error::Internal(format!(
-                "refusing to open a plaintext gRPC channel to non-loopback CA endpoint '{}'; \
-                 configure CA mTLS (client cert/key + CA cert) or set --ca-insecure for \
-                 development only",
-                config.endpoint
-            )));
-        }
+        let allow_plaintext = plaintext_policy(
+            &config.endpoint,
+            has_tls_material,
+            is_loopback,
+            allow_insecure,
+            !cfg!(debug_assertions),
+        )?;
 
         if !has_tls_material {
             tracing::warn!(
@@ -129,6 +133,11 @@ impl EstCaClient {
                  configure CA mTLS for production (NIST 800-53: SC-8, AC-17)"
             );
         }
+
+        // Plaintext is only ever used when no TLS material is configured;
+        // `CaGrpcClient::new` still rejects partial material and an https://
+        // endpoint without material.
+        config.allow_plaintext = allow_plaintext;
 
         let grpc_client = CaGrpcClient::new(config)
             .await
@@ -363,9 +372,94 @@ impl EstCaClient {
     }
 }
 
+/// Decide whether the EST→CA channel may fall back to plaintext.
+///
+/// Debug builds: plaintext (no TLS material) is allowed to a loopback endpoint
+/// or with `allow_insecure`; otherwise it is refused. Release builds: the
+/// `allow_insecure` flag and the loopback exception are both refused, so a
+/// release EST server always uses mTLS to the CA.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SC-8, AC-17, CM-6 (no development escape hatch in release
+///   builds), SI-17 (fail secure)
+/// - NIAP PP-CA: FTP_ITC.1
+fn plaintext_policy(
+    endpoint: &str,
+    has_tls_material: bool,
+    is_loopback: bool,
+    allow_insecure: bool,
+    release_build: bool,
+) -> Result<bool> {
+    if release_build {
+        if allow_insecure {
+            return Err(Error::Internal(
+                "--ca-insecure / caInsecure is a development escape hatch and is not \
+                 available in release builds; configure CA mTLS (client cert/key + CA cert)"
+                    .to_string(),
+            ));
+        }
+        if !has_tls_material {
+            return Err(Error::Internal(format!(
+                "refusing a plaintext gRPC channel to CA endpoint '{endpoint}' in a release \
+                 build (the loopback exception is debug-only); configure CA mTLS (client \
+                 cert/key + CA cert)"
+            )));
+        }
+        return Ok(false);
+    }
+    if !has_tls_material && !is_loopback && !allow_insecure {
+        // NIST 800-53: SI-17 - fail secure rather than expose a plaintext
+        // issuance channel to a non-loopback CA endpoint.
+        return Err(Error::Internal(format!(
+            "refusing to open a plaintext gRPC channel to non-loopback CA endpoint '{endpoint}'; \
+             configure CA mTLS (client cert/key + CA cert) or set --ca-insecure for \
+             development only"
+        )));
+    }
+    Ok(allow_insecure || is_loopback)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CM-6 / SC-8: release builds refuse `allow_insecure` and the loopback
+    /// plaintext exception; debug builds keep the dev behaviour.
+    #[test]
+    fn plaintext_policy_is_debug_only() {
+        let ep = "http://127.0.0.1:50051";
+        // release
+        assert!(
+            plaintext_policy(ep, false, true, false, true).is_err(),
+            "loopback"
+        );
+        assert!(
+            plaintext_policy(ep, false, false, true, true).is_err(),
+            "insecure"
+        );
+        assert!(
+            plaintext_policy(ep, true, false, true, true).is_err(),
+            "flag + mTLS"
+        );
+        assert_eq!(
+            plaintext_policy(ep, true, true, false, true).ok(),
+            Some(false)
+        );
+        // debug
+        assert_eq!(
+            plaintext_policy(ep, false, true, false, false).ok(),
+            Some(true)
+        );
+        assert_eq!(
+            plaintext_policy(ep, false, false, true, false).ok(),
+            Some(true)
+        );
+        assert!(plaintext_policy(ep, false, false, false, false).is_err());
+        assert_eq!(
+            plaintext_policy(ep, true, false, false, false).ok(),
+            Some(false)
+        );
+    }
 
     #[test]
     fn test_endpoint_is_loopback() {

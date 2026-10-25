@@ -26,7 +26,7 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow traffic from other OstrichPKI services
+    # REST: allow traffic from other OstrichPKI services
     - from:
         - podSelector:
             matchLabels:
@@ -34,6 +34,20 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.ca.rest.port }}
+    # gRPC issuance API: only the RA front ends (acme, est) may connect.
+    # Defence in depth in front of mTLS + the client-subject allowlist.
+    # NIST 800-53: AC-4, SC-7, AC-6
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ostrich-pki.selectorLabels" . | nindent 14 }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  - acme
+                  - est
+      ports:
         - protocol: TCP
           port: {{ .Values.ca.grpc.port }}
     # Allow traffic from ingress namespace if specified

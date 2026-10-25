@@ -42,3 +42,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Error handling
 anyhow = { workspace = true }
+
+# Zeroize the CA gRPC client key PEM in memory (NIST 800-53 SI-12).
+zeroize = { workspace = true }

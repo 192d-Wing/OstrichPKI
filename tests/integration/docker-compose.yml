@@ -3,6 +3,12 @@
 # COMPLIANCE MAPPING:
 # - NIST 800-53: SA-11 (Developer Security Testing)
 # - NIST 800-53: CA-2 (Security Assessments)
+# - NIST 800-53: SC-8, AC-17, IA-3, AC-3 (CA gRPC is TLS 1.3 mTLS + allowlist)
+#
+# PREREQUISITE: run `make dev-grpc-certs` from the repo root first (writes
+# DEV ONLY certs to <repo>/.dev-grpc-certs, mounted below as /app/grpc-tls).
+# The CA exits at startup without them. Host-side tests then load the client identity:
+#   set -a; . .dev-grpc-certs/integration-tests.env; set +a
 
 services:
   # PostgreSQL Database
@@ -39,6 +45,11 @@ services:
       # Bind addresses
       CA_REST_ADDRESS: 0.0.0.0:8080
       CA_GRPC_ADDRESS: 0.0.0.0:50051
+      # gRPC mTLS (DEV ONLY certs); integration-tests = host-side cargo tests
+      CA_GRPC_TLS_CERT_FILE: /app/grpc-tls/ca-service.crt
+      CA_GRPC_TLS_KEY_FILE: /app/grpc-tls/ca-service.key
+      CA_GRPC_TLS_CLIENT_CA_FILE: /app/grpc-tls/ca.crt
+      CA_GRPC_ALLOWED_CLIENT_SUBJECTS: "CN=acme-server;CN=est-server;CN=integration-tests"
       # Test mode
       RUST_LOG: debug
     ports:
@@ -46,6 +57,16 @@ services:
       - "50051:50051"
     volumes:
       - ./fixtures/certs:/app/certs:ro
+      # DEV ONLY (shared directory: every gRPC container sees every dev key;
+      # docker-compose.yml mounts per-service subdirectories instead).
+      # gRPC mTLS material (repo-root .dev-grpc-certs). Long syntax so a
+      # missing directory is an error instead of an empty auto-created mount.
+      - type: bind
+        source: ../../.dev-grpc-certs
+        target: /app/grpc-tls
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 10s
@@ -70,12 +91,27 @@ services:
       # ACME Configuration
       ACME_BIND_ADDRESS: 0.0.0.0:8080
       ACME_BASE_URL: http://acme-service:8080
+      # CA gRPC client over TLS 1.3 mTLS (CN=acme-server)
+      CA_GRPC_URL: https://ca-service:50051
+      CA_GRPC_CLIENT_CERT_FILE: /app/grpc-tls/acme-server.crt
+      CA_GRPC_CLIENT_KEY_FILE: /app/grpc-tls/acme-server.key
+      CA_GRPC_CA_CERT_FILE: /app/grpc-tls/ca.crt
       # Test mode
       RUST_LOG: debug
     ports:
       - "8090:8080"
     volumes:
       - ./fixtures/certs:/app/certs:ro
+      # DEV ONLY (shared directory: every gRPC container sees every dev key;
+      # docker-compose.yml mounts per-service subdirectories instead).
+      # gRPC mTLS material (repo-root .dev-grpc-certs). Long syntax so a
+      # missing directory is an error instead of an empty auto-created mount.
+      - type: bind
+        source: ../../.dev-grpc-certs
+        target: /app/grpc-tls
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 10s
@@ -103,12 +139,27 @@ services:
       TLS_CERT_FILE: /app/certs/est-service.pem
       TLS_KEY_FILE: /app/certs/est-service-key.pem
       TLS_CA_CERT_FILE: /app/certs/root-ca.pem
+      # CA gRPC client over TLS 1.3 mTLS (CN=est-server)
+      CA_GRPC_URL: https://ca-service:50051
+      CA_GRPC_CLIENT_CERT_FILE: /app/grpc-tls/est-server.crt
+      CA_GRPC_CLIENT_KEY_FILE: /app/grpc-tls/est-server.key
+      CA_GRPC_CA_CERT_FILE: /app/grpc-tls/ca.crt
       # Test mode
       RUST_LOG: debug
     ports:
       - "8443:8443"
     volumes:
       - ./fixtures/certs:/app/certs:ro
+      # DEV ONLY (shared directory: every gRPC container sees every dev key;
+      # docker-compose.yml mounts per-service subdirectories instead).
+      # gRPC mTLS material (repo-root .dev-grpc-certs). Long syntax so a
+      # missing directory is an error instead of an empty auto-created mount.
+      - type: bind
+        source: ../../.dev-grpc-certs
+        target: /app/grpc-tls
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8443/health || exit 1"]
       interval: 10s

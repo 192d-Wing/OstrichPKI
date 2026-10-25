@@ -10,6 +10,20 @@
 #   docker-compose up -d ca acme            # Start specific services
 #   docker-compose logs -f ca               # View CA logs
 #   docker-compose down                     # Stop all services
+#
+# PREREQUISITE: CA gRPC mTLS material. The CA gRPC API (50051) only serves
+# TLS 1.3 mutual TLS (aws-lc-rs FIPS) with a client-subject allowlist, and the
+# CA exits at startup without it (no plaintext fallback in release images).
+# For development run `make dev-grpc-certs`; otherwise point CA_GRPC_TLS_DIR,
+# ACME_CA_GRPC_CLIENT_DIR and EST_CA_GRPC_CLIENT_DIR in .env at directories
+# holding real certificates (see .env.example and docs/runbooks/ca-grpc-mtls.md).
+# Each container mounts ONLY its own certificate, key and trust anchor (one
+# directory per service, laid out like the Kubernetes secrets: tls.crt, tls.key
+# and client-ca.crt / ca.crt), never another service's private key.
+# Keep those directories OUTSIDE ./certs: ca, est and ocsp mount ./certs
+# wholesale, so anything under it is visible to all three. The DEV ONLY
+# default (./.dev-grpc-certs) is outside ./certs for that reason.
+# NIST 800-53: SC-8, AC-17, IA-3, AC-3, AC-6 (least privilege), SC-12
 
 services:
   # PostgreSQL Database
@@ -50,6 +64,13 @@ services:
       # Bind addresses
       CA_REST_ADDRESS: 0.0.0.0:8080
       CA_GRPC_ADDRESS: 0.0.0.0:50051
+      # gRPC mTLS (server identity, client trust anchor, ";"-joined allowlist)
+      # client-ca.crt must be a dedicated service-identity CA, never the CA's
+      # own subscriber-issuing certificate (ca-server refuses to start).
+      CA_GRPC_TLS_CERT_FILE: ${CA_GRPC_TLS_CERT_FILE:-/app/grpc-tls/tls.crt}
+      CA_GRPC_TLS_KEY_FILE: ${CA_GRPC_TLS_KEY_FILE:-/app/grpc-tls/tls.key}
+      CA_GRPC_TLS_CLIENT_CA_FILE: ${CA_GRPC_TLS_CLIENT_CA_FILE:-/app/grpc-tls/client-ca.crt}
+      CA_GRPC_ALLOWED_CLIENT_SUBJECTS: ${CA_GRPC_ALLOWED_CLIENT_SUBJECTS:-CN=acme-server;CN=est-server}
       # CA Configuration
       CA_CERT_FILE: ${CA_CERT_FILE:-}
       CA_KEY_FILE: ${CA_KEY_FILE:-}
@@ -60,8 +81,20 @@ services:
       - "8080:8080"
       - "50051:50051"
     volumes:
+      # ./certs is mounted whole: never put gRPC key material under it (the
+      # dev default ./.dev-grpc-certs is outside it; see CA_GRPC_TLS_DIR etc.).
       - ./certs:/app/certs:ro
       - ./config:/app/config:ro
+      # CA gRPC server material ONLY: tls.crt, tls.key, client-ca.crt (default:
+      # DEV ONLY ./.dev-grpc-certs/ca-server from `make dev-grpc-certs`; point
+      # CA_GRPC_TLS_DIR at real files outside development). No client keys.
+      # Long syntax: a missing directory is an error, not an empty mount.
+      - type: bind
+        source: ${CA_GRPC_TLS_DIR:-./.dev-grpc-certs/ca-server}
+        target: /app/grpc-tls
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 30s
@@ -91,9 +124,25 @@ services:
       # ACME Configuration
       ACME_BIND_ADDRESS: 0.0.0.0:8080
       ACME_BASE_URL: ${ACME_BASE_URL:-http://localhost:8080}
+      # CA gRPC client (TLS 1.3 mTLS, subject must be allow-listed on the CA)
+      CA_GRPC_URL: ${ACME_CA_GRPC_URL:-https://ca:50051}
+      CA_GRPC_CLIENT_CERT_FILE: ${ACME_CA_GRPC_CLIENT_CERT_FILE:-/app/ca-grpc-client/tls.crt}
+      CA_GRPC_CLIENT_KEY_FILE: ${ACME_CA_GRPC_CLIENT_KEY_FILE:-/app/ca-grpc-client/tls.key}
+      CA_GRPC_CA_CERT_FILE: ${ACME_CA_GRPC_CA_CERT_FILE:-/app/ca-grpc-client/ca.crt}
       # Logging
       RUST_LOG: ${RUST_LOG:-info}
       LOG_JSON: ${LOG_JSON:-true}
+    volumes:
+      # CA gRPC client material ONLY for acme-server: tls.crt, tls.key and ca.crt
+      # (server trust anchor). Default: DEV ONLY ./.dev-grpc-certs/acme-server from
+      # `make dev-grpc-certs`; point ACME_CA_GRPC_CLIENT_DIR at real files.
+      # Long syntax: a missing directory is an error, not an empty mount.
+      - type: bind
+        source: ${ACME_CA_GRPC_CLIENT_DIR:-./.dev-grpc-certs/acme-server}
+        target: /app/ca-grpc-client
+        read_only: true
+        bind:
+          create_host_path: false
     ports:
       - "8090:8080"
     healthcheck:
@@ -124,6 +173,11 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-ostrich}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ostrich_pki}
       # EST Configuration
       EST_BIND_ADDRESS: 0.0.0.0:8443
+      # CA gRPC client (TLS 1.3 mTLS, subject must be allow-listed on the CA)
+      CA_GRPC_URL: ${EST_CA_GRPC_URL:-https://ca:50051}
+      CA_GRPC_CLIENT_CERT_FILE: ${EST_CA_GRPC_CLIENT_CERT_FILE:-/app/ca-grpc-client/tls.crt}
+      CA_GRPC_CLIENT_KEY_FILE: ${EST_CA_GRPC_CLIENT_KEY_FILE:-/app/ca-grpc-client/tls.key}
+      CA_GRPC_CA_CERT_FILE: ${EST_CA_GRPC_CA_CERT_FILE:-/app/ca-grpc-client/ca.crt}
       # TLS Configuration
       TLS_CERT_FILE: ${EST_TLS_CERT_FILE:-}
       TLS_KEY_FILE: ${EST_TLS_KEY_FILE:-}
@@ -134,7 +188,19 @@ services:
     ports:
       - "8443:8443"
     volumes:
+      # ./certs is mounted whole: never put gRPC key material under it (the
+      # dev default ./.dev-grpc-certs is outside it; see CA_GRPC_TLS_DIR etc.).
       - ./certs:/app/certs:ro
+      # CA gRPC client material ONLY for est-server: tls.crt, tls.key and ca.crt
+      # (server trust anchor). Default: DEV ONLY ./.dev-grpc-certs/est-server from
+      # `make dev-grpc-certs`; point EST_CA_GRPC_CLIENT_DIR at real files.
+      # Long syntax: a missing directory is an error, not an empty mount.
+      - type: bind
+        source: ${EST_CA_GRPC_CLIENT_DIR:-./.dev-grpc-certs/est-server}
+        target: /app/ca-grpc-client
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8443/health || exit 1"]
       interval: 30s
@@ -169,6 +235,8 @@ services:
     ports:
       - "8081:8081"
     volumes:
+      # ./certs is mounted whole: never put gRPC key material under it (the
+      # dev default ./.dev-grpc-certs is outside it; see CA_GRPC_TLS_DIR etc.).
       - ./certs:/app/certs:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8081/health || exit 1"]

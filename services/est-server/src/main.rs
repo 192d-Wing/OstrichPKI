@@ -64,6 +64,12 @@ struct Args {
     #[arg(long, env = "CA_GRPC_CA_CERT_FILE")]
     ca_grpc_ca_cert: Option<String>,
 
+    /// TLS server name the CA gRPC server certificate must match. Defaults to
+    /// the CA_GRPC_URL host. Applies to the default CA client only; named
+    /// caBackends verify against their grpcUrl host.
+    #[arg(long, env = "CA_GRPC_SERVER_NAME")]
+    ca_grpc_server_name: Option<String>,
+
     /// How a CSR's requested identity is authorized against the authenticated
     /// account (H1): "username" (default) or "allowlist". NIST 800-53: AC-3 / AC-6.
     #[arg(long, env = "EST_IDENTITY_POLICY")]
@@ -150,6 +156,7 @@ struct Settings {
     ca_grpc_client_cert: Option<String>,
     ca_grpc_client_key: Option<String>,
     ca_grpc_ca_cert: Option<String>,
+    ca_grpc_server_name: Option<String>,
     ca_insecure: bool,
     enroll_profile: String,
     enroll_identity_policy: String,
@@ -189,6 +196,8 @@ impl Settings {
             ca_grpc_client_cert: args.ca_grpc_client_cert.or(file.ca_grpc_client_cert),
             ca_grpc_client_key: args.ca_grpc_client_key.or(file.ca_grpc_client_key),
             ca_grpc_ca_cert: args.ca_grpc_ca_cert.or(file.ca_grpc_ca_cert),
+            // CLI/env only (the JSON config schema has no field for it yet).
+            ca_grpc_server_name: args.ca_grpc_server_name,
             ca_insecure: args.ca_insecure.or(file.ca_insecure).unwrap_or(false),
             enroll_profile: args
                 .enroll_profile
@@ -241,6 +250,11 @@ async fn main() -> Result<()> {
     let settings = Settings::resolve(args, file)?;
 
     init_logging(&settings.log_level, settings.log_json)?;
+
+    // Process-level FIPS gate before the database, the CA gRPC clients or any
+    // listener. NIST 800-53: SC-13, SC-24.
+    // NIAP PP-CA: supports FPT_TST_EXT.1; FPT_FLS.1.
+    ostrich_common::tls::fips_gate()?;
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -467,34 +481,16 @@ async fn main() -> Result<()> {
         Some(url) => {
             tracing::info!(endpoint = %url, "Connecting to CA gRPC service");
             // Load CA mTLS material when configured (SC-8 / AC-17). All three
-            // (client cert, client key, CA cert) are required for mTLS; partial
-            // configuration is rejected so the channel can't silently degrade.
-            let read_pem = |path: &Option<String>| -> Result<String> {
-                match path {
-                    Some(p) => Ok(std::fs::read_to_string(p)?),
-                    None => Ok(String::new()),
-                }
-            };
-            let client_cert_pem = read_pem(&settings.ca_grpc_client_cert)?;
-            let client_key_pem = read_pem(&settings.ca_grpc_client_key)?;
-            let ca_cert_pem = read_pem(&settings.ca_grpc_ca_cert)?;
-            let any = !client_cert_pem.is_empty()
-                || !client_key_pem.is_empty()
-                || !ca_cert_pem.is_empty();
-            let all = !client_cert_pem.is_empty()
-                && !client_key_pem.is_empty()
-                && !ca_cert_pem.is_empty();
-            if any && !all {
-                anyhow::bail!(
-                    "CA gRPC mTLS requires all of --ca-grpc-client-cert, \
-                     --ca-grpc-client-key, --ca-grpc-ca-cert"
-                );
-            }
+            // (client cert, client key, CA cert) are required for mTLS; the
+            // all-or-nothing rule is enforced by `CaGrpcClient::new`, so the
+            // channel can't silently degrade. The key is read into zeroizing
+            // memory (SI-12).
             let config = ostrich_common::GrpcClientConfig {
                 endpoint: url.clone(),
-                client_cert_pem,
-                client_key_pem,
-                ca_cert_pem,
+                client_cert_pem: read_optional_pem(&settings.ca_grpc_client_cert)?,
+                client_key_pem: read_optional_key_pem(&settings.ca_grpc_client_key)?,
+                ca_cert_pem: read_optional_pem(&settings.ca_grpc_ca_cert)?,
+                server_name: settings.ca_grpc_server_name.clone(),
                 ..Default::default()
             };
             let client = ostrich_est::ca_integration::EstCaClient::new(
@@ -542,25 +538,13 @@ async fn main() -> Result<()> {
         if !backend_names.insert(backend.name.clone()) {
             anyhow::bail!("duplicate caBackends name '{}'", backend.name);
         }
-        // mTLS to the backend gRPC channel is all-or-nothing (SC-8 / AC-17).
-        let client_cert_pem = read_optional_pem(&backend.client_cert)?;
-        let client_key_pem = read_optional_pem(&backend.client_key)?;
-        let ca_cert_pem = read_optional_pem(&backend.ca_cert)?;
-        let any =
-            !client_cert_pem.is_empty() || !client_key_pem.is_empty() || !ca_cert_pem.is_empty();
-        let all =
-            !client_cert_pem.is_empty() && !client_key_pem.is_empty() && !ca_cert_pem.is_empty();
-        if any && !all {
-            anyhow::bail!(
-                "caBackends['{}'] mTLS requires all of clientCert, clientKey, caCert",
-                backend.name
-            );
-        }
+        // mTLS to the backend gRPC channel is all-or-nothing (SC-8 / AC-17),
+        // enforced by `CaGrpcClient::new`; the key is zeroized (SI-12).
         let config = ostrich_common::GrpcClientConfig {
             endpoint: backend.grpc_url.clone(),
-            client_cert_pem,
-            client_key_pem,
-            ca_cert_pem,
+            client_cert_pem: read_optional_pem(&backend.client_cert)?,
+            client_key_pem: read_optional_key_pem(&backend.client_key)?,
+            ca_cert_pem: read_optional_pem(&backend.ca_cert)?,
             ..Default::default()
         };
         // NOTE: ca_insecure is a single GLOBAL dev escape hatch — it applies to
@@ -571,7 +555,8 @@ async fn main() -> Result<()> {
             db_pool.clone(),
             settings.ca_insecure,
         )
-        .await?;
+        .await
+        .map_err(|e| anyhow::anyhow!("caBackends['{}']: {e}", backend.name))?;
         // This backend's issuing CA certificate, served by /{label}/cacerts.
         // A configured id that resolves to no row is a misconfiguration (the
         // operator explicitly named a cert) and fails fast (CM-6).
@@ -781,8 +766,20 @@ async fn main() -> Result<()> {
 /// absent (mirrors the default-backend mTLS material handling).
 fn read_optional_pem(path: &Option<String>) -> Result<String> {
     match path {
-        Some(p) => Ok(std::fs::read_to_string(p)?),
+        Some(p) => std::fs::read_to_string(p)
+            .map_err(|e| anyhow::anyhow!("failed to read PEM file {p}: {e}")),
         None => Ok(String::new()),
+    }
+}
+
+/// Read a private-key PEM file into zeroize-on-drop memory (NIST 800-53
+/// SI-12), returning an empty value when the path is absent.
+fn read_optional_key_pem(path: &Option<String>) -> Result<zeroize::Zeroizing<String>> {
+    match path {
+        Some(p) => Ok(ostrich_common::read_private_key_pem(std::path::Path::new(
+            p,
+        ))?),
+        None => Ok(zeroize::Zeroizing::new(String::new())),
     }
 }
 

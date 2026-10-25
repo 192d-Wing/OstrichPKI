@@ -104,12 +104,37 @@ ca:
       type: ClusterIP
       port: 8080
 
-  # gRPC API
+  # gRPC issuance API (acme/est -> CA). Always TLS 1.3 mutual TLS via the
+  # aws-lc-rs FIPS provider; there is no plaintext mode in release images, so
+  # rendering FAILS unless ca.grpc.tls.existingSecret is set (fail closed).
+  # See docs/runbooks/ca-grpc-mtls.md.
+  # NIST 800-53: SC-8, AC-17, IA-3, IA-5(2), AC-3; NIAP PP-CA: FTP_ITC.1
   grpc:
     port: 50051
     service:
       type: ClusterIP
       port: 50051
+    tls:
+      # Secret with keys tls.crt (server chain; SAN must include
+      # "<fullname>-ca", the host in the in-cluster gRPC URL), tls.key, and
+      # client-ca.crt (trust anchor for acme/est client certificates). The
+      # client CA MUST be a dedicated service-identity CA/intermediate that
+      # issues nothing else; ca-server refuses to start if client-ca.crt holds
+      # its own subscriber-issuing CA certificate. Client certificates must
+      # carry an EKU extension that includes clientAuth.
+      # Mounted read-only at /app/grpc-tls.
+      existingSecret: ""
+      certFile: /app/grpc-tls/tls.crt
+      keyFile: /app/grpc-tls/tls.key
+      clientCaFile: /app/grpc-tls/client-ca.crt
+    # Client-certificate subject DNs (RFC 4514) allowed to call the CA gRPC
+    # API. Anything else gets PERMISSION_DENIED and an audit event. Must not be
+    # empty. Exact, case-sensitive match on the RFC 4514 form; one DN per item,
+    # no ";" inside a DN. Passed to ca-server as CA_GRPC_ALLOWED_CLIENT_SUBJECTS
+    # (";"-joined).
+    allowedClientSubjects:
+      - "CN=acme-server"
+      - "CN=est-server"
 
   # CA certificate and key
   # NIST 800-53: SC-12 (Cryptographic Key Establishment)
@@ -168,6 +193,21 @@ acme:
   # Port the http-01 challenge validator connects to on the client.
   http01Port: 80
 
+  # mTLS client identity for the CA gRPC API. Required when acme is enabled
+  # (rendering fails without clientTls.existingSecret). The certificate subject
+  # must be in ca.grpc.allowedClientSubjects (default CN=acme-server) and carry
+  # EKU clientAuth. NIST 800-53: SC-8, IA-3; NIAP PP-CA: FCS_TLSC_EXT.2
+  caGrpc:
+    # TLS server name to verify; empty = host of the CA gRPC URL ("<fullname>-ca").
+    serverName: ""
+    clientTls:
+      # Secret with keys tls.crt, tls.key, ca.crt (trust anchor for the CA
+      # gRPC server certificate). Mounted read-only at /app/ca-grpc-client.
+      existingSecret: ""
+      certFile: /app/ca-grpc-client/tls.crt
+      keyFile: /app/ca-grpc-client/tls.key
+      caFile: /app/ca-grpc-client/ca.crt
+
   # Ingress for external ACME access
   ingress:
     enabled: false
@@ -220,6 +260,21 @@ est:
     certFile: ""
     keyFile: ""
     caCertFile: ""
+
+  # mTLS client identity for the CA gRPC API. Required when est is enabled
+  # (rendering fails without clientTls.existingSecret). The certificate subject
+  # must be in ca.grpc.allowedClientSubjects (default CN=est-server) and carry
+  # EKU clientAuth. NIST 800-53: SC-8, IA-3; NIAP PP-CA: FCS_TLSC_EXT.2
+  caGrpc:
+    # TLS server name to verify; empty = host of the CA gRPC URL ("<fullname>-ca").
+    serverName: ""
+    clientTls:
+      # Secret with keys tls.crt, tls.key, ca.crt. Mounted read-only at
+      # /app/ca-grpc-client.
+      existingSecret: ""
+      certFile: /app/ca-grpc-client/tls.crt
+      keyFile: /app/ca-grpc-client/tls.key
+      caFile: /app/ca-grpc-client/ca.crt
 
   resources:
     limits:

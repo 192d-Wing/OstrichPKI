@@ -22,11 +22,42 @@ pub const TEST_REQUESTOR: &str = "integration-tests::ca_core";
 /// Type alias for the connected CA gRPC client
 pub type CaClient = CertificateAuthorityServiceClient<Channel>;
 
-/// Connect to the CA gRPC endpoint (plaintext HTTP/2 in the test environment)
+/// Read a PEM file named by an environment variable ("" when unset).
+fn pem_from_env(var: &str) -> String {
+    match std::env::var(var).ok().filter(|p| !p.is_empty()) {
+        Some(path) => std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{var}={path}: cannot read PEM: {e}")),
+        None => String::new(),
+    }
+}
+
+/// Connect to the CA gRPC endpoint.
+///
+/// The CA gRPC listener requires TLS 1.3 mTLS with an allow-listed client
+/// subject, so the client certificate, key and CA are read from
+/// `CA_GRPC_CLIENT_CERT_FILE`, `CA_GRPC_CLIENT_KEY_FILE` and
+/// `CA_GRPC_CA_CERT_FILE` (e.g. the `CN=integration-tests` certs written by
+/// `make dev-grpc-certs`); `CA_GRPC_SERVER_NAME` overrides the TLS server name.
+/// An `http://` endpoint (debug-build CA with CA_GRPC_INSECURE_DEV_PLAINTEXT)
+/// connects in plaintext.
+///
+/// NIST 800-53: SC-8 / AC-17 - the tests use the production transport path.
 pub async fn connect_ca(endpoint: &str) -> CaClient {
-    CertificateAuthorityServiceClient::connect(endpoint.to_string())
+    let config = ostrich_common::GrpcClientConfig {
+        endpoint: endpoint.to_string(),
+        client_cert_pem: pem_from_env("CA_GRPC_CLIENT_CERT_FILE"),
+        client_key_pem: zeroize::Zeroizing::new(pem_from_env("CA_GRPC_CLIENT_KEY_FILE")),
+        ca_cert_pem: pem_from_env("CA_GRPC_CA_CERT_FILE"),
+        server_name: std::env::var("CA_GRPC_SERVER_NAME")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        allow_plaintext: endpoint.starts_with("http://"),
+        ..Default::default()
+    };
+    let client = ostrich_common::CaGrpcClient::new(config)
         .await
-        .unwrap_or_else(|e| panic!("Failed to connect to CA gRPC at {}: {}", endpoint, e))
+        .unwrap_or_else(|e| panic!("Failed to connect to CA gRPC at {}: {}", endpoint, e));
+    CertificateAuthorityServiceClient::new(client.channel())
 }
 
 /// Build a test subject DN with the given common name

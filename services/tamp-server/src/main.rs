@@ -72,6 +72,12 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     init_logging(&args.log_level, args.log_json.unwrap_or(false))?;
 
+    // Process-level FIPS gate before any database, client or listener: asserts
+    // AWS-LC FIPS mode and installs the aws-lc-rs FIPS provider as the process
+    // default. NIST 800-53: SC-13, SC-24.
+    // NIAP PP-CA: supports FPT_TST_EXT.1; FPT_FLS.1.
+    ostrich_common::tls::fips_gate()?;
+
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         "Starting OstrichPKI TAMP Manager Server"

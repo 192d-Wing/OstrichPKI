@@ -27,11 +27,15 @@ use contract::{STREAM_NAME, SUBJECT_EMAIL, SUBJECT_NOTIFY};
 async fn main() -> Result<()> {
     let cfg = Config::parse();
     init_tracing(&cfg);
-    tracing::info!(role = ?cfg.role, "Starting OstrichPKI notify-service");
 
-    // Process-wide rustls provider (aws-lc-rs / FIPS) for lettre STARTTLS and any
-    // NATS TLS. Idempotent. NIST 800-53: SC-13.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    // Process-level FIPS gate before the database, NATS or any listener: asserts
+    // AWS-LC FIPS mode and installs the aws-lc-rs FIPS provider as the process
+    // default rustls provider (used by lettre STARTTLS and NATS TLS).
+    // Idempotent. NIST 800-53: SC-13, SC-24.
+    // NIAP PP-CA: supports FPT_TST_EXT.1; FPT_FLS.1.
+    ostrich_common::tls::fips_gate()?;
+
+    tracing::info!(role = ?cfg.role, "Starting OstrichPKI notify-service");
 
     let pool = db::connect(&cfg.database_url)
         .await

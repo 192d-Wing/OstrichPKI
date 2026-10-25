@@ -4,8 +4,12 @@ OstrichPKI ACME Service Deployment
 COMPLIANCE MAPPING:
 - RFC 8555: ACME Protocol
 - NIST 800-53: SC-17 (PKI Certificates)
+- NIST 800-53: SC-8, AC-17, IA-3 (CA gRPC client over TLS 1.3 mTLS; rendering
+  fails without the client certificate secret)
+- NIAP PP-CA: FCS_TLSC_EXT.2, FTP_ITC.1
 */}}
 {{- if .Values.acme.enabled -}}
+{{- $caGrpcClientSecret := include "ostrich-pki.caGrpcClientSecret" (dict "component" "acme" "cfg" .Values.acme.caGrpc) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,10 +55,9 @@ spec:
             {{- include "ostrich-pki.commonEnv" . | nindent 12 }}
             - name: ACME_BIND_ADDRESS
               value: "0.0.0.0:8080"
-            - name: CA_GRPC_URL
-              value: {{ include "ostrich-pki.caGrpcUrl" . | quote }}
-            - name: CA_GRPC_INSECURE
-              value: "true"
+            # CA gRPC over TLS 1.3 mTLS (client cert from acme.caGrpc.clientTls).
+            # CA_GRPC_INSECURE is deliberately never set (fail closed).
+            {{- include "ostrich-pki.caGrpcClientEnv" (dict "cfg" .Values.acme.caGrpc "root" .) | nindent 12 }}
             - name: ACME_ALLOW_PRIVATE_IP_DOMAINS
               value: {{ .Values.acme.allowPrivateIpDomains | quote }}
             - name: ACME_HTTP01_PORT
@@ -87,9 +90,16 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: ca-grpc-client
+              mountPath: /app/ca-grpc-client
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: ca-grpc-client
+          secret:
+            secretName: {{ $caGrpcClientSecret }}
+            defaultMode: 0440
       {{- with .Values.acme.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

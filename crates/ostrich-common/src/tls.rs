@@ -20,6 +20,7 @@
 //! - RFC 8446: TLS 1.3
 
 use crate::{Error, Result};
+use rustls::crypto::CryptoProvider;
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
 use rustls_pki_types::pem::PemObject;
@@ -103,6 +104,15 @@ impl TlsSettings {
 
     /// Load certificates and build a TLS 1.3-only rustls server config.
     pub fn load(&self) -> Result<ServerConfig> {
+        self.load_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+    }
+
+    /// [`Self::load`] with a caller-narrowed aws-lc-rs provider (the gRPC
+    /// listener restricts key-exchange groups and signature algorithms; see
+    /// `grpc_tls::grpc_crypto_provider`). The client-certificate verifier is
+    /// built from the same provider, and the result is checked with
+    /// [`ensure_fips`].
+    pub(crate) fn load_with_provider(&self, provider: Arc<CryptoProvider>) -> Result<ServerConfig> {
         let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(&self.cert_path)
             .map_err(|e| tls_err("read certificate", &self.cert_path, e))?
             .collect::<std::result::Result<_, _>>()
@@ -127,7 +137,6 @@ impl TlsSettings {
         // this same provider: `ServerConfig::fips()` does not inspect the
         // verifier, so keeping it on `provider` is what keeps signature
         // verification of client certificates inside the module.
-        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 
         // TLS 1.3 only per project policy (NIST 800-53: SC-8, RFC 8446)
         let builder = ServerConfig::builder_with_provider(provider.clone())
@@ -213,14 +222,16 @@ impl TlsSettings {
 /// - NIST 800-53: SC-24 (Fail in Known State) - refuse to serve, never degrade
 /// - NIAP PP-CA: FCS_COP.1, FCS_TLSS_EXT.1, FPT_FLS.1
 // POAM: POAM-2026-10-23-05 - this guard covers rustls ServerConfigs served via
-// `serve`/`serve_with_config` only. Still uncovered: plain-HTTP mode (no cert
-// configured) and the absence of a process-level FIPS gate at startup; rustls
-// ClientConfigs (web-ui and npe-portal backend clients, the ACME tls-alpn-01
-// validator); tonic gRPC: the CA gRPC server is plaintext (no ServerTlsConfig,
-// ca-server main.rs) and gRPC clients use the `tls-ring` provider
-// (POAM-2026-10-23-08); ca-server spawns its gRPC listener before the HTTPS
-// guard runs; no `ostrich-audit` event is emitted on refusal (error log only);
-// and the project's crypto KATs do not run through AWS-LC.
+// `serve`/`serve_with_config` and the CA gRPC listener (`grpc_tls`); the
+// process-level gate is [`fips_gate`] and gRPC client configs are checked by
+// [`ensure_fips_client`]. Still uncovered: plain-HTTP REST mode (no cert
+// configured); rustls ClientConfigs outside gRPC (web-ui and npe-portal backend
+// clients, the ACME tls-alpn-01 validator) are not asserted; no `ostrich-audit`
+// event is emitted on a startup refusal (error log only, no DB pool yet); the
+// project's crypto KATs do not run through AWS-LC; (f) a second aws-lc-sys copy
+// (non-FIPS) is still linked through other dependencies, and clients that build
+// their TLS config from the process default (async-nats, lettre, instant-acme)
+// rely on `fips_gate` only - their own configs are never asserted with `fips()`.
 pub fn ensure_fips(config: &ServerConfig) -> Result<()> {
     if config.fips() {
         return Ok(());
@@ -239,6 +250,108 @@ pub fn ensure_fips(config: &ServerConfig) -> Result<()> {
          configured."
             .to_string(),
     ))
+}
+
+/// Refuse a rustls [`rustls::ClientConfig`] that does not report FIPS mode.
+///
+/// The client-side counterpart of [`ensure_fips`]. `ClientConfig::fips()`
+/// (rustls 0.23.46) is `provider.fips() && require_ems` and additionally
+/// requires any configured ECH mode to be FIPS. Like [`ensure_fips`] it does
+/// not check protocol versions or a custom server-certificate verifier: callers
+/// build TLS 1.3-only configs with the verifier on the same provider (see
+/// `grpc_tls::grpc_client_config`).
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SC-13 (Cryptographic Protection), SC-8, SC-24 (Fail in Known State)
+/// - NIAP PP-CA: FCS_COP.1, FCS_TLSC_EXT.2, FPT_FLS.1
+pub fn ensure_fips_client(config: &rustls::ClientConfig) -> Result<()> {
+    if config.fips() {
+        return Ok(());
+    }
+    // NIST 800-53: SC-24 / AU-2 - log the refusal at the point it happens.
+    tracing::error!(
+        require_ems = config.require_ems,
+        provider_fips = config.crypto_provider().fips(),
+        "Refusing to connect over TLS: ClientConfig is not in FIPS mode"
+    );
+    Err(Error::Config(
+        "TLS client configuration is not in FIPS mode; refusing to connect. Possible \
+         causes: the rustls `fips` feature is missing, a non-FIPS AWS-LC is linked, \
+         or a non-approved suite/group or disabled extended master secret was \
+         configured."
+            .to_string(),
+    ))
+}
+
+/// Process-level FIPS gate, run at the top of every service `main` before any
+/// database, NATS, gRPC or HTTPS listener or client is started.
+///
+/// 1. Asserts the linked AWS-LC module is in FIPS mode (`try_fips_mode`).
+/// 2. Asserts the rustls aws-lc-rs provider reports FIPS (approved suites,
+///    groups and signature algorithms only).
+/// 3. Installs that provider as the process default (idempotent) and then
+///    verifies the effective default reports FIPS, so a non-FIPS provider
+///    installed earlier by any component makes the process refuse to start.
+///
+/// The process default is the stock aws-lc-rs FIPS provider (TLS 1.2 + 1.3)
+/// because lettre STARTTLS, NATS and instant-acme clients build their configs
+/// from it; every OstrichPKI-built config (REST, gRPC server and client) narrows
+/// itself to TLS 1.3.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SC-13 (Cryptographic Protection) - FIPS-mode AWS-LC FIPS 4.2.0
+///   (CMVP certificate pending confirmation, POAM-2026-10-23-01)
+/// - NIST 800-53: SC-24 (Fail in Known State) - refuse to start
+/// - NIST 800-53: CM-6 (Configuration Settings) - no toggle; secure default only
+/// - NIAP PP-CA: supports FPT_TST_EXT.1 (startup check of the crypto module's
+///   FIPS status; the self-tests themselves run inside AWS-LC), FPT_FLS.1,
+///   FCS_COP.1
+pub fn fips_gate() -> Result<()> {
+    if let Err(e) = aws_lc_rs::try_fips_mode() {
+        tracing::error!(
+            error = e,
+            aws_lc_version = aws_lc_module_version(),
+            "FIPS gate failed: AWS-LC is not in FIPS mode; refusing to start"
+        );
+        return Err(Error::Config(format!(
+            "AWS-LC is not in FIPS mode ({e}); refusing to start"
+        )));
+    }
+
+    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    if !provider.fips() {
+        tracing::error!("FIPS gate failed: rustls aws-lc-rs provider does not report FIPS mode");
+        return Err(Error::Config(
+            "rustls aws-lc-rs provider is not in FIPS mode; refusing to start".to_string(),
+        ));
+    }
+
+    // `install_default` returns Err(existing) when a provider is already
+    // installed (a second gate call, or another component). Either way the
+    // effective default is checked below, so an earlier non-FIPS install fails.
+    if provider.install_default().is_err() {
+        tracing::debug!("rustls process-default CryptoProvider already installed; verifying it");
+    }
+    match rustls::crypto::CryptoProvider::get_default() {
+        Some(default) if default.fips() => {}
+        _ => {
+            tracing::error!(
+                "FIPS gate failed: the process-default rustls CryptoProvider is not \
+                 FIPS (a non-FIPS provider was installed earlier); refusing to start"
+            );
+            return Err(Error::Config(
+                "process-default rustls CryptoProvider is not in FIPS mode; refusing to start"
+                    .to_string(),
+            ));
+        }
+    }
+
+    tracing::info!(
+        aws_lc_version = aws_lc_module_version(),
+        fips = true,
+        "FIPS gate passed: aws-lc-rs provider installed as process default"
+    );
+    Ok(())
 }
 
 /// Version of the linked AWS-LC library (e.g. `"4.2.0"` for the FIPS 4.2.0
@@ -387,7 +500,7 @@ pub async fn serve(
 ///
 /// Fails closed: the config is checked with [`ensure_fips`] before anything is
 /// bound, so a caller-built config (e.g. npe-portal ACME mode) cannot serve on a
-/// non-FIPS TLS stack. NIST 800-53: SC-13, SC-24.
+/// non-FIPS TLS stack. NIST 800-53: SC-13, SC-24. NIAP PP-CA: FPT_FLS.1.
 pub async fn serve_with_config(
     addr: SocketAddr,
     app: axum::Router,
@@ -897,6 +1010,58 @@ mod tests {
             client_config(&srv.ca.pem(), None, &[&rustls::version::TLS12]),
         );
         assert!(res.is_err(), "TLS 1.2-only client must not connect");
+    }
+
+    /// SC-13 / FPT_TST_EXT.1: the process gate passes, leaves a FIPS provider
+    /// as the process default, and is idempotent (a second call also passes).
+    #[test]
+    fn fips_gate_installs_fips_default_and_is_idempotent() {
+        fips_gate().expect("first gate call");
+        let default = rustls::crypto::CryptoProvider::get_default().expect("default installed");
+        assert!(default.fips(), "process default must report FIPS");
+        fips_gate().expect("second gate call (idempotent)");
+    }
+
+    fn client_config_with_provider(provider: rustls::crypto::CryptoProvider) -> ClientConfig {
+        let pki = Pki::new("Client Guard CA");
+        ClientConfig::builder_with_provider(Arc::new(provider))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("tls13")
+            .with_root_certificates({
+                let mut roots = RootCertStore::empty();
+                roots
+                    .add(pem_certs(&pki.ca.pem())[0].clone())
+                    .expect("root");
+                roots
+            })
+            .with_no_client_auth()
+    }
+
+    /// The client guard accepts a TLS 1.3 aws-lc-rs config (no false refusals).
+    #[test]
+    fn ensure_fips_client_accepts_tls13_aws_lc_config() {
+        let config = client_config_with_provider(rustls::crypto::aws_lc_rs::default_provider());
+        assert!(ensure_fips_client(&config).is_ok());
+    }
+
+    /// SC-13 fail-closed: a client provider offering plain X25519 is refused.
+    #[test]
+    fn ensure_fips_client_rejects_non_fips_kx() {
+        let mut provider = rustls::crypto::aws_lc_rs::default_provider();
+        provider
+            .kx_groups
+            .push(rustls::crypto::aws_lc_rs::kx_group::X25519);
+        let config = client_config_with_provider(provider);
+        assert!(matches!(ensure_fips_client(&config), Err(Error::Config(_))));
+    }
+
+    /// SC-13 fail-closed: a client config with EMS not required is refused.
+    #[test]
+    fn ensure_fips_client_rejects_no_ems() {
+        let mut config = client_config_with_provider(rustls::crypto::aws_lc_rs::default_provider());
+        assert!(ensure_fips_client(&config).is_ok());
+        config.require_ems = false;
+        assert!(matches!(ensure_fips_client(&config), Err(Error::Config(_))));
     }
 
     /// A client certificate without the clientAuth EKU (serverAuth only) is

@@ -35,6 +35,9 @@ tests/integration/fixtures/
 tests/fixtures/
 benches/fixtures/
 
+# DEV ONLY gRPC mTLS keys from `make dev-grpc-certs`: never in a build context
+.dev-grpc-certs/
+
 # Local configuration (should use env vars in containers)
 .env
 .env.*

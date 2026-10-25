@@ -11,25 +11,22 @@
 //! - NIST 800-53: AU-10 (Non-repudiation), AU-9(3) (Cryptographic protection)
 //! - NIAP PP-CA: FAU_STG.4 (Prevention of undetected audit modification)
 //!
-//! Requires a Postgres reachable via DATABASE_URL with the audit_events table
-//! (migrations 0000x + 00007). Skips (passes) if DATABASE_URL is unset.
+//! Opt-in: requires `OSTRICH_DB_TESTS=1` and a reachable DATABASE_URL (with
+//! migrations 0000x + 00007 applied) whose database name contains `test` (it
+//! TRUNCATEs audit_events); skipped otherwise. See `tests/common/mod.rs`.
 
 use std::sync::Arc;
 
 use ostrich_audit::{AuditEventBuilder, AuditSink, DatabaseAuditSink, EventOutcome, EventType};
 use ostrich_crypto::{Algorithm, CryptoProvider, KeyType, software::SoftwareProvider};
-use ostrich_db::{DatabasePool, PoolConfig};
+use ostrich_db::DatabasePool;
+
+mod common;
 
 const ALGO: Algorithm = Algorithm::EcdsaP256Sha256;
 
-async fn connect() -> Option<DatabasePool> {
-    let url = std::env::var("DATABASE_URL").ok()?;
-    let config = PoolConfig::from_url(&url).expect("valid DATABASE_URL");
-    Some(
-        DatabasePool::new(&config)
-            .await
-            .expect("connect to test DB"),
-    )
+async fn connect(test: &str) -> Option<DatabasePool> {
+    common::connect_test_db(test).await
 }
 
 /// Remove every audit row so the chain starts clean for this test run.
@@ -42,8 +39,7 @@ async fn truncate_audit(pool: &DatabasePool) {
 
 #[tokio::test]
 async fn signature_catches_tamper_that_hash_chain_misses() {
-    let Some(pool) = connect().await else {
-        eprintln!("DATABASE_URL not set; skipping signed-chain tamper test");
+    let Some(pool) = connect(module_path!()).await else {
         return;
     };
     truncate_audit(&pool).await;
@@ -62,7 +58,8 @@ async fn signature_catches_tamper_that_hash_chain_misses() {
         .expect("export audit public key");
 
     let sink =
-        DatabaseAuditSink::with_signing_key(pool.clone(), crypto, key, ALGO, "audit-signing-key");
+        DatabaseAuditSink::with_signing_key(pool.clone(), crypto, key, ALGO, "audit-signing-key")
+            .expect("ECDSA audit signing key accepted");
 
     // Write a few signed events.
     for i in 0..3 {

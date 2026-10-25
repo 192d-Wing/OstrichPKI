@@ -16,6 +16,15 @@ ca:
       enabled: true
       size: 256Mi
   requireApproval: false
+  # CA gRPC mTLS (required; rendering fails without it). The CI pipeline must
+  # create this secret before `helm install`, e.g. from
+  # `scripts/gen-dev-grpc-certs.sh --san DNS:<release-fullname>-ca`; see
+  # docs/runbooks/ca-grpc-mtls.md "Disposable CI clusters".
+  grpc:
+    tls:
+      existingSecret: ostrich-ci-ca-grpc-tls
+    allowedClientSubjects:
+      - "CN=est-server"
 
 est:
   allowBearerAuth: false
@@ -25,6 +34,10 @@ est:
     certFile: /app/certs/tls.crt
     keyFile: /app/certs/tls.key
     caCertFile: /app/certs/client-ca.crt
+  # EST -> CA gRPC client certificate (CN=est-server, EKU clientAuth).
+  caGrpc:
+    clientTls:
+      existingSecret: ostrich-ci-est-grpc-client
 
 acme:
   enabled: false

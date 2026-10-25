@@ -185,6 +185,11 @@ test:unit:
   needs:
     - build:linux
   script:
+    # No postgres service in this job: drop the global DATABASE_URL so the
+    # DATABASE_URL-gated suites skip instead of failing to connect, and leave
+    # OSTRICH_DB_TESTS unset (the destructive DB-backed audit tests only run
+    # with OSTRICH_DB_TESTS=1, in test:integration).
+    - unset DATABASE_URL OSTRICH_DB_TESTS
     - apt-get install -y softhsm2
     - export SOFTHSM2_CONF="$HOME/.config/softhsm2/softhsm2.conf"
     - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
@@ -225,6 +230,8 @@ test:coverage:
   needs:
     - build:linux
   script:
+    # No postgres service here either (see test:unit).
+    - unset DATABASE_URL OSTRICH_DB_TESTS
     - apt-get install -y softhsm2
     - export SOFTHSM2_CONF="$HOME/.config/softhsm2/softhsm2.conf"
     - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
@@ -273,7 +280,8 @@ test:integration:
     - cargo install sqlx-cli --no-default-features --features postgres
     - sqlx database create || true
     - sqlx migrate run
-    # Run integration tests
+    # Run integration tests (every workspace member's tests/ targets, incl.
+    # ostrich-integration-tests grpc_mtls_e2e and fips_gate_preinstalled).
     - cargo test --test '*' -- --test-threads=1
   variables:
     PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
@@ -281,6 +289,11 @@ test:integration:
     PKCS11_PIN: "1234"
     CRYPTO_PROVIDER: software
     RUST_LOG: info
+    # Opt in to the DB-backed ostrich-audit suites (they TRUNCATE audit_events
+    # and refuse unless the database name contains "test"; the service DB is
+    # the disposable ostrich_pki_test from the global DATABASE_URL).
+    # NIST 800-53: SA-11, AU-9 (chain concurrency / tamper detection tests)
+    OSTRICH_DB_TESTS: "1"
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"

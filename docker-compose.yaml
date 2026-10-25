@@ -11,6 +11,12 @@
 #
 # WARNING: This configuration uses SoftHSM for development only.
 # Production deployments MUST use FIPS 140-2 Level 2+ validated HSMs.
+#
+# PREREQUISITE: run `make dev-grpc-certs` first. The CA gRPC API (50051) only
+# serves TLS 1.3 mutual TLS (aws-lc-rs FIPS) with a client-subject allowlist;
+# ca-service exits at startup if the certificate files are missing, and there
+# is no plaintext fallback in these release-built images.
+# NIST 800-53: SC-8, AC-17, IA-3, AC-3 (docs/runbooks/ca-grpc-mtls.md)
 
 version: '3.8'
 
@@ -82,6 +88,11 @@ services:
       DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki?sslmode=disable
       CA_GRPC_ADDRESS: 0.0.0.0:50051
       CA_REST_ADDRESS: 0.0.0.0:8080
+      # gRPC mTLS server identity + client trust anchor + allowlist (";"-joined DNs)
+      CA_GRPC_TLS_CERT_FILE: /app/grpc-tls/ca-service.crt
+      CA_GRPC_TLS_KEY_FILE: /app/grpc-tls/ca-service.key
+      CA_GRPC_TLS_CLIENT_CA_FILE: /app/grpc-tls/ca.crt
+      CA_GRPC_ALLOWED_CLIENT_SUBJECTS: ${CA_GRPC_ALLOWED_CLIENT_SUBJECTS:-CN=acme-server;CN=est-server}
       # HSM Configuration (SoftHSM for development)
       # The PKCS#11 slot is read from the ca_keys row registered by ca-init.
       PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
@@ -94,8 +105,18 @@ services:
       - ca_certs:/app/certs
       - ca_data:/app/data
       - softhsm_tokens:/app/tokens
+      # DEV ONLY (shared directory: every gRPC container sees every dev key;
+      # docker-compose.yml mounts per-service subdirectories instead).
+      # gRPC mTLS material from `make dev-grpc-certs`. Long syntax so a
+      # missing directory is an error instead of an empty auto-created mount.
+      - type: bind
+        source: ./.dev-grpc-certs
+        target: /app/grpc-tls
+        read_only: true
+        bind:
+          create_host_path: false
     ports:
-      - "50051:50051"  # gRPC
+      - "50051:50051"  # gRPC (mTLS only)
       - "8080:8080"    # REST API
     depends_on:
       postgres:
@@ -126,9 +147,22 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki?sslmode=disable
       ACME_BIND_ADDRESS: 0.0.0.0:8080
-      CA_GRPC_URL: http://ca-service:50051
+      CA_GRPC_URL: https://ca-service:50051
+      CA_GRPC_CLIENT_CERT_FILE: /app/grpc-tls/acme-server.crt
+      CA_GRPC_CLIENT_KEY_FILE: /app/grpc-tls/acme-server.key
+      CA_GRPC_CA_CERT_FILE: /app/grpc-tls/ca.crt
     volumes:
       - acme_config:/app/config
+      # DEV ONLY (shared directory: every gRPC container sees every dev key;
+      # docker-compose.yml mounts per-service subdirectories instead).
+      # gRPC mTLS material from `make dev-grpc-certs`. Long syntax so a
+      # missing directory is an error instead of an empty auto-created mount.
+      - type: bind
+        source: ./.dev-grpc-certs
+        target: /app/grpc-tls
+        read_only: true
+        bind:
+          create_host_path: false
     ports:
       - "8081:8080"  # ACME API
     depends_on:
@@ -157,9 +191,22 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki?sslmode=disable
       EST_BIND_ADDRESS: 0.0.0.0:8443
-      CA_GRPC_URL: http://ca-service:50051
+      CA_GRPC_URL: https://ca-service:50051
+      CA_GRPC_CLIENT_CERT_FILE: /app/grpc-tls/est-server.crt
+      CA_GRPC_CLIENT_KEY_FILE: /app/grpc-tls/est-server.key
+      CA_GRPC_CA_CERT_FILE: /app/grpc-tls/ca.crt
     volumes:
       - est_config:/app/config
+      # DEV ONLY (shared directory: every gRPC container sees every dev key;
+      # docker-compose.yml mounts per-service subdirectories instead).
+      # gRPC mTLS material from `make dev-grpc-certs`. Long syntax so a
+      # missing directory is an error instead of an empty auto-created mount.
+      - type: bind
+        source: ./.dev-grpc-certs
+        target: /app/grpc-tls
+        read_only: true
+        bind:
+          create_host_path: false
       - est_certs:/app/certs
     ports:
       - "8443:8443"  # EST API

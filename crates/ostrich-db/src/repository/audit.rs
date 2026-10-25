@@ -39,6 +39,83 @@ use chrono::{DateTime, Utc};
 use sqlx::Row;
 use uuid::Uuid;
 
+/// Fixed key of the PostgreSQL advisory lock that serialises audit-chain
+/// appends across all services and instances sharing the database
+/// ("OSTRICHA" as ASCII, big-endian).
+// POAM: POAM-2026-10-23-31 - append serialisation is verified against
+// Postgres only by the opt-in test `crates/ostrich-audit/tests/chain_concurrency.rs`
+// (OSTRICH_DB_TESTS=1), which CI does not run yet.
+pub const AUDIT_CHAIN_LOCK_KEY: i64 = 0x4F53_5452_4943_4841;
+
+/// `lock_timeout` for an audit-chain append transaction: how long a writer
+/// waits for [`AUDIT_CHAIN_LOCK_KEY`] before the append fails (closed) instead
+/// of blocking behind a stalled holder (AU-5, SC-5).
+pub const AUDIT_CHAIN_LOCK_TIMEOUT_MS: u32 = 5_000;
+
+/// `statement_timeout` for each statement of an audit-chain append
+/// transaction (head read, insert).
+pub const AUDIT_CHAIN_STATEMENT_TIMEOUT_MS: u32 = 10_000;
+
+/// `idle_in_transaction_session_timeout` for an audit-chain append
+/// transaction. The record is signed between the head read and the insert,
+/// with the transaction idle and the chain lock held. If the client stalls
+/// there (a hung HSM call, a stuck process), Postgres terminates the session
+/// after this long, which rolls back and releases the advisory lock for the
+/// other writers. Kept slightly above the audit sink's sign timeout
+/// (`ostrich_audit::sink::AUDIT_SIGN_TIMEOUT`, 5 s) so the client normally
+/// gives up first.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AU-5 (Response to Audit Processing Failures), SC-5
+pub const AUDIT_CHAIN_IDLE_TIMEOUT_MS: u32 = 7_000;
+
+/// An in-progress, serialised audit-chain append (see
+/// [`AuditRepository::begin_append`]). Holds the advisory lock until
+/// [`Self::commit`] or drop (rollback).
+pub struct AuditAppendTx {
+    tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    previous_hash: Option<Vec<u8>>,
+    previous_timestamp: Option<DateTime<Utc>>,
+}
+
+impl AuditAppendTx {
+    /// Hash of the current chain head (`None` for the first record).
+    pub fn previous_hash(&self) -> Option<&[u8]> {
+        self.previous_hash.as_deref()
+    }
+
+    /// Timestamp of the current chain head. Chain order is timestamp order,
+    /// so a new record must be strictly later (FPT_STM.1 / AU-9(3)).
+    pub fn previous_timestamp(&self) -> Option<DateTime<Utc>> {
+        self.previous_timestamp
+    }
+
+    /// Insert the record and commit, releasing the lock. The record must link
+    /// to [`Self::previous_hash`] and be later than
+    /// [`Self::previous_timestamp`].
+    pub async fn commit(mut self, event: &AuditEvent) -> Result<AuditEvent> {
+        if event.previous_hash.as_deref() != self.previous_hash.as_deref() {
+            return Err(Error::ConstraintViolation(
+                "audit record does not link to the current chain head".to_string(),
+            ));
+        }
+        if self
+            .previous_timestamp
+            .is_some_and(|head| event.timestamp <= head)
+        {
+            return Err(Error::ConstraintViolation(
+                "audit record timestamp is not after the current chain head".to_string(),
+            ));
+        }
+        let created = AuditRepository::insert(&mut *self.tx, event).await?;
+        self.tx
+            .commit()
+            .await
+            .map_err(|e| Error::Query(e.to_string()))?;
+        Ok(created)
+    }
+}
+
 /// Repository for audit log operations
 ///
 /// Implements append-only audit log with hash chain for integrity.
@@ -64,26 +141,112 @@ impl AuditRepository {
         Self { pool }
     }
 
-    /// Append a new audit event to the log
+    /// Insert a fully prepared audit record, checked against the chain head.
     ///
-    /// This is the primary method for recording audit events. Each event is
-    /// linked to the previous event via hash chain to ensure integrity.
+    /// This method does NOT build the chain: the caller must already have set
+    /// `previous_hash`, `timestamp` and `event_hash` (and the signature) for
+    /// the current head. The insert runs under the chain lock (via
+    /// [`Self::begin_append`]) and is refused with
+    /// [`Error::ConstraintViolation`] if the record does not link to the
+    /// current head or is not later than it, so it can never fork the chain.
+    /// Writers that need the head to build a record use [`Self::begin_append`]
+    /// directly (as `ostrich_audit::DatabaseAuditSink` does).
     ///
     /// COMPLIANCE MAPPING:
-    /// - NIST 800-53: AU-2 - Auditable events
-    /// - NIST 800-53: AU-3 - Content of audit records
-    /// - NIST 800-53: AU-10 - Non-repudiation via hash chain
-    /// - NIAP PP-CA v2.1: FAU_GEN.1 - Audit data generation for CA events
-    /// - NIAP PP-CA v2.1: FAU_GEN.2 - User identity association (actor field)
-    /// - NIAP PP-CA v2.1: FAU_STG.2 - Guarantees of audit data availability
-    /// - NIAP PP-CA v2.1: FPT_STM.1 - Reliable time stamps (timestamp field)
+    /// - NIST 800-53: AU-9(3) - chain linkage verified under the chain lock
+    /// - NIAP PP-CA v2.1: FAU_STG.1, FAU_STG.4
     pub async fn append(&self, event: &AuditEvent) -> Result<AuditEvent> {
-        // The caller (sink) is responsible for setting `previous_hash` BEFORE it
-        // computes and signs `event_hash`, so the chain link is covered by both
-        // the hash and the signature. We persist exactly what was hashed/signed;
-        // re-deriving it here would store a link the event_hash never covered,
-        // breaking verify_chain (and any signature over event_hash).
-        let created = sqlx::query_as::<_, AuditEvent>(
+        // We persist exactly what was hashed/signed; re-deriving the link here
+        // would store a link the event_hash never covered.
+        let created = self.begin_append().await?.commit(event).await?;
+
+        tracing::debug!(
+            "Audit event recorded: {} - {} {} on {}",
+            event.event_type,
+            event.actor,
+            event.action,
+            event.target
+        );
+
+        Ok(created)
+    }
+
+    /// Start an atomic, serialised chain append.
+    ///
+    /// Opens a transaction, takes the transaction-scoped advisory lock
+    /// [`AUDIT_CHAIN_LOCK_KEY`] (shared by every service writing to this
+    /// database), and reads the current chain head. The caller links, hashes
+    /// and signs its record against [`AuditAppendTx::previous_hash`] and then
+    /// calls [`AuditAppendTx::commit`]. Concurrent appenders wait on the lock,
+    /// so two records can never link to the same predecessor (forked chain).
+    /// Dropping the handle without committing rolls back and releases the
+    /// lock.
+    ///
+    /// The transaction sets `lock_timeout` ([`AUDIT_CHAIN_LOCK_TIMEOUT_MS`]),
+    /// `statement_timeout` ([`AUDIT_CHAIN_STATEMENT_TIMEOUT_MS`]) and
+    /// `idle_in_transaction_session_timeout` ([`AUDIT_CHAIN_IDLE_TIMEOUT_MS`])
+    /// first. Waiting writers fail (closed, nothing inserted) instead of
+    /// queueing without bound, and a holder that goes idle mid-append (stuck
+    /// signing) has its session killed by the server, which releases the lock.
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - NIST 800-53: AU-9 / AU-9(3) - hash chain integrity under concurrency
+    /// - NIST 800-53: AU-5 - bounded wait; the failure is reported to the caller
+    /// - NIAP PP-CA v2.1: FAU_STG.1, FAU_STG.4, FPT_STM.1 (monotonic order)
+    pub async fn begin_append(&self) -> Result<AuditAppendTx> {
+        let mut tx = self
+            .pool
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| Error::Query(e.to_string()))?;
+        // Transaction-local (`is_local = true`, i.e. SET LOCAL) timeouts in ms.
+        sqlx::query(
+            "SELECT set_config('lock_timeout', $1, true), \
+                    set_config('statement_timeout', $2, true), \
+                    set_config('idle_in_transaction_session_timeout', $3, true)",
+        )
+        .bind(AUDIT_CHAIN_LOCK_TIMEOUT_MS.to_string())
+        .bind(AUDIT_CHAIN_STATEMENT_TIMEOUT_MS.to_string())
+        .bind(AUDIT_CHAIN_IDLE_TIMEOUT_MS.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Query(e.to_string()))?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(AUDIT_CHAIN_LOCK_KEY)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Query(e.to_string()))?;
+        let head = sqlx::query(
+            r#"
+            SELECT event_hash, timestamp
+            FROM audit_events
+            ORDER BY timestamp DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| Error::Query(e.to_string()))?;
+        let (previous_hash, previous_timestamp) = match head {
+            Some(row) => (
+                Some(row.get::<Vec<u8>, _>("event_hash")),
+                Some(row.get::<DateTime<Utc>, _>("timestamp")),
+            ),
+            None => (None, None),
+        };
+        Ok(AuditAppendTx {
+            tx,
+            previous_hash,
+            previous_timestamp,
+        })
+    }
+
+    async fn insert<'c, E>(executor: E, event: &AuditEvent) -> Result<AuditEvent>
+    where
+        E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+    {
+        sqlx::query_as::<_, AuditEvent>(
             r#"
             INSERT INTO audit_events (
                 id, event_type, actor, target, action, outcome,
@@ -110,30 +273,16 @@ impl AuditRepository {
         .bind(event.timestamp)
         .bind(&event.signature)
         .bind(&event.signing_key_id)
-        .fetch_one(self.pool.pool())
+        .fetch_one(executor)
         .await
-        .map_err(|e| Error::Query(e.to_string()))?;
-
-        tracing::debug!(
-            "Audit event recorded: {} - {} {} on {}",
-            event.event_type,
-            event.actor,
-            event.action,
-            event.target
-        );
-
-        Ok(created)
+        .map_err(|e| Error::Query(e.to_string()))
     }
 
-    /// Get the hash of the last audit event for chain integrity
+    /// Hash of the most recent audit event, read WITHOUT the chain lock.
     ///
-    /// Retrieves the hash of the most recent audit event to maintain
-    /// the cryptographic chain linking all audit records.
-    ///
-    /// COMPLIANCE MAPPING:
-    /// - NIST 800-53: AU-9(3) - Maintain hash chain
-    /// - NIAP PP-CA v2.1: FAU_STG.4 - Prevention of audit data loss
-    /// - FIPS 180-4: SHA-256 hash algorithm for chain integrity
+    /// Informational only (e.g. monitoring): the value can be stale as soon as
+    /// it is returned, so it must not be used to link a new record. Appenders
+    /// use [`Self::begin_append`], which reads the head under the lock.
     pub async fn get_last_hash(&self) -> Result<Option<Vec<u8>>> {
         let result = sqlx::query(
             r#"
@@ -580,8 +729,9 @@ impl super::Repository<AuditEvent> for AuditRepository {
         Ok(event)
     }
 
+    /// Same as [`AuditRepository::append`]: a checked insert of a prepared
+    /// record under the chain lock; refused unless it links to the head.
     async fn create(&self, event: &AuditEvent) -> Result<AuditEvent> {
-        // Use append method for audit events to maintain chain
         self.append(event).await
     }
 

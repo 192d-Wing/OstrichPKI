@@ -11,9 +11,11 @@
 # the Prometheus scrape target) is left open — it is TLS/mTLS-protected.
 #
 # COMPLIANCE MAPPING:
-# - NIST 800-53: AC-3, SC-7 (Boundary Protection), SC-8 (compensating control for
-#   the cleartext in-cluster hop), AC-17
-# - NIAP PP-CA: FDP_IFC.1 / FDP_IFF.1
+# - NIST 800-53: AC-4 (Information Flow Enforcement), SC-7 (Boundary
+#   Protection), AC-3, SC-8 (compensating control for the cleartext
+#   in-cluster hop), AC-17
+# - NIAP PP-CA: none (not a TOE SFR). Network segmentation is an operational
+#   environment (OE) control, mapped to NIST AC-4 / SC-7 above.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
