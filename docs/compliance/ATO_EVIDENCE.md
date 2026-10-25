@@ -835,7 +835,7 @@ Branch `claude/ci-hardening` (uncommitted at recording time; based on `main` @
 |------|---------|--------|
 | Advisories (gate form) | `cargo audit --deny warnings` | exit 0; 642 crates scanned; 0 vulnerabilities, 0 warnings |
 | Supply-chain policy | `cargo deny check` | **exit 0**: `advisories ok, bans ok, licenses ok, sources ok`; only `warning[duplicate]` (policy `warn`) |
-| Exception parity | `diff` of the RUSTSEC IDs in `.cargo/audit.toml` and `deny.toml` | identical: RUSTSEC-2023-0071, -2024-0436, -2025-0134, -2026-0097 |
+| Exception parity | `diff` of the RUSTSEC IDs in `.cargo/audit.toml` and `deny.toml` | identical: RUSTSEC-2023-0071, -2024-0436, -2025-0134, -2026-0097 (superseded 2026-10-24: 3 IDs, see the dependency-cleanup record below) |
 | Negative checks | scratch copies with one exception removed | `cargo deny` fails without RUSTSEC-2023-0071 or -2024-0436, or without the `aws-lc-fips-sys`, `webpki-roots` or `borrow-or-share` license exception, or without `license.workspace` in `tests/Cargo.toml`; `cargo audit --deny warnings` fails without RUSTSEC-2023-0071, -2025-0134 or -2026-0097 |
 
 CI configuration of the gate ([.github/workflows/audit.yml](../../.github/workflows/audit.yml),
@@ -868,7 +868,7 @@ Same branch, later the same day. Run record
 |------|---------|--------|
 | Advisories (gate form) | `cargo audit --deny warnings` | before the ignore: **1 vulnerability**, RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5, published 2026-10-23; `Cargo.lock` unchanged); after the ignore: exit 0 |
 | Supply-chain policy | `cargo deny check` | before: `advisories FAILED, bans ok, licenses ok, sources ok`; after: exit 0 |
-| Exception parity | RUSTSEC IDs in `.cargo/audit.toml` and `deny.toml` | identical, 5 IDs: RUSTSEC-2023-0071, -2024-0436, -2025-0134, -2026-0097, -2026-0387 |
+| Exception parity | RUSTSEC IDs in `.cargo/audit.toml` and `deny.toml` | identical, 5 IDs: RUSTSEC-2023-0071, -2024-0436, -2025-0134, -2026-0097, -2026-0387 (superseded 2026-10-24: 3 IDs) |
 
 Risk acceptance for RUSTSEC-2026-0387 (user decision 2026-10-23,
 POAM-2026-10-23-16): no compatible fix (≥0.7.6 needs the RustCrypto 0.3
@@ -878,8 +878,36 @@ dependency of `ostrich-web-ui` (no call sites), so no production code reaches
 it. In the integration-test crate, `p256` 0.13 is used only for ephemeral,
 test-only fixture keys. No production secret flows through the affected
 operations. Removing the unused dependency is tracked as POAM-2026-10-23-22.
+(Superseded 2026-10-24: the ignore was removed; see the next record.)
 
 Limits: local run only; no CI run of the gate recorded for this change.
+
+**Recorded result — 2026-10-24, dependency cleanup (RA-5 / SI-2 / CM-7):**
+
+Branch `claude/deps-cleanup` (from `main` @ 138ee83), uncommitted. Run record
+`target/agent-workflow/20261024-104215-deps-cleanup/` (`impl-notes.md`).
+
+| Scan | Command | Result |
+|------|---------|--------|
+| Advisories (gate form) | `cargo audit --deny warnings` | exit 0 (1352 advisories, 614 crates) with RUSTSEC-2026-0097 and RUSTSEC-2026-0387 no longer ignored |
+| Supply-chain policy | `cargo deny check` | exit 0: `advisories ok, bans ok, licenses ok, sources ok` |
+| Exception parity | RUSTSEC IDs in `.cargo/audit.toml` and `deny.toml` | identical, 3 IDs: RUSTSEC-2023-0071, -2024-0436, -2025-0134 |
+| Graph check, before (`main` @ 138ee83) | `cargo tree -i crypto-bigint@0.5.5 -e normal,build,dev --target all` | two roots: `openidconnect` 4.0.1 → `ostrich-web-ui` (via `p256`/`p384` → `elliptic-curve` 0.13.8), and `ostrich-integration-tests` (direct `p256` 0.13.2); `rand` 0.8.5 present |
+| Graph check, after | `cargo tree -i <pkg> --target all -e all` for `crypto-bigint@0.5.5`, `rand@0.8.5`, `openidconnect`, `p256`, `elliptic-curve` | each: "did not match any packages" (the package is not in the resolved graph); `rand@0.8.6` present |
+| Lockfile | `[[package]]` entries in `Cargo.lock` | 642 → 614 (28 removed, all reachable only through `openidconnect` or `p256`); the only version change is `rand` 0.8.5 → 0.8.6 |
+
+Changes: `openidconnect` removed from workspace `Cargo.toml` and
+`services/web-ui/Cargo.toml` (no call sites; POAM-2026-10-23-22); `rand`
+0.8.5 → 0.8.6 (POAM-2026-10-23-11); `p256` removed from `tests/Cargo.toml`, and
+the `generate_test_p256_spki` fixture now uses the software `CryptoProvider`
+(POAM-2026-10-23-16). No production code changed. The `rsa` acceptance
+(RUSTSEC-2023-0071, POAM-2026-10-23-09) stays: the only production use is
+`ostrich-acme` JWS verification, which handles RSA public keys only. `oauth2` is
+also unused and its removal is tracked as POAM-2026-10-23-23.
+
+Limits: local run only (the audit and deny exit codes were re-run by the
+compliance scribe on 2026-10-24). No CI run of the gate is recorded for this
+change, so POAM-11, -16 and -22 are "Closed pending first green CI run".
 
 **CM-6: CI workflow secure defaults (2026-10-23, CI hardening):**
 

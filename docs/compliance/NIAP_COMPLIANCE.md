@@ -526,6 +526,14 @@ cargo test --package ostrich-crypto -- test_key
 - ✅ Challenge token generation
 - ✅ Key generation entropy seeding
 
+**Gap (pre-existing, recorded 2026-10-24; PQC-001):** some CSPs are not drawn
+from the AWS-LC SP 800-90A DRBG but from `rand` 0.10 `ThreadRng`: Shamir KEK
+share coefficients (`ostrich-kra`), `secure_random_bytes` (PKCS#12 PBES2 salt
+and IV), the EST PKCS#12 one-time password and enrollment token, and web
+session tokens. Tracked as POAM-2026-10-23-24 in
+[NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)
+(NIST SC-13 / SC-12). The status above is not changed by this note.
+
 **NIAP Annotation Required:** ✅ Complete
 
 **Related NIST:** NIST SP 800-90A Rev 1, FIPS 140-3 IG D.K, IG 9.3.A
@@ -2369,6 +2377,7 @@ ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
 | 3.2 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix. FCS_COP.1(1): RSA-PSS through PKCS#11 recorded as "Fixed; local SoftHSM 2.7.0 28/0/1; Linux CI pending" (stays 🟡); Linux CI before-fix result (16/3/1, exit 101) recorded; impact corrected (X.509/CRL/OCSP RSA signing is PKCS#1 v1.5 and was not affected; AU-10 audit-record signing with RSA PKCS#11 CA keys was); new tests; algorithm-key binding and HSM-policy gaps (POAM-18, POAM-21). FCS_COP.1(2): host-side AWS-LC hashing for PKCS#11 PSS/ECDSA; removed the false "ring FIPS 140-2 validated" bullet. FCS_CKM.1 suite counts updated. FCO_NRO_EXT.2: RSA-PSS CSR parameter caveat (POAM-20) and audit-signing note. New "PKCS#11 RSA-PSS digest input" section. **No SFR status or percentage changes.** |
 | 3.3 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): GitHub Actions run 40063317654, SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0. FCS_COP.1(1): RSA-PSS via PKCS#11 🟡 → ✅ **scoped to SoftHSM** 2.6.1 / 2.7.0 and RSA-2048/3072/4096; production HSM not validated (POAM-21); AWS-LC 4.2.0 CMVP caveat kept. HSM-path signing test evidence 🟡 → ✅ (SoftHSM only). FCS_CKM.1 Linux after-fix result recorded. FCO_NRO_EXT.2 audit-signing note updated (EC-only e2e caveat kept). "PKCS#11 RSA-PSS digest input" status updated; POAM-17 closed. **No SFR status or percentage changes** (FCS_COP.1(1) stays 🟢 75%). |
 | 3.4 | 2026-10-24 | OstrichPKI Team | PR 152 (fail-closed FIPS TLS, branch `revive-fips-tls`). FCS_TLSS_EXT.1: `ensure_fips` gate added as evidence (all HTTPS listeners via `ostrich_common::tls`, including npe-portal ACME mode; CMVP certificate pending confirmation, POAM-01) with test references; offered groups noted; corrected "gRPC uses `tonic` server with rustls" (the ca-server gRPC server has no TLS; gRPC clients use tonic `tls-ring`, POAM-08); Related NIST adds AC-17 to match the NIST cross-reference. FPT_FLS.1: 🟡 TLS fail-closed evidence bullet (HTTPS listeners only); Related NIST adds SC-24 and SI-13 to match the NIST cross-reference. **No SFR status or percentage changes** (FCS_TLSS_EXT.1 and FPT_FLS.1 stay 🟢 Compliant). Header version 3.0 → 3.4 (3.1-3.3 had not updated it). |
+| 3.5 | 2026-10-24 | OstrichPKI Team | Dependency cleanup (branch `claude/deps-cleanup`). FCS_RBG_EXT.1: added a pre-existing gap note (PQC-001, POAM-2026-10-23-24; some CSPs from `rand` `ThreadRng`). No SFR status changed. |
 
 ---
 

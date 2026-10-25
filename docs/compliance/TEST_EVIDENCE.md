@@ -219,7 +219,7 @@ that gate as NOT RUN locally). A gate that did not execute is recorded as NOT RU
 | Format | `cargo fmt --all --check` | PASS | exit 0 |
 | Lint | `make clippy` | PASS | exit 0 |
 | Supply chain | `cargo audit --deny warnings` | FAIL before the ignore; PASS after | before: 1 vulnerability (RUSTSEC-2026-0387, `crypto-bigint` 0.5.5, published 2026-10-23, `Cargo.lock` unchanged); after the user-approved ignore (POAM-2026-10-23-16): exit 0 |
-| Supply chain | `cargo deny check` | FAIL before the ignore; PASS after | before: `advisories FAILED, bans ok, licenses ok, sources ok`; after: exit 0. Ignore lists in `.cargo/audit.toml` and `deny.toml` identical (5 IDs) |
+| Supply chain | `cargo deny check` | FAIL before the ignore; PASS after | before: `advisories FAILED, bans ok, licenses ok, sources ok`; after: exit 0. Ignore lists in `.cargo/audit.toml` and `deny.toml` identical (5 IDs; 3 since 2026-10-24, §2.7) |
 | Compliance | `make compliance-check`, `make compliance-annotations` | PASS | run by QA before round-1 fixes |
 | PKCS#11 (Linux CI), **after fix** | `hsm-integration.yml` (workflow `HSM integration`) job `PKCS#11 suite (SoftHSM2)`, GitHub Actions [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654); ubuntu24 image 20261012.334.1, SoftHSM 2.6.1, rustc 1.99.1; GitHub head SHA 44d560d (PR 181 head); the artifact's `commit:` line shows the PR merge ref c67c10e | PASS (exit 0) | **28 passed, 0 failed, 1 ignored** (29 tests). All six `test_rsa_pss_*` tests ok, including `test_rsa_pss_hsm_sign_software_verify`; `test_deterministic_signatures_rsa_pss` and `test_multiple_keys_same_provider` ok. Ignored: `test_key_wrapping_and_unwrapping`. Meets the POAM-2026-10-23-17 close criterion |
 | GitHub dependency gate | `audit.yml` jobs `cargo audit`, `cargo deny` (PR 181, run 40063317688) | PASS | both jobs green (`gh pr checks 181`: 12 of 12 checks pass) |
@@ -304,6 +304,45 @@ skips the service binary tests. They were run separately here (58 passed).
 non-FIPS configs from the FIPS provider); a failed AWS-LC power-on self-test
 (the module aborts the process, outside the gate); plain-HTTP mode; rustls
 client configs; gRPC (POAM-2026-10-23-05, -08).
+
+### 2.7 Test Run 2026-10-24 (Dependency Cleanup)
+
+**Scope:** branch `claude/deps-cleanup` from `main` @ 138ee83, uncommitted:
+workspace `Cargo.toml` and `services/web-ui/Cargo.toml` (`openidconnect`
+removed), `tests/Cargo.toml` (`p256` removed), `Cargo.lock` (`rand` 0.8.5 →
+0.8.6; 28 packages removed, 642 → 614), `.cargo/audit.toml` and `deny.toml`
+(RUSTSEC-2026-0097 and RUSTSEC-2026-0387 ignores removed),
+`tests/integration/common/fixtures.rs` (`generate_test_p256_spki` now uses the
+software `CryptoProvider` and is `async`) and `tests/integration/ca_core_test.rs`.
+**Sources:** `impl-notes.md` in `target/agent-workflow/20261024-104215-deps-cleanup/`. No
+`qa-report.md` was available to the compliance scribe; the gate results below
+are as recorded by the implementer, except the rows marked "re-run by the
+scribe" and the two supply-chain exit codes, which the compliance scribe re-ran
+on 2026-10-24. A gate that did not execute is recorded as
+NOT RUN.
+
+| Gate | Command | Result | Counts |
+|------|---------|--------|--------|
+| Unit | `make test-unit` (`cargo test --workspace --all-features --lib`) | PASS | **667 passed, 0 failed, 1 ignored** (pre-existing ignore) |
+| Service binaries | `cargo test --all-features --bins -p ostrich-web-ui` | PASS | **19 passed, 0 failed** |
+| Service binaries | `cargo test --all-features --bins -p ostrich-npe-portal` | PASS | **30 passed, 0 failed** (re-run by the scribe 2026-10-24) |
+| Integration (offline fixture tests) | `cargo test -p ostrich-integration-tests --test ca_core_test` (re-run by the scribe 2026-10-24) | PASS for the fixture tests | `test_p256_spki_fixture_well_formed` and `test_p256_spki_fixture_path_verifies_signature`: **2 passed, 0 failed**. Whole binary: 11 passed, 2 failed, 7 ignored. The 2 failures are `test_ca_health` and `test_ca_readiness`, which need a running CA (docker-compose) and fail without one (pre-existing, QA-001); the 7 ignored include `test_ca_issue_certificate_ecdsa` |
+| Integration (compile) | `cargo test -p ostrich-integration-tests --no-run` | PASS | all integration test binaries compile |
+| Format | `cargo fmt --all --check` | PASS | exit 0 |
+| Lint | `make clippy` | PASS | exit 0 |
+| Supply chain | `cargo audit --deny warnings` | PASS | exit 0 (1352 advisories, 614 crates), without the 0097 and 0387 ignores |
+| Supply chain | `cargo deny check` | PASS | exit 0 (`advisories ok, bans ok, licenses ok, sources ok`); ignore lists identical (3 IDs) |
+| Integration (live) | `test_ca_issue_certificate_ecdsa` (the existing caller of the fixture; `#[ignore]`) | **NOT RUN** | needs the docker-compose environment |
+| CI (GitHub / GitLab gate) | `audit.yml`, `security:audit`, `security:deny` | **NOT RUN** | change not pushed |
+
+**Tests added** (`tests/integration/ca_core_test.rs`):
+`test_p256_spki_fixture_path_verifies_signature` and
+`test_p256_spki_fixture_well_formed`. The second parses the fixture output with
+`x509-parser` and checks: no trailing bytes, algorithm id-ecPublicKey
+(1.2.840.10045.2.1), namedCurve prime256v1 (1.2.840.10045.3.1.7), a 65-byte
+uncompressed point starting with 0x04, and a different key on each call.
+
+**Not covered:** the fixture inside a live CA issuance (NOT RUN above).
 
 ---
 
@@ -650,6 +689,11 @@ with no `continue-on-error`, so a new advisory fails the workflow. It is not
 yet a required status check, so it does not by itself block merges (POA&M).
 Local result: exit 0, 642 crates, 0 vulnerabilities, 0 warnings (§2.4).
 
+**2026-10-24, dependency cleanup (latest recorded):** `cargo audit --deny
+warnings` exit 0 (1352 advisories, 614 crates) after `rand` 0.8.5 → 0.8.6 and
+the removal of `openidconnect` and `p256`. The ignore list is down to 3 IDs
+(RUSTSEC-2023-0071, -2024-0436, -2025-0134). Local only (§2.7).
+
 ### 5.3 License Compliance
 
 ```bash
@@ -847,3 +891,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 1.4 | 2026-10-23 | OstrichPKI Team | Added §2.5, the PKCS#11 RSA-PSS fix run: Linux CI before the fix 16 passed / 3 failed / 1 ignored (exit 101); local SoftHSM 2.7.0 after the fix 28 passed / 0 failed / 1 ignored; mutation checks; `ostrich-crypto` lib 65 passed; `make test-unit` 661 passed / 0 failed / 1 ignored; `cargo audit` / `cargo deny` failed on RUSTSEC-2026-0387 and pass after the risk-accepted ignore (POAM-16). Linux CI after the fix NOT RUN. §2.4 Linux row cross-referenced. |
 | 1.5 | 2026-10-23 | OstrichPKI Team | §2.5: recorded the after-fix Linux CI result, GitHub Actions run 40063317654 (`HSM integration` / `PKCS#11 suite (SoftHSM2)`, SoftHSM 2.6.1, rustc 1.99.1, head 44d560d, artifact `commit:` merge ref c67c10e): 28 passed / 0 failed / 1 ignored, exit 0 (NOT RUN → PASS). GitHub dependency gate NOT RUN → PASS (PR 181, 12/12 checks green); GitLab still NOT RUN. QA-004 text updated (POAM-07 and POAM-17 closed; `CKA_ALLOWED_MECHANISMS` still not exercised). §2.4 cross-references updated. |
 | 1.6 | 2026-10-24 | OstrichPKI Team | Added §2.6, the PR 152 fail-closed FIPS TLS run: `tls::` 26 passed / 0 failed; `make test-unit` 667 / 0 / 1; service `--bins` 58 / 0; `mtls_peercert_e2e` 1 / 0; fmt, clippy, `cargo deny`, `cargo audit` pass; mutation check fails both refusal tests as intended. CI on the uncommitted round-1 fixes, Postgres integration and live start-up NOT RUN. QA-005 (`make test-unit` skips service bins) recorded. Header version 1.2 → 1.6 (1.3-1.5 had not updated it). |
+| 1.7 | 2026-10-24 | OstrichPKI Team | Added §2.7, the dependency-cleanup run: `make test-unit` 667 / 0 / 1; web-ui `--bins` 19 / 0; npe-portal `--bins` 30 / 0; two new offline fixture tests 2 / 0 (`ca_core_test` health/readiness fail without docker, pre-existing QA-001); fmt, clippy pass; `cargo audit --deny warnings` and `cargo deny check` pass without the RUSTSEC-2026-0097 and RUSTSEC-2026-0387 ignores (3 IDs left); live `test_ca_issue_certificate_ecdsa` and CI NOT RUN. §5.2: 2026-10-24 result added. §2.5: ignore-count note. |

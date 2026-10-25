@@ -100,6 +100,100 @@ async fn test_ca_issue_certificate_rsa() {
     println!("✓ RSA certificate issued: {}", response.certificate_id);
 }
 
+/// Offline check of the P-256 SPKI fixture used by the ECDSA issuance test:
+/// ecPublicKey with the prime256v1 named curve and a 65-byte uncompressed
+/// point. Needs no live environment.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SA-11 (Developer Security Testing)
+/// - RFC 5480 §2.1.1, §2.2 - ECC SubjectPublicKeyInfo (namedCurve, ECPoint)
+#[tokio::test]
+async fn test_p256_spki_fixture_well_formed() {
+    use x509_parser::prelude::FromDer;
+    use x509_parser::x509::SubjectPublicKeyInfo;
+
+    let spki_der = fixtures::generate_test_p256_spki().await;
+    let (rest, spki) = SubjectPublicKeyInfo::from_der(&spki_der).expect("fixture SPKI must parse");
+    assert!(rest.is_empty(), "no trailing bytes after SPKI");
+
+    assert_eq!(spki.algorithm.algorithm.to_id_string(), "1.2.840.10045.2.1");
+    let curve = spki
+        .algorithm
+        .parameters
+        .as_ref()
+        .and_then(|p| p.as_oid().ok())
+        .expect("namedCurve parameter");
+    assert_eq!(curve.to_id_string(), "1.2.840.10045.3.1.7");
+
+    let point = &spki.subject_public_key.data;
+    assert_eq!(point.len(), 65, "uncompressed P-256 point");
+    assert_eq!(point.first(), Some(&0x04));
+
+    // Fresh throwaway key per call.
+    assert_ne!(spki_der, fixtures::generate_test_p256_spki().await);
+}
+
+/// The fixture's key path (software provider EcP256 keygen + export_public_key)
+/// yields an SPKI that an independent stateless verifier accepts: a signature
+/// made with the same key verifies, and tampered data / wrong algorithm do not.
+/// Proves the exported point is a usable on-curve P-256 key, not only
+/// well-formed DER. Needs no live environment.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SA-11 (Developer Security Testing)
+/// - FIPS 186-5: ECDSA P-256 sign/verify round trip (test fixture)
+/// - RFC 5480 §2 - ECC SubjectPublicKeyInfo consumed by a verifier
+#[tokio::test]
+async fn test_p256_spki_fixture_path_verifies_signature() {
+    use ostrich_crypto::{verify_with_spki, Algorithm, CryptoProviderFactory, KeyType};
+
+    // Same provider calls as fixtures::generate_test_p256_spki, keeping the
+    // key handle so we can sign with it.
+    let provider = CryptoProviderFactory::create_software_provider();
+    let key = provider
+        .generate_key_pair(KeyType::EcP256, "test-p256-fixture", false)
+        .await
+        .expect("P-256 keygen");
+    let spki_der = provider.export_public_key(&key).await.expect("export SPKI");
+
+    let data = b"ostrich p256 fixture round trip";
+    let sig = provider
+        .sign(&key, Algorithm::EcdsaP256Sha256, data)
+        .await
+        .expect("sign");
+    // Software provider emits fixed-size r||s for ECDSA.
+    assert_eq!(sig.len(), 64);
+
+    assert!(
+        verify_with_spki(&spki_der, Algorithm::EcdsaP256Sha256, data, &sig, true)
+            .expect("SPKI must be accepted by verifier"),
+        "signature by the same key must verify against the exported SPKI"
+    );
+    assert!(
+        !verify_with_spki(
+            &spki_der,
+            Algorithm::EcdsaP256Sha256,
+            b"tampered",
+            &sig,
+            true
+        )
+        .expect("verifier returns Ok(false) on mismatch"),
+        "tampered data must not verify"
+    );
+    assert!(
+        !verify_with_spki(&spki_der, Algorithm::EcdsaP384Sha384, data, &sig, true).unwrap_or(false),
+        "wrong-curve algorithm must not verify (fail secure)"
+    );
+
+    // A different fixture key must not verify this signature.
+    let other = fixtures::generate_test_p256_spki().await;
+    assert!(
+        !verify_with_spki(&other, Algorithm::EcdsaP256Sha256, data, &sig, true)
+            .expect("fixture SPKI must be accepted by verifier"),
+        "signature must not verify under an unrelated fixture key"
+    );
+}
+
 /// Test certificate issuance with ECDSA P-256
 ///
 /// COMPLIANCE MAPPING:
@@ -112,7 +206,7 @@ async fn test_ca_issue_certificate_ecdsa() {
     let config = TestConfig::default();
     let mut client = connect_ca(&config.ca_grpc_endpoint).await;
 
-    let spki = fixtures::generate_test_p256_spki();
+    let spki = fixtures::generate_test_p256_spki().await;
     let common_name = generate_test_domain();
 
     let response = issue_test_certificate(

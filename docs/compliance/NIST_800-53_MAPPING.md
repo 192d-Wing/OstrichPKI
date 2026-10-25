@@ -856,6 +856,41 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 ---
 
+### CM-7: Least Functionality
+
+**Control:** The organization configures the system to provide only essential capabilities and prohibits or restricts functions, ports, protocols, software and services that are not needed.
+
+**Implementation Status:** 🟡 **Partial** (unused dependencies are being removed; one known unused dependency remains, and there is no automated unused-dependency check)
+
+**NIAP Mapping:**
+
+- No PP-CA SFR
+
+**Implementation:**
+
+- Dependencies are declared in workspace `Cargo.toml` and per-crate manifests and reviewed through the CM-3 workflow; `cargo deny check` enforces the ban, license and source policy ([deny.toml](../../deny.toml))
+
+**Evidence:**
+
+- ✅ 2026-10-24 dependency cleanup (branch `claude/deps-cleanup`, uncommitted; run record `target/agent-workflow/20261024-104215-deps-cleanup/`): `openidconnect` (no call sites in `ostrich-web-ui`) removed from workspace `Cargo.toml` and `services/web-ui/Cargo.toml`, and the integration-test crate's `p256` dependency removed (the fixture now uses the software `CryptoProvider`). 28 packages left `Cargo.lock` (642 → 614 `[[package]]` entries); no production code changed. This also reduces the supply-chain surface (SR-3) and removed `crypto-bigint` 0.5.5 and its advisory (RA-5, SI-2). `cargo audit --deny warnings`, `cargo deny check`, `make test-unit` (667 / 0 / 1) and the web-ui and npe-portal `--bins` tests (19 / 0 and 30 / 0) pass locally
+
+**Gaps:**
+
+- `oauth2` 5.0.0 is a declared but unused dependency of `ostrich-web-ui`; its default features link `reqwest` 0.12 and enable the `rustls` `ring` feature in the web-ui binary (POAM-2026-10-23-23; `ring` paths also POAM-2026-10-23-08)
+- No automated check for unused dependencies (for example `cargo machete` or `cargo udeps`) in CI
+- Ports, protocols and services per deployment are not yet documented against this control
+
+**Remediation (POA&M, see [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)):**
+
+- Remove `oauth2` (POAM-23)
+
+**Evidence Required for ATO:**
+
+- Dependency inventory (SBOM) per release
+- Ports, protocols and services list per service
+
+---
+
 ## Contingency Planning (CP)
 
 ### CP-9: System Backup
@@ -1099,7 +1134,7 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - [.github/workflows/audit.yml](../../.github/workflows/audit.yml) - "dependency gate" workflow (CI hardening, 2026-10-23; branch `claude/ci-hardening`, not yet merged). Job `cargo audit` runs `cargo audit --deny warnings` (cargo-audit 0.22.2), so vulnerabilities and unmaintained, unsound or yanked warnings all fail the job. Job `cargo deny` runs `cargo deny check` (cargo-deny 0.20.2: advisories, bans, licenses, sources). No `continue-on-error`. Least-privilege token (`contents: read`), `persist-credentials: false`, SHA-pinned actions
 - **Scan frequency (RA-5(a)):** every pull request (no path filter), every push to `main`, weekly (Monday 06:00 UTC), and manual dispatch. GitLab: `security:audit` and `security:deny` per merge request and on `main`/`develop`; `scheduled:security-scan` (audit and deny) on pipeline schedules
 - [.github/dependabot.yml](../../.github/dependabot.yml) - Dependabot dependency-update PRs
-- [.cargo/audit.toml](../../.cargo/audit.toml) - **authoritative risk-acceptance record** and the only exception path for the gate: 5 ignored advisories, each with a rationale and a grep-able `# POAM:` tag (RUSTSEC-2023-0071 `rsa` Marvin, POAM-09; RUSTSEC-2026-0387 `crypto-bigint` 0.5.5, POAM-16; RUSTSEC-2026-0097 `rand` 0.8.5, POAM-11; RUSTSEC-2024-0436 `paste` and RUSTSEC-2025-0134 `rustls-pemfile`, both unmaintained, SA-22, POAM-12). [deny.toml](../../deny.toml) `[advisories].ignore` mirrors the same 5 IDs. RUSTSEC-2026-0387 was added on 2026-10-23 (user decision: ignore + POA&M)
+- [.cargo/audit.toml](../../.cargo/audit.toml) - **authoritative risk-acceptance record** and the only exception path for the gate: 3 ignored advisories, each with a rationale and a grep-able `# POAM:` tag (RUSTSEC-2023-0071 `rsa` Marvin, POAM-09; RUSTSEC-2024-0436 `paste` and RUSTSEC-2025-0134 `rustls-pemfile`, both unmaintained, SA-22, POAM-12). [deny.toml](../../deny.toml) `[advisories].ignore` mirrors the same 3 IDs. RUSTSEC-2026-0387 (added 2026-10-23, user decision: ignore + POA&M) and RUSTSEC-2026-0097 were removed on 2026-10-24 (dependency cleanup; POAM-16 and POAM-11)
 
 **Evidence:**
 
@@ -1107,7 +1142,8 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - ✅ 2026-10-23 scan after remediation (branch `claude/audit-advisories-clippy`): `cargo audit` with 1351 advisories loaded, 642 crates scanned, **0 vulnerabilities, 0 warnings**, exit 0 (cargo-audit 0.22.2). See SI-2 and [ATO_EVIDENCE.md §2.3](ATO_EVIDENCE.md#23-vulnerability-scan-results)
 - ✅ 2026-10-23 CI-hardening branch, local run: `cargo audit --deny warnings` exit 0 (642 crates); `cargo deny check` exit 0 (`advisories ok, bans ok, licenses ok, sources ok`); ignore lists identical in both files. No unused exception (no `advisory-not-detected` / `license-not-encountered` warnings). Negative checks: each of the 4 ignores was shown load-bearing in at least one of the two tools, and removing the `aws-lc-fips-sys`, `webpki-roots` or `borrow-or-share` license exception fails `cargo deny` (`qa-report.md` gates 6-16)
 - ✅ 2026-10-23, later (PKCS#11 RSA-PSS fix, same branch): RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5, timing variability, published 2026-10-23) made `cargo audit --deny warnings` and `cargo deny check` fail with `Cargo.lock` unchanged. That shows the gate catches a new advisory on an unchanged lockfile. No compatible fix exists (fixed only in ≥0.7.6). After the user-approved ignore (POAM-2026-10-23-16), both commands pass locally (run record `target/agent-workflow/20261023-230002-pkcs11-rsa-pss/`, `fixes-round-1.md`)
-- 🟡 No CI run of the new gate has been recorded yet
+- ✅ 2026-10-24, dependency cleanup (branch `claude/deps-cleanup`, uncommitted; run record `target/agent-workflow/20261024-104215-deps-cleanup/`): `rand` 0.8.5 → 0.8.6, `openidconnect` removed from `ostrich-web-ui`, and the integration-test crate's `p256` dependency removed; 28 packages left `Cargo.lock` (642 → 614). `crypto-bigint` 0.5.5 and `rand` 0.8.5 are no longer in the resolved graph (`cargo tree -i … --target all -e all` → "did not match any packages"). With the RUSTSEC-2026-0097 and RUSTSEC-2026-0387 ignores removed: `cargo audit --deny warnings` exit 0 (1352 advisories, 614 crates) and `cargo deny check` exit 0; ignore lists identical (3 IDs). Re-run by the compliance scribe on 2026-10-24 with the same exit codes. Local only
+- 🟡 No CI run of the new gate has been recorded for the dependency-cleanup change (the 2026-10-23 gate passed on PR 181, run 40063317688)
 
 **Gaps:**
 
@@ -1121,8 +1157,9 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - Obtain AO approval of the remediation timeframes and document the red-scheduled-run procedure (POAM-03, narrowed)
 - Protect `main` and make `cargo audit`, `cargo deny` and `Toolchain pin consistency` required checks (POAM-14); add `CODEOWNERS` for the gate files (POAM-13)
 - Confirm the first green CI run of `cargo deny` on GitHub and GitLab (POAM-06, closed pending CI)
-- Bump `rand` to 0.8.6 and drop RUSTSEC-2026-0097 (POAM-11); keep the `rsa` (POAM-09) and SA-22 (POAM-12) acceptances under review
-- Remove the RUSTSEC-2026-0387 ignore once `crypto-bigint` ≥0.7.6 is reachable (RustCrypto 0.3 migration, issue #21) (POAM-16). Removing the unused `openidconnect` dependency from `ostrich-web-ui` would take `crypto-bigint` 0.5.5 out of the production dependency tree sooner (POAM-22)
+- ~~Bump `rand` to 0.8.6 and drop RUSTSEC-2026-0097 (POAM-11)~~ done 2026-10-24, closed pending first green CI run; keep the `rsa` (POAM-09) and SA-22 (POAM-12) acceptances under review
+- ~~Remove the RUSTSEC-2026-0387 ignore (POAM-16) and the unused `openidconnect` dependency (POAM-22)~~ done 2026-10-24 by removing `crypto-bigint` 0.5.5 from the graph, both closed pending first green CI run. The RustCrypto 0.3 migration (issue #21) no longer blocks any advisory
+- Remove the unused `oauth2` dependency from `ostrich-web-ui` (CM-7; POAM-23)
 
 **Evidence Required for ATO:**
 
@@ -1587,6 +1624,12 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
   (SEC-001, POAM-2026-10-23-18)
 - Only SoftHSM has been tested; no vendor HSM, no verify known-answer vectors,
   and sLen is fixed at the hash length (QA coverage gaps)
+- Pre-existing (PQC-001, 2026-10-24): some CSPs are drawn from `rand` 0.10
+  `ThreadRng`, not the AWS-LC SP 800-90A DRBG: Shamir KEK share coefficients
+  (`ostrich-kra`), `secure_random_bytes` (PKCS#12 PBES2 salt and IV), the EST
+  PKCS#12 one-time password and enrollment token, and web session tokens.
+  CA serial numbers already use `fips_random_bytes`. FCS_RBG_EXT.1 /
+  POAM-2026-10-23-24
 
 **Remediation:** Phase 12+ - Add post-quantum cryptography when HSM vendors provide support
 
@@ -1803,17 +1846,26 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 
 "Not scored" means the cargo-audit output on 2026-10-23 had no CVSS score for the advisory. Severity values are copied from that output, not assessed here.
 
-- ✅ Result: 0 vulnerabilities, 0 warnings (RA-5 evidence). No advisory was added to `.cargo/audit.toml` by this remediation. (Later on 2026-10-23, RUSTSEC-2026-0387 was added as a risk-accepted ignore; see Gaps and POAM-2026-10-23-16)
+- ✅ Result: 0 vulnerabilities, 0 warnings (RA-5 evidence). No advisory was added to `.cargo/audit.toml` by this remediation. (Later on 2026-10-23, RUSTSEC-2026-0387 was added as a risk-accepted ignore, POAM-2026-10-23-16; it was removed on 2026-10-24, see below)
 - ✅ zip 9 migration keeps the bulk-enrollment ZIP limits and adds entry-name validation (SI-10; [ATO_EVIDENCE.md](ATO_EVIDENCE.md#bulk-enrollment-zip-hardening-2026-10-23-si-10--si-2))
 - ✅ Required side effect: AWS-LC FIPS module 3.3.0 → 4.2.0 (`aws-lc-fips-sys` 0.14.2), approved by the user 2026-10-23 (CM-3 / CM-4 note; SC-13)
+
+**Evidence: 2026-10-24 dependency cleanup (branch `claude/deps-cleanup`, uncommitted; run record `target/agent-workflow/20261024-104215-deps-cleanup/`)**
+
+| Advisory | Crate | Before → After | Status | Note |
+|----------|-------|----------------|--------|------|
+| RUSTSEC-2026-0097 (unsound) | rand | 0.8.5 → 0.8.6 | ✅ Remediated 2026-10-24 (target was 2026-11-06); ignore removed from `.cargo/audit.toml` and `deny.toml` | POAM-2026-10-23-11, closed pending first green CI run |
+| RUSTSEC-2026-0387 | crypto-bigint | 0.5.5 → removed | ✅ Remediated 2026-10-24 by removing the dependency (no fixed version was compatible); ignore removed from both files | Both roots removed: `openidconnect` (unused in `ostrich-web-ui`, POAM-22) and the integration-test crate's `p256` 0.13 (fixture now uses the software `CryptoProvider`). POAM-2026-10-23-16, closed pending first green CI run |
+
+- ✅ Result: `cargo audit --deny warnings` and `cargo deny check` exit 0 with 3 ignores (RUSTSEC-2023-0071, -2024-0436, -2025-0134). Local only; no CI run recorded for this change
 
 **Gaps:**
 
 - No AO-approved flaw-remediation time periods (proposed values in RA-5, pending AO approval)
 - The dependency gate fails in CI, but merge-blocking is pending required checks on `main` (POAM-2026-10-23-14); until then a vulnerable dependency can still be merged past a red check (RA-5)
-- `rand` 0.8.5 (RUSTSEC-2026-0097) has a fix available but is not yet bumped (POAM-2026-10-23-11)
 - The cryptoki fix has SoftHSM test evidence only. The SoftHSM CI job ran on Linux before the RSA-PSS fix (16 passed / 3 RSA-PSS failed / 1 ignored, exit 101) and after it ([run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654): 28 passed / 0 failed / 1 ignored, exit 0); local SoftHSM 2.7.0 also gives 28/0/1. POAM-2026-10-23-07 and POAM-2026-10-23-17 closed 2026-10-23. No run exercises the `CKA_ALLOWED_MECHANISMS` decode path, because `ostrich-crypto/src/pkcs11` never reads that attribute
-- `crypto-bigint` 0.5.5 (RUSTSEC-2026-0387) has no compatible fix (≥0.7.6 needs the RustCrypto 0.3 migration, issue #21). It is ignored with risk acceptance (POAM-2026-10-23-16). It enters through `elliptic-curve` 0.13 (`p256`/`p384`) from `openidconnect` 4.0.1, a declared but unused dependency of `ostrich-web-ui` (no call sites), so no production code reaches it. In the integration-test crate, `p256` 0.13 is used only for ephemeral, test-only fixture keys ([tests/integration/common/fixtures.rs](../../tests/integration/common/fixtures.rs)). No production secret flows through the affected operations
+- The 2026-10-24 removals of RUSTSEC-2026-0097 and RUSTSEC-2026-0387 (POAM-11, POAM-16, POAM-22) are verified locally only; they stay on the POA&M until a CI run of the gate records the same result
+- `oauth2` 5.0.0 is a declared but unused dependency of `ostrich-web-ui` (no call sites); removal tracked as POAM-2026-10-23-23 (CM-7)
 
 **Remediation:** see RA-5 and the POA&M in [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)
 
@@ -2031,13 +2083,13 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 |----------------|----------------|-------------|-----------|-----------|--------------|
 | AC (Access Control) | 7 | 0 | 2 | 5 | 14% |
 | AU (Audit) | 10 | 4 | 4 | 2 | 60% |
-| CM (Configuration) | 3 | 0 | 3 | 0 | 50% |
+| CM (Configuration) | 4 | 0 | 4 | 0 | 50% |
 | CP (Contingency) | 2 | 0 | 1 | 1 | 25% |
 | IA (Identification/Auth) | 3 | 0 | 2 | 1 | 33% |
 | RA (Risk Assessment) | 1 | 0 | 1 | 0 | 50% |
 | SC (System Protection) | 8 | 2 | 5 | 1 | 56% |
 | SI (System Integrity) | 4 | 0 | 3 | 1 | 38% |
-| **TOTAL** | **38** | **6** | **21** | **11** | **43%** |
+| **TOTAL** | **39** | **6** | **22** | **11** | **44%** |
 
 Compliance % = (Compliant + 0.5 × Partial) / Total. On 2026-10-23 only the
 RA row (new: RA-5, Partial), the SI row (SI-2 added as Partial) and the TOTAL
@@ -2056,6 +2108,11 @@ On 2026-10-24 SC-24 (new, Partial) was added to the SC row and TOTAL. SC row:
 other SC status changed, and the SC row is still not reconciled with the SC
 sections (SC-8 and SC-23 marked Implemented). TOTAL: (6 + 0.5 × 21) / 38 =
 16.5 / 38 = 43.4%, shown as 43% (was 43.2%).
+
+Later on 2026-10-24 CM-7 (new, Partial) was added to the CM row and TOTAL. CM
+row: (0 + 0.5 × 4) / 4 = 50% (unchanged). TOTAL: (6 + 0.5 × 22) / 39 = 17 / 39
+= 43.6%, shown as 44% (was 43.4%). The +0.2 points come only from counting one
+more Partial control; no existing status changed.
 
 ---
 
@@ -2316,6 +2373,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 2.4 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix (branch `claude/ci-hardening`, uncommitted; run record `target/agent-workflow/20261023-230002-pkcs11-rsa-pss/`). SC-13: RSA-PSS ✅ → 🟡 with the impact corrected (X.509/CRL/OCSP RSA signing is PKCS#1 v1.5 and was not affected; the broken path was AU-10 audit-record signing with RSA PKCS#11 CA keys); PKCS#11 status "Fixed; local SoftHSM 2.7.0 28/0/1; Linux CI pending"; Linux CI before-fix result 16/3/1 (exit 101) recorded; stale `mod.rs` line references replaced by function names; new tests listed; split-boundary, algorithm-key binding and vendor-HSM gaps added; untraceable "39 tests" count removed. AU-10: RSA PKCS#11 audit-signing note and gap (NIST-005). RA-5 / SI-2: 5 ignored advisories (RUSTSEC-2026-0387 `crypto-bigint` 0.5.5 added, POAM-16; openidconnect recorded as declared but unused in web-ui). SI-10: RSASSA-PSS CSR parameter caveat (POAM-20). New "PKCS#11 RSA-PSS digest input" section. **No control status or percentage changed** (SC-13 stays 98%, AU-10 Compliant, RA-5 / SI-2 Partial). |
 | 2.5 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix, Linux CI evidence (commit 44d560d, PR 181). Recorded GitHub Actions run 40063317654 (`HSM integration` / `PKCS#11 suite (SoftHSM2)`; SoftHSM 2.6.1, rustc 1.99.1; 28 passed / 0 failed / 1 ignored, exit 0; artifact `commit:` = PR merge ref c67c10e). SC-13: RSA-PSS via PKCS#11 🟡 → ✅ **scoped to SoftHSM** 2.6.1 / 2.7.0 and RSA-2048/3072/4096; production HSM not validated (POAM-21); AWS-LC 4.2.0 CMVP caveat kept. SC-13 suite, signature-test and HSM-test evidence items 🟡 → ✅ (SoftHSM only). AU-10 RSA bullet stays 🟡 (no RSA end-to-end test). SI-2 cryptoki row and gap updated. POAM-07 and POAM-17 recorded as closed; `CKA_ALLOWED_MECHANISMS` caveat kept. **No control status or percentage changed** (SC-13 stays 🟢 98%, AU-10 Compliant, SI-2 Partial). |
 | 2.6 | 2026-10-24 | OstrichPKI Team | PR 152 (fail-closed FIPS TLS, branch `revive-fips-tls`, uncommitted round-1 fixes; run record `target/agent-workflow/20261024-000214-pr152-fips-tls/`). SC-8: fail-closed FIPS gate (`ensure_fips`) added as evidence; "all seven service binaries ... via `serve`" corrected to nine binaries via `from_options` + `serve` plus npe-portal ACME mode via `serve_with_config` (now gated). SC-13: "services do not assert FIPS mode at startup" rescoped to a 🟡 HTTPS-listener-only assertion; `fips()` reflects build and linkage, not a failed self-test (PQC-009); gRPC ordering gap in ca-server recorded. New SC-24 section (🟡 Partial, HTTPS listeners only). Cross-reference FPT_FLS.1 → SC-24, SI-13, SI-17 (SI-17 already mapped FPT_FLS.1 in its own section). Summary table: SC row 7/2/4/1 43% → 8/2/5/1 56% and TOTAL 37 → 38 controls, 43% → 43% (arithmetic under the table). **No existing control status raised** (SC-8 Implemented, SC-13 🟢 98% unchanged). Header version 2.2 → 2.6 (2.3-2.5 had not updated it). |
+| 2.7 | 2026-10-24 | OstrichPKI Team | Dependency cleanup (branch `claude/deps-cleanup`, uncommitted; run record `target/agent-workflow/20261024-104215-deps-cleanup/`). RA-5: ignore count 5 → 3 (RUSTSEC-2026-0097 and RUSTSEC-2026-0387 removed); 2026-10-24 local gate evidence added; remediation items for POAM-11/-16/-22 marked done, POAM-23 (unused `oauth2`) added. SI-2: new 2026-10-24 evidence table (RUSTSEC-2026-0097 `rand` 0.8.5 → 0.8.6 and RUSTSEC-2026-0387 `crypto-bigint` 0.5.5 removed, both remediated); the two corresponding gaps replaced by a CI-pending note and the `oauth2` item. CM-7: new section, 🟡 Partial (openidconnect and p256 removal as evidence, 28 crates; gap POAM-23 `oauth2`; SR-3 noted). SC-13: added a pre-existing gap (PQC-001, CSPs from `rand` `ThreadRng`; POAM-24). RA-5 and SI-2 stay 🟡 Partial; SC-13 status unchanged. Control Implementation Summary: CM row 3 → 4 controls (50% unchanged), TOTAL 38 → 39 controls, (6 + 0.5 × 22) / 39 = 43.6% → 44% (was 43%) |
 
 ---
 

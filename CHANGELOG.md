@@ -63,13 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (`taiki-e/install-action`).
 - The only exception path for advisories is `.cargo/audit.toml`. `deny.toml [advisories].ignore` must
   match it exactly. Current ignores, each with a rationale:
-  - RUSTSEC-2023-0071: risk acceptance, tracked as a POA&M item.
-  - RUSTSEC-2024-0436.
-  - RUSTSEC-2025-0134.
-  - RUSTSEC-2026-0097: POA&M, remove after the rand 0.8.6 lockfile bump.
-  - RUSTSEC-2026-0387: risk acceptance, POAM-2026-10-23-16 (see below).
+  - RUSTSEC-2023-0071: risk acceptance, tracked as a POA&M item (POAM-2026-10-23-09).
+  - RUSTSEC-2024-0436: SA-22 unmaintained-component acceptance (POAM-2026-10-23-12).
+  - RUSTSEC-2025-0134: SA-22 unmaintained-component acceptance (POAM-2026-10-23-12).
 - Removed stale ignores: RUSTSEC-2026-0118, RUSTSEC-2025-0141 and RUSTSEC-2024-0370 no longer match the
-  dependency graph.
+  dependency graph. RUSTSEC-2026-0097 and RUSTSEC-2026-0387 were later fixed and their ignores removed
+  (see below).
 - `deny.toml` was rewritten for the cargo-deny 0.18+ schema, which removed five keys. `cargo deny check`
   now passes with no blanket ignores.
   - The full feature set and all targets are evaluated.
@@ -82,25 +81,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cargo-deny 0.20.2.
 - **NIST 800-53**: RA-5, SI-2, SR-3, SR-4, SR-11, SI-7, CM-6
 
-#### RUSTSEC-2026-0387 (crypto-bigint 0.5.5) accepted with a POA&M item
+#### RUSTSEC-2026-0097 and RUSTSEC-2026-0387 fixed; advisory ignores cut from 5 to 3
 
 ##### workspace (Cargo.lock)
 
-- RUSTSEC-2026-0387 is now ignored in `.cargo/audit.toml` and `deny.toml`. The two lists still match.
-  The advisory reports timing variability in crypto-bigint 0.5.5 operations that are meant to be
-  constant-time.
-- There is no upgrade path. crypto-bigint 0.5.5 comes in only through elliptic-curve 0.13
-  (p256/p384), from two places:
-  - openidconnect 4.0.1, the latest release, used by ostrich-web-ui;
-  - the integration-test crate (`tests/Cargo.toml`, p256 0.13).
-- The fix is only in crypto-bigint 0.7.6 and later. That version is part of the blocked
-  RustCrypto 0.3 migration (issue #21).
-- Exposure: openidconnect is a declared but unused dependency of ostrich-web-ui (it has no call
-  sites), so no production code reaches crypto-bigint. In the test crate, p256 is used only for
-  ephemeral test fixture keys. No production secret passes through the affected operations.
-- Tracked as `POAM-2026-10-23-16`. Remove the ignore when openidconnect, p256 and p384 move to
-  crypto-bigint 0.7.6 or later.
-- **NIST 800-53**: RA-5, SI-2, CA-5 (POA&M)
+- **rand** 0.8.5 -> 0.8.6: RUSTSEC-2026-0097 (unsound `rand::thread_rng` when a custom `log` logger
+  draws from ThreadRng). This is a semver-compatible lockfile update
+  (`cargo update -p rand@0.8.5 --precise 0.8.6`). No other crate changed version. The ignore is removed
+  from `.cargo/audit.toml` and `deny.toml`. Closes POAM-2026-10-23-11.
+- **crypto-bigint** 0.5.5 has left the dependency graph: RUSTSEC-2026-0387 (timing variability in
+  operations meant to be constant-time). An earlier change in this release accepted that advisory with
+  an ignore. Its only paths were elliptic-curve 0.13 (p256/p384) from the unused `openidconnect`
+  dependency of ostrich-web-ui and `p256` in the integration-test crate. Both are now removed (see
+  `### Removed`), and `cargo tree -i crypto-bigint@0.5.5 --target all -e all` no longer matches any
+  package. The ignore is removed from both files. Closes POAM-2026-10-23-16.
+- The two ignore lists still match. They now hold RUSTSEC-2023-0071, RUSTSEC-2024-0436 and
+  RUSTSEC-2025-0134. The RUSTSEC-2023-0071 (`rsa`) rationale no longer mentions openidconnect;
+  ostrich-acme JWS SPKI conversion is now the only production path to `rsa`.
+- `cargo audit --deny warnings` and `cargo deny check` pass without the removed ignores.
+- **NIST 800-53**: RA-5, SI-2, CA-5 (POA&M closure), SR-3
 
 ### Changed
 
@@ -161,6 +160,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `400 invalid ZIP entry name`. zip 2 decoded such names lossily. This fails closed (SI-10).
   - Added 9 unit tests that cover stored/deflated CSRs, symlink and directory entries, extension
     filtering, size, CSR-count and entry-count limits, garbage input, and SUID entries.
+
+### Removed
+
+#### Unused and test-only dependencies (28 crates leave the lockfile)
+
+##### ostrich-web-ui
+
+- Removed the `openidconnect` 4.0 dependency from `services/web-ui/Cargo.toml` and
+  `[workspace.dependencies]`. It had no call sites: OIDC login (`server/auth/oidc.rs`) does
+  authorization code + PKCE directly over reqwest. No behaviour change. Closes POAM-2026-10-23-22.
+
+##### ostrich-integration-tests
+
+- Removed the `p256` 0.13 dev dependency. `common/fixtures.rs` `generate_test_p256_spki` now creates
+  its throwaway P-256 key through `CryptoProvider` (software provider, AWS-LC FIPS module) and returns
+  the exported SPKI DER. The function is now `async`; its one caller was updated.
+- New offline test `test_p256_spki_fixture_well_formed` (`ca_core_test.rs`) checks the SPKI
+  structure, ecPublicKey/prime256v1 OIDs, the 65-byte uncompressed point, and that each call gives a
+  fresh key.
+
+##### workspace (Cargo.lock)
+
+- 28 packages that were only reachable through openidconnect or p256 are gone (642 -> 614):
+  base16ct, base64 0.21, crypto-bigint 0.5, darling/darling_core/darling_macro 0.21, dyn-clone, ecdsa,
+  elliptic-curve, ff, group, hashbrown 0.12, ident_case, indexmap 1, itertools 0.10, openidconnect,
+  ordered-float 2, p256, p384, primeorder, rfc6979, schemars 0.9 and 1.2, sec1, serde-value,
+  serde_plain, serde_with, serde_with_macros.
+- **NIST 800-53**: CM-7 (Least Functionality), SR-3, CM-3 (baseline change)
 
 ### Fixed
 
