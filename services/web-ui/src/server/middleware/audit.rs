@@ -146,7 +146,7 @@ fn should_audit_request(method: &Method, path: &str) -> bool {
 }
 
 /// Extract client IP from request headers or connection
-fn extract_client_ip(request: &Request) -> Option<String> {
+pub(crate) fn extract_client_ip(request: &Request) -> Option<String> {
     // Check X-Forwarded-For first (for reverse proxy setups)
     if let Some(forwarded) = request
         .headers()

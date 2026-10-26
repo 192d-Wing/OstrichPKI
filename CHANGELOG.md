@@ -587,11 +587,66 @@ Closes POAM-2026-10-23-39.
 - The web-ui BFF proxy (`services/web-ui/src/server/proxy.rs`) percent-decodes the forwarded path,
   so client-side encoding protects only the browser-to-BFF hop. This predates the change
   (POAM-2026-10-23-43).
+  Closed before release by "web-ui BFF proxy forwards the raw request path" below.
 - The web-ui SPA has no unit test runner. The navigation guard is checked by an out-of-tree script
   only (POAM-2026-10-23-44).
 - The login redirect and navigation were smoke-tested in a browser against a local mock BFF only.
   OIDC sign-in and logout were not exercised. `login.tsx` and `protected.tsx` changed only their
   import lines.
+
+#### web-ui BFF proxy forwards the raw request path (confused-deputy fix)
+
+> **Behaviour change.** The `/api/{ca,acme,ocsp,scms,kra,audit,est}/...` proxy now refuses unsafe
+> paths with `400 {"error":"invalid_path",...}` and never contacts the backend. This includes a
+> trailing slash (`/api/ca/certificates/`) and empty segments (`//`), which used to be forwarded.
+> Clients that send either must drop the extra `/`.
+
+Closes POAM-2026-10-23-43.
+
+##### ostrich-web-ui
+
+- Before this fix, the seven proxy handlers built the backend URL from axum's percent-decoded
+  `Path` capture. `%2F`, `%3F` and `%2E%2E` therefore reached the backend as `/`, `?` and `..`.
+  A crafted link could make the BFF send an arbitrary backend GET (path and query) with the
+  signed-in administrator's backend bearer token.
+- The backend path is now taken from the raw (still percent-encoded) request path and forwarded
+  unchanged. Legitimate escapes such as `%20`, `%40` and UTF-8 sequences reach the backend still
+  encoded. The query string is still appended verbatim; it cannot change the backend path.
+- A path is rejected if any segment:
+  - is empty;
+  - is `.` or `..`, literal or percent-encoded;
+  - contains a malformed escape (`%` not followed by two hex digits);
+  - decodes to `/`, `?`, `#` or `\`;
+  - decodes to a control character (0x00-0x1F, 0x7F).
+- Each rejection logs a `proxy_path_rejected` security event (`tracing` warn) with `request_id`,
+  `actor`, `client_ip` (first `X-Forwarded-For` hop, then `X-Real-IP`, as the audit middleware
+  does; logged only if it parses as an IP address, otherwise `-`, so header text cannot forge log
+  fields), `method`, `service`, the escaped path, `reason` and `outcome=denied`. No session or
+  bearer token is logged.
+- The proxy no longer forwards the browser's `Cookie` header or any client-supplied `X-Npe-*`
+  header to backends, in addition to `Authorization` and hop-by-hop headers. The only upstream
+  credential is the session-bound bearer token. No backend reads the web-ui session cookie.
+- `SessionData`'s `Debug` output redacts `backend_token` (`Some("[REDACTED]")`).
+- 23 new tests, 41 in the crate. They cover the path validator directly, and all seven services
+  through the axum router against a local echo backend that must see zero requests for a rejected
+  path. Other tests check header stripping, the security event fields and token redaction.
+- **NIST 800-53**: SI-10, AC-3, AC-4, AU-2, AU-3, SC-23, IA-5.
+  **NIAP PP-CA**: FDP_ACF.1 (supporting). **RFC** 3986 §2.1, §3.3, §5.2.4.
+
+##### Known limitations (POA&M)
+
+- The unauthenticated `/next/{*rest}` redirect in `services/web-ui/src/server/router.rs` builds
+  `Location` from the decoded path. `/next/%2Fevil.com` and `/next//evil.com` redirect to
+  `//evil.com` (open redirect, CWE-601). This predates the change (POAM-2026-10-23-45).
+- The npe-portal BFF proxy (`services/npe-portal/src/server/proxy.rs`) has the same
+  decoded-path bug that this entry fixes in web-ui (POAM-2026-10-23-46).
+- web-ui security and audit events, including `proxy_path_rejected`, go to `tracing` only, not
+  to `ostrich-audit`. They are not in the signed hash chain (AU-9, AU-10, AU-12)
+  (POAM-2026-10-23-47).
+- The session cookie is `SameSite=Lax`, so a cross-site top-level link can still make the BFF send
+  a backend GET to a valid path, with an attacker-chosen query, using the administrator's token.
+  `Sec-Fetch-Site` / `Sec-Fetch-Mode` checks or `SameSite=Strict` are not yet in place
+  (POAM-2026-10-23-48).
 
 #### ACME challenge validation hardening (dns-01, http-01, tls-alpn-01)
 
@@ -665,17 +720,17 @@ Closes POAM-2026-10-23-39.
   - the CA-to-resolver channel is unauthenticated (no TSIG or DoT, and the AD bit is not checked);
   - no multi-perspective validation and no 0x20 case randomisation;
   - no live dns-01 end-to-end test.
-- POAM-2026-10-23-45: `new_order` does not validate identifiers. `*.` wildcards are stored with
+- POAM-2026-10-23-49: `new_order` does not validate identifiers. `*.` wildcards are stored with
   `wildcard: false`, and dns-01 is offered for IP identifiers (RFC 8555 §7.1.4, RFC 8738 §7).
   Until this is fixed, the dns-01 validator rejects wildcard identifiers, so wildcard
   certificates cannot be issued.
-- POAM-2026-10-23-46: `respond_to_challenge` has no ownership or state check, and validation
+- POAM-2026-10-23-50: `respond_to_challenge` has no ownership or state check, and validation
   tasks are spawned with no concurrency bound (AC-3, SC-5; RFC 8555 §7.5.1). A dns-01 validation
   is bounded at about 83 s nominal.
-- POAM-2026-10-23-47: the challenge-validation audit record has no challenge type, identifier,
+- POAM-2026-10-23-51: the challenge-validation audit record has no challenge type, identifier,
   account or failure category. A CA misconfiguration looks the same as a subscriber failure
   (AU-3).
-- POAM-2026-10-23-48: tls-alpn-01 does not check that the `acmeIdentifier` extension is marked
+- POAM-2026-10-23-52: tls-alpn-01 does not check that the `acmeIdentifier` extension is marked
   critical or that the certificate has exactly one dNSName SAN. It also accepts a bare 32-byte
   extension value as well as the DER OCTET STRING (RFC 8737 §3; SI-10). The digest itself is
   still compared.

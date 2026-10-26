@@ -683,7 +683,7 @@ async fn system_resolver_config_off_runtime()
 // and no 0x20 query-name case randomisation. The CA-to-recursor channel is
 // unauthenticated (no TSIG/DoT, AD bit not checked); deploy the recursor on a
 // trusted segment. Wildcard identifiers are rejected until new_order stores the
-// base domain with `wildcard: true` (RFC 8555 §7.1.4; POAM-2026-10-23-45).
+// base domain with `wildcard: true` (RFC 8555 §7.1.4; POAM-2026-10-23-49).
 pub struct Dns01Validator {
     /// DNS resolver timeout in seconds
     timeout_secs: u64,
@@ -962,7 +962,7 @@ impl TlsAlpn01Validator {
         // - RFC 8737 - TLS-ALPN-01 validation procedure
         // - RFC 8555 §8.1 - Key authorization computation
         //
-        // POAM: POAM-2026-10-23-48 - tls-alpn-01 does not check acmeIdentifier criticality or single-dNSName SAN, and accepts a bare 32-byte value (RFC 8737 §3; SI-10)
+        // POAM: POAM-2026-10-23-52 - tls-alpn-01 does not check acmeIdentifier criticality or single-dNSName SAN, and accepts a bare 32-byte value (RFC 8737 §3; SI-10)
 
         // SI-10: SSRF prevention. Resolve the domain, require every resolved
         // address to be globally routable, and connect to that VALIDATED address

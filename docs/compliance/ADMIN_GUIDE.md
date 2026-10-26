@@ -446,7 +446,7 @@ restart; treat them as CM-3 changes.
 **Subscriber-visible behaviour (2026-10-26).** dns-01 identifiers must be
 plain DNS names without a trailing dot; IP literals and `*.` wildcard names
 fail dns-01 with `malformed` (wildcard orders are not supported yet,
-POAM-2026-10-23-45). A stale or missing TXT record is retried for about 8 s
+POAM-2026-10-23-49). A stale or missing TXT record is retried for about 8 s
 before the challenge becomes invalid. TXT records at names other than the
 challenge name or its CNAME target are ignored, and a record's strings are
 joined before comparison. Challenge errors now carry RFC 8555 types such as

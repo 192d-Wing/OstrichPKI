@@ -976,7 +976,8 @@ Limits of this evidence:
   has no test runner (POAM-2026-10-23-44)
 - The BFF proxy forwards a percent-decoded path to the backends, so the
   client-side encoding protects only the browser → BFF hop
-  (POAM-2026-10-23-43)
+  (POAM-2026-10-23-43). Fixed later on 2026-10-26 by the proxy raw-path change
+  (row "SI-10 / AC-3 / AC-4" in Appendix B); closed pending first green CI run
 - Test detail: [TEST_EVIDENCE.md §2.11](TEST_EVIDENCE.md#211-test-run-2026-10-26-web-ui-react-router-v7-migration)
 
 **CM-6: CI workflow secure defaults (2026-10-23, CI hardening):**
@@ -1870,6 +1871,7 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | CM-6 / CM-2 | `deploy/helm/ostrich-pki/values.yaml` (`ca.grpc.*`, `acme.caGrpc.*`, `est.caGrpc.*`), `deploy/kubernetes/{ca,acme,est}-deployment.yaml`, `docker-compose*.y*ml`, `.env.example`, `scripts/gen-dev-grpc-certs.sh` | Configuration baseline (see "CA gRPC mTLS evidence" below). `helm template` fails closed without the required secrets |
 | AC-4 (OE.NETWORK) | `deploy/helm/ostrich-pki/templates/networkpolicy.yaml`; `deploy/kubernetes/ca-networkpolicy.yaml` | Configuration: gRPC port reachable only from acme/est pods. Rendered and decoded offline; no live cluster test |
 | SC-8 / SC-18 / SI-10 | `services/web-ui/src/server/middleware/csp.rs` | Code implementation (per-request nonce CSP + hardening headers on the web console). `script-src` is nonce-strict + `'wasm-unsafe-eval'`; `default-src`/`connect-src`/`base-uri`/`form-action` are `'self'`; `frame-ancestors 'none'`; `upgrade-insecure-requests`. Unit tests (3) cover nonce generation and header contents. |
+| SI-10 / AC-3 / AC-4 / AU-2 / AU-3 / FDP_ACF.1 (supporting) | `services/web-ui/src/server/proxy.rs` (`validate_backend_path`, `percent_decode_segment`, `proxy_to_service`, `is_stripped_inbound_header`); `services/web-ui/src/server/auth/session.rs` (`impl Debug for SessionData`) | Code implementation and test results (2026-10-26, branch `claude/web-ui-proxy-raw-path`, uncommitted; closes POAM-2026-10-23-43 pending first green CI run). The BFF builds the backend path from the raw request path and refuses empty, `.` / `..` (literal or encoded), encoded `/` `?` `#` `\`, control-character and malformed-escape segments with 400 `invalid_path` before contacting the backend; the raw query is appended unchanged. Each refusal logs `security_event=proxy_path_rejected` with `request_id`, `actor`, `client_ip`, `method`, `service`, `path`, `reason`, `outcome=denied` (no tokens). Only the session-bound bearer goes upstream; inbound `Authorization`, `Cookie` and `X-Npe-*` are stripped. `SessionData` `Debug` redacts `backend_token`. Tests: 22 new in `ostrich-web-ui` (router-level tests assert zero backend hits on rejection across all seven services); `cargo test -p ostrich-web-ui` 41 / 0, fmt and clippy clean, local only, re-run by the compliance scribe ([TEST_EVIDENCE.md §2.12](TEST_EVIDENCE.md#212-test-run-2026-10-26-web-ui-bff-proxy-raw-path)). Secure default: no configuration switch; validation always applies. Residuals: query unvalidated, `%252F` and bytes >= 0x80 forwarded raw, trailing slash now 400, `..;` passed through. Gaps: the event is a log line, not `ostrich-audit` (POAM-2026-10-23-47); `/next` open redirect (POAM-45); npe-portal proxy (POAM-46); cross-site GETs (POAM-48) |
 | SC-8 / SC-18 | `services/web-ui/src/server/middleware/csp.rs` deployment header capture (`/next`, image `web-ui:sha-4f64ef4`, 2026-06-24) | Deployment evidence — see CSP capture below |
 | SC-12 / FCS_COP.1 | `crates/ostrich-kra/src/wrap.rs` | Code implementation (AES-256-GCM KEK wrapping) |
 | SC-12 / FCS_CKM.4 | `crates/ostrich-kra/src/wrap.rs` unit tests (6) | Test results (wrap/unwrap, tamper, AAD, zeroization-by-construction) |
@@ -2022,7 +2024,7 @@ Issuer roles (POAM-2026-10-23-28).
 
 Branch `claude/dns01-resolver-fix`, uncommitted; run record
 `target/agent-workflow/20261026-091032-dns01-resolver/`. Narrows
-POAM-2026-10-23-41; opens POAM-2026-10-23-45 to -48. Operator guidance:
+POAM-2026-10-23-41; opens POAM-2026-10-23-49 to -52. Operator guidance:
 [ADMIN_GUIDE.md](ADMIN_GUIDE.md) Section 3.7.
 
 **Configuration baseline (CM-6).**
@@ -2099,7 +2101,7 @@ on the final tree on 2026-10-26; the others are from `qa-report.md` and
 **Audit records (AU-2 / AU-3).** No new event type. The existing
 `validate_challenge` record (actor `acme-validator`, Success / Failure) is
 unchanged and lacks challenge type, identifier, account and failure category
-(POAM-2026-10-23-47); no automated test covers it (QA-001).
+(POAM-2026-10-23-51); no automated test covers it (QA-001).
 
 **Live evidence still to capture:** a dns-01 issuance against a controllable
 authoritative zone through a DNSSEC-validating recursor (positive case, stale

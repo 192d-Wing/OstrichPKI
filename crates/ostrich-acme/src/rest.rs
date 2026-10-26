@@ -675,7 +675,7 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
 ///
 /// - **SI-10**: Input validation on domain identifiers.
 /// - **AU-2/AU-3**: Order lifecycle events logged.
-// POAM: POAM-2026-10-23-45 - identifiers are not validated here (SI-10 claim above is not yet met), `*.` wildcards are stored with wildcard=false, and dns-01 is offered for IP identifiers (RFC 8555 §7.1.4, RFC 8738 §7).
+// POAM: POAM-2026-10-23-49 - identifiers are not validated here (SI-10 claim above is not yet met), `*.` wildcards are stored with wildcard=false, and dns-01 is offered for IP identifiers (RFC 8555 §7.1.4, RFC 8738 §7).
 async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Response> {
     // Validate JWS and extract payload
     let url = format!("{}/acme/new-order", state.base_url);
@@ -884,7 +884,7 @@ async fn get_authorization(
 /// # NIST 800-53 Controls
 ///
 /// - **SC-17**: Identifier control verified before certificate issuance.
-// POAM: POAM-2026-10-23-46 - no ownership/state check on the challenge POST and validation tasks are spawned without a concurrency bound (AC-3, SC-5; RFC 8555 §7.5.1).
+// POAM: POAM-2026-10-23-50 - no ownership/state check on the challenge POST and validation tasks are spawned without a concurrency bound (AC-3, SC-5; RFC 8555 §7.5.1).
 async fn respond_to_challenge(
     State(state): State<AcmeState>,
     Path(id): Path<String>,
@@ -990,7 +990,7 @@ async fn run_challenge_validation(state: AcmeState, challenge: ostrich_db::model
     }
 
     // AU-2: audit the validation outcome
-    // POAM: POAM-2026-10-23-47 - this record lacks challenge type, identifier, account and failure category, so a CA misconfiguration is indistinguishable from a subscriber failure (AU-3).
+    // POAM: POAM-2026-10-23-51 - this record lacks challenge type, identifier, account and failure category, so a CA misconfiguration is indistinguishable from a subscriber failure (AU-3).
     let mut event = ostrich_audit::AuditEventBuilder::new(
         ostrich_audit::EventType::Authentication,
         "acme-validator",

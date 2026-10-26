@@ -1,9 +1,9 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.3
+**Document Version:** 2.4
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
-**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 817 unit tests passed, 0 failed, 1 ignored, 2026-10-26 (§2.12, `make test-unit`)
+**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 817 unit tests passed, 0 failed, 1 ignored, 2026-10-26 (§2.13, `make test-unit`)
 
 ---
 
@@ -559,7 +559,8 @@ request (`GET /api/ca/api/v1/certificates/abc%2Fdef`). All PASS.
 
 **Not covered:** OIDC SSO login and logout (server-side redirects; they need
 the real BFF); the browser smoke used a mock BFF, so the BFF proxy's
-percent-decoding of the forwarded path was not exercised (POAM-2026-10-23-43);
+percent-decoding of the forwarded path was not exercised (POAM-2026-10-23-43,
+since fixed and tested in §2.12; closed pending first green CI run);
 router composition is tested through `resolvePath` / `createPath`, not
 through `BrowserRouter` in a real DOM; the `encodeURIComponent` in `lib/ca.ts`
 is checked by review, typecheck and the one smoke request only; the
@@ -567,9 +568,79 @@ is checked by review, typecheck and the one smoke request only; the
 scripts that are not committed and not run in CI: web-ui has no test runner
 (POAM-2026-10-23-44).
 
+### 2.12 Test Run 2026-10-26 (Web UI BFF proxy raw path)
+
+**Scope:** branch `claude/web-ui-proxy-raw-path`, uncommitted, stacked on
+PR #188 (`claude/react-router-v7`, commit f00ddf6) (run record
+`target/agent-workflow/20261026-093447-proxy-raw-path/`). Changed files:
+`services/web-ui/src/server/proxy.rs`, `services/web-ui/src/server/auth/session.rs`
+and `services/web-ui/src/server/middleware/audit.rs` (visibility only). Closes
+POAM-2026-10-23-43 pending the first green CI run; also fixes SEC-003 (inbound
+`Cookie` / `X-Npe-*` stripping) and QA-001 (`SessionData` `Debug` redaction).
+**Sources:** `qa-report.md` (QA round, 38 / 0; PASS), `fixes-round-1.md`
+(41 / 0 after the fixes). Rows marked "scribe" were re-run by the compliance
+scribe on the final working tree on 2026-10-26.
+
+| Gate | Command | Result | Counts / notes |
+|------|---------|--------|----------------|
+| Format | `cargo fmt --all -- --check` | PASS | exit 0 (QA, coder, scribe) |
+| Lint | `cargo clippy -p ostrich-web-ui --all-targets -- -D warnings` | PASS | 0 warnings (QA, coder, scribe) |
+| Unit tests | `cargo test -p ostrich-web-ui` | PASS | **41 passed, 0 failed, 0 ignored** (coder after fix round 1; scribe). QA round before the fixes: 38 / 0 |
+| Serial run | `cargo test -p ostrich-web-ui -- --test-threads=1` | PASS | 38 / 0 (QA round) |
+| Flake check | `cargo test -p ostrich-web-ui` repeated | PASS | 120 / 120 (QA round, after the test-harness fix); 20 / 20 full suite and 20 / 20 for the log-capture test alone (coder, after fix round 1) |
+| Doc tests | n/a | NOT RUN | binary-only crate |
+| Workspace | `make clippy` / `make test-unit` | NOT RUN | scoped to one crate |
+| Supply chain | `make security` | NOT RUN | no `Cargo.toml` / `Cargo.lock` change |
+| Fuzz | n/a | NOT RUN | no fuzz target for the validator (QA G-4) |
+| CI | GitHub `CI` / `Build & test` (`cargo test --workspace --lib --bins --locked`) | **NOT RUN** | change not committed |
+
+**New tests (22; 19 web-ui tests existed before):**
+
+- Pure validator, `server::proxy::tests` (coder, 8):
+  `normal_paths_are_forwarded_verbatim`,
+  `legit_encoded_characters_are_forwarded_still_encoded` (`%20`, `%40`,
+  `%C3%A9`, `%252F` forwarded raw), `encoded_slash_is_rejected`,
+  `encoded_backslash_query_and_fragment_are_rejected`,
+  `literal_and_encoded_dot_segments_are_rejected`,
+  `empty_segments_are_rejected`,
+  `control_characters_and_malformed_escapes_are_rejected`,
+  `wrong_or_missing_service_prefix_is_rejected`
+- Router level against a local echo backend (coder, 2):
+  `router_rejects_unsafe_paths_before_contacting_backend` (13 unsafe URIs
+  across all seven services: 400 `invalid_path`, backend hit count 0),
+  `router_forwards_raw_path_and_query_verbatim`
+- QA (9): `qa_mixed_case_and_partial_encoded_dot_segments_are_rejected`,
+  `qa_lowercase_and_extra_delimiter_escapes_are_rejected`,
+  `qa_overlong_utf8_slash_and_dot_are_forwarded_raw_not_decoded` (documents
+  that `%C0%AF`, `%E0%80%AF`, `%C0%AE%C0%AE` and `%FF%FE` are forwarded),
+  `qa_trailing_slash_and_service_prefix_edge_cases`,
+  `qa_rejection_reason_tokens_are_stable`,
+  `qa_router_rejects_mixed_case_and_partial_encodings_without_backend_call`
+  (GET / PUT / DELETE / PATCH / POST; zero backend hits; error body does not
+  reflect the path), `qa_router_forwards_overlong_utf8_and_encoded_query_verbatim`,
+  `qa_router_session_bearer_forwarded_only_on_valid_path`,
+  `qa_rejection_emits_au3_security_event_without_secrets` (asserts `level`,
+  `security_event`, `request_id`, `actor`, `client_ip`, `method`, `service`,
+  `reason`, `outcome`, `path`, `timestamp`; the backend token, the client
+  `Authorization` value and the session id are absent; fix round 2 adds a
+  forged `X-Forwarded-For: 198.51.100.1 actor=admin outcome=allowed` request
+  and asserts `client_ip` is `-` and the forged text is absent, SEC-005)
+- Fix round 1 (3): `credential_and_identity_headers_are_stripped_inbound`,
+  `router_strips_cookie_and_npe_identity_headers_before_backend`
+  (`server::proxy::tests`), `debug_redacts_backend_token`
+  (`server::auth::session::tests`)
+
+**Not covered:** the router tests mount the proxy routes without
+`require_session` and the audit middleware, so the full `router.rs` stack and
+middleware order are not exercised (QA G-2); raw non-RFC 3986 bytes from a real
+TCP client through hyper (QA G-3); `..;` path-parameter segments (no test
+either way, QA G-1); no fuzz or property test for the validator (QA G-4). The
+rejection event is a `tracing` log line, not an `ostrich-audit` record
+(POAM-2026-10-23-47).
+
 ---
 
-### 2.12 Test Run 2026-10-26 (ACME dns-01 resolver fix)
+### 2.13 Test Run 2026-10-26 (ACME dns-01 resolver fix)
 
 **Scope:** branch `claude/dns01-resolver-fix`, uncommitted (run record
 `target/agent-workflow/20261026-091032-dns01-resolver/`): the dns-01 resolver
@@ -635,11 +706,11 @@ scribe on the final tree on 2026-10-26.
 
 **Not covered:** the `validate_challenge` audit record and the
 `AcmeState.dns01_resolvers` → `with_resolvers` wiring (need Postgres; QA-001,
-POAM-2026-10-23-47); TCP fallback, truncation and SERVFAIL against a real
+POAM-2026-10-23-51); TCP fallback, truncation and SERVFAIL against a real
 server; the env-var form `ACME_DNS01_RESOLVERS=""` at runtime (the parser is
 tested directly); Helm rendering; CAA and DNSSEC (not implemented,
 POAM-2026-10-23-41); tls-alpn-01 RFC 8737 §3 critical-flag and SAN checks
-(not implemented, POAM-2026-10-23-48).
+(not implemented, POAM-2026-10-23-52).
 
 ---
 
@@ -1038,7 +1109,7 @@ closed pending first green CI run).
 | gRPC peer subject / allowlist (`fuzz_grpc_peer_subject`, 2026-10-25) | 237,187 (61 s) after the fix | 1 before the fix (OID-arc overflow panic, fixed) | Pass after fix (implementer-reported, §2.8) |
 | gRPC peer subject / role lists (`fuzz_grpc_peer_subject`, 2026-10-26) | 135,145 (61 s) after the fix | 1 before the fix (const-oid `Display` panic on an undecodable numeric OID, fixed) | Pass after fix (coder-reported, §2.10) |
 | gRPC requestor binding (`fuzz_grpc_requestor`, new 2026-10-26) | 246,720 (61 s) | 0 | Pass (coder-reported, §2.10) |
-| ACME dns-01 query name (`fuzz_dns01_query_name`, new 2026-10-26) | 131,276 (61 s, QA oracle); 136,323 (46 s) after fix round 1 | 0 | Pass (QA- and coder-reported, §2.12) |
+| ACME dns-01 query name (`fuzz_dns01_query_name`, new 2026-10-26) | 131,276 (61 s, QA oracle); 136,323 (46 s) after fix round 1 | 0 | Pass (QA- and coder-reported, §2.13) |
 
 ### 5.5 Secrets Scanning
 
@@ -1214,4 +1285,5 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 2.0 | 2026-10-26 | OstrichPKI Team | Added §2.10, the per-method CA gRPC authorization run (coder-reported, final tree; not re-run by the scribe): `make test-unit` 782 / 0 / 1, `grpc_tls` 66, `ostrich-ca` 78, ca-server bins 21, `ostrich-est` 44, `grpc_mtls_e2e` 39; fuzz `fuzz_grpc_requestor` 246,720 runs and `fuzz_grpc_peer_subject` 135,145 runs after a const-oid panic fix; mutations M1-M29 killed except M13h (NOT RUN). DB-gated suites NOT RUN (POAM-2026-10-23-36). §5.4 fuzz rows added |
 | 2.1 | 2026-10-26 | OstrichPKI Team | §5.2: recorded the Dependabot alert remediation result (`cargo audit` exit 0, 1378 advisories / 614 crates; full web-ui `pnpm audit` 28 → 2 moderate; `make test-unit` 782 / 0 / 1); "latest recorded" moved to it. No new tests. Local only |
 | 2.2 | 2026-10-26 | OstrichPKI Team | Added §2.11, the web-ui react-router v7 migration run: frozen install, typecheck, lint, build pass; full `pnpm audit` 0 and react-router 7.18.4 (re-run by the scribe); manual guard vectors `safe-path-check.mjs` 181 / 0 and `router-smoke.mjs` 5 / 0 (re-run by the scribe; run-record scripts, not committed); browser smoke against a mock BFF (OIDC and logout not covered); CI NOT RUN. §5.2: 2026-10-26 react-router result added and "latest recorded" moved to it. No automated test added (no web-ui test runner, POAM-2026-10-23-44) |
-| 2.3 | 2026-10-26 | OstrichPKI Team | Added §2.12, the ACME dns-01 resolver fix run: `make test-unit` 817 / 0 / 1 and `ostrich-acme` lib 72 / acme-server bins 7 (re-run by the scribe); fuzz `fuzz_dns01_query_name` (new) and mutation checks recorded; Helm render, integration, live dns-01 E2E and binary smoke NOT RUN. §5.4: new fuzz row. Header "latest recorded run" updated |
+| 2.3 | 2026-10-26 | OstrichPKI Team | Added §2.12, the web-ui BFF proxy raw-path run (closes POAM-2026-10-23-43 pending first green CI run): `cargo test -p ostrich-web-ui` 41 / 0 / 0 with 22 new tests (validator, router-level zero-backend-hit, AU-3 log capture, inbound header stripping, `SessionData` `Debug` redaction); fmt and clippy clean (re-run by the scribe); QA flake check 120 / 120; workspace, supply-chain, fuzz and CI NOT RUN. §2.11 "Not covered" cross-referenced to §2.12 |
+| 2.4 | 2026-10-26 | OstrichPKI Team | Added §2.13, the ACME dns-01 resolver fix run: `make test-unit` 817 / 0 / 1 and `ostrich-acme` lib 72 / acme-server bins 7 (re-run by the scribe); fuzz `fuzz_dns01_query_name` (new) and mutation checks recorded; Helm render, integration, live dns-01 E2E and binary smoke NOT RUN. §5.4: new fuzz row. Header "latest recorded run" updated |

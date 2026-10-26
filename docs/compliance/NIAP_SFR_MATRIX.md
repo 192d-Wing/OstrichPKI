@@ -387,7 +387,7 @@ domain-control validation; dns-01 is functional since the dns-01 resolver fix
 (branch `claude/dns01-resolver-fix`, uncommitted;
 [validation.rs](../../crates/ostrich-acme/src/validation.rs)). Open: no CAA
 check, wildcard and IP-identifier order handling, tls-alpn-01 RFC 8737 §3
-certificate checks (POAM-2026-10-23-41, -45, -48; see NIAP_COMPLIANCE.md
+certificate checks (POAM-2026-10-23-41, -49, -52; see NIAP_COMPLIANCE.md
 FDP_CER_EXT.1). No status change.
 
 **Certificate Fields:**
@@ -959,4 +959,4 @@ grep -r "NIAP PP-CA:" crates/ --include="*.rs"
 | 1.2 | 2026-10-25 | OstrichPKI Team | FTP_ITC.1: inter-service bullets corrected (TLS 1.3 only, both AES-GCM suites, key-exchange groups, allowlist) and a 2026-10-25 note added: the CA gRPC channel is now TLS 1.3 mTLS on the aws-lc-rs FIPS provider; before this the ✅ overstated the state. Status and overall percentage unchanged |
 | 1.3 | 2026-10-25 | OstrichPKI Team | FTP_ITC.1 evidence count updated to `grpc_mtls_e2e` 21/21 (final code after fix round 3). No status change |
 | 1.4 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization (branch `claude/grpc-per-method-authz`, uncommitted). FAU_GEN.2: gRPC actor row (verified peer). FMT_SMR.2: gRPC Issuer / Admin role table (Admin = CA Operations Staff). FTP_ITC.1: per-role lists replace the allowlist bullet; 2026-10-26 note, `grpc_mtls_e2e` 39/39. No status change |
-| 1.5 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted). FDP_CER_EXT.1: ACME issuance-gating note with open POA&M items 41, 45, 48. FPT_FLS.1: dns-01 fail-closed evidence. FMT_SMF.1: dns-01 resolvers are deployment-time settings, not a management function. No status change |
+| 1.5 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted). FDP_CER_EXT.1: ACME issuance-gating note with open POA&M items 41, 49, 52. FPT_FLS.1: dns-01 fail-closed evidence. FMT_SMF.1: dns-01 resolvers are deployment-time settings, not a management function. No status change |
