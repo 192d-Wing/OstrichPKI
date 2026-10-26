@@ -48,6 +48,13 @@ env:
   CARGO_TERM_COLOR: always
   FUZZ_TOOLCHAIN: nightly-2026-10-23
   CARGO_FUZZ_VERSION: 0.13.2
+  # No AddressSanitizer on Linux: cc-rs passes -fsanitize=address to the C
+  # build of aws-lc-fips-sys, and the FIPS module's delocate step then refuses
+  # the instrumented assembly (".data section found in module"; first PR run,
+  # 2026-10-26). libFuzzer coverage, panics, overflow checks and debug
+  # assertions still apply; the targets are safe Rust. Memory sanitizers on
+  # this crate graph would need a non-FIPS aws-lc build (follow-up).
+  FUZZ_SANITIZER: none
 
 jobs:
   fuzz:
@@ -106,7 +113,7 @@ jobs:
         run: cargo +"$FUZZ_TOOLCHAIN" fetch --locked --manifest-path fuzz/Cargo.toml
 
       - name: Build fuzz target
-        run: cargo +"$FUZZ_TOOLCHAIN" fuzz build "$T"
+        run: cargo +"$FUZZ_TOOLCHAIN" fuzz build --sanitizer "$FUZZ_SANITIZER" "$T"
 
       # Corpus (test inputs only, no keys): restore the newest saved corpus
       # for this target; a new key per run attempt so each non-PR run can save.
@@ -122,7 +129,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "fuzz/corpus/$T"
-          cargo +"$FUZZ_TOOLCHAIN" fuzz run "$T" "fuzz/corpus/$T" -- -max_total_time="$MAX_TOTAL_TIME" -timeout=10 -rss_limit_mb=2048 -print_final_stats=1 2>&1 | tee "$RUNNER_TEMP/fuzz-$T.txt"
+          cargo +"$FUZZ_TOOLCHAIN" fuzz run --sanitizer "$FUZZ_SANITIZER" "$T" "fuzz/corpus/$T" -- -max_total_time="$MAX_TOTAL_TIME" -timeout=10 -rss_limit_mb=2048 -print_final_stats=1 2>&1 | tee "$RUNNER_TEMP/fuzz-$T.txt"
 
       # PR runs never write the shared corpus cache.
       - name: Save fuzz corpus

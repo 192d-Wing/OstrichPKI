@@ -647,8 +647,11 @@ each on a linked green run.
 **Not covered:** every live assertion above; the REST `generate_crl` /
 `generate_delta_crl` handler glue; CRL and Revoke failure audits on the
 database paths; the call-time `ca_profile_not_permitted` refusal through
-`issue()`; Helm v3.22.1 on Linux; ASan with the AWS-LC FIPS module on Linux;
-the GitLab changes.
+`issue()`; Helm v3.22.1 on Linux; the GitLab changes. ASan with the AWS-LC
+FIPS module does not build on Linux (the FIPS delocate step rejects the
+instrumented C build; first PR run, 2026-10-26), so `fuzz.yml` runs with
+`--sanitizer none`: libFuzzer coverage, panics and overflow checks only, no
+memory sanitizer in CI.
 
 ---
 

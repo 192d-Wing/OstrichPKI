@@ -697,6 +697,8 @@ the new jobs or live tests has run yet; see "Known limitations" below.
     `crates/ostrich-common/src/{grpc_tls.rs,tls.rs,auth/**}`, `crates/ostrich-common/Cargo.toml`,
     the root `Cargo.toml` or `rust-toolchain.toml`.
   - The nightly toolchain is pinned to `nightly-2026-10-23`.
+  - It runs with `--sanitizer none`: AddressSanitizer breaks the AWS-LC FIPS module build on
+    Linux, so CI has libFuzzer coverage, panics and overflow checks but no memory sanitizer.
   - cargo-fuzz 0.13.2 is built from source with `--locked` on every run (`cache-bin: false`).
   - `fuzz/Cargo.lock` is enforced with `cargo fetch --locked`.
   - The corpus is kept per target in the Actions cache. Every run restores it; only scheduled and
