@@ -22,7 +22,7 @@ ostrich-acme = { path = "../crates/ostrich-acme" }
 # root `[workspace.dependencies]`): this crate is its own workspace (below), so
 # `workspace = true` would not resolve and `cargo fuzz` would fail to parse the
 # manifest.
-x509-cert = { version = "0.2.5", features = ["builder", "pem"] }
+x509-cert = { version = "0.3.0", features = ["builder", "pem"] }
 der = { version = "0.7", features = ["derive", "alloc", "oid"] }
 pem-rfc7468 = { version = "1", features = ["alloc"] }
 

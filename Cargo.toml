@@ -97,7 +97,7 @@ sqlx = { version = "0.9", features = [
 ] }
 
 # Cryptography - RustCrypto ecosystem
-x509-cert = { version = "0.2.5", features = ["builder", "pem"] }
+x509-cert = { version = "0.3.0", features = ["builder", "pem"] }
 x509-parser = "0.18"
 # Test-only self-signed certificate generation (dev-dependencies).
 rcgen = "0.14"
