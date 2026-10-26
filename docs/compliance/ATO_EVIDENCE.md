@@ -1,6 +1,6 @@
 # Authority to Operate (ATO) Evidence Collection Guide
 
-**Document Version:** 1.7
+**Document Version:** 1.8
 **Generated:** 2026-01-04 (revised 2026-10-26)
 **OstrichPKI Version:** 0.15.0
 **Framework:** NIST Risk Management Framework (RMF)
@@ -1025,18 +1025,24 @@ tag-pinned (POAM-2026-10-23-15).
   RUSTSEC-2026-0286, because `ostrich-crypto/src/pkcs11` never reads that
   attribute
 
-**SA-11 / CA-2: live DB + SoftHSM, Helm and fuzz CI paths (2026-10-26, CI path added, NOT RUN):**
+**SA-11 / CA-2: live DB + SoftHSM, Helm and fuzz CI paths (2026-10-26; first green runs on `main` 2026-10-26, commit 2eb959a):**
 
-Branch `pr/hopeful-sammet-b6708c` on `main` @ 460f62c, uncommitted and not
-pushed; run record `target/agent-workflow/20261026-082358-ci-evidence-gaps/`.
-None of these jobs has run. Local results are in
-[TEST_EVIDENCE.md §2.11](TEST_EVIDENCE.md#211-test-run-2026-10-26-ci-evidence-gaps-live-db--softhsm-helm-and-fuzz-jobs).
+Added by branch `pr/hopeful-sammet-b6708c` (run record
+`target/agent-workflow/20261026-082358-ci-evidence-gaps/`), merged as PR #189
+(commit 2eb959a). Local results are in
+[TEST_EVIDENCE.md §2.14](TEST_EVIDENCE.md#214-test-run-2026-10-26-ci-evidence-gaps-live-db--softhsm-helm-and-fuzz-jobs)
+(the link previously pointed at §2.11 by mistake). The first GitHub runs, all
+on `main` at commit `2eb959a23b0855a0b997dda1e55d9a7d49ea12b4`, are in
+[TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-first-green-ci-runs-live-db--softhsm-helm-fuzz); run record
+`target/agent-workflow/20261026-191500-ci-evidence-runs/evidence-record.md`.
+Each artifact sha256 below was computed locally on the downloaded zip and
+equals GitHub's reported digest.
 
 | Job | Pins | Artifact | Retention | Status |
 |---|---|---|---|---|
-| [integration-db.yml](../../.github/workflows/integration-db.yml) `DB + SoftHSM live tests` | `postgres:16-alpine@sha256:0cefaabd…31ab`; SoftHSM2 from the ubuntu-24.04 archive; toolchain from `rust-toolchain.toml`; actions by SHA | `live-db-softhsm-results` (test logs, migration log, environment record: commit, runner image, Postgres digest, SoftHSM, openssl and rustc versions, slot number; never the PIN or `DATABASE_URL`) | 90 days | **NOT RUN** |
-| [helm.yml](../../.github/workflows/helm.yml) `Helm chart validation` | Helm v3.22.1 linux-amd64 sha256 `896cf636…a0ea`; `postgresql-14.3.3.tgz` sha256 `9e1cd8fc…6132`; actions by SHA | `helm-chart-results` (`helm-chart-check.sh` output, 15 cases) | 90 days | **NOT RUN** |
-| [fuzz.yml](../../.github/workflows/fuzz.yml) `Fuzz <target>` | `nightly-2026-10-23`; cargo-fuzz 0.13.2 (`--locked`, built from source, `cache-bin: false`); actions by SHA | `fuzz-log-<target>`; `fuzz-crash-<target>` on failure | 30 days | **NOT RUN** |
+| [integration-db.yml](../../.github/workflows/integration-db.yml) `DB + SoftHSM live tests` | `postgres:16-alpine@sha256:0cefaabd…31ab`; SoftHSM2 from the ubuntu-24.04 archive; toolchain from `rust-toolchain.toml`; actions by SHA | `live-db-softhsm-results` (test logs, migration log, environment record: commit, runner image, Postgres digest, SoftHSM, openssl and rustc versions, slot number; never the PIN or `DATABASE_URL`) | 90 days | Executed 2026-10-26, CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764) (push to `main`), commit 2eb959a, artifact `live-db-softhsm-results` (id 12676628099, expires 2027-01-24) sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`; 9 / 9 live tests ok, SoftHSM 2.6.1, OpenSSL 3.0.13 |
+| [helm.yml](../../.github/workflows/helm.yml) `Helm chart validation` | Helm v3.22.1 linux-amd64 sha256 `896cf636…a0ea`; `postgresql-14.3.3.tgz` sha256 `9e1cd8fc…6132`; actions by SHA | `helm-chart-results` (`helm-chart-check.sh` output, 15 cases) | 90 days | Executed 2026-10-26, CI [run 40376869459](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869459) (push to `main`), commit 2eb959a, artifact `helm-chart-results` (id 12676045030, expires 2027-01-24) sha256 `33e9b1204a8e935e648796b5480a900655c0dbfae80971e94cf150dfbd1f3b2d`; 15 passed, 0 failed |
+| [fuzz.yml](../../.github/workflows/fuzz.yml) `Fuzz <target>` | `nightly-2026-10-23`; cargo-fuzz 0.13.2 (`--locked`, built from source, `cache-bin: false`); actions by SHA | `fuzz-log-<target>`; `fuzz-crash-<target>` on failure | 30 days | Executed 2026-10-26, CI [run 40377054587](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377054587) (`workflow_dispatch` on `main`, 600 s, `--sanitizer none`), commit 2eb959a, artifacts `fuzz-log-fuzz_grpc_requestor` (id 12678299025) sha256 `b6ed076be41bf7a424429597ea64f95d31657f3d9690128697f2ccf1f17414d1` and `fuzz-log-fuzz_grpc_peer_subject` (id 12678233730) sha256 `ba3a863b2ebec39482b7a24d3df3cda0afd22922547fa40f77e7fa96b726c521`, both expire 2026-11-25; 0 crashes. No memory sanitizer; no scheduled run yet |
 | `.gitlab-ci.yml` `test:integration` | `postgres:16-alpine` by the same digest | job log | GitLab default | **NOT RUN** (on GitLab) |
 
 All three GitHub workflows set `permissions: contents: read`, use
@@ -1071,6 +1077,26 @@ days, so the GitHub artifact is not the durable record):
 4. Only then change POAM-2026-10-23-31 / -36 and the PR #184 release findings
    REL-002 (Helm), REL-005 (DB/HSM) and REL-008 (fuzz). They are addressed in
    code; close each on its linked green run
+
+Procedure status for the 2026-10-26 runs: step 1 done (table above and the run
+record). Step 2: the sha256 digests are recorded; the zip files are not yet in
+the run directory and must be archived there before they expire (fuzz logs
+2026-11-25, the others 2027-01-24). Step 3: the job succeeded and the check
+step has no `continue-on-error`, so it passed; its output is not quoted in the
+run record. Step 4, done 2026-10-26:
+
+- POAM-2026-10-23-31 **closed** (all three Postgres suites green;
+  NIAP_GAP_ANALYSIS.md §11). Its hung-HSM residual (SEC-017) is now
+  POAM-2026-10-23-55
+- POAM-2026-10-23-36 **narrowed, stays Open** (residuals in NIAP_GAP_ANALYSIS.md §11)
+- REL-002 (Helm not in CI) **closed**: `helm.yml` run 40376869459. Image pulls
+  are not tested (POAM-2026-10-23-53)
+- REL-005 (no CI path for the DB / HSM tests) **closed**: `integration-db.yml`
+  run 40376869764. `ca_core_test` and `ocsp_revocation_test` (compose stack)
+  still have no CI path (POAM-2026-10-23-36)
+- REL-008 (fuzz not in CI) **closed**: `fuzz.yml` dispatch run 40377054587. CI
+  runs `--sanitizer none` (AWS-LC FIPS does not build with ASan), so there is
+  no memory sanitizer in CI
 
 **Remediation:**
 
@@ -1913,9 +1939,9 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | AC-17 / SC-8 / SC-8(1) / SC-13 / IA-3 / IA-5(2) / FTP_ITC.1 / FCS_TLSS_EXT.2 / FCS_TLSC_EXT.2 | `crates/ostrich-common/src/grpc_tls.rs`, `crates/ostrich-common/src/grpc_client.rs`, `services/ca-server/src/main.rs` (`start_grpc_listener`), `crates/ostrich-acme/src/ca_integration.rs`, `crates/ostrich-est/src/ca_integration.rs` | Code implementation (2026-10-25, uncommitted): CA gRPC TLS 1.3 mTLS on the aws-lc-rs FIPS provider, `fips()` asserted on server and client, ALPN `h2`. Tests: `grpc_mtls_e2e` 21 / 0 (re-run by the scribe on the final code; TEST_EVIDENCE.md §2.8). Revocation not checked (POAM-2026-10-23-27) |
 | AC-3 / AC-6 / FDP_ACC.1 / FDP_ACF.1 | `SubjectAllowlistLayer`, `authorize_peer`, `ensure_dedicated_client_ca` in `grpc_tls.rs` | Code implementation (2026-10-25; the single allowlist is superseded by the per-role lists in the next row): default-deny subject allowlist, clientAuth EKU extension required, dedicated client CA enforced at startup over the CA-database lineage (`walk_ca_ancestors` + `ensure_dedicated_client_ca`: issuing SPKI or subject, issued by the issuing CA, its issuer, database ancestors; refusal audited), per-call `subscriber_issuing_ca` denial. Tests: `disallowed_subject_permission_denied_and_audited`, `leaf_without_eku_is_permission_denied`; `grpc_tls` unit tests `dedicated_client_ca_refuses_chain_relatives`, `issued_by_checks_cover_name_and_key_id_independently`, `authorize_peer_refuses_subscriber_issuing_ca_leaf` (41 / 0); ca-server `grpc_client_ca_must_not_be_the_issuing_ca`, `walk_ca_ancestors_follows_parent_ca_id_and_fails_closed`, `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal`. Gaps: listener-wide (POAM-26), subject-only, siblings / grandchildren / roots outside the lineage not detected (POAM-28) |
 | AC-3 / AC-5 / AC-6 / AC-6(10) / CM-7 / IA-3 / IA-9 / FDP_ACC.1 / FDP_ACF.1 / FMT_SMR.2 | `crates/ostrich-ca/src/grpc_authz.rs` (`CA_GRPC_METHOD_RULES`, `IssuerProfilePolicy`, `bind_caller`); `crates/ostrich-common/src/grpc_tls.rs` (`GrpcClientRegistry`, `authorize_peer_at`, `validate_requestor`, `AdminTrustAnchor`); `services/ca-server/src/main.rs` | Code implementation (2026-10-26, branch `claude/grpc-per-method-authz`, uncommitted): three role lists, default-deny per-method table, namespace-bound requestor, per-namespace profile allowlists, per-call leaf validity, Admin leaf issued directly by the single anchor. Supersedes the listener-wide allowlist in the row above (POAM-2026-10-23-26 closed pending commit). Tests: see "CA gRPC per-method authorization evidence (2026-10-26)" below |
-| AU-3 / AU-10 / FAU_GEN.2 | `crates/ostrich-ca/src/grpc.rs` (`issuance_request`, `revocation_request`, `crl_actor`); `crates/ostrich-ca/src/issuance.rs` (`audit_identity`, `AuthenticatedCaller`); `crates/ostrich-ca/src/revocation.rs` (`CrlActor`, `crl_audit_event`, `crl_failure_event`); `crates/ostrich-ca/src/rest.rs` (`generate_crl`, `generate_delta_crl`) | Code implementation (2026-10-26, uncommitted): gRPC actor = verified peer DN with issuer and serial, `on_behalf_of` = validated requestor; REST CRL actor = user. Pure-builder unit tests passed; DB-backed handler and `audit_signing_e2e` assertions NOT RUN (POAM-2026-10-23-36). POAM-2026-10-23-25 closed pending commit. 2026-10-26: `tests/integration/ca_grpc_audit_e2e.rs` (gRPC Issue / Revoke / GenerateCrl actor, `authenticated_caller*`, `on_behalf_of`, `verify_signed_chain` plus tamper, Issuer → GenerateCrl denial record) has a CI path in `integration-db.yml`, **NOT RUN**; M13h kill argued by construction, not executed |
+| AU-3 / AU-10 / FAU_GEN.2 | `crates/ostrich-ca/src/grpc.rs` (`issuance_request`, `revocation_request`, `crl_actor`); `crates/ostrich-ca/src/issuance.rs` (`audit_identity`, `AuthenticatedCaller`); `crates/ostrich-ca/src/revocation.rs` (`CrlActor`, `crl_audit_event`, `crl_failure_event`); `crates/ostrich-ca/src/rest.rs` (`generate_crl`, `generate_delta_crl`) | Code implementation (2026-10-26, uncommitted): gRPC actor = verified peer DN with issuer and serial, `on_behalf_of` = validated requestor; REST CRL actor = user. Pure-builder unit tests passed; DB-backed gRPC handler and `audit_signing_e2e` assertions executed 2026-10-26 (see the end of this row); REST CRL handler glue not live-tested (POAM-2026-10-23-36). POAM-2026-10-23-25 closed pending commit. 2026-10-26: `tests/integration/ca_grpc_audit_e2e.rs` (gRPC Issue / Revoke / GenerateCrl actor, `authenticated_caller*`, `on_behalf_of`, `verify_signed_chain` plus tamper, Issuer → GenerateCrl denial record) has a CI path in `integration-db.yml`: executed 2026-10-26, CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f` (`grpc_handlers_record_verified_peer_as_audit_actor` ok; `audit_signing_e2e` ok). M13h: kill argued by construction; asserting test executed green on 2026-10-26; mutant not executed. REST CRL handler glue still has no live test (POAM-2026-10-23-36) |
 | AU-2 / AU-12 / FAU_GEN.1 | `crates/ostrich-audit/src/auth_hook.rs`; `grpc_tls.rs` `RateLimitedAudit`; ca-server `audit_grpc_listener` | Events `access_denied`, `access_denied_suppressed`, `tls_handshake_failed`, `tls_handshake_failures_suppressed`, `grpc_listener_started`, `grpc_insecure_dev_plaintext_enabled`, `grpc_listener_refused` (see "CA gRPC mTLS evidence" below). Tests in `grpc_mtls_e2e` (21 / 0), `ostrich-audit` lib (20 / 0, re-run by the scribe) and ca-server `--bins` (13 / 0, coder-reported after round 3) |
-| AU-9 / AU-9(3) / FAU_STG.4 | `crates/ostrich-db/src/repository/audit.rs` `begin_append` (`pg_advisory_xact_lock`); `crates/ostrich-audit/src/sink.rs` | Code implementation (Implemented, not Tested): serialised chain append, checked `append`, lock / statement / idle-in-transaction timeouts (5 s / 10 s / 7 s), begin / sign / commit bounds (10 s / 5 s / 10 s) with the sign on the blocking pool, fail-closed `alert="audit_write_failed"` (commit timeout: `outcome=unknown`), `details.occurred_at` on a moved timestamp, SLH-DSA audit key refused (POAM-2026-10-23-34). Offline unit tests in `ostrich-audit` lib (20 / 0, incl. `sign_timeout_fires_for_blocking_signer`). Postgres tests `chain_concurrency.rs`, `signed_chain_tamper.rs`, `sign_timeout_db.rs` **NOT RUN**; with `OSTRICH_DB_TESTS=1` they fail on an unreachable database, so a green GitLab `test:integration` log will be evidence (POAM-2026-10-23-31). 2026-10-26: CI path added in `integration-db.yml` (fails unless all three report `ok`), **NOT RUN** |
+| AU-9 / AU-9(3) / FAU_STG.4 | `crates/ostrich-db/src/repository/audit.rs` `begin_append` (`pg_advisory_xact_lock`); `crates/ostrich-audit/src/sink.rs` | Code implementation and Postgres test results (Tested on Postgres 16 in CI 2026-10-26): serialised chain append, checked `append`, lock / statement / idle-in-transaction timeouts (5 s / 10 s / 7 s), begin / sign / commit bounds (10 s / 5 s / 10 s) with the sign on the blocking pool, fail-closed `alert="audit_write_failed"` (commit timeout: `outcome=unknown`), `details.occurred_at` on a moved timestamp, SLH-DSA audit key refused (POAM-2026-10-23-34). Offline unit tests in `ostrich-audit` lib (20 / 0, incl. `sign_timeout_fires_for_blocking_signer`). Postgres tests `chain_concurrency.rs`, `signed_chain_tamper.rs`, `sign_timeout_db.rs`: executed 2026-10-26, CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`; all three ok with `OSTRICH_DB_TESTS=1` (POAM-2026-10-23-31 closed). GitLab `test:integration` NOT RUN. Residual: hung HSM call not cancellable (SEC-017, POAM-2026-10-23-55) |
 | CM-6 / CM-2 | `deploy/helm/ostrich-pki/values.yaml` (`ca.grpc.*`, `acme.caGrpc.*`, `est.caGrpc.*`), `deploy/kubernetes/{ca,acme,est}-deployment.yaml`, `docker-compose*.y*ml`, `.env.example`, `scripts/gen-dev-grpc-certs.sh` | Configuration baseline (see "CA gRPC mTLS evidence" below). `helm template` fails closed without the required secrets |
 | AC-4 (OE.NETWORK) | `deploy/helm/ostrich-pki/templates/networkpolicy.yaml`; `deploy/kubernetes/ca-networkpolicy.yaml` | Configuration: gRPC port reachable only from acme/est pods. Rendered and decoded offline; no live cluster test |
 | SC-8 / SC-18 / SI-10 | `services/web-ui/src/server/middleware/csp.rs` | Code implementation (per-request nonce CSP + hardening headers on the web console). `script-src` is nonce-strict + `'wasm-unsafe-eval'`; `default-src`/`connect-src`/`base-uri`/`form-action` are `'self'`; `frame-ancestors 'none'`; `upgrade-insecure-requests`. Unit tests (3) cover nonce generation and header contents. |
@@ -1937,9 +1963,9 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | SC-17 / SI-10 / FDP_CER_EXT.1 / FPT_FLS.1 | `crates/ostrich-acme/src/validation.rs` (`dns01_query_name`, `dns01_resolver_config`, `txt_answers_match`, `Dns01Validator`) | Code implementation and unit tests (2026-10-26, uncommitted): dns-01 resolver, query name, TXT matching, fail-closed paths; see "ACME dns-01 validation evidence" |
 | CM-6 | `services/acme-server/src/main.rs` (`--dns01-resolvers` / `ACME_DNS01_RESOLVERS`); `deploy/helm/ostrich-pki/values.yaml` (`acme.dns01Resolvers`), `templates/_helpers.tpl`, `templates/acme-deployment.yaml`, `templates/networkpolicy.yaml`; `docker-compose.yml`; `.env.example` | Configuration baseline (2026-10-26); Helm render NOT RUN |
 | SI-11 | `crates/ostrich-acme/src/rest.rs` (`challenge_error_document`), `crates/ostrich-acme/src/error.rs` (`error_type`, `client_detail`) | Code implementation and unit tests (2026-10-26): registered RFC 8555 problem types and generic detail for challenge errors |
-| SA-11 / CA-2 / AU-3 / AU-10 / AU-12 / FAU_GEN.1 / FAU_GEN.2 / ATE_FUN.1 | `.github/workflows/integration-db.yml`, artifact `live-db-softhsm-results` (90 days) | CI path added 2026-10-26, **NOT RUN**. Evidence once run: run URL, commit SHA and artifact sha256 (§2.3 procedure). POAM-2026-10-23-31, -36 |
-| SA-11 / CM-6 / FMT_SMR.2 | `.github/workflows/helm.yml`, `scripts/helm-chart-check.sh`, artifact `helm-chart-results` (90 days) | CI path added 2026-10-26, **NOT RUN**; local 15 / 15 with Helm 3.19, not the pinned 3.22.1 (TEST_EVIDENCE.md §2.11) |
-| SA-11 / SI-10 | `.github/workflows/fuzz.yml`, artifacts `fuzz-log-<target>`, `fuzz-crash-<target>` (30 days) | CI path added 2026-10-26, **NOT RUN**; local 30 s smoke 128,734 / 80,018 runs, no crash (TEST_EVIDENCE.md §5.4) |
+| SA-11 / CA-2 / AU-3 / AU-10 / AU-12 / FAU_GEN.1 / FAU_GEN.2 / ATE_FUN.1 | `.github/workflows/integration-db.yml`, artifact `live-db-softhsm-results` (90 days) | Test results: executed 2026-10-26, CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`; 9 / 9 live tests ok ([TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-first-green-ci-runs-live-db--softhsm-helm-fuzz)). POAM-2026-10-23-31 closed, -36 narrowed; REL-005 closed |
+| SA-11 / CM-6 / FMT_SMR.2 | `.github/workflows/helm.yml`, `scripts/helm-chart-check.sh`, artifact `helm-chart-results` (90 days) | Test results: executed 2026-10-26, CI [run 40376869459](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869459), commit 2eb959a, artifact `helm-chart-results` sha256 `33e9b1204a8e935e648796b5480a900655c0dbfae80971e94cf150dfbd1f3b2d`; 15 / 15 on the pinned Helm v3.22.1 ([TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-first-green-ci-runs-live-db--softhsm-helm-fuzz)). REL-002 closed. No image pull (POAM-2026-10-23-53) |
+| SA-11 / SI-10 | `.github/workflows/fuzz.yml`, artifacts `fuzz-log-<target>`, `fuzz-crash-<target>` (30 days) | Test results: executed 2026-10-26 (dispatch, 600 s), CI [run 40377054587](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377054587), commit 2eb959a, artifacts `fuzz-log-fuzz_grpc_requestor` sha256 `b6ed076be41bf7a424429597ea64f95d31657f3d9690128697f2ccf1f17414d1` (224,928,701 runs) and `fuzz-log-fuzz_grpc_peer_subject` sha256 `ba3a863b2ebec39482b7a24d3df3cda0afd22922547fa40f77e7fa96b726c521` (2,295,805 runs), 0 crashes; `--sanitizer none`, no memory sanitizer ([TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-first-green-ci-runs-live-db--softhsm-helm-fuzz)). REL-008 closed |
 
 ### CA gRPC mTLS evidence (2026-10-25)
 
@@ -1991,17 +2017,18 @@ window (timer-flushed, and flushed when the accept loop exits).
 FIPS gate line and `grpc_listener_started`; grpcurl verification cases 1-6
 from the runbook against a deployed CA, with the resulting `audit_events`
 rows; a NetworkPolicy denial from a non-RA pod; a `grpc_listener_refused`
-row from a deliberate trust-anchor misconfiguration; the GitLab
-`test:integration` job log with `chain_concurrency`, `signed_chain_tamper` and
-`sign_timeout_db` run against Postgres (`OSTRICH_DB_TESTS=1`;
-POAM-2026-10-23-31). Added 2026-10-26: runbook verification cases 7-9
+row from a deliberate trust-anchor misconfiguration. (The Postgres run of
+`chain_concurrency`, `signed_chain_tamper` and `sign_timeout_db` was captured
+on 2026-10-26 in `integration-db.yml` run 40376869764, so POAM-2026-10-23-31
+is closed; a GitLab `test:integration` log is still not recorded.) Added 2026-10-26: runbook verification cases 7-9
 (issuer denied GenerateCrl, admin denied IssueCertificate, admin read) with
 their `access_denied` rows; a signed issuance and revocation record from a
 live CA showing the peer DN as actor and `on_behalf_of`
-(POAM-2026-10-23-36). Added 2026-10-26: the first green `integration-db.yml`
-run (run URL, commit SHA, `live-db-softhsm-results` sha256), which also
-replaces the GitLab log as the first Postgres evidence for POAM-2026-10-23-31
-if it comes first.
+(POAM-2026-10-23-36). The first green `integration-db.yml` run was captured
+on 2026-10-26 (run 40376869764, commit 2eb959a, `live-db-softhsm-results`
+sha256 `12fd4a28…e91f`; TEST_EVIDENCE.md §2.15). It covers the gRPC records
+from a test-assembled CA in CI, not a deployed CA, so the live-CA rows above
+are still to capture.
 
 ### CA gRPC per-method authorization evidence (2026-10-26)
 
@@ -2023,9 +2050,9 @@ them.
 | gRPC mTLS e2e (no DB) | `cargo test -p ostrich-integration-tests --test grpc_mtls_e2e --locked` | 39 passed, 0 failed |
 | Fuzz | `cargo +nightly fuzz run fuzz_grpc_requestor -- -max_total_time=60` | 246,720 runs in 61 s, no crash |
 | Fuzz | `cargo +nightly fuzz run fuzz_grpc_peer_subject -- -max_total_time=60` | first run crashed (const-oid `Display` panic on an undecodable numeric OID in operator configuration; pre-existing); after the fix 135,145 runs in 61 s, no crash, both artifacts replay clean |
-| Mutation checks | QA and coder scripts (each mutation reverted, file hash verified) | M1-M11, M14-M17 (QA round), M12, M12r, M13, M18-M22 (round 1), M23-M29 (round 2) and the nit-pass DN-only-fallback mutation killed; **M13h (GenerateCrl handler glue) NOT RUN** (needs a database) |
+| Mutation checks | QA and coder scripts (each mutation reverted, file hash verified) | M1-M11, M14-M17 (QA round), M12, M12r, M13, M18-M22 (round 1), M23-M29 (round 2) and the nit-pass DN-only-fallback mutation killed; **M13h (GenerateCrl handler glue) mutant NOT RUN** (needs a database). 2026-10-26: kill argued by construction; asserting test `ca_grpc_audit_e2e` executed green in CI run 40376869764; mutant not executed |
 | Lint / format / release build | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo build --release -p ostrich-ca-server` | rc=0 |
-| DB-gated | `ca_core_test`, `ocsp_revocation_test`, `est_serverkeygen_e2e`, live `audit_signing_e2e` / `crl_delta_e2e` | **NOT RUN** (no Postgres or Docker on the host; POAM-2026-10-23-36). 2026-10-26: CI path in `integration-db.yml` for all but `ca_core_test` / `ocsp_revocation_test`, still **NOT RUN** (§2.3) |
+| DB-gated | `ca_core_test`, `ocsp_revocation_test`, `est_serverkeygen_e2e`, live `audit_signing_e2e` / `crl_delta_e2e` | **NOT RUN** (no Postgres or Docker on the host; POAM-2026-10-23-36). 2026-10-26: CI path in `integration-db.yml` for all but `ca_core_test` / `ocsp_revocation_test`; `est_serverkeygen_e2e`, `audit_signing_e2e` and `crl_delta_e2e` executed green in CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`. `ca_core_test` / `ocsp_revocation_test` still **NOT RUN** |
 
 Key tests by control:
 

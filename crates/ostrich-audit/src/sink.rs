@@ -423,13 +423,14 @@ impl AuditSink for DatabaseAuditSink {
         // Compute event hash with chain integrity
         event.event_hash = event.compute_hash();
 
-        // POAM: POAM-2026-10-23-31 - the record is signed while the chain lock
+        // POAM: POAM-2026-10-23-55 - the record is signed while the chain lock
         // is held, so signer latency serialises all audit writers. The wait is
         // bounded by AUDIT_SIGN_TIMEOUT (the sign runs off the async workers,
         // see sign_bounded) and, server side, by the transaction's
         // idle_in_transaction_session_timeout; a hung HSM call itself is not
-        // cancelled. The Postgres concurrency test runs opt-in only
-        // (OSTRICH_DB_TESTS=1).
+        // cancelled and keeps a blocking-pool thread busy until it returns.
+        // The Postgres tests (chain_concurrency, sign_timeout_db) run in CI in
+        // .github/workflows/integration-db.yml (OSTRICH_DB_TESTS=1).
         // AU-10: sign the event_hash so tampering is detectable even if the
         // attacker recomputes the whole hash chain (they cannot forge this).
         if let Some(signer) = &self.signer {

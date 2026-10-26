@@ -12,10 +12,11 @@
 //! Opt-in: requires `OSTRICH_DB_TESTS=1` and a reachable DATABASE_URL whose
 //! database name has a `test` token (it TRUNCATEs audit_events); skipped
 //! otherwise. See `tests/common/mod.rs`.
-// POAM: POAM-2026-10-23-31 - this Postgres test is opt-in and not yet run in
-// CI; the append path now has lock/statement/sign/commit timeouts, keeps the
-// original time in `details.occurred_at` when the chain timestamp is moved,
-// and `AuditRepository::append` is a checked append under the chain lock.
+// Runs in CI in `.github/workflows/integration-db.yml` (OSTRICH_DB_TESTS=1);
+// first green run 2026-10-26 (POAM-2026-10-23-31 closed). The append path has
+// lock/statement/sign/commit timeouts, keeps the original time in
+// `details.occurred_at` when the chain timestamp is moved, and
+// `AuditRepository::append` is a checked append under the chain lock.
 
 use ostrich_audit::{AuditEventBuilder, AuditSink, DatabaseAuditSink, EventOutcome, EventType};
 use ostrich_db::DatabasePool;
