@@ -16,6 +16,7 @@ ostrich-x509 = { path = "../crates/ostrich-x509" }
 ostrich-crypto = { path = "../crates/ostrich-crypto" }
 ostrich-common = { path = "../crates/ostrich-common" }
 ostrich-protocol = { path = "../crates/ostrich-protocol" }
+ostrich-acme = { path = "../crates/ostrich-acme" }
 
 # Dependencies for fuzzing targets. Explicit versions (kept in step with the
 # root `[workspace.dependencies]`): this crate is its own workspace (below), so
@@ -80,5 +81,11 @@ doc = false
 [[bin]]
 name = "fuzz_grpc_requestor"
 path = "fuzz_targets/fuzz_grpc_requestor.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_dns01_query_name"
+path = "fuzz_targets/fuzz_dns01_query_name.rs"
 test = false
 doc = false

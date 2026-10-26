@@ -1,7 +1,7 @@
 # FIPS Cryptographic Standards Compliance Matrix
 
-**Document Version:** 2.3
-**Date:** 2026-10-25
+**Document Version:** 2.4
+**Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Enhanced (70-75%)
 
@@ -344,6 +344,7 @@ signing/verification/key-generation run inside the AWS-LC FIPS 140-3 module via
   module (CMVP certificate pending confirmation, POAM-2026-10-23-01)
 - [crates/ostrich-audit/src/event.rs](../../crates/ostrich-audit/src/event.rs) - SHA-256 for audit chain (`compute_hash`)
 - [crates/ostrich-acme/src/jws.rs](../../crates/ostrich-acme/src/jws.rs) - SHA-256 for JWK thumbprints
+- [crates/ostrich-acme/src/validation.rs](../../crates/ostrich-acme/src/validation.rs) - SHA-256 of the ACME key authorization for the dns-01 TXT value and the tls-alpn-01 acmeIdentifier (RFC 8555 §8.4, RFC 8737 §3), also with RustCrypto `sha2`, not the AWS-LC module (pre-existing; recorded 2026-10-26). This digest is a challenge-binding value, not a FIPS 140-3 module service, and is not cited as validated-module evidence
 
 **Evidence:**
 
@@ -954,7 +955,7 @@ workspace `fips` feature.
 3. **Challenge Tokens**
    - ✅ DRBG provides unpredictable tokens
    - ✅ ACME HTTP-01 and TLS-ALPN-01 tokens in use
-   - 🟡 DNS-01: tokens are generated, but dns-01 validation is non-functional (resolver has no name servers; POAM-2026-10-23-41)
+   - 🟡 DNS-01: tokens in use; dns-01 validation is functional since 2026-10-26 (branch `claude/dns01-resolver-fix`, uncommitted; POAM-2026-10-23-41 narrowed to CAA and DNSSEC). Kept 🟡 because challenge tokens for all three types are UUID v4 values ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 734), not DRBG output (same migration as ACME nonces)
 
 4. **ECDSA k values**
    - ✅ DRBG ready for random k generation
@@ -1249,6 +1250,7 @@ allowed_pqc_algorithms = [
 | 2.1 | 2026-10-25 | OstrichPKI Team | CA gRPC behind mTLS (branch `claude/grpc-mtls`, uncommitted). FIPS 197 TLS endpoints: process-level `fips_gate` (all ten mains) and CA gRPC server/client `fips()` assertions added; "Not covered" list narrowed (tonic `tls-ring` and the gRPC ordering gap removed; plain-HTTP REST, non-gRPC client configs, process-default clients, refusal audit and KATs remain, POAM-05). New CA gRPC provider note: SECP256R1MLKEM768 first, narrowed signature algorithms, CMVP pending. Runtime FIPS-mode evidence stays 🟡 with the extended scope. `ring` inventory rewritten: gRPC no longer uses `ring`; KRA `wrap.rs`, async-nats SHA-256 (POAM-30) and the rustls `ring` feature via lettre / reqwest 0.12 / async-nats / tokio-websockets remain (POAM-08 narrowed, not closed). Header version 1.9 → 2.1 (2.0 had not updated it). **FIPS module unchanged** (AWS-LC FIPS 4.2.0); no algorithm added; no status raised. |
 | 2.2 | 2026-10-25 | OstrichPKI Team | CA gRPC mTLS final refresh after fix round 3. FIPS 205: SLH-DSA CA keys not supported by ca-server (CA key signs audit records; audit sink refuses SLH-DSA; POAM-2026-10-23-34; currently moot, no provider signs SLH-DSA). FIPS 197 TLS endpoints: `grpc_mtls_e2e` 21/21. PR 152 finding cited as PR152-PQC-010. No algorithm, module or status change |
 | 2.3 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation: no algorithm, parameter set, module or self-test changed (hickory DNS and web-ui build-chain lockfile updates only). Challenge-token item corrected: DNS-01 validation is non-functional (POAM-2026-10-23-41); no FIPS claim changed |
+| 2.4 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted): no algorithm, parameter set, module or self-test changed; the dns-01 digest code is unchanged. FIPS 180-4: recorded that the dns-01 and tls-alpn-01 key-authorization SHA-256 uses RustCrypto `sha2` (pre-existing, outside the AWS-LC module; not validated-module evidence). Challenge-token item: DNS-01 validation functional (POAM-41 narrowed); stays 🟡 because tokens are UUID v4, not DRBG output. No FIPS claim raised |
 
 ---
 
