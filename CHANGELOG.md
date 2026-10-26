@@ -516,6 +516,49 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
 - `cargo audit --deny warnings` and `cargo deny check` pass without the removed ignores.
 - **NIST 800-53**: RA-5, SI-2, CA-5 (POA&M closure), SR-3
 
+#### Dependabot alert remediation (hickory DNS resolver, web-ui SPA build chain)
+
+##### workspace (Cargo.lock)
+
+- **hickory-resolver**, **hickory-net** and **hickory-proto** 0.26.1 -> 0.26.2 (runtime; ostrich-acme /
+  acme-server dns-01 TXT lookups):
+  - GHSA-6w6g-hm98-mhgm (high)
+  - GHSA-5j98-2g5x-46v6 (high)
+  - GHSA-6f2x-v7q7-m7m5 (medium)
+- These advisories have no RustSec alias, so `cargo audit` did not report them. Dependabot found them.
+- All three crates move together. hickory-resolver 0.26.2 does not compile against hickory-net/-proto
+  0.26.1, although its version requirement allows it. No other crate in `Cargo.lock` changed.
+- **NIST 800-53**: SI-2, RA-5, SR-3
+
+##### ostrich-web-ui (web/package.json, web/pnpm-lock.yaml)
+
+- **vite** 8.1.3 -> 8.1.6 (build tool; the dev-server advisories affect developer hosts only):
+  GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv, GHSA-r825-w8mm-5pxw (launch-editor), GHSA-rq7h-c2jc-7f22,
+  GHSA-9jrq-w75r-8gcw. Pulls rolldown 1.1.4 -> 1.1.5 and its transitive updates.
+- **source-map-js** 1.2.1 -> 1.2.2 (build): GHSA-68fv-2mgg-jv7q
+- **postcss** 8.5.16 -> 8.5.31 (build): GHSA-r28c-9q8g-f849, GHSA-fxqj-rqcc-2cmp
+- **brace-expansion** 1.1.15 -> 1.1.21 and 5.0.6 -> 5.0.12 (dev tooling): GHSA-3jxr-9vmj-r5cp,
+  GHSA-q2hr-2g5m-vwhr
+- **js-yaml** 4.2.0 -> 4.3.2 (dev tooling): GHSA-52cp-r559-cp3m, GHSA-5p4m-2wfm-xmqj,
+  GHSA-2883-xcg3-v3hh
+- **react-router-dom** / **react-router** 6.30.4 -> 6.30.6 (runtime): GHSA-jjmj-jmhj-qwj2 (open
+  redirect leading to XSS)
+- `package.json` version floors raised: `vite` ^8.1.2 -> ^8.1.6, `react-router-dom` ^6.26.0 -> ^6.30.6.
+- The lockfile is still installed with `pnpm install --frozen-lockfile` (pnpm 9.15.9). `pnpm audit
+  --prod --audit-level=high` passes.
+- **NIST 800-53**: SI-2, RA-5, CM-2, SR-3
+
+##### Known limitations (POA&M)
+
+- react-router v6 still has GHSA-wrjc-x8rr-h8h6 and GHSA-337j-9hxr-rhxg (medium). They are fixed only
+  in v7 and need a react-router-dom v6 -> react-router v7 migration (POAM-2026-10-23-39).
+- The npe-portal SPA has no committed lockfile. Its image build runs `npm install` from
+  `package.json`, and Dependabot and the CI audit gate do not cover it (POAM-2026-10-23-40).
+- The ACME dns-01 resolver is configured with no name servers. This predates the change and fails
+  closed (POAM-2026-10-23-41).
+- Scan coverage has gaps. The cargo gate is RustSec-only, so GitHub-only advisories do not fail CI,
+  and npm dev and moderate advisories are not gated (POAM-2026-10-23-42).
+
 ### Added
 
 #### New authentication audit events

@@ -1,6 +1,6 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 2.5
+**Document Version:** 2.6
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Excellent (85%)
@@ -977,12 +977,12 @@ of identifiers authorized in the order.
 
 #### §7.5: Identifier Validation Challenges
 
-**Status:** 🟢 **Good** (infrastructure complete)
+**Status:** 🟡 **Partial** (HTTP-01 and TLS-ALPN-01 functional; DNS-01 implemented but non-functional, POAM-2026-10-23-41; corrected 2026-10-26, was "🟢 Good (infrastructure complete)")
 
 **Challenges:**
 
 - ✅ §8.3 - HTTP-01 Challenge (validator implemented)
-- ✅ §8.4 - DNS-01 Challenge (infrastructure ready, DNS resolver TODO)
+- 🟡 §8.4 - DNS-01 Challenge (implemented, non-functional (POAM-2026-10-23-41): the resolver has no name servers, so validation always fails closed)
 - ✅ §8.5 - TLS-ALPN-01 Challenge (RFC 8737; self-signed challenge cert accepted, acmeIdentifier extension verified)
 
 **Implementation:**
@@ -1008,9 +1008,26 @@ of identifiers authorized in the order.
   ignored the flag, so an internal identifier that validated over HTTP-01 was
   refused over TLS-ALPN-01 ("resolves to non-public address … SSRF prevention").
 - ✅ DNS-01: Compute `_acme-challenge.<domain>` TXT record value
-- ⚠️ DNS-01: DNS resolver implementation pending
+- ⚠️ DNS-01: resolver implemented, non-functional (POAM-2026-10-23-41). The
+  resolver is built with `ResolverConfig::default()`
+  ([validation.rs](../../crates/ostrich-acme/src/validation.rs) lines 349-351),
+  which has no name servers in hickory-resolver 0.26.x. Every TXT lookup
+  fails and the challenge becomes invalid (fails closed). Pre-existing since
+  the hickory 0.26 migration (f1d0e0b). dns-01 is still offered by default
+  (`crates/ostrich-common/src/config.rs` line 416), and wildcard identifiers
+  can only be validated through dns-01
+- ⚠️ **Gap: no CAA check (RFC 8659 §3).** Issuance does not check CAA
+  records. `urn:ietf:params:acme:error:caa` is defined
+  (`crates/ostrich-acme/src/error.rs` line 134) but never raised, and the
+  directory `caaIdentities` is always absent (`rest.rs` line 480). When
+  implemented, a DNS error during the CAA check must deny issuance
+  (POAM-2026-10-23-41)
+- ⚠️ **Gap: no DNSSEC validation (RFC 8555 §11.2).** hickory is built
+  without its DNSSEC feature; the validator doc comment "Use DNSSEC if
+  available" (`validation.rs` line 274) is not implemented
+  (POAM-2026-10-23-41)
 
-**Remediation:** Phase 16 - Complete DNS-01 validator
+**Remediation:** Phase 16 - Complete DNS-01 validator: build the resolver from the system configuration or explicit name servers and add an empty-server-list test; add the CAA check; decide on DNSSEC (POAM-2026-10-23-41)
 
 ---
 
@@ -1557,6 +1574,19 @@ Lockfile updates that fix advisories in protocol implementations (see NIST SI-2)
 
 ---
 
+### Dependency protocol conformance fixes (2026-10-26)
+
+Lockfile update (branch `claude/dependabot-remediation`, uncommitted; see NIST SI-2):
+
+- RFC 1035 / RFC 8555 §8.4 (DNS, ACME dns-01): hickory-resolver, hickory-net and hickory-proto 0.26.1 → 0.26.2. hickory is used only by the dns-01 TXT lookup in [validation.rs](../../crates/ostrich-acme/src/validation.rs) (default features `system-config` and `tokio`; no DNSSEC or `recursor` feature). Reachability in this build:
+  - GHSA-6w6g-hm98-mhgm (unbounded truncation retry): reachable through the applicant-controlled zone. The retry is now bounded, the lookup returns an error, and the challenge fails closed
+  - GHSA-5j98-2g5x-46v6 (DNSSEC failures hidden): not reachable; needs the DNSSEC feature, which is not enabled
+  - GHSA-6f2x-v7q7-m7m5 (irrelevant CNAME records followed): not reachable; the fix is in the `recursor` module, which is not enabled. Stub-resolver CNAME handling is unchanged, so `_acme-challenge` CNAME delegation behaves as before
+- Other changes in the bump are neutral or improve conformance: answers with the wrong DNS class are rejected, compressed names are decoded without recursion, and the TXT parsing API used by the validator is unchanged
+- This bump does not make dns-01 work: the resolver has no name servers (POAM-2026-10-23-41, pre-existing)
+
+---
+
 ## Post-Quantum Cryptography (Draft RFCs)
 
 ### RFC 9881 (formerly draft-ietf-lamps-dilithium-certificates): ML-DSA in X.509
@@ -1660,7 +1690,8 @@ splicing it into an OpenSSL SPKI for bidirectional interop
    - Corrected 2026-10-23: this item previously said "Weak TLS configuration possible", which no longer describes the REST listeners
 
 2. **RFC 8555 - ACME Challenge Validators** (🟡 Partial)
-   - Impact: DNS-01 and TLS-ALPN-01 not fully functional
+   - Impact: DNS-01 is not functional (resolver has no name servers; fails closed; POAM-2026-10-23-41); no CAA check (RFC 8659) and no DNSSEC validation (RFC 8555 §11.2)
+   - Corrected 2026-10-26: this item previously also listed TLS-ALPN-01, which was fixed by commits 5b1a034 (self-signed challenge certificate accepted, RFC 8737) and 5e8ab3f (critical acmeIdentifier extension accepted)
    - Phase: 16
    - Effort: 1 week
 
@@ -1803,6 +1834,7 @@ consumed by the TAMP messages above.
 | 2.3 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix: added "RFC 8017 / RFC 4055 — RSASSA-PSS" note. PKCS#11 RSA-PSS now follows RFC 8017 §8.1/§9.1 (mHash = Hash(M) computed on the host), verified against an independent software verifier locally; Linux CI pending. Recorded the pre-existing RFC 4055 deviation: the X.509 layer does not encode or parse RSASSA-PSS-params (POAM-2026-10-23-20). No RFC section status changed. |
 | 2.4 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): "RFC 8017 / RFC 4055 — RSASSA-PSS" status updated with GitHub Actions run 40063317654 (SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0); scoped to SoftHSM and the PKCS#11 provider. RFC 4055 deviation (POAM-20) unchanged. No RFC section status changed. |
 | 2.5 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization (branch `claude/grpc-per-method-authz`, uncommitted). RFC 5280: admin list requires one distinct anchor with SKI (refusal, not warning); Admin leaf issued directly by the anchor (§4.1.2.4, §4.2.1.1 / §4.2.1.2, no DN-only fallback); per-call leaf validity (§4.1.2.5, leaf only); peer serial format (§4.1.2.2). RFC 4514: three role lists, case-variant overlap refusal, undecodable numeric OIDs refused (const-oid fuzz finding). New "gRPC over HTTP/2" subsection: exact path matching, status mapping, deviations RFC-003 (unknown method → PERMISSION_DENIED) and RFC-004 (malformed requestor → PERMISSION_DENIED). RFC 7030: EST client-identifier rule and HTTP 403 JSON body (RFC-104). ACME RFC 8555 §7.6 revocation still does not reach the CA. Counts: `grpc_mtls_e2e` 39, `grpc_tls` 66 (coder-reported). Version numbers 2.3 / 2.4 appear twice in this table (2026-10-23 and 2026-10-25); this entry continues from 2.4. No status change |
+| 2.6 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation (branch `claude/dependabot-remediation`, uncommitted). Added "Dependency protocol conformance fixes (2026-10-26)": hickory 0.26.2 with per-advisory reachability (GHSA-6w6g reachable, now fails closed; GHSA-5j98 and GHSA-6f2x feature-gated, not reachable). RFC 8555 §7.5 / §8.4: stale "DNS resolver TODO/pending" replaced by "implemented, non-functional" (POAM-2026-10-23-41); §7.5 status corrected 🟢 → 🟡 (subsection only). Added CAA (RFC 8659 §3) and DNSSEC (RFC 8555 §11.2) as gaps. Priority 2 item 2: stale TLS-ALPN-01 statement removed (fixed by 5b1a034 / 5e8ab3f). RFC 8555 85% and the summary table not recalculated (no change claimed) |
 
 ---
 
