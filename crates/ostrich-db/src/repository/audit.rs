@@ -42,9 +42,9 @@ use uuid::Uuid;
 /// Fixed key of the PostgreSQL advisory lock that serialises audit-chain
 /// appends across all services and instances sharing the database
 /// ("OSTRICHA" as ASCII, big-endian).
-// POAM: POAM-2026-10-23-31 - append serialisation is verified against
-// Postgres only by the opt-in test `crates/ostrich-audit/tests/chain_concurrency.rs`
-// (OSTRICH_DB_TESTS=1), which CI does not run yet.
+// Append serialisation is verified against Postgres by
+// `crates/ostrich-audit/tests/chain_concurrency.rs` (OSTRICH_DB_TESTS=1), run in
+// CI by `.github/workflows/integration-db.yml` (POAM-2026-10-23-31 closed).
 pub const AUDIT_CHAIN_LOCK_KEY: i64 = 0x4F53_5452_4943_4841;
 
 /// `lock_timeout` for an audit-chain append transaction: how long a writer

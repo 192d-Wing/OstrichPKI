@@ -342,7 +342,7 @@ does not do:
   configuration refusals that happen before the database connects (role
   lists, legacy variable, admin with several anchors, profile lists) are
   written to the service log only (POAM-2026-10-23-05).
-- **Hung HSM during audit signing** (POAM-2026-10-23-31). Each timed-out
+- **Hung HSM during audit signing** (POAM-2026-10-23-55; split from POAM-2026-10-23-31 on 2026-10-26). Each timed-out
   audit signature leaves one tokio blocking-pool thread stuck until the HSM
   call returns. The tokio runtime waits for these threads when it shuts down,
   so ca-server shutdown can stall until Kubernetes kills the pod after

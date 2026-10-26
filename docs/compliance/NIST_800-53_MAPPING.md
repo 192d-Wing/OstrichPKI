@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 3.9
+**Document Version:** 3.10
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -173,7 +173,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   `identity_attached_only_on_valid_path`,
   `qa_through_require_session_layer_rejects_unsafe_and_forwards_safe`
   (`cargo test -p ostrich-npe-portal` 42 / 0, local;
-  [TEST_EVIDENCE.md §2.16](TEST_EVIDENCE.md#216-test-run-2026-10-26-npe-portal-bff-proxy-raw-path))
+  [TEST_EVIDENCE.md §2.17](TEST_EVIDENCE.md#217-test-run-2026-10-26-npe-portal-bff-proxy-raw-path))
 - Intentionally public endpoints are explicitly allowlisted with RFC / NIAP
   justifications at `crates/ostrich-ocsp/src/rest.rs::create_router` (RFC 6960,
   NIAP FDP_IFC.1) and `crates/ostrich-acme/src/rest.rs::create_router`
@@ -445,8 +445,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - 🟡 AC-6(9) (log use of privileged functions): RevokeCertificate and
   GenerateCrl are audited with the verified admin peer as actor;
   CheckRevocationStatus is an unaudited admin read (only its denials are
-  audited). Handler-level live evidence is pending (POAM-2026-10-23-36;
-  CI path added 2026-10-26, NOT RUN)
+  audited). gRPC handler-level live evidence for RevokeCertificate and
+  GenerateCrl: executed 2026-10-26, CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`
+  (`ca_grpc_audit_e2e`). The REST CRL handlers have no live test
+  (POAM-2026-10-23-36)
 - 🔴 No user privilege levels
 
 **Gaps:**
@@ -788,8 +790,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   `revocation_request_carries_verified_caller`, `crl_actor_is_verified_peer`,
   `audit_identity_with_caller_uses_peer_as_actor`,
   `delta_crl_audit_event_actor` (mutations M11-M13, M12r, M26 killed).
-  Residuals: handler glue (M13h) and the live `audit_signing_e2e` assertions
-  NOT RUN (POAM-2026-10-23-36); `on_behalf_of` is a namespace-bound claim,
+  Residuals: the gRPC handler glue and the live `audit_signing_e2e`
+  assertions executed 2026-10-26 (CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`); M13h: kill argued by construction,
+  asserting test executed green on 2026-10-26, mutant not executed; REST CRL
+  handler glue not live-tested (POAM-2026-10-23-36); `on_behalf_of` is a namespace-bound claim,
   not a verified account (POAM-2026-10-23-35)
 - 🟡 Web UI `proxy_path_rejected` event (2026-10-26, merged in PR #191,
   merge commit 635c5c3): who = `actor`
@@ -806,15 +810,16 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   value is only as trustworthy as the fronting reverse proxy. The session token
   and backend bearer token are not logged, which the log-capture test checks
   with a sentinel token. Content is in the log line only (POAM-2026-10-23-47)
-- 🟡 DB-backed test of the gRPC handler glue (2026-10-26, CI path added,
-  **NOT RUN**):
+- ✅ DB-backed test of the gRPC handler glue (executed 2026-10-26, CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`;
+  [TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-first-green-ci-runs-live-db--softhsm-helm-fuzz)):
   [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs)
   asserts actor, `authenticated_caller*` and `on_behalf_of` on the stored
-  Issue, Revoke and GenerateCrl records written by the real `CaGrpcService`;
-  it runs in
-  [integration-db.yml](../../.github/workflows/integration-db.yml), which has
-  not run. M13h: kill argued by construction, not executed. The REST CRL
-  handler glue still has no live test (POAM-2026-10-23-36)
+  Issue, Revoke and GenerateCrl records written by the real `CaGrpcService`
+  over mTLS (Postgres 16, SoftHSM 2.6.1), in
+  [integration-db.yml](../../.github/workflows/integration-db.yml). M13h: kill
+  argued by construction; asserting test executed green on 2026-10-26; mutant
+  not executed. The REST CRL handler glue still has no live test
+  (POAM-2026-10-23-36)
 - 🟡 NPE portal `proxy_path_rejected` records (2026-10-26, branch
   `claude/npe-portal-proxy-raw-path`, uncommitted). The fields are:
   - who: `actor`, the session's certificate CN, Debug-escaped in the warn
@@ -960,7 +965,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   `apply_chain_timestamp_preserves_original_time`,
   `memory_sink_records_occurred_at_when_bumped`). `occurred_at` is reserved
   for the sink: a value set by the caller is moved to
-  `details.caller_occurred_at` with a warning (POAM-2026-10-23-31)
+  `details.caller_occurred_at` with a warning (POAM-2026-10-23-31, closed
+  2026-10-26)
 
 **Deployment Requirement:**
 
@@ -1025,21 +1031,25 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   Unit tests (offline, passed 2026-10-25): `sign_timeout_fires_for_blocking_signer`
   (multi- and current-thread runtimes), `bounded_sign_succeeds_within_timeout`
   and `idle_in_transaction_timeout_exceeds_sign_timeout`. Status:
-  **Implemented, not Tested** on Postgres. The opt-in tests
+  **Tested on Postgres** (2026-10-26). The opt-in tests
   `crates/ostrich-audit/tests/chain_concurrency.rs`, `signed_chain_tamper.rs`
-  and `sign_timeout_db.rs` have **not been executed** against a database.
-  Without `OSTRICH_DB_TESTS=1` they skip and are reported as passed, so those
-  results are not evidence. With the opt-in they now fail if the database is
-  unreachable, so a green GitLab `test:integration` job (which sets it) will
-  be evidence once it has run (POAM-2026-10-23-31). Since 2026-10-26
-  `integration-db.yml` also runs them and fails unless all three report
-  `ok` (CI path added, NOT RUN). The in-memory
+  and `sign_timeout_db.rs` executed with `OSTRICH_DB_TESTS=1` against
+  `postgres:16-alpine` in
+  [integration-db.yml](../../.github/workflows/integration-db.yml):
+  `concurrent_appends_do_not_fork_the_chain`,
+  `signature_catches_tamper_that_hash_chain_misses` and
+  `hung_signer_times_out_and_releases_the_chain_lock` ok, no skip; CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`
+  ([TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-first-green-ci-runs-live-db--softhsm-helm-fuzz); POAM-2026-10-23-31 closed). Without
+  `OSTRICH_DB_TESTS=1` they skip and are reported as passed, so local
+  skip-path results are not evidence. The GitLab `test:integration` job has
+  not run. The hung-signer test blocks a software signer, not a real HSM.
+  The in-memory
   `MemoryAuditSink` concurrency test is not evidence for the database path.
   Residuals: signing still happens under the global lock, so signer latency
   serialises every audit writer of every service. A hung HSM call cannot be
   cancelled, so each timeout leaves one blocking-pool thread busy until the
   HSM returns. That can stall shutdown until the pod is killed, and a long
-  outage can fill the blocking pool (SEC-017)
+  outage can fill the blocking pool (SEC-017, POAM-2026-10-23-55)
 - 🔴 No explicit deletion prevention (needs database permissions)
 - 🔴 No access control on audit queries
 
@@ -1047,8 +1057,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 - Database permissions not configured in code
 - Any database user can query audit_events table
-- Concurrent-append correctness on Postgres not yet demonstrated
-  (POAM-2026-10-23-31)
+- Hung HSM calls during audit signing cannot be cancelled
+  (POAM-2026-10-23-55). Concurrent-append correctness on Postgres is
+  demonstrated as of 2026-10-26 (POAM-2026-10-23-31 closed)
 
 **Remediation:** Phase 15 - Add database migration to REVOKE DELETE/UPDATE on audit_events table
 
@@ -1081,7 +1092,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - ✅ Each audit event includes hash of previous event
 - ✅ Chain integrity verifiable end-to-end (`verify_chain()` / `verify_integrity()`)
 - ✅ SHA-256 hashing (FIPS 180-4)
-- ✅ Live integrity test against Postgres: [crates/ostrich-audit/tests/signed_chain_tamper.rs](../../crates/ostrich-audit/tests/signed_chain_tamper.rs) (earlier result; since 2026-10-25 the test is opt-in, `OSTRICH_DB_TESTS=1`, and no run of the current version is recorded)
+- ✅ Live integrity test against Postgres: [crates/ostrich-audit/tests/signed_chain_tamper.rs](../../crates/ostrich-audit/tests/signed_chain_tamper.rs) (`OSTRICH_DB_TESTS=1`). Current version executed 2026-10-26, CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f` ([TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-first-green-ci-runs-live-db--softhsm-helm-fuzz))
 
 **Integrity fixes (chain now verifiable for DB-backed sinks):**
 
@@ -1090,10 +1101,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - **Concurrent appends (2026-10-25, branch `claude/grpc-mtls`, uncommitted;
   NIST-002):** read-link-hash-sign-insert now runs in one transaction under
   `pg_advisory_xact_lock(AUDIT_CHAIN_LOCK_KEY)` (`AuditRepository::begin_append`),
-  shared by every service that writes the chain. **Implemented; Tested is
-  pending** a Postgres run of `crates/ostrich-audit/tests/chain_concurrency.rs`
-  and `sign_timeout_db.rs` (not executed: they skip without
-  `OSTRICH_DB_TESTS=1`; POAM-2026-10-23-31). The lock is held across the audit
+  shared by every service that writes the chain. **Implemented and Tested**
+  on Postgres: `crates/ostrich-audit/tests/chain_concurrency.rs` and
+  `sign_timeout_db.rs` executed 2026-10-26 with `OSTRICH_DB_TESTS=1`
+  (CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`; POAM-2026-10-23-31 closed). The lock is held across the audit
   signature. The wait is bounded by the 5 s sign timeout (blocking pool) and by
   the 7 s `idle_in_transaction_session_timeout` backstop, with lock and
   statement timeouts on the transaction. See AU-9
@@ -1105,7 +1116,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **Evidence Required for ATO:**
 
 - Hash chain algorithm specification ✅ (documented above)
-- Integrity verification test results ✅ (signed_chain_tamper.rs passes against live DB)
+- Integrity verification test results ✅ (signed_chain_tamper.rs passes against live DB: executed 2026-10-26, CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`)
 
 ---
 
@@ -1133,10 +1144,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 - ✅ All CA-signed objects provide proof of origin
 - ✅ Audit events link actions to actors
-- ✅ **Live tamper-detection proof (mechanism)**: [crates/ostrich-audit/tests/signed_chain_tamper.rs](../../crates/ostrich-audit/tests/signed_chain_tamper.rs) writes signed records to Postgres, forges the last record's content and recomputes its `event_hash` (which fools the hash-only `verify_chain`), and shows `verify_signed_chain` still detects it because the stale signature no longer verifies over the forged hash.
-- ✅ **Live end-to-end proof (production wiring)**: [crates/ostrich-ca/src/audit_signing_e2e.rs](../../crates/ostrich-ca/src/audit_signing_e2e.rs) builds a `CertificateAuthority` backed by a SoftHSM (PKCS#11) ECDSA key, performs a real revocation, and asserts the resulting audit record is signed (`signature` non-null, `signing_key_id` = CA key) and that `verify_signed_chain` accepts it against the CA public key — and rejects it after a signature byte is corrupted.
+- ✅ **Live tamper-detection proof (mechanism)**: [crates/ostrich-audit/tests/signed_chain_tamper.rs](../../crates/ostrich-audit/tests/signed_chain_tamper.rs) writes signed records to Postgres, forges the last record's content and recomputes its `event_hash` (which fools the hash-only `verify_chain`), and shows `verify_signed_chain` still detects it because the stale signature no longer verifies over the forged hash. Executed 2026-10-26 (`signature_catches_tamper_that_hash_chain_misses` ok), CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f` ([TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-first-green-ci-runs-live-db--softhsm-helm-fuzz)). No run of the current test was recorded before this one.
+- ✅ **Live end-to-end proof (production wiring)**: [crates/ostrich-ca/src/audit_signing_e2e.rs](../../crates/ostrich-ca/src/audit_signing_e2e.rs) builds a `CertificateAuthority` backed by a SoftHSM (PKCS#11) ECDSA key, performs a real revocation, and asserts the resulting audit record is signed (`signature` non-null, `signing_key_id` = CA key) and that `verify_signed_chain` accepts it against the CA public key — and rejects it after a signature byte is corrupted. Executed 2026-10-26 (`ca_emits_signed_audit_records_verifiable_with_ca_public_key` ok; SoftHSM 2.6.1, Postgres 16), CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`. No run of the current test was recorded before this one. SoftHSM is a test double (POAM-2026-10-23-21).
 - 🟡 **RSA PKCS#11 CA keys (added 2026-10-23, NIST-005):** audit records are signed with `ca_key.algorithm` ([crates/ostrich-ca/src/ca.rs](../../crates/ostrich-ca/src/ca.rs), `CertificateAuthority::new`). For an RSA key generated through `Pkcs11Provider` that algorithm is `RsaPssSha256`. Before the 2026-10-23 fix, PKCS#11 RSA-PSS `C_Sign` failed (`CKR_GENERAL_ERROR`), so **audit-record signing with an RSA PKCS#11 CA key did not work**. X.509 certificate, CRL and OCSP signing with RSA CA keys uses PKCS#1 v1.5 (`recommended_signature_algorithm`, [crates/ostrich-x509/src/signing.rs](../../crates/ostrich-x509/src/signing.rs)) and was not affected. The provider fix is verified on SoftHSM 2.6.1 (Linux CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654): 28 passed / 0 failed / 1 ignored, exit 0) and SoftHSM 2.7.0 (local, 28/0/1); POAM-2026-10-23-17 closed 2026-10-23. SoftHSM is a test double; the production HSM is not yet validated (POAM-2026-10-23-21). `audit_signing_e2e` covers an EC P-256 CA key only; there is no RSA variant yet, so this bullet stays 🟡
-- 🟡 **CA gRPC actor in signed records (2026-10-26, branch
+- ✅ **CA gRPC actor in signed records (2026-10-26, branch
   `claude/grpc-per-method-authz`, uncommitted):** the signed issuance,
   revocation and CRL records for gRPC calls now name the verified mTLS peer
   as actor, with its certificate issuer and serial, instead of the
@@ -1148,9 +1159,11 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   2026-10-26: `audit_signing_e2e` and the new
   [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs)
   (`verify_signed_chain` over gRPC-written records against the CA SPKI, then
-  false after the `crl_generation` signature is corrupted) have a CI path in
-  [integration-db.yml](../../.github/workflows/integration-db.yml),
-  **NOT RUN**
+  false after the `crl_generation` signature is corrupted) run in
+  [integration-db.yml](../../.github/workflows/integration-db.yml); both
+  executed green on 2026-10-26, CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`
+  ([TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-first-green-ci-runs-live-db--softhsm-helm-fuzz)). Marker 🟡 → ✅ on this evidence; `on_behalf_of` remains a
+  claim (POAM-2026-10-23-35)
 - 🔴 No CSR→Certificate linkage (missing request_id)
 
 **Gaps / POA&M:**
@@ -1210,7 +1223,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   web-ui does not emit `ostrich-audit` records, so AU-12 generation into
   `ostrich-audit` and the AU-9 / AU-10 protections are not met for the web-ui
   (POAM-2026-10-23-47)
-- 🟡 Stored denial record (2026-10-26, CI path added, **NOT RUN**):
+- 🟡 Stored denial record (executed 2026-10-26, CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`; stays 🟡
+  because `start_grpc_listener`'s own assembly is not exercised):
   [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs)
   asserts one stored `access_denied` Failure record in Postgres when an
   Issuer calls GenerateCrl, through an `AuthAuditAdapter` stack that the test
@@ -3077,7 +3091,7 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
   control bytes. QA ran it for 259,220 runs in 60 s with no crash, and a
   mutation that disabled segment checking was caught (npe-portal 5 failed,
   ostrich-common 10 failed). Details:
-  [TEST_EVIDENCE.md §2.16](TEST_EVIDENCE.md#216-test-run-2026-10-26-npe-portal-bff-proxy-raw-path).
+  [TEST_EVIDENCE.md §2.17](TEST_EVIDENCE.md#217-test-run-2026-10-26-npe-portal-bff-proxy-raw-path).
   Accepted residuals are the same as for web-ui (query verbatim, `%252F`
   raw, bytes >= 0x80 passed through, `..;` passed through, trailing slash
   400). In addition, `/api/ca/` and `/api/est/` with an empty remainder get an
@@ -3591,7 +3605,8 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 3.6 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path CI evidence ([PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191), fix commit e56a09e, merge commit 635c5c3, merged 2026-10-26T16:45:42Z). GitHub Actions [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224) `Build & test` green (`ostrich_web_ui` 41 passed / 0 failed / 0 ignored). AC-3, AU-2, AU-3 and SI-10 web-ui proxy items: "branch, uncommitted" replaced by the merge reference; POAM-2026-10-23-43 closed pending first green CI run → Closed. AU-2 / AU-3 `proxy_path_rejected` stays 🟡 (log line only, POAM-47). POAM-45 to -48 unchanged. **No control status or percentage changed** |
 | 3.7 | 2026-10-26 | OstrichPKI Team | web-ui legacy `/next` open redirect, CWE-601 (branch `pr/blissful-chandrasekhar-6051b3`, later merged as PR #193, based on `main` @ c9a159c (v0.17.0; includes PR #191); run record `target/agent-workflow/20261026-113122-next-open-redirect/`). SI-10: new evidence item for `legacy_next_target` / `legacy_next_redirect` / `legacy_next_router` (raw `OriginalUri` path; fail secure to `/` for empty, `//`, `\`, `%2F` / `%5C`, dot and non-visible-ASCII remainders; query dropped; `legacy_redirect_rejected` warn event); the proxy item's "not yet fixed" sentence and the SI-10 gap no longer describe POAM-2026-10-23-45 as open (closed pending first green CI run). No NIAP SFR mapped (none covers HTTP redirect targets); cross-reference table unchanged. Local evidence only (`cargo test -p ostrich-web-ui` 61 / 0, re-run by the scribe). **No control status or percentage changed** (SI-10 stays 🟢 Good (85%); summary table not recalculated) |
 | 3.8 | 2026-10-26 | OstrichPKI Team | web-ui legacy `/next` open redirect CI evidence ([PR #193](https://github.com/192d-Wing/OstrichPKI/pull/193), fix commit 3ece58c, merge commit 3804b4f, merged 2026-10-26T19:06:44Z). GitHub Actions [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363) `Build & test` green (`ostrich_web_ui` 61 passed / 0 failed / 0 ignored, all 20 `test_legacy_next_*` `ok`). SI-10 `/next` evidence item and SI-10 gap: "branch, uncommitted" replaced by the merge reference; POAM-2026-10-23-45 closed pending first green CI run → Closed. The `legacy_redirect_rejected` event stays a log line (POAM-47). **No control status or percentage changed** (SI-10 stays 🟢 Good (85%)) |
-| 3.9 | 2026-10-26 | OstrichPKI Team | npe-portal BFF proxy raw path and shared validator (branch `claude/npe-portal-proxy-raw-path`, uncommitted, based on `main` @ 2eb959a; run record `target/agent-workflow/20261026-113138-npe-proxy-raw-path/`). SI-10: new evidence item for `ostrich_common::util::proxy_path` (canonical) and npe-portal `checked_backend_path` / `invalid_path_response`, with the fuzz target `fuzz_proxy_path` (259,220 runs, no crash) and a mutation check as SA-11 evidence; the POAM-46 gap was removed (POAM-45 remains) and a two-copies gap added (web-ui switch is a follow-up). AC-3: new npe-portal bullet (identity forwarded only on a validated path), the POAM-46 gap sentence removed, code references added. AC-4: application-layer supporting bullet for both BFF proxies (status and scope unchanged). AU-2 / AU-3: npe-portal `proxy_path_rejected` warn event and `ostrich_audit` Authorization / Failure record (no session id; `client_ip` relies on the load balancer overwriting XFF / X-Real-IP), recorded as 🟡 because the records are not in `DatabaseAuditSink`. AU-12: npe-portal denial-record bullet (🟡). NPE portal section: proxy denial record and identity-bridge target-integrity bullet. POAM-43 references were left unchanged; branch `claude/close-poam-43` updates them. Local evidence only (`ostrich-npe-portal` 42 / 0, `ostrich-common` lib 278 / 0, `ostrich-web-ui` 41 / 0, re-run by the scribe). **No control status or percentage changed** (AC-3 🟢 Implemented, AC-4 🟡 Partial, SI-10 🟢 Good (85%), AU-2 / AU-12 🟢 Compliant, AU-3 ✅) |
+| 3.9 | 2026-10-26 | OstrichPKI Team | First green CI runs on `main` (commit 2eb959a, PR #189 merged; run record `target/agent-workflow/20261026-191500-ci-evidence-runs/`): `integration-db.yml` run 40376869764, artifact `live-db-softhsm-results` sha256 `12fd4a28…e91f`. AU-9 / AU-9(3): Postgres tests `chain_concurrency`, `signed_chain_tamper`, `sign_timeout_db` executed green, "Implemented, not Tested" → Tested on Postgres (POAM-2026-10-23-31 closed; hung-HSM residual now POAM-2026-10-23-55). AU-10: the "Live tamper-detection proof" and "Live end-to-end proof" ✅ items and AU-9(3) "passes against live DB" now carry the run evidence (they had no recorded run of the current tests before); CA gRPC actor bullet 🟡 → ✅. AU-3: gRPC handler-glue bullet 🟡 → ✅ (executed); M13h mutant still not executed. AU-12 stored denial record executed, stays 🟡 (test-assembled stack). AC-6(9) evidence updated, stays 🟡. Control statuses and the summary-table percentages unchanged (AU-9 stays 🟡 Partial: deletion prevention and query access control still missing) |
+| 3.10 | 2026-10-26 | OstrichPKI Team | npe-portal BFF proxy raw path and shared validator (branch `claude/npe-portal-proxy-raw-path`, uncommitted, based on `main` @ 2eb959a; run record `target/agent-workflow/20261026-113138-npe-proxy-raw-path/`). SI-10: new evidence item for `ostrich_common::util::proxy_path` (canonical) and npe-portal `checked_backend_path` / `invalid_path_response`, with the fuzz target `fuzz_proxy_path` (259,220 runs, no crash) and a mutation check as SA-11 evidence; the POAM-46 gap was removed (POAM-45 remains) and a two-copies gap added (web-ui switch is a follow-up). AC-3: new npe-portal bullet (identity forwarded only on a validated path), the POAM-46 gap sentence removed, code references added. AC-4: application-layer supporting bullet for both BFF proxies (status and scope unchanged). AU-2 / AU-3: npe-portal `proxy_path_rejected` warn event and `ostrich_audit` Authorization / Failure record (no session id; `client_ip` relies on the load balancer overwriting XFF / X-Real-IP), recorded as 🟡 because the records are not in `DatabaseAuditSink`. AU-12: npe-portal denial-record bullet (🟡). NPE portal section: proxy denial record and identity-bridge target-integrity bullet. POAM-43 references were left unchanged; branch `claude/close-poam-43` updates them. Local evidence only (`ostrich-npe-portal` 42 / 0, `ostrich-common` lib 278 / 0, `ostrich-web-ui` 41 / 0, re-run by the scribe). **No control status or percentage changed** (AC-3 🟢 Implemented, AC-4 🟡 Partial, SI-10 🟢 Good (85%), AU-2 / AU-12 🟢 Compliant, AU-3 ✅) |
 
 ---
 

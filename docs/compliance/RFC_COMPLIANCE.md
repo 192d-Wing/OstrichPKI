@@ -1699,11 +1699,10 @@ Lockfile update (branch `claude/dependabot-remediation`, uncommitted; see NIST S
 
 ### RFC 3986: URI path handling in the BFF proxies (web-ui and npe-portal, 2026-10-26)
 
-web-ui: merged to `main` in [PR
-#191](https://github.com/192d-Wing/OstrichPKI/pull/191) (fix commit e56a09e,
+web-ui: merged to `main` in
+[PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191) (fix commit e56a09e,
 merge commit 635c5c3; see NIST SI-10); POAM-2026-10-23-43 is closed on the green
-CI [run
-40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224).
+CI [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224).
 npe-portal: branch `claude/npe-portal-proxy-raw-path`, uncommitted
 (POAM-2026-10-23-46 closed pending first green CI run). Both proxies forward
 `/api/{svc}/...` requests to the backends, and both now treat the path as RFC
@@ -1737,7 +1736,7 @@ switching it to the shared module is a follow-up.
   against these rules. The fuzz target `fuzz_proxy_path` ran 259,220 runs with
   no crash. npe-portal router tests show 400 and zero backend hits for unsafe
   paths, and verbatim forwarding of the raw path and query (local;
-  TEST_EVIDENCE.md §2.16)
+  TEST_EVIDENCE.md §2.17)
 
 ---
 
