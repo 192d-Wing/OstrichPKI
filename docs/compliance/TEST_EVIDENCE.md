@@ -1,6 +1,6 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.6
+**Document Version:** 2.9
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
 **Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 817 unit tests passed, 0 failed, 1 ignored, 2026-10-26 (§2.13, `make test-unit`)
@@ -560,7 +560,8 @@ request (`GET /api/ca/api/v1/certificates/abc%2Fdef`). All PASS.
 **Not covered:** OIDC SSO login and logout (server-side redirects; they need
 the real BFF); the browser smoke used a mock BFF, so the BFF proxy's
 percent-decoding of the forwarded path was not exercised (POAM-2026-10-23-43,
-since fixed and tested in §2.12; closed pending first green CI run);
+since fixed and tested in §2.12; closed 2026-10-26 on the green CI run
+40360909224);
 router composition is tested through `resolvePath` / `createPath`, not
 through `BrowserRouter` in a real DOM; the `encodeURIComponent` in `lib/ca.ts`
 is checked by review, typecheck and the one smoke request only; the
@@ -570,16 +571,18 @@ scripts that are not committed and not run in CI: web-ui has no test runner
 
 ### 2.12 Test Run 2026-10-26 (Web UI BFF proxy raw path)
 
-**Scope:** branch `claude/web-ui-proxy-raw-path`, uncommitted, stacked on
-PR #188 (`claude/react-router-v7`, commit f00ddf6) (run record
-`target/agent-workflow/20261026-093447-proxy-raw-path/`). Changed files:
+**Scope:** branch `claude/web-ui-proxy-raw-path`, stacked on PR #188
+(`claude/react-router-v7`, commit f00ddf6), merged to `main` as
+[PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191) on 2026-10-26T16:45:42Z (fix commit e56a09e, merge commit
+635c5c3) (run record `target/agent-workflow/20261026-093447-proxy-raw-path/`). Changed files:
 `services/web-ui/src/server/proxy.rs`, `services/web-ui/src/server/auth/session.rs`
 and `services/web-ui/src/server/middleware/audit.rs` (visibility only). Closes
-POAM-2026-10-23-43 pending the first green CI run; also fixes SEC-003 (inbound
+POAM-2026-10-23-43 (closed on the green CI run recorded below); also fixes SEC-003 (inbound
 `Cookie` / `X-Npe-*` stripping) and QA-001 (`SessionData` `Debug` redaction).
 **Sources:** `qa-report.md` (QA round, 38 / 0; PASS), `fixes-round-1.md`
 (41 / 0 after the fixes). Rows marked "scribe" were re-run by the compliance
-scribe on the final working tree on 2026-10-26.
+scribe on the final working tree on 2026-10-26. The CI rows come from the
+GitHub Actions job log and `gh pr checks 191`, not from `qa-report.md`.
 
 | Gate | Command | Result | Counts / notes |
 |------|---------|--------|----------------|
@@ -589,10 +592,12 @@ scribe on the final working tree on 2026-10-26.
 | Serial run | `cargo test -p ostrich-web-ui -- --test-threads=1` | PASS | 38 / 0 (QA round) |
 | Flake check | `cargo test -p ostrich-web-ui` repeated | PASS | 120 / 120 (QA round, after the test-harness fix); 20 / 20 full suite and 20 / 20 for the log-capture test alone (coder, after fix round 1) |
 | Doc tests | n/a | NOT RUN | binary-only crate |
-| Workspace | `make clippy` / `make test-unit` | NOT RUN | scoped to one crate |
+| Workspace | `make clippy` / `make test-unit` | NOT RUN | scoped to one crate (local); the CI `Build & test` row below covers the workspace lib and bin tests |
 | Supply chain | `make security` | NOT RUN | no `Cargo.toml` / `Cargo.lock` change |
 | Fuzz | n/a | NOT RUN | no fuzz target for the validator (QA G-4) |
-| CI | GitHub `CI` / `Build & test` (`cargo test --workspace --lib --bins --locked`) | **NOT RUN** | change not committed |
+| CI | GitHub `CI` / `Build & test` (`cargo test --workspace --lib --bins --locked`), [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224/job/121705749851); `pull_request` event, head SHA e56a09e; ubuntu-24.04 image 20261012.334.1, rustc 1.99.1 | PASS | `ostrich_web_ui` unit tests **41 passed, 0 failed, 0 ignored**, including `router_rejects_unsafe_paths_before_contacting_backend`, `qa_rejection_emits_au3_security_event_without_secrets` and `debug_redacts_backend_token`; every test binary in the job reported `ok`. Meets the POAM-2026-10-23-43 close criterion |
+| CI, other jobs | same run: Clippy (advisory), Rustfmt (advisory), Toolchain pin consistency, Web UI (React build + supply-chain) | PASS | all green (`gh pr checks 191`) |
+| GitHub dependency gate and HSM job | `audit.yml` jobs `cargo audit`, `cargo deny`; `PKCS#11 suite (SoftHSM2)` (PR #191) | PASS | all green (`gh pr checks 191`) |
 
 **New tests (22; 19 web-ui tests existed before):**
 
@@ -797,9 +802,76 @@ memory sanitizer in CI.
 
 ---
 
-### 2.15 Test Run 2026-10-26 (NPE portal BFF proxy raw path)
+### 2.15 Test Run 2026-10-26 (Web UI legacy /next open redirect)
 
-Section 2.13 is used by the ACME dns-01 resolver run (PR #190).
+**Scope:** branch `pr/blissful-chandrasekhar-6051b3`, based on `main` @
+c9a159c (v0.17.0; includes PR #191), merged to `main` as
+[PR #193](https://github.com/192d-Wing/OstrichPKI/pull/193) on 2026-10-26T19:06:44Z (fix commit 3ece58c, merge commit
+3804b4f) (run record
+`target/agent-workflow/20261026-113122-next-open-redirect/`). Changed file:
+`services/web-ui/src/server/router.rs` (`legacy_next_router`,
+`legacy_next_redirect`, `legacy_next_target` and tests). Closes
+POAM-2026-10-23-45 (CWE-601, SI-10) (closed on the green CI run recorded below).
+**Sources:** `qa-report.md` (QA round on base 460f62c, before the rebase onto
+e56a09e: 37 / 0; PASS), `fixes-round-1.md` (61 / 0 after the fixes and the
+rebase). Rows marked "scribe" were re-run by the compliance scribe on the
+final working tree on 2026-10-26. The CI rows come from the GitHub Actions job
+log and `gh pr checks 193`, not from `qa-report.md`.
+
+| Gate | Command | Result | Counts / notes |
+|------|---------|--------|----------------|
+| Format | `cargo fmt -p ostrich-web-ui -- --check` | PASS | exit 0 (QA, coder, scribe) |
+| Lint | `cargo clippy -p ostrich-web-ui --all-targets -- -D warnings` | PASS | 0 warnings (QA, coder, scribe) |
+| Unit tests | `cargo test -p ostrich-web-ui` | PASS | **61 passed, 0 failed, 0 ignored** (coder after fix round 1; scribe). QA round before the fixes and the rebase: 37 / 0 |
+| Scoped run | `cargo test -p ostrich-web-ui legacy_next` | PASS | 20 passed, 0 failed (coder after fix round 1; scribe). QA round: 18 / 0 |
+| Doc tests | n/a | NOT RUN | binary-only crate |
+| Workspace | `cargo fmt --all --check` / `make clippy` / `make test-unit` | NOT RUN | scoped to one crate (local); the CI `Build & test` row below covers the workspace lib and bin tests |
+| Supply chain | `make security` | NOT RUN | no `Cargo.toml` / `Cargo.lock` change |
+| Fuzz | n/a | NOT RUN | no new parser; the helper is covered by a table-driven corpus test |
+| CI | GitHub `CI` / `Build & test` (`cargo test --workspace --lib --bins --locked`), [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363/job/121765190342); `pull_request` event, head SHA 9683787; ubuntu-24.04 image 20261012.334.1, rustc 1.99.1 | PASS | `ostrich_web_ui` unit tests **61 passed, 0 failed, 0 ignored**, including all 20 `test_legacy_next_*` tests (each `ok`); 30 test binaries reported `test result: ok`, 0 FAILED. Meets the POAM-2026-10-23-45 close criterion |
+| CI, other jobs | same run: Clippy (advisory), Rustfmt (advisory), Toolchain pin consistency, Web UI (React build + supply-chain) | PASS | all green (`gh pr checks 193`) |
+| GitHub dependency gate and HSM job | `audit.yml` jobs `cargo audit`, `cargo deny` (run 40377706824); `PKCS#11 suite (SoftHSM2)` (run 40377706515) (PR #193) | PASS | all green (`gh pr checks 193`, 14 / 14 checks, which also include CodeQL Analyze (run 40377699426), DB + SoftHSM live tests (run 40377706244) and Helm chart validation (run 40377706504)) |
+
+**New tests (20, all `server::router::tests::test_legacy_next_*`):**
+
+- Coder (8): `test_legacy_next_encoded_slash_fails_secure` (`%2F`, `%2f`),
+  `test_legacy_next_double_slash_fails_secure`,
+  `test_legacy_next_encoded_backslash_upper_fails_secure`,
+  `test_legacy_next_encoded_backslash_lower_fails_secure` (all 308 `/`),
+  `test_legacy_next_preserves_deep_link` (`/next/certificates/abc` →
+  `/certificates/abc`), `test_legacy_next_drops_query`,
+  `test_legacy_next_root_redirects_to_root` (`/next` and `/next/` → `/`),
+  `test_legacy_next_target_helper` (unit)
+- QA (10, as revised in fix round 1):
+  `test_legacy_next_double_encoded_separators_stay_in_origin` (`%252F` stays
+  literal), `test_legacy_next_mixed_case_encoded_separators_anywhere_fail_secure`,
+  `test_legacy_next_literal_backslash_fails_secure`,
+  `test_legacy_next_dot_segments_fail_secure` (15 dot-segment variants → `/`;
+  `.well-known`, `a.b`, `...` preserved),
+  `test_legacy_next_prefix_must_be_exact_segment` (`/nextfoo`, `/Next` → 404,
+  no `Location`), `test_legacy_next_whitespace_variants`,
+  `test_legacy_next_query_and_fragment_do_not_influence_path`,
+  `test_legacy_next_methods` (HEAD 308 `/`, POST 405),
+  `test_legacy_next_non_visible_ascii_fails_secure` (DEL and raw UTF-8 → 308
+  `/`; replaced QA's `test_legacy_next_del_byte_fails_closed`, which recorded
+  a 500), `test_legacy_next_target_invariant_corpus` (18 inputs checked
+  against the same-origin `Location` invariant)
+- Fix round 1 (2): `test_legacy_next_inner_double_slash_fails_secure`,
+  `test_legacy_next_merged_router_fails_secure` (legacy router merged before
+  a fallback and wrapped in `audit_middleware`, as `create_router` does)
+
+**Not covered:** `create_router` itself (it needs a `WebUiConfig` and a static
+directory); wire-level request-target parsing through hyper / httparse (tests
+build requests with `http::Uri`); no test captures the
+`legacy_redirect_rejected` warn event (no tracing-capture dev-dependency; the
+Ok / Err split that drives it is tested at helper level). The event is a
+`tracing` log line, not an `ostrich-audit` record (POAM-2026-10-23-47).
+
+---
+
+### 2.16 Test Run 2026-10-26 (NPE portal BFF proxy raw path)
+
+Sections 2.13-2.15 are used by PR #190, PR #189 and PR #193.
 
 **Scope:** branch `claude/npe-portal-proxy-raw-path`, uncommitted, based on
 `main` @ 2eb959a (run record
@@ -1296,7 +1368,7 @@ closed pending first green CI run).
 | gRPC requestor binding (`fuzz_grpc_requestor`, 2026-10-26 smoke, `nightly-2026-10-23`, cargo-fuzz 0.13.2, ASan, aarch64-apple-darwin) | 128,734 (31 s) | 0 | Pass (coder-reported, §2.14; local smoke, not the CI job) |
 | gRPC peer subject (`fuzz_grpc_peer_subject`, 2026-10-26 smoke, same toolchain) | 80,018 (31 s) | 0 | Pass (coder-reported, §2.14; local smoke, not the CI job) |
 | Both gRPC targets, scheduled / dispatch / PR job ([fuzz.yml](../../.github/workflows/fuzz.yml)) | n/a | n/a | **NOT RUN** (workflow added 2026-10-26, not pushed; scheduled and dispatch runs need the workflow on `main`) |
-| BFF proxy raw-path validator (`fuzz_proxy_path`, new 2026-10-26) | 259,220 (60 s) | 0 | Pass (QA-reported, §2.15) |
+| BFF proxy raw-path validator (`fuzz_proxy_path`, new 2026-10-26) | 259,220 (60 s) | 0 | Pass (QA-reported, §2.16) |
 
 ### 5.5 Secrets Scanning
 
@@ -1491,4 +1563,7 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 2.3 | 2026-10-26 | OstrichPKI Team | Added §2.12, the web-ui BFF proxy raw-path run (closes POAM-2026-10-23-43 pending first green CI run): `cargo test -p ostrich-web-ui` 41 / 0 / 0 with 22 new tests (validator, router-level zero-backend-hit, AU-3 log capture, inbound header stripping, `SessionData` `Debug` redaction); fmt and clippy clean (re-run by the scribe); QA flake check 120 / 120; workspace, supply-chain, fuzz and CI NOT RUN. §2.11 "Not covered" cross-referenced to §2.12 |
 | 2.4 | 2026-10-26 | OstrichPKI Team | Added §2.13, the ACME dns-01 resolver fix run: `make test-unit` 817 / 0 / 1 and `ostrich-acme` lib 72 / acme-server bins 7 (re-run by the scribe); fuzz `fuzz_dns01_query_name` (new) and mutation checks recorded; Helm render, integration, live dns-01 E2E and binary smoke NOT RUN. §5.4: new fuzz row. Header "latest recorded run" updated |
 | 2.5 | 2026-10-26 | OstrichPKI Team | Added §2.14, the CI evidence-gaps run (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; coder- and QA-reported, not re-run by the scribe): fmt / clippy clean; `ostrich-ca` lib 85 / 0; `OSTRICH_REQUIRE_LIVE_TESTS=1` negative runs exit 101; live-gate unit tests; `helm-chart-check.sh` 15 / 15 with Helm 3.19 (not the pinned 3.22.1); fuzz 30 s smoke 128,734 / 80,018 runs. New jobs `integration-db.yml`, `helm.yml`, `fuzz.yml` and the GitLab `test:integration` fixes: **NOT RUN**. All live DB + SoftHSM suites, including the new `ca_grpc_audit_e2e`, NOT RUN; M13h kill argued by construction, not executed. §2.10 Helm and DB-gated rows cross-referenced. §5.4: smoke and CI rows. §8.2: workflow table; the "nightly builds" claim removed (no such workflow) |
-| 2.6 | 2026-10-26 | OstrichPKI Team | Added §2.15, the npe-portal BFF proxy raw-path run (closes POAM-2026-10-23-46 pending first green CI run). Sections 2.13-2.14 are used by PR #190 and PR #189. Results: `cargo test -p ostrich-npe-portal` 42 / 0 / 0 (12 new router-level tests); `ostrich-common` lib 278 / 0 with 17 `proxy_path` tests; `ostrich-web-ui` 41 / 0. These counts were re-run by the scribe. Fuzz `fuzz_proxy_path` 259,220 runs, no crash; a mutation check was detected. The ostrich-common doc-test stage fails on macOS for an environmental reason (QA-001, aws-lc-fips dylib rpath); with an rpath workaround it passes 3 / 6 ignored. CI NOT RUN. Added a §5.4 fuzz row |
+| 2.6 | 2026-10-26 | OstrichPKI Team | §2.12: recorded the CI result for the web-ui BFF proxy raw-path change, merged as [PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191) (fix commit e56a09e, merge commit 635c5c3): GitHub Actions [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224) `Build & test` (`cargo test --workspace --lib --bins --locked`, ubuntu-24.04, rustc 1.99.1) `ostrich_web_ui` 41 passed / 0 failed / 0 ignored (CI NOT RUN → PASS); the run's other jobs and the PR's `cargo audit`, `cargo deny` and `PKCS#11 suite (SoftHSM2)` checks green. POAM-2026-10-23-43 closed. Scope line updated from "uncommitted" to the merge reference; §2.11 cross-reference updated. No GitLab pipeline result recorded; doc tests and fuzz still NOT RUN |
+| 2.7 | 2026-10-26 | OstrichPKI Team | Added §2.15, the web-ui legacy `/next` open-redirect run (closes POAM-2026-10-23-45 pending first green CI run; SI-10, CWE-601): `cargo test -p ostrich-web-ui` 61 / 0 / 0 with 20 new `test_legacy_next_*` tests; `legacy_next` filter 20 / 0; fmt and clippy clean (re-run by the scribe); workspace, supply-chain, fuzz and CI NOT RUN |
+| 2.8 | 2026-10-26 | OstrichPKI Team | §2.15: recorded the CI result for the web-ui legacy `/next` open-redirect change, merged as [PR #193](https://github.com/192d-Wing/OstrichPKI/pull/193) (fix commit 3ece58c, merge commit 3804b4f): GitHub Actions [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363) `Build & test` (`cargo test --workspace --lib --bins --locked`, ubuntu-24.04, rustc 1.99.1) `ostrich_web_ui` 61 passed / 0 failed / 0 ignored, all 20 `test_legacy_next_*` `ok` (CI NOT RUN → PASS); the run's other jobs and the PR's `cargo audit`, `cargo deny`, `PKCS#11 suite (SoftHSM2)`, CodeQL, DB + SoftHSM and Helm checks green (14 / 14). POAM-2026-10-23-45 closed. Scope line updated from "uncommitted" to the merge reference. No GitLab pipeline result recorded; doc tests and fuzz still NOT RUN; the `legacy_redirect_rejected` event is still not captured by a test |
+| 2.9 | 2026-10-26 | OstrichPKI Team | Added §2.16, the npe-portal BFF proxy raw-path run (closes POAM-2026-10-23-46 pending first green CI run). Sections 2.13-2.15 are used by PR #190, PR #189 and PR #193. Results: `cargo test -p ostrich-npe-portal` 42 / 0 / 0 (12 new router-level tests); `ostrich-common` lib 278 / 0 with 17 `proxy_path` tests; `ostrich-web-ui` 41 / 0. These counts were re-run by the scribe. Fuzz `fuzz_proxy_path` 259,220 runs, no crash; a mutation check was detected. The ostrich-common doc-test stage fails on macOS for an environmental reason (QA-001, aws-lc-fips dylib rpath); with an rpath workaround it passes 3 / 6 ignored. CI NOT RUN. Added a §5.4 fuzz row |
