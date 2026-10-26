@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 3.7
+**Document Version:** 3.8
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -2933,9 +2933,10 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
   parameters). Not yet fixed: the same defect in the npe-portal proxy
   (POAM-2026-10-23-46). The web-ui `/next/{*rest}` open redirect
   (POAM-2026-10-23-45) is fixed by the next item
-- ✅ Web UI legacy `/next` redirect target validation (2026-10-26, branch
-  `pr/blissful-chandrasekhar-6051b3`, uncommitted; CWE-601; closes
-  POAM-2026-10-23-45 pending first green CI run). In
+- ✅ Web UI legacy `/next` redirect target validation (2026-10-26, merged to
+  `main` in [PR #193](https://github.com/192d-Wing/OstrichPKI/pull/193), fix commit 3ece58c, merge commit 3804b4f;
+  CWE-601; closes POAM-2026-10-23-45, closed on the green CI
+  [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363)). In
   [router.rs](../../services/web-ui/src/server/router.rs),
   `legacy_next_router` sends `/next`, `/next/` and `/next/{*rest}` to
   `legacy_next_redirect`, which takes the raw, still percent-encoded path from
@@ -2957,7 +2958,10 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
   fragment ignored, `/nextfoo` not matched, HEAD and POST, an invariant
   corpus, and a router merged before a fallback and wrapped in
   `audit_middleware`). Results: `cargo test -p ostrich-web-ui` 61 / 0, fmt
-  and clippy clean, local only, re-run by the compliance scribe
+  and clippy clean, local, re-run by the compliance scribe, and in CI the
+  `Build & test` job (`cargo test --workspace --lib --bins --locked`,
+  ubuntu-24.04) ran the `ostrich_web_ui` unit tests 61 passed / 0 failed /
+  0 ignored, including all 20 `test_legacy_next_*` tests, in run 40377706363
   ([TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-web-ui-legacy-next-open-redirect)).
   Not tested: `create_router` itself and wire-level parsing through hyper;
   the warn event is not captured by a test
@@ -3009,8 +3013,8 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
 
 - ⚠️ The npe-portal proxy forwards a percent-decoded path
   (POAM-2026-10-23-46). The web-ui `/next/{*rest}` open redirect
-  (POAM-2026-10-23-45) is fixed in the working tree and closed pending the
-  first green CI run (see Evidence)
+  (POAM-2026-10-23-45) is fixed and closed (PR #193, CI
+  [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363); see Evidence)
 - ⚠️ No comprehensive malformed CSR rejection testing
 - ⚠️ Need dedicated unit tests for CSR signature verification with test vectors
 
@@ -3455,7 +3459,8 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 3.4 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted; run record `target/agent-workflow/20261026-091032-dns01-resolver/`). CM-6: `ACME_DNS01_RESOLVERS` / `--dns01-resolvers` baseline (default system resolvers, at most 8 IP literals, startup refusals), Helm `acme.dns01Resolvers` and NetworkPolicy egress; helm render NOT RUN. SI-10: dns-01 identifier, DNS-answer and resolver-list validation, bounds-checked acmeIdentifier parsing; `new_order` explicitly not evidence (POAM-49); related SI-11 challenge-error item. SC-17: dns-01 domain-control evidence (🟡 item) and ACME gaps (POAM-41, -49, -52); related SC-21 (not in the TOE; environment assumption) and SC-5 (83 s per validation, concurrency unbounded, POAM-50); SC-20 not claimed. AU-2: no new events; record content gap (POAM-51). IA-5: challenge validation is not IA-5(1) evidence. Tests re-run by the scribe: `ostrich-acme` lib 72/72, acme-server bins 7/7, `make test-unit` 817 / 0 / 1. **No control status changed; summary table unchanged (18 / 41 = 44%)** |
 | 3.5 | 2026-10-26 | OstrichPKI Team | CI evidence gaps (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; run record `target/agent-workflow/20261026-082358-ci-evidence-gaps/`). AU-3, AU-10, AU-12: name the new DB-backed `tests/integration/ca_grpc_audit_e2e.rs` and the `integration-db.yml` job, CI path added, **NOT RUN**; M13h kill argued by construction, not executed. AC-6(9), AU-2, AU-9: POAM-36 / -31 cross-references updated. No new control sections; **no status or percentage changes** |
 | 3.6 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path CI evidence ([PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191), fix commit e56a09e, merge commit 635c5c3, merged 2026-10-26T16:45:42Z). GitHub Actions [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224) `Build & test` green (`ostrich_web_ui` 41 passed / 0 failed / 0 ignored). AC-3, AU-2, AU-3 and SI-10 web-ui proxy items: "branch, uncommitted" replaced by the merge reference; POAM-2026-10-23-43 closed pending first green CI run → Closed. AU-2 / AU-3 `proxy_path_rejected` stays 🟡 (log line only, POAM-47). POAM-45 to -48 unchanged. **No control status or percentage changed** |
-| 3.7 | 2026-10-26 | OstrichPKI Team | web-ui legacy `/next` open redirect, CWE-601 (branch `pr/blissful-chandrasekhar-6051b3`, uncommitted, based on `main` @ c9a159c (v0.17.0; includes PR #191); run record `target/agent-workflow/20261026-113122-next-open-redirect/`). SI-10: new evidence item for `legacy_next_target` / `legacy_next_redirect` / `legacy_next_router` (raw `OriginalUri` path; fail secure to `/` for empty, `//`, `\`, `%2F` / `%5C`, dot and non-visible-ASCII remainders; query dropped; `legacy_redirect_rejected` warn event); the proxy item's "not yet fixed" sentence and the SI-10 gap no longer describe POAM-2026-10-23-45 as open (closed pending first green CI run). No NIAP SFR mapped (none covers HTTP redirect targets); cross-reference table unchanged. Local evidence only (`cargo test -p ostrich-web-ui` 61 / 0, re-run by the scribe). **No control status or percentage changed** (SI-10 stays 🟢 Good (85%); summary table not recalculated) |
+| 3.7 | 2026-10-26 | OstrichPKI Team | web-ui legacy `/next` open redirect, CWE-601 (branch `pr/blissful-chandrasekhar-6051b3`, later merged as PR #193, based on `main` @ c9a159c (v0.17.0; includes PR #191); run record `target/agent-workflow/20261026-113122-next-open-redirect/`). SI-10: new evidence item for `legacy_next_target` / `legacy_next_redirect` / `legacy_next_router` (raw `OriginalUri` path; fail secure to `/` for empty, `//`, `\`, `%2F` / `%5C`, dot and non-visible-ASCII remainders; query dropped; `legacy_redirect_rejected` warn event); the proxy item's "not yet fixed" sentence and the SI-10 gap no longer describe POAM-2026-10-23-45 as open (closed pending first green CI run). No NIAP SFR mapped (none covers HTTP redirect targets); cross-reference table unchanged. Local evidence only (`cargo test -p ostrich-web-ui` 61 / 0, re-run by the scribe). **No control status or percentage changed** (SI-10 stays 🟢 Good (85%); summary table not recalculated) |
+| 3.8 | 2026-10-26 | OstrichPKI Team | web-ui legacy `/next` open redirect CI evidence ([PR #193](https://github.com/192d-Wing/OstrichPKI/pull/193), fix commit 3ece58c, merge commit 3804b4f, merged 2026-10-26T19:06:44Z). GitHub Actions [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363) `Build & test` green (`ostrich_web_ui` 61 passed / 0 failed / 0 ignored, all 20 `test_legacy_next_*` `ok`). SI-10 `/next` evidence item and SI-10 gap: "branch, uncommitted" replaced by the merge reference; POAM-2026-10-23-45 closed pending first green CI run → Closed. The `legacy_redirect_rejected` event stays a log line (POAM-47). **No control status or percentage changed** (SI-10 stays 🟢 Good (85%)) |
 
 ---
 
