@@ -9,8 +9,8 @@ apiVersion: v2
 name: ostrich-pki
 description: A Helm chart for deploying OstrichPKI Public Key Infrastructure
 type: application
-version: 0.13.0
-appVersion: "0.13.0"
+version: 0.14.0
+appVersion: "0.17.0"
 
 keywords:
   - pki
