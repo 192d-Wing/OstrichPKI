@@ -1,6 +1,6 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.3
+**Document Version:** 2.4
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
 **Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 667 unit tests passed, 0 failed, 1 ignored, 2026-10-24 (§2.6)
@@ -560,7 +560,8 @@ request (`GET /api/ca/api/v1/certificates/abc%2Fdef`). All PASS.
 **Not covered:** OIDC SSO login and logout (server-side redirects; they need
 the real BFF); the browser smoke used a mock BFF, so the BFF proxy's
 percent-decoding of the forwarded path was not exercised (POAM-2026-10-23-43,
-since fixed and tested in §2.12; closed pending first green CI run);
+since fixed and tested in §2.12; closed 2026-10-26 on the green CI run
+40360909224);
 router composition is tested through `resolvePath` / `createPath`, not
 through `BrowserRouter` in a real DOM; the `encodeURIComponent` in `lib/ca.ts`
 is checked by review, typecheck and the one smoke request only; the
@@ -570,16 +571,18 @@ scripts that are not committed and not run in CI: web-ui has no test runner
 
 ### 2.12 Test Run 2026-10-26 (Web UI BFF proxy raw path)
 
-**Scope:** branch `claude/web-ui-proxy-raw-path`, uncommitted, stacked on
-PR #188 (`claude/react-router-v7`, commit f00ddf6) (run record
-`target/agent-workflow/20261026-093447-proxy-raw-path/`). Changed files:
+**Scope:** branch `claude/web-ui-proxy-raw-path`, stacked on PR #188
+(`claude/react-router-v7`, commit f00ddf6), merged to `main` as
+[PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191) on 2026-10-26T16:45:42Z (fix commit e56a09e, merge commit
+635c5c3) (run record `target/agent-workflow/20261026-093447-proxy-raw-path/`). Changed files:
 `services/web-ui/src/server/proxy.rs`, `services/web-ui/src/server/auth/session.rs`
 and `services/web-ui/src/server/middleware/audit.rs` (visibility only). Closes
-POAM-2026-10-23-43 pending the first green CI run; also fixes SEC-003 (inbound
+POAM-2026-10-23-43 (closed on the green CI run recorded below); also fixes SEC-003 (inbound
 `Cookie` / `X-Npe-*` stripping) and QA-001 (`SessionData` `Debug` redaction).
 **Sources:** `qa-report.md` (QA round, 38 / 0; PASS), `fixes-round-1.md`
 (41 / 0 after the fixes). Rows marked "scribe" were re-run by the compliance
-scribe on the final working tree on 2026-10-26.
+scribe on the final working tree on 2026-10-26. The CI rows come from the
+GitHub Actions job log and `gh pr checks 191`, not from `qa-report.md`.
 
 | Gate | Command | Result | Counts / notes |
 |------|---------|--------|----------------|
@@ -589,10 +592,12 @@ scribe on the final working tree on 2026-10-26.
 | Serial run | `cargo test -p ostrich-web-ui -- --test-threads=1` | PASS | 38 / 0 (QA round) |
 | Flake check | `cargo test -p ostrich-web-ui` repeated | PASS | 120 / 120 (QA round, after the test-harness fix); 20 / 20 full suite and 20 / 20 for the log-capture test alone (coder, after fix round 1) |
 | Doc tests | n/a | NOT RUN | binary-only crate |
-| Workspace | `make clippy` / `make test-unit` | NOT RUN | scoped to one crate |
+| Workspace | `make clippy` / `make test-unit` | NOT RUN | scoped to one crate (local); the CI `Build & test` row below covers the workspace lib and bin tests |
 | Supply chain | `make security` | NOT RUN | no `Cargo.toml` / `Cargo.lock` change |
 | Fuzz | n/a | NOT RUN | no fuzz target for the validator (QA G-4) |
-| CI | GitHub `CI` / `Build & test` (`cargo test --workspace --lib --bins --locked`) | **NOT RUN** | change not committed |
+| CI | GitHub `CI` / `Build & test` (`cargo test --workspace --lib --bins --locked`), [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224/job/121705749851); `pull_request` event, head SHA e56a09e; ubuntu-24.04 image 20261012.334.1, rustc 1.99.1 | PASS | `ostrich_web_ui` unit tests **41 passed, 0 failed, 0 ignored**, including `router_rejects_unsafe_paths_before_contacting_backend`, `qa_rejection_emits_au3_security_event_without_secrets` and `debug_redacts_backend_token`; every test binary in the job reported `ok`. Meets the POAM-2026-10-23-43 close criterion |
+| CI, other jobs | same run: Clippy (advisory), Rustfmt (advisory), Toolchain pin consistency, Web UI (React build + supply-chain) | PASS | all green (`gh pr checks 191`) |
+| GitHub dependency gate and HSM job | `audit.yml` jobs `cargo audit`, `cargo deny`; `PKCS#11 suite (SoftHSM2)` (PR #191) | PASS | all green (`gh pr checks 191`) |
 
 **New tests (22; 19 web-ui tests existed before):**
 
@@ -1211,3 +1216,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 2.1 | 2026-10-26 | OstrichPKI Team | §5.2: recorded the Dependabot alert remediation result (`cargo audit` exit 0, 1378 advisories / 614 crates; full web-ui `pnpm audit` 28 → 2 moderate; `make test-unit` 782 / 0 / 1); "latest recorded" moved to it. No new tests. Local only |
 | 2.2 | 2026-10-26 | OstrichPKI Team | Added §2.11, the web-ui react-router v7 migration run: frozen install, typecheck, lint, build pass; full `pnpm audit` 0 and react-router 7.18.4 (re-run by the scribe); manual guard vectors `safe-path-check.mjs` 181 / 0 and `router-smoke.mjs` 5 / 0 (re-run by the scribe; run-record scripts, not committed); browser smoke against a mock BFF (OIDC and logout not covered); CI NOT RUN. §5.2: 2026-10-26 react-router result added and "latest recorded" moved to it. No automated test added (no web-ui test runner, POAM-2026-10-23-44) |
 | 2.3 | 2026-10-26 | OstrichPKI Team | Added §2.12, the web-ui BFF proxy raw-path run (closes POAM-2026-10-23-43 pending first green CI run): `cargo test -p ostrich-web-ui` 41 / 0 / 0 with 22 new tests (validator, router-level zero-backend-hit, AU-3 log capture, inbound header stripping, `SessionData` `Debug` redaction); fmt and clippy clean (re-run by the scribe); QA flake check 120 / 120; workspace, supply-chain, fuzz and CI NOT RUN. §2.11 "Not covered" cross-referenced to §2.12 |
+| 2.4 | 2026-10-26 | OstrichPKI Team | §2.12: recorded the CI result for the web-ui BFF proxy raw-path change, merged as [PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191) (fix commit e56a09e, merge commit 635c5c3): GitHub Actions [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224) `Build & test` (`cargo test --workspace --lib --bins --locked`, ubuntu-24.04, rustc 1.99.1) `ostrich_web_ui` 41 passed / 0 failed / 0 ignored (CI NOT RUN → PASS); the run's other jobs and the PR's `cargo audit`, `cargo deny` and `PKCS#11 suite (SoftHSM2)` checks green. POAM-2026-10-23-43 closed. Scope line updated from "uncommitted" to the merge reference; §2.11 cross-reference updated. No GitLab pipeline result recorded; doc tests and fuzz still NOT RUN |
