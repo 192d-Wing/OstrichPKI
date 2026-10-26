@@ -171,7 +171,7 @@ argon2 = { version = "0.5", features = ["std"] }
 aws-lc-rs = { version = "1.18", features = ["fips"] }
 
 # PKCS#11
-cryptoki = "0.11"
+cryptoki = "0.12"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
