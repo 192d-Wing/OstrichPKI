@@ -44,7 +44,9 @@ use uuid::Uuid;
 const SESSION_TOKEN_LENGTH: usize = 32;
 
 /// Session data stored server-side
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Debug` is implemented by hand so `backend_token` is redacted (see below).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SessionData {
     /// Session ID
     pub id: String,
@@ -88,6 +90,33 @@ pub struct SessionData {
     /// - NIST 800-53: IA-2 - the upstream call carries the user's own credential
     #[serde(default, skip_serializing)]
     pub backend_token: Option<String>,
+}
+
+// COMPLIANCE MAPPING:
+// - NIST 800-53: IA-5 (Authenticator Management), SI-11 (Error Handling) -
+//   the live backend bearer token is never rendered by `{:?}` (logs, panic
+//   messages); only whether one is present. CWE-532.
+// `id` is a server-generated UUID that is already logged at session creation
+// and is not a credential (the cookie token is the store key, not a field), so
+// it is shown.
+impl std::fmt::Debug for SessionData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionData")
+            .field("id", &self.id)
+            .field("user_subject", &self.user_subject)
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("roles", &self.roles)
+            .field("created_at", &self.created_at)
+            .field("last_activity", &self.last_activity)
+            .field("expires_at", &self.expires_at)
+            .field("locked", &self.locked)
+            .field(
+                "backend_token",
+                &self.backend_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl SessionData {
@@ -359,6 +388,38 @@ impl Default for SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn debug_redacts_backend_token() {
+        let manager = SessionManager::new(900, 28800);
+        let (_, session) = manager
+            .create_session_with_token(
+                "user-123".to_string(),
+                Some("testuser".to_string()),
+                None,
+                vec!["admin".to_string()],
+                Some("sentinel-backend-bearer-token".to_string()),
+            )
+            .await;
+
+        for rendered in [format!("{session:?}"), format!("{session:#?}")] {
+            assert!(
+                !rendered.contains("sentinel-backend-bearer-token"),
+                "{rendered}"
+            );
+            assert!(rendered.contains("[REDACTED]"), "{rendered}");
+            // Non-secret fields stay useful for debugging.
+            assert!(rendered.contains("user-123"), "{rendered}");
+        }
+
+        // Absent token renders as `None`, not as a redaction marker.
+        let (_, session) = manager
+            .create_session("user-456".to_string(), None, None, vec![])
+            .await;
+        let rendered = format!("{session:?}");
+        assert!(rendered.contains("backend_token: None"), "{rendered}");
+        assert!(!rendered.contains("[REDACTED]"), "{rendered}");
+    }
 
     #[tokio::test]
     async fn test_create_session() {
