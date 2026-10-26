@@ -1,6 +1,6 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 2.6
+**Document Version:** 2.7
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Excellent (85%)
@@ -1585,6 +1585,31 @@ Lockfile update (branch `claude/dependabot-remediation`, uncommitted; see NIST S
 - Other changes in the bump are neutral or improve conformance: answers with the wrong DNS class are rejected, compressed names are decoded without recursion, and the TXT parsing API used by the validator is unchanged
 - This bump does not make dns-01 work: the resolver has no name servers (POAM-2026-10-23-41, pre-existing)
 
+### RFC 3986: URI path handling in the web-ui BFF proxy (2026-10-26)
+
+Branch `claude/web-ui-proxy-raw-path`, uncommitted (see NIST SI-10; closes
+POAM-2026-10-23-43 pending first green CI run). The web-ui proxy forwards
+`/api/{svc}/...` requests to the backends. It now treats the path as RFC 3986
+data instead of using axum's decoded capture:
+
+- §2.1 percent-encoding: `percent_decode_segment` in
+  [proxy.rs](../../services/web-ui/src/server/proxy.rs) decodes strictly. A `%`
+  not followed by two hex digits is refused. Decoding is only used to check
+  each segment; the backend receives the original, still-encoded bytes, so the
+  encoding is not changed in transit (no decode-then-re-encode)
+- §3.3 path segments: a segment that decodes to `/`, `?`, `#` or `\` is
+  refused, so an encoded delimiter cannot change the request target. Empty
+  segments are refused too. This is stricter than RFC 3986, which allows empty
+  segments; as a result a trailing slash now gets 400
+- §5.2.4 dot segments: literal or encoded `.` and `..` segments are refused
+  rather than removed, so the proxy never resolves a relative reference on the
+  client's behalf. `...` and `..a` are not dot segments and are forwarded
+- Not checked: the query (§3.4) is appended verbatim; double encoding
+  (`%252F`) is forwarded as is; decoded octets >= 0x80, including overlong
+  UTF-8, are not validated (RFC 3986 defines no UTF-8 rule for them); `;`
+  path parameters (`..;`) are forwarded. The npe-portal proxy does not have
+  this handling yet (POAM-2026-10-23-46)
+
 ---
 
 ## Post-Quantum Cryptography (Draft RFCs)
@@ -1835,6 +1860,7 @@ consumed by the TAMP messages above.
 | 2.4 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): "RFC 8017 / RFC 4055 — RSASSA-PSS" status updated with GitHub Actions run 40063317654 (SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0); scoped to SoftHSM and the PKCS#11 provider. RFC 4055 deviation (POAM-20) unchanged. No RFC section status changed. |
 | 2.5 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization (branch `claude/grpc-per-method-authz`, uncommitted). RFC 5280: admin list requires one distinct anchor with SKI (refusal, not warning); Admin leaf issued directly by the anchor (§4.1.2.4, §4.2.1.1 / §4.2.1.2, no DN-only fallback); per-call leaf validity (§4.1.2.5, leaf only); peer serial format (§4.1.2.2). RFC 4514: three role lists, case-variant overlap refusal, undecodable numeric OIDs refused (const-oid fuzz finding). New "gRPC over HTTP/2" subsection: exact path matching, status mapping, deviations RFC-003 (unknown method → PERMISSION_DENIED) and RFC-004 (malformed requestor → PERMISSION_DENIED). RFC 7030: EST client-identifier rule and HTTP 403 JSON body (RFC-104). ACME RFC 8555 §7.6 revocation still does not reach the CA. Counts: `grpc_mtls_e2e` 39, `grpc_tls` 66 (coder-reported). Version numbers 2.3 / 2.4 appear twice in this table (2026-10-23 and 2026-10-25); this entry continues from 2.4. No status change |
 | 2.6 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation (branch `claude/dependabot-remediation`, uncommitted). Added "Dependency protocol conformance fixes (2026-10-26)": hickory 0.26.2 with per-advisory reachability (GHSA-6w6g reachable, now fails closed; GHSA-5j98 and GHSA-6f2x feature-gated, not reachable). RFC 8555 §7.5 / §8.4: stale "DNS resolver TODO/pending" replaced by "implemented, non-functional" (POAM-2026-10-23-41); §7.5 status corrected 🟢 → 🟡 (subsection only). Added CAA (RFC 8659 §3) and DNSSEC (RFC 8555 §11.2) as gaps. Priority 2 item 2: stale TLS-ALPN-01 statement removed (fixed by 5b1a034 / 5e8ab3f). RFC 8555 85% and the summary table not recalculated (no change claimed) |
+| 2.7 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path (branch `claude/web-ui-proxy-raw-path`, uncommitted). Added "RFC 3986: URI path handling in the web-ui BFF proxy": strict §2.1 decoding for checks only, raw path forwarded, §3.3 encoded delimiters and empty segments refused (stricter than RFC 3986), §5.2.4 dot segments refused rather than removed; query, `%252F`, octets >= 0x80 and `;` parameters not checked; npe-portal pending (POAM-46). No compliance percentage changed |
 
 ---
 
