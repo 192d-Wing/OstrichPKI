@@ -1,6 +1,6 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.7
+**Document Version:** 2.8
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
 **Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 817 unit tests passed, 0 failed, 1 ignored, 2026-10-26 (§2.13, `make test-unit`)
@@ -807,16 +807,19 @@ memory sanitizer in CI.
 
 ### 2.15 Test Run 2026-10-26 (Web UI legacy /next open redirect)
 
-**Scope:** branch `pr/blissful-chandrasekhar-6051b3`, uncommitted, based on
-`main` @ c9a159c (v0.17.0; includes PR #191) (run record
+**Scope:** branch `pr/blissful-chandrasekhar-6051b3`, based on `main` @
+c9a159c (v0.17.0; includes PR #191), merged to `main` as
+[PR #193](https://github.com/192d-Wing/OstrichPKI/pull/193) on 2026-10-26T19:06:44Z (fix commit 3ece58c, merge commit
+3804b4f) (run record
 `target/agent-workflow/20261026-113122-next-open-redirect/`). Changed file:
 `services/web-ui/src/server/router.rs` (`legacy_next_router`,
 `legacy_next_redirect`, `legacy_next_target` and tests). Closes
-POAM-2026-10-23-45 (CWE-601, SI-10) pending the first green CI run.
+POAM-2026-10-23-45 (CWE-601, SI-10) (closed on the green CI run recorded below).
 **Sources:** `qa-report.md` (QA round on base 460f62c, before the rebase onto
 e56a09e: 37 / 0; PASS), `fixes-round-1.md` (61 / 0 after the fixes and the
 rebase). Rows marked "scribe" were re-run by the compliance scribe on the
-final working tree on 2026-10-26.
+final working tree on 2026-10-26. The CI rows come from the GitHub Actions job
+log and `gh pr checks 193`, not from `qa-report.md`.
 
 | Gate | Command | Result | Counts / notes |
 |------|---------|--------|----------------|
@@ -825,10 +828,12 @@ final working tree on 2026-10-26.
 | Unit tests | `cargo test -p ostrich-web-ui` | PASS | **61 passed, 0 failed, 0 ignored** (coder after fix round 1; scribe). QA round before the fixes and the rebase: 37 / 0 |
 | Scoped run | `cargo test -p ostrich-web-ui legacy_next` | PASS | 20 passed, 0 failed (coder after fix round 1; scribe). QA round: 18 / 0 |
 | Doc tests | n/a | NOT RUN | binary-only crate |
-| Workspace | `cargo fmt --all --check` / `make clippy` / `make test-unit` | NOT RUN | scoped to one crate |
+| Workspace | `cargo fmt --all --check` / `make clippy` / `make test-unit` | NOT RUN | scoped to one crate (local); the CI `Build & test` row below covers the workspace lib and bin tests |
 | Supply chain | `make security` | NOT RUN | no `Cargo.toml` / `Cargo.lock` change |
 | Fuzz | n/a | NOT RUN | no new parser; the helper is covered by a table-driven corpus test |
-| CI | GitHub `CI` / `Build & test` (`cargo test --workspace --lib --bins --locked`) | **NOT RUN** | change not committed |
+| CI | GitHub `CI` / `Build & test` (`cargo test --workspace --lib --bins --locked`), [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363/job/121765190342); `pull_request` event, head SHA 9683787; ubuntu-24.04 image 20261012.334.1, rustc 1.99.1 | PASS | `ostrich_web_ui` unit tests **61 passed, 0 failed, 0 ignored**, including all 20 `test_legacy_next_*` tests (each `ok`); 30 test binaries reported `test result: ok`, 0 FAILED. Meets the POAM-2026-10-23-45 close criterion |
+| CI, other jobs | same run: Clippy (advisory), Rustfmt (advisory), Toolchain pin consistency, Web UI (React build + supply-chain) | PASS | all green (`gh pr checks 193`) |
+| GitHub dependency gate and HSM job | `audit.yml` jobs `cargo audit`, `cargo deny` (run 40377706824); `PKCS#11 suite (SoftHSM2)` (run 40377706515) (PR #193) | PASS | all green (`gh pr checks 193`, 14 / 14 checks, which also include CodeQL Analyze (run 40377699426), DB + SoftHSM live tests (run 40377706244) and Helm chart validation (run 40377706504)) |
 
 **New tests (20, all `server::router::tests::test_legacy_next_*`):**
 
@@ -1462,3 +1467,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 2.5 | 2026-10-26 | OstrichPKI Team | Added §2.14, the CI evidence-gaps run (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; coder- and QA-reported, not re-run by the scribe): fmt / clippy clean; `ostrich-ca` lib 85 / 0; `OSTRICH_REQUIRE_LIVE_TESTS=1` negative runs exit 101; live-gate unit tests; `helm-chart-check.sh` 15 / 15 with Helm 3.19 (not the pinned 3.22.1); fuzz 30 s smoke 128,734 / 80,018 runs. New jobs `integration-db.yml`, `helm.yml`, `fuzz.yml` and the GitLab `test:integration` fixes: **NOT RUN**. All live DB + SoftHSM suites, including the new `ca_grpc_audit_e2e`, NOT RUN; M13h kill argued by construction, not executed. §2.10 Helm and DB-gated rows cross-referenced. §5.4: smoke and CI rows. §8.2: workflow table; the "nightly builds" claim removed (no such workflow) |
 | 2.6 | 2026-10-26 | OstrichPKI Team | §2.12: recorded the CI result for the web-ui BFF proxy raw-path change, merged as [PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191) (fix commit e56a09e, merge commit 635c5c3): GitHub Actions [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224) `Build & test` (`cargo test --workspace --lib --bins --locked`, ubuntu-24.04, rustc 1.99.1) `ostrich_web_ui` 41 passed / 0 failed / 0 ignored (CI NOT RUN → PASS); the run's other jobs and the PR's `cargo audit`, `cargo deny` and `PKCS#11 suite (SoftHSM2)` checks green. POAM-2026-10-23-43 closed. Scope line updated from "uncommitted" to the merge reference; §2.11 cross-reference updated. No GitLab pipeline result recorded; doc tests and fuzz still NOT RUN |
 | 2.7 | 2026-10-26 | OstrichPKI Team | Added §2.15, the web-ui legacy `/next` open-redirect run (closes POAM-2026-10-23-45 pending first green CI run; SI-10, CWE-601): `cargo test -p ostrich-web-ui` 61 / 0 / 0 with 20 new `test_legacy_next_*` tests; `legacy_next` filter 20 / 0; fmt and clippy clean (re-run by the scribe); workspace, supply-chain, fuzz and CI NOT RUN |
+| 2.8 | 2026-10-26 | OstrichPKI Team | §2.15: recorded the CI result for the web-ui legacy `/next` open-redirect change, merged as [PR #193](https://github.com/192d-Wing/OstrichPKI/pull/193) (fix commit 3ece58c, merge commit 3804b4f): GitHub Actions [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363) `Build & test` (`cargo test --workspace --lib --bins --locked`, ubuntu-24.04, rustc 1.99.1) `ostrich_web_ui` 61 passed / 0 failed / 0 ignored, all 20 `test_legacy_next_*` `ok` (CI NOT RUN → PASS); the run's other jobs and the PR's `cargo audit`, `cargo deny`, `PKCS#11 suite (SoftHSM2)`, CodeQL, DB + SoftHSM and Helm checks green (14 / 14). POAM-2026-10-23-45 closed. Scope line updated from "uncommitted" to the merge reference. No GitLab pipeline result recorded; doc tests and fuzz still NOT RUN; the `legacy_redirect_rejected` event is still not captured by a test |
