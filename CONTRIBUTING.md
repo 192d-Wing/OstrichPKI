@@ -23,10 +23,15 @@ This project follows [Semantic Versioning 2.0.0](https://semver.org/):
    - Security patches
    - Performance improvements (without new features)
 
-3. **Breaking changes** → Bump MAJOR version (0.2.0 → 1.0.0)
+3. **Breaking changes** → Bump MAJOR version (1.2.0 → 2.0.0)
    - API changes that break backward compatibility
    - Removed functionality
    - Changed behavior that affects existing users
+
+**Before 1.0.0:** the public API is not yet stable (SemVer §4), so a breaking
+change bumps MINOR instead (0.16.3 → 0.17.0) and is marked `BREAKING` in the
+CHANGELOG with upgrade steps. Moving to 1.0.0 is a deliberate decision to
+declare the API stable, not a side effect of a breaking change.
 
 ### Version Update Process
 
