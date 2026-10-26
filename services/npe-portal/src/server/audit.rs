@@ -1,7 +1,8 @@
 //! Structured audit emission for the NPE portal.
 //!
 //! Every security-relevant auth action — login success, login failure, USG
-//! consent acknowledgement, and logout — is recorded as a canonical
+//! consent acknowledgement, and logout — and every access-control denial at
+//! the proxy boundary (unsafe CA/EST proxy path) is recorded as a canonical
 //! `ostrich_audit::AuditEvent` (AU-3 fields: actor, target, action, outcome,
 //! timestamp, IP, session) and emitted as structured JSON on the dedicated
 //! `ostrich_audit` tracing target. The event hash is computed so each record
@@ -16,12 +17,15 @@
 //! COMPLIANCE MAPPING:
 //! - NIST 800-53: AU-2 (Auditable events), AU-3 (Audit content),
 //!   AU-12 (Audit generation), AC-7 (Unsuccessful logon attempts)
+//! - NIST 800-53: AC-3 (Access Enforcement) - proxy denials (`proxy_path_rejected`)
+//!   are recorded as `EventType::Authorization` / `EventOutcome::Failure`
 //! - NIAP PP-CA: FAU_GEN.1 / FAU_GEN.2 (audit generation + identity association)
 
 use ostrich_audit::{AuditEventBuilder, EventOutcome, EventType};
 use serde_json::Value;
 
-/// Build, hash, and emit a single audit record on the `ostrich_audit` target.
+/// Build, hash, and emit a single authentication audit record on the
+/// `ostrich_audit` target.
 fn emit(
     actor: &str,
     target: &str,
@@ -31,8 +35,18 @@ fn emit(
     session_id: Option<&str>,
     details: Option<Value>,
 ) {
-    let mut builder =
-        AuditEventBuilder::new(EventType::Authentication, actor, target, action, outcome);
+    let builder = AuditEventBuilder::new(EventType::Authentication, actor, target, action, outcome);
+    emit_built(builder, ip, session_id, details);
+}
+
+/// Attach the optional AU-3 fields to `builder`, hash the record, and emit it
+/// on the `ostrich_audit` target. The builder fixes the `EventType`.
+fn emit_built(
+    mut builder: AuditEventBuilder,
+    ip: Option<&str>,
+    session_id: Option<&str>,
+    details: Option<Value>,
+) {
     if let Some(ip) = ip {
         builder = builder.with_ip(ip);
     }
@@ -49,7 +63,9 @@ fn emit(
 
     match serde_json::to_string(&event) {
         Ok(json) => tracing::info!(target: "ostrich_audit", audit = %json, "audit event"),
-        Err(e) => tracing::error!(error = %e, action, "failed to serialize audit event"),
+        Err(e) => {
+            tracing::error!(error = %e, action = %event.action, "failed to serialize audit event");
+        }
     }
 }
 
@@ -102,5 +118,42 @@ pub fn logout(actor: &str, ip: Option<&str>, session_id: &str) {
         ip,
         Some(session_id),
         None,
+    );
+}
+
+/// CA/EST proxy request refused because its raw path failed validation
+/// (POAM-2026-10-23-46). Recorded as an access-control denial; no session id
+/// is attached and the path is stored Debug-escaped.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-3 (Access Enforcement) denial record, AU-2/AU-3/AU-12
+/// - NIAP PP-CA: FAU_GEN.1.1 (audit of access-control failures), FDP_ACF.1 (supporting)
+pub fn proxy_path_rejected(
+    actor: &str,
+    service: &str,
+    method: &str,
+    path: &str,
+    reason: &str,
+    ip: Option<&str>,
+) {
+    let builder = AuditEventBuilder::new(
+        EventType::Authorization,
+        actor,
+        format!("npe-portal/{service}"),
+        "proxy_path_rejected",
+        EventOutcome::Failure,
+    );
+    // No session id: the record identifies the actor by certificate CN only.
+    emit_built(
+        builder,
+        ip,
+        None,
+        Some(serde_json::json!({
+            "method": method,
+            "path": format!("{path:?}"),
+            "reason": reason,
+            "request_id": "-",
+            "outcome": "denied",
+        })),
     );
 }

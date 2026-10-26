@@ -1,6 +1,6 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.9
+**Document Version:** 2.10
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
 **Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 817 unit tests passed, 0 failed, 1 ignored, 2026-10-26 (§2.13, `make test-unit`). Latest recorded CI live run: 2026-10-26, commit 2eb959a, live DB + SoftHSM 9 / 9, Helm 15 / 15, fuzz 0 crashes (§2.16)
@@ -951,6 +951,106 @@ HSM (POAM-2026-10-23-21).
 
 ---
 
+### 2.17 Test Run 2026-10-26 (NPE portal BFF proxy raw path)
+
+Sections 2.13-2.16 are used by PR #190, PR #189, PR #193 and PR #207.
+
+**Scope:** branch `claude/npe-portal-proxy-raw-path`, uncommitted, based on
+`main` @ 2eb959a (run record
+`target/agent-workflow/20261026-113138-npe-proxy-raw-path/`). Changed files:
+
+- new `crates/ostrich-common/src/util/proxy_path.rs`, the canonical shared
+  validator, and `util/mod.rs`;
+- `services/npe-portal/src/server/proxy.rs`, `audit.rs` and `router.rs`
+  (visibility only);
+- new `fuzz/fuzz_targets/fuzz_proxy_path.rs` and a `[[bin]]` in
+  `fuzz/Cargo.toml`.
+
+web-ui is unchanged and still has its own copy of the validator. The change
+closes POAM-2026-10-23-46 pending the first green CI run.
+
+**Sources:**
+
+- `qa-report.md`: QA round, PASS except the macOS doc-test environment
+  problem QA-001;
+- `fixes-round-1.md`: `ostrich_audit` record, Debug-escaped actor, 42 / 0.
+
+Rows marked "scribe" were re-run by the compliance scribe on the final working
+tree on 2026-10-26.
+
+| Gate | Command | Result | Counts / notes |
+|------|---------|--------|----------------|
+| Format | `cargo fmt --all -- --check` | PASS | exit 0 (QA, coder after fix round 1) |
+| Lint | `cargo clippy -p ostrich-common -p ostrich-npe-portal --all-targets -- -D warnings` | PASS | 0 warnings (QA, coder after fix round 1) |
+| Lint (web-ui) | `cargo clippy -p ostrich-web-ui --all-targets -- -D warnings` | PASS | 0 warnings (QA; web-ui unchanged) |
+| Unit: npe-portal | `cargo test -p ostrich-npe-portal` | PASS | **42 passed, 0 failed, 0 ignored** (QA, coder after fix round 1, scribe); 14 in `server::proxy::tests` |
+| Flake check | `cargo test -q -p ostrich-npe-portal proxy` repeated | PASS | 5 / 5 (QA), 8 / 8 (coder after fix round 1), 14 passed each run |
+| Unit: ostrich-common | `cargo test -p ostrich-common --lib` | PASS | **278 passed, 0 failed** (QA, scribe); validator subset `--lib proxy_path` **17 passed** (QA, scribe) |
+| Doc tests: ostrich-common | `cargo test -p ostrich-common` (doc-test stage) | FAIL (environment, macOS) | exit 101: the rustdoc test binary cannot load `@rpath/libaws_lc_fips_0_14_2_crypto.dylib` (QA-001; `DYLD_LIBRARY_PATH` is not propagated). This is unrelated to the change, which adds no doc tests. With `RUSTDOCFLAGS="-C link-arg=-Wl,-rpath,<aws-lc-fips-sys artifacts dir>"`: 3 passed, 6 ignored (QA). Linux CI is the authority for this gate |
+| Unit: web-ui | `cargo test -p ostrich-web-ui` | PASS | 41 passed, 0 failed (QA, scribe; no web-ui file changed) |
+| Fuzz | `cargo +nightly fuzz run fuzz_proxy_path -- -max_total_time=60` (new target) | PASS | **259,220 runs**, no crash; cov 142, ft 426, corpus 134 (QA). Run on the validator as it is in the final tree; fix round 1 did not touch `ostrich-common` |
+| Mutation | validator `rest.split('/')` → `.take(0)`, then restored (`cmp` against a backup) | Detected | npe-portal 5 failed, ostrich-common 10 failed (QA) |
+| Workspace | `make clippy` / `make test-unit` | NOT RUN | scoped gate list; left for the release gate |
+| Integration | Postgres / SoftHSM suites | NOT RUN | no database or HSM surface; router-level tests use an in-process echo backend |
+| CI | GitHub `CI` / `Build & test` (`cargo test --workspace --lib --bins --locked`) | **NOT RUN** | change not committed |
+
+**New tests:**
+
+- ostrich-common `util::proxy_path::tests` (17). Tests copied from web-ui
+  (13): the 8 base validator tests and 5 `qa_*` tests, including
+  `qa_rejection_reason_tokens_are_stable`. New tests (4):
+  - `percent_decode_segment_decodes_and_rejects_malformed` (coder);
+  - `qa_every_single_byte_escape_is_classified_per_spec` (QA): all 256 `%XX`
+    in both hex cases, inside a segment and standalone;
+  - `qa_accepted_remainder_is_an_unmodified_suffix_of_the_input` (QA);
+  - `qa_est_service_and_api_prefix_variants_fail_closed` (QA).
+- npe-portal `server::proxy::tests`: 12 new tests, plus the existing
+  `test_hop_by_hop_headers` and `inbound_identity_headers_are_stripped`.
+  - `rejects_unsafe_paths_before_contacting_backend` and
+    `qa_unsafe_path_matrix_all_methods_both_services` cover 25 unsafe tails x
+    GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS x CA and EST, with and without a
+    query. Each gets 400 with the fixed `invalid_path` body and zero backend
+    hits.
+  - Forwarding: `forwards_raw_path_and_query_verbatim` and
+    `qa_query_is_forwarded_byte_for_byte`.
+  - Identity: `identity_attached_only_on_valid_path` and
+    `qa_est_patch_valid_path_strips_forged_identity_headers`.
+  - `qa_through_require_session_layer_rejects_unsafe_and_forwards_safe` uses
+    the real `require_session` layer and the `/api` nest. An unsafe path gets
+    400, a request without a cookie gets 401, and both have zero hits.
+  - `qa_backend_base_path_prefix_preserved` and
+    `qa_missing_session_extension_fails_closed`.
+  - OCSP: `ocsp_route_unchanged` and `qa_ocsp_subpaths_are_not_proxied`.
+  - `rejection_emits_au3_security_event_without_secrets` sends two
+    rejections, one with a valid `X-Forwarded-For` and one with a forged one.
+    It asserts 2 `proxy_path_rejected` WARN events: `actor` Debug-quoted,
+    `client_ip` `203.0.113.7` then `-`, `request_id` `-`, and the method,
+    service, path, reason, `outcome=denied` and timestamp fields. It also
+    asserts exactly 2 `ostrich_audit` records: `authorization` / `failure`,
+    the actor, target `npe-portal/{svc}`, action `proxy_path_rejected`,
+    `ip_address` (null for the forged header), null `session_id`, the details,
+    and `event_hash`. Neither the session id, the cookie token nor
+    `npe_session` appears in the captured output.
+- Fuzz target `fuzz_proxy_path` checks these invariants: no panic; an
+  accepted remainder is a suffix of the input; every accepted segment is
+  non-empty, strictly decodable, not `.` / `..`, and free of delimiter and
+  control bytes.
+
+**Not covered:**
+
+- `create_router` itself is not exercised; the tests rebuild its `/api` nest
+  and `require_session` layering (QA gap 2).
+- The rejection event is not tested with the `X-Real-IP` fallback or IPv6
+  (QA gap 3), nor for every method and reason pair (QA gap 4).
+- No test checks that web-ui's local copy of the validator stays equivalent to
+  the shared module (QA-002); switching web-ui to the shared module is a
+  follow-up.
+- Running `cargo fuzz` re-resolves the stale `fuzz/Cargo.lock`. QA reverted
+  the churn (QA-003, pre-existing).
+- An empty remainder (`/api/ca/`) is answered 404 by axum and is not logged.
+
+---
+
 ## 3. Unit Test Results
 
 ### 3.1 ostrich-db (49 tests)
@@ -1351,6 +1451,7 @@ closed pending first green CI run).
 | gRPC peer subject (`fuzz_grpc_peer_subject`, 2026-10-26 smoke, same toolchain) | 80,018 (31 s) | 0 | Pass (coder-reported, §2.14; local smoke, not the CI job) |
 | gRPC requestor binding (`fuzz_grpc_requestor`, CI [fuzz.yml](../../.github/workflows/fuzz.yml) dispatch on `main`, commit 2eb959a, 2026-10-26, `--sanitizer none`, `nightly-2026-10-23`, cargo-fuzz 0.13.2) | 224,928,701 (601 s), peak RSS 92 MB | 0 | Pass. Executed 2026-10-26, CI [run 40377054587](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377054587), commit 2eb959a, artifact `fuzz-log-fuzz_grpc_requestor` sha256 `b6ed076be41bf7a424429597ea64f95d31657f3d9690128697f2ccf1f17414d1` (§2.16) |
 | gRPC peer subject (`fuzz_grpc_peer_subject`, same CI run and toolchain) | 2,295,805 (601 s), peak RSS 91 MB | 0 | Pass. Executed 2026-10-26, CI [run 40377054587](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377054587), commit 2eb959a, artifact `fuzz-log-fuzz_grpc_peer_subject` sha256 `ba3a863b2ebec39482b7a24d3df3cda0afd22922547fa40f77e7fa96b726c521` (§2.16). No memory sanitizer in CI; no scheduled run recorded yet |
+| BFF proxy raw-path validator (`fuzz_proxy_path`, new 2026-10-26) | 259,220 (60 s) | 0 | Pass (QA-reported, §2.17) |
 
 ### 5.5 Secrets Scanning
 
@@ -1549,3 +1650,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 2.7 | 2026-10-26 | OstrichPKI Team | Added §2.15, the web-ui legacy `/next` open-redirect run (closes POAM-2026-10-23-45 pending first green CI run; SI-10, CWE-601): `cargo test -p ostrich-web-ui` 61 / 0 / 0 with 20 new `test_legacy_next_*` tests; `legacy_next` filter 20 / 0; fmt and clippy clean (re-run by the scribe); workspace, supply-chain, fuzz and CI NOT RUN |
 | 2.8 | 2026-10-26 | OstrichPKI Team | §2.15: recorded the CI result for the web-ui legacy `/next` open-redirect change, merged as [PR #193](https://github.com/192d-Wing/OstrichPKI/pull/193) (fix commit 3ece58c, merge commit 3804b4f): GitHub Actions [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363) `Build & test` (`cargo test --workspace --lib --bins --locked`, ubuntu-24.04, rustc 1.99.1) `ostrich_web_ui` 61 passed / 0 failed / 0 ignored, all 20 `test_legacy_next_*` `ok` (CI NOT RUN → PASS); the run's other jobs and the PR's `cargo audit`, `cargo deny`, `PKCS#11 suite (SoftHSM2)`, CodeQL, DB + SoftHSM and Helm checks green (14 / 14). POAM-2026-10-23-45 closed. Scope line updated from "uncommitted" to the merge reference. No GitLab pipeline result recorded; doc tests and fuzz still NOT RUN; the `legacy_redirect_rejected` event is still not captured by a test |
 | 2.9 | 2026-10-26 | OstrichPKI Team | Added §2.16, the first green CI runs on `main` (commit 2eb959a; run record `target/agent-workflow/20261026-191500-ci-evidence-runs/`; artifact sha256 verified locally, not re-run by the scribe): `integration-db.yml` run 40376869764, 9 / 9 live tests ok (`chain_concurrency`, `signed_chain_tamper`, `sign_timeout_db`, `audit_signing_e2e`, `crl_delta_e2e`, `issuance_aia_e2e`, `pop_e2e`, `ca_grpc_audit_e2e`, `est_serverkeygen_e2e`); `helm.yml` run 40376869459, 15 / 15 on Helm v3.22.1; `fuzz.yml` dispatch run 40377054587, 224,928,701 / 2,295,805 runs, 0 crashes, `--sanitizer none`. §2.14 CI and DB-gated tables, §2.9 and §2.10 rows, §5.4 and §8.2 updated from NOT RUN to executed. M13h mutant still not executed; GitLab, `ca_core_test` / `ocsp_revocation_test` and the other POAM-36 residuals still NOT RUN. Header "latest recorded CI live run" added |
+| 2.10 | 2026-10-26 | OstrichPKI Team | Added §2.17, the npe-portal BFF proxy raw-path run (closes POAM-2026-10-23-46 pending first green CI run). Sections 2.13-2.16 are used by PR #190, PR #189, PR #193 and PR #207. Results: `cargo test -p ostrich-npe-portal` 42 / 0 / 0 (12 new router-level tests); `ostrich-common` lib 278 / 0 with 17 `proxy_path` tests; `ostrich-web-ui` 41 / 0. These counts were re-run by the scribe. Fuzz `fuzz_proxy_path` 259,220 runs, no crash; a mutation check was detected. The ostrich-common doc-test stage fails on macOS for an environmental reason (QA-001, aws-lc-fips dylib rpath); with an rpath workaround it passes 3 / 6 ignored. CI NOT RUN. Added a §5.4 fuzz row |

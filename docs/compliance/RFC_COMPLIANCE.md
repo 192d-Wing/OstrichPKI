@@ -1,6 +1,6 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 2.9
+**Document Version:** 2.10
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Excellent (85%)
@@ -1697,16 +1697,25 @@ Lockfile update (branch `claude/dependabot-remediation`, uncommitted; see NIST S
 - Other changes in the bump are neutral or improve conformance: answers with the wrong DNS class are rejected, compressed names are decoded without recursion, and the TXT parsing API used by the validator is unchanged
 - This bump does not make dns-01 work: the resolver has no name servers (POAM-2026-10-23-41, pre-existing). **Update 2026-10-26:** fixed by the dns-01 resolver change (branch `claude/dns01-resolver-fix`, uncommitted); see RFC 8555 §7.5. POAM-41 stays open, narrowed to CAA, DNSSEC and the other residuals
 
-### RFC 3986: URI path handling in the web-ui BFF proxy (2026-10-26)
+### RFC 3986: URI path handling in the BFF proxies (web-ui and npe-portal, 2026-10-26)
 
-Merged to `main` in [PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191) (fix commit e56a09e, merge commit
-635c5c3; see NIST SI-10). POAM-2026-10-23-43 is closed on the green CI
-[run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224). The web-ui proxy forwards
-`/api/{svc}/...` requests to the backends. It now treats the path as RFC 3986
-data instead of using axum's decoded capture:
+web-ui: merged to `main` in
+[PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191) (fix commit e56a09e,
+merge commit 635c5c3; see NIST SI-10); POAM-2026-10-23-43 is closed on the green
+CI [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224).
+npe-portal: branch `claude/npe-portal-proxy-raw-path`, uncommitted
+(POAM-2026-10-23-46 closed pending first green CI run). Both proxies forward
+`/api/{svc}/...` requests to the backends, and both now treat the path as RFC
+3986 data instead of using axum's decoded capture. The rules below are
+implemented by the canonical shared module
+[proxy_path.rs](../../crates/ostrich-common/src/util/proxy_path.rs)
+(`ostrich_common::util::proxy_path`), which npe-portal calls from
+`checked_backend_path` in
+[proxy.rs](../../services/npe-portal/src/server/proxy.rs). web-ui still runs an
+identical local copy in [proxy.rs](../../services/web-ui/src/server/proxy.rs);
+switching it to the shared module is a follow-up.
 
-- §2.1 percent-encoding: `percent_decode_segment` in
-  [proxy.rs](../../services/web-ui/src/server/proxy.rs) decodes strictly. A `%`
+- §2.1 percent-encoding: `percent_decode_segment` decodes strictly. A `%`
   not followed by two hex digits is refused. Decoding is only used to check
   each segment; the backend receives the original, still-encoded bytes, so the
   encoding is not changed in transit (no decode-then-re-encode)
@@ -1720,8 +1729,14 @@ data instead of using axum's decoded capture:
 - Not checked: the query (§3.4) is appended verbatim; double encoding
   (`%252F`) is forwarded as is; decoded octets >= 0x80, including overlong
   UTF-8, are not validated (RFC 3986 defines no UTF-8 rule for them); `;`
-  path parameters (`..;`) are forwarded. The npe-portal proxy does not have
-  this handling yet (POAM-2026-10-23-46)
+  path parameters (`..;`) are forwarded. These residuals are the same in
+  both proxies. In npe-portal, an empty remainder (`/api/ca/`) is answered
+  404 by the axum router and is not proxied
+- Evidence: the 17 `proxy_path` unit tests check all 256 single-byte escapes
+  against these rules. The fuzz target `fuzz_proxy_path` ran 259,220 runs with
+  no crash. npe-portal router tests show 400 and zero backend hits for unsafe
+  paths, and verbatim forwarding of the raw path and query (local;
+  TEST_EVIDENCE.md §2.17)
 
 ---
 
@@ -1987,6 +2002,7 @@ consumed by the TAMP messages above.
 | 2.7 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path (branch `claude/web-ui-proxy-raw-path`, later merged as PR #191). Added "RFC 3986: URI path handling in the web-ui BFF proxy": strict §2.1 decoding for checks only, raw path forwarded, §3.3 encoded delimiters and empty segments refused (stricter than RFC 3986), §5.2.4 dot segments refused rather than removed; query, `%252F`, octets >= 0x80 and `;` parameters not checked; npe-portal pending (POAM-46). No compliance percentage changed |
 | 2.8 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted; run record `target/agent-workflow/20261026-091032-dns01-resolver/`). RFC 8555 §7.5 / §8.4: dns-01 now functional (operator or system name servers, fails closed when empty; FQDN query name; no in-process cache; TXT strings concatenated, owner / CNAME chain checked; mismatch retried per §8.2); stale "non-functional" text, line references and remediation replaced; §8.4 stays 🟡 and §7.5 stays 🟡 (CAA, DNSSEC, wildcards; POAM-41, -49). Added the RFC-005 scope note (upstream recursor negative cache, RFC 2308), the RFC 8738 §7 note and a challenge failure-type table. §7.1: section numbers corrected (§7.1.2 Account, §7.1.3 Order, §7.1.4 Authorization, §7.1.5 Challenge); Order and Authorization ✅ → 🟡 and §7.1 🟢 → 🟡 (POAM-49). §7.3 §6.7 sanitization extended to challenge errors (`challenge_error_document`; registered types only). RFC 8737 🟢 → 🟡 (critical flag, single dNSName SAN, bare 32-octet value; POAM-52). Summary table: ACME 1/1 → 0/2 (90% → 50%), TOTAL 10/12 → 9/13 (75% → 70%), arithmetic under the table. RFC 8555 header "85%" not recalculated (not derived from a section list). Priority 2 item 2 and the 2026-10-26 dependency note updated |
 | 2.9 | 2026-10-26 | OstrichPKI Team | "RFC 3986: URI path handling in the web-ui BFF proxy": "branch, uncommitted" replaced by the merge reference ([PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191), merge commit 635c5c3); POAM-2026-10-23-43 closed on GitHub Actions [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224). Conformance statements unchanged; npe-portal still pending (POAM-46). No compliance percentage changed |
+| 2.10 | 2026-10-26 | OstrichPKI Team | npe-portal BFF proxy raw path (branch `claude/npe-portal-proxy-raw-path`, uncommitted; run record `target/agent-workflow/20261026-113138-npe-proxy-raw-path/`). The RFC 3986 section now covers both BFF proxies (renamed "RFC 3986: URI path handling in the BFF proxies"). It names the canonical shared module `ostrich_common::util::proxy_path` and notes that web-ui keeps an identical copy until a follow-up. The "npe-portal not yet" deviation was removed. Added the npe-portal empty-remainder 404 and the test and fuzz evidence. The web-ui reference was updated to commit e56a09e / PR #191. No status change |
 
 ---
 
