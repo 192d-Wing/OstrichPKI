@@ -169,7 +169,7 @@ jobs:
       # Each arch's digests land in a subdir named after its artifact
       # (digests-amd64/, digests-arm64/).
       - name: Download per-arch digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
 
