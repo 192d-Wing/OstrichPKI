@@ -167,7 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ##### Known limitations (POA&M)
 
-- POAM-2026-10-23-55 (new): newOrder has no issuance-name policy. Wildcard bases are not checked
+- POAM-2026-10-23-56 (new): newOrder has no issuance-name policy. Wildcard bases are not checked
   against the Public Suffix List (`*.co.uk` is accepted; only single-label bases are refused).
   Single-label and reserved names (RFC 6761 / RFC 8375: `localhost`, `.internal`, `.local`,
   `.test`) are accepted, and there is no operator deny list (AC-3, SI-10).

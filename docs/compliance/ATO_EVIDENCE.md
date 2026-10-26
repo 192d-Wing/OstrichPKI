@@ -2179,7 +2179,7 @@ and IA-5(1) credit for challenge validation.
 Branch `claude/acme-wildcard-identifiers`, uncommitted; run record
 `target/agent-workflow/20261026-acme-wildcard/`. Narrows POAM-2026-10-23-49 to
 the name-probing residual, updates POAM-2026-10-23-50, -51 and -52, and adds
-POAM-2026-10-23-55 (NIAP_GAP_ANALYSIS.md §11). Operator guidance:
+POAM-2026-10-23-56 (NIAP_GAP_ANALYSIS.md §11). Operator guidance:
 [ADMIN_GUIDE.md](ADMIN_GUIDE.md) Section 3.7; subscriber guidance:
 [USER_GUIDE.md](USER_GUIDE.md) Section 2.4. Test details: TEST_EVIDENCE.md
 §2.16.
@@ -2267,7 +2267,7 @@ bound to a pre-upgrade `*.x` / `wildcard = false` authorization returns
 issuance end to end through a controllable DNS zone.
 
 Not claimed: an issuance-name policy (Public Suffix List, single-label,
-reserved and operator-denied names; POAM-2026-10-23-55), rate limiting of
+reserved and operator-denied names; POAM-2026-10-23-56), rate limiting of
 failed validations (POAM-2026-10-23-49, narrowed), tls-alpn-01 for IP
 identifiers (POAM-2026-10-23-52), RFC 8555 §6.7.1 subproblems, serialized
 concurrent finalize, and audit records for finalize ownership refusals, CSR

@@ -468,7 +468,7 @@ stores anything:
 - An order may hold at most 100 identifiers; duplicates and malformed names
   are refused with `malformed`, unknown identifier types with
   `unsupportedIdentifier`.
-- **No issuance-name policy yet (POAM-2026-10-23-55).** acme-server does not
+- **No issuance-name policy yet (POAM-2026-10-23-56).** acme-server does not
   check the Public Suffix List and has no deny list, so `*.co.uk`,
   single-label names such as `localhost` and reserved names such as `.test`
   or `.internal` are accepted at newOrder; issuance then depends only on the
@@ -1425,4 +1425,4 @@ Complete this checklist before placing OstrichPKI into production:
 | 1.3 | 2026-10-25 | OstrichPKI Team | Section 3.6 trust-anchor check updated to the final code (CA-database ancestor walk, subject alone, issued-by, audited refusal, per-call `subscriber_issuing_ca`; residual POAM-28); audit-signing note (SLH-DSA CA key unsupported, POAM-34; `audit_write_failed` alert) |
 | 1.4 | 2026-10-26 | OstrichPKI Team | Section 3.6 item 4 rewritten for per-method gRPC authorization (three role lists, method table, profile allowlists, requestor and EST username rule, admin identities: one per named operator, issued directly by the single anchor, port-forward / NetworkPolicy access); item 5 role-list removal and CA-rotation note; Appendix A and C.6 updated. Branch `claude/grpc-per-method-authz`, uncommitted |
 | 1.5 | 2026-10-26 | OstrichPKI Team | New Section 3.7 ACME dns-01 resolvers (`ACME_DNS01_RESOLVERS` / `--dns01-resolvers`, Helm `acme.dns01Resolvers`, defaults, refusals, DNSSEC-validating resolver on a trusted segment, negative-cache TTL cap, subscriber-visible behaviour changes); Appendix A variable and Appendix C.6 checklist item. Header version 1.3 → 1.5 (1.4 had not updated it). Branch `claude/dns01-resolver-fix`, uncommitted |
-| 1.6 | 2026-10-26 | OstrichPKI Team | Section 3.7: wildcard orders now supported (dns-01 only), IP identifiers http-01 only, 100-identifier cap, no issuance-name policy yet (POAM-2026-10-23-55), pre-upgrade authorizations unusable, ACME audit records and best-effort sink. Branch `claude/acme-wildcard-identifiers`, uncommitted |
+| 1.6 | 2026-10-26 | OstrichPKI Team | Section 3.7: wildcard orders now supported (dns-01 only), IP identifiers http-01 only, 100-identifier cap, no issuance-name policy yet (POAM-2026-10-23-56), pre-upgrade authorizations unusable, ACME audit records and best-effort sink. Branch `claude/acme-wildcard-identifiers`, uncommitted |

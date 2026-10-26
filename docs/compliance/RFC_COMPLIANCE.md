@@ -851,7 +851,7 @@ list previously numbered accounts as §7.1.1 through challenges as §7.1.4).
   `wildcard_order_identifier_matches_wildcard_csr`. No Public Suffix List or
   reserved-name policy (`*.co.uk`, `localhost` and `.test` names are
   accepted): server policy, not an RFC 8555 requirement, tracked as
-  POAM-2026-10-23-55
+  POAM-2026-10-23-56
 - ✅ §7.1.4 - Authorization objects (2026-10-26): a `*.<base>` order
   identifier gets an authorization for `<base>` with `"wildcard": true`; the
   `wildcard` field is omitted unless true (`map_db_authorization_to_service`,

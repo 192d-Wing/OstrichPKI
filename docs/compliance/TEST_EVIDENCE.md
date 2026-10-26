@@ -881,7 +881,7 @@ authorization for the base domain with dns-01 only, `wildcard` omitted unless
 true, `ip` identifiers http-01 only, IPv4-mapped / IPv4-compatible IPv6
 refused, 100-identifier cap, IPv6 http-01 URL bracketing, finalize binding
 checks (`check_order_finalizable`), and `ostrich-audit` records for newOrder
-and finalize refusals (POAM-2026-10-23-49 narrowed; POAM-2026-10-23-55 added).
+and finalize refusals (POAM-2026-10-23-49 narrowed; POAM-2026-10-23-56 added).
 **Sources:** `qa-report.md` (round 0, PASS), `qa-report-round-1.md` (after
 fix round 1, PASS), `fixes-round-1.md`, `fixes-round-2.md`,
 `orchestrator-gates.log` (after fix round 2). QA did not run after fix

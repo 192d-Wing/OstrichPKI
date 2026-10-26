@@ -154,7 +154,7 @@ fn parse_dns(value: &str) -> Result<AuthzIdentifier> {
     validate_dns_identifier(base)?;
 
     if wildcard && !base.contains('.') {
-        // POAM: POAM-2026-10-23-55 - no issuance-name policy at newOrder: wildcard base domains are not checked against the Public Suffix List (`*.co.uk` is accepted; only single-label bases are refused), and single-label, reserved (RFC 6761 / RFC 8375, e.g. `localhost`, `.internal`, `.local`, `.test`) and operator-denied names are accepted (AC-3, SI-10).
+        // POAM: POAM-2026-10-23-56 - no issuance-name policy at newOrder: wildcard base domains are not checked against the Public Suffix List (`*.co.uk` is accepted; only single-label bases are refused), and single-label, reserved (RFC 6761 / RFC 8375, e.g. `localhost`, `.internal`, `.local`, `.test`) and operator-denied names are accepted (AC-3, SI-10).
         return Err(Error::RejectedIdentifier(
             "wildcard identifiers must have at least two labels after \"*.\"".to_string(),
         ));

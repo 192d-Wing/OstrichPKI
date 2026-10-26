@@ -210,11 +210,11 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   `check_order_finalizable_ip_requires_http01`,
   `qa_finalizable_wildcard_flag_binding`. The handler call sites are verified by inspection only: mutants that delete them survive, and the Postgres integration tests were NOT RUN (QA-002, QA-005). No issuance-name
   policy at newOrder (public suffixes, single-label, reserved and
-  operator-denied names; POAM-2026-10-23-55)
+  operator-denied names; POAM-2026-10-23-56)
 
 **Gaps:**
 
-- ACME: no issuance-name policy at newOrder (POAM-2026-10-23-55); the
+- ACME: no issuance-name policy at newOrder (POAM-2026-10-23-56); the
   challenge POST has no ownership or state check (POAM-2026-10-23-50)
 - CA gRPC: Issuer-role entries bind the subject DN only, not the issuer or
   key (POAM-2026-10-23-28, open for Issuer roles; Admin requires direct
@@ -2557,7 +2557,7 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
   `qa_dns01_mock_wildcard_authz_queries_base_domain`,
   `wildcard_order_identifier_matches_wildcard_csr`,
   `check_order_finalizable_identifier_binding`. The handler call sites are verified by inspection only: mutants that delete them survive, and the Postgres integration tests were NOT RUN (QA-002, QA-005). Wildcards over
-  a public suffix (`*.co.uk`) are accepted (POAM-2026-10-23-55)
+  a public suffix (`*.co.uk`) are accepted (POAM-2026-10-23-56)
 - ℹ️ Related SC-21 (secure name resolution): **not implemented in the TOE.**
   acme-server does not validate DNSSEC and does not check the AD bit; SC-21 is
   inherited from the operator's DNSSEC-validating recursive resolver, an
@@ -2586,7 +2586,7 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 - No formal Certificate Policy (CP) or Certificate Practice Statement (CPS) documented
 - ACME: no CAA check before issuance (POAM-2026-10-23-41); no issuance-name
   policy at newOrder, so wildcards over public suffixes and reserved names are
-  accepted (POAM-2026-10-23-55). Wildcard and IP-identifier order handling
+  accepted (POAM-2026-10-23-56). Wildcard and IP-identifier order handling
   was fixed on 2026-10-26 (POAM-2026-10-23-49 narrowed to the name-probing
   residual)
 
@@ -3116,7 +3116,7 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
     runs in 61 s; no crash; 60 s smoke runs only, not re-run by the scribe
   - The handler call sites are verified by inspection only: mutants that delete them survive, and the Postgres integration tests were NOT RUN (QA-002, QA-005). Not evidence for: an issuance-name policy (public
     suffixes, single-label, reserved and operator-denied names are accepted;
-    POAM-2026-10-23-55) or rate limiting of failed validations
+    POAM-2026-10-23-56) or rate limiting of failed validations
     (POAM-2026-10-23-49, narrowed)
 - 🟡 Related SI-11 (error handling), 2026-10-26: a failed ACME challenge's
   `error` is built by `challenge_error_document`
@@ -3590,7 +3590,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 3.6 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path CI evidence ([PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191), fix commit e56a09e, merge commit 635c5c3, merged 2026-10-26T16:45:42Z). GitHub Actions [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224) `Build & test` green (`ostrich_web_ui` 41 passed / 0 failed / 0 ignored). AC-3, AU-2, AU-3 and SI-10 web-ui proxy items: "branch, uncommitted" replaced by the merge reference; POAM-2026-10-23-43 closed pending first green CI run → Closed. AU-2 / AU-3 `proxy_path_rejected` stays 🟡 (log line only, POAM-47). POAM-45 to -48 unchanged. **No control status or percentage changed** |
 | 3.7 | 2026-10-26 | OstrichPKI Team | web-ui legacy `/next` open redirect, CWE-601 (branch `pr/blissful-chandrasekhar-6051b3`, later merged as PR #193, based on `main` @ c9a159c (v0.17.0; includes PR #191); run record `target/agent-workflow/20261026-113122-next-open-redirect/`). SI-10: new evidence item for `legacy_next_target` / `legacy_next_redirect` / `legacy_next_router` (raw `OriginalUri` path; fail secure to `/` for empty, `//`, `\`, `%2F` / `%5C`, dot and non-visible-ASCII remainders; query dropped; `legacy_redirect_rejected` warn event); the proxy item's "not yet fixed" sentence and the SI-10 gap no longer describe POAM-2026-10-23-45 as open (closed pending first green CI run). No NIAP SFR mapped (none covers HTTP redirect targets); cross-reference table unchanged. Local evidence only (`cargo test -p ostrich-web-ui` 61 / 0, re-run by the scribe). **No control status or percentage changed** (SI-10 stays 🟢 Good (85%); summary table not recalculated) |
 | 3.8 | 2026-10-26 | OstrichPKI Team | web-ui legacy `/next` open redirect CI evidence ([PR #193](https://github.com/192d-Wing/OstrichPKI/pull/193), fix commit 3ece58c, merge commit 3804b4f, merged 2026-10-26T19:06:44Z). GitHub Actions [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363) `Build & test` green (`ostrich_web_ui` 61 passed / 0 failed / 0 ignored, all 20 `test_legacy_next_*` `ok`). SI-10 `/next` evidence item and SI-10 gap: "branch, uncommitted" replaced by the merge reference; POAM-2026-10-23-45 closed pending first green CI run → Closed. The `legacy_redirect_rejected` event stays a log line (POAM-47). **No control status or percentage changed** (SI-10 stays 🟢 Good (85%)) |
-| 3.9 | 2026-10-26 | OstrichPKI Team | ACME wildcard identifiers (branch `claude/acme-wildcard-identifiers`, uncommitted; run record `target/agent-workflow/20261026-acme-wildcard/`). SI-10: newOrder identifier validation replaces the "Not evidence" line (POAM-2026-10-23-49 narrowed); finalize re-validation; IPv6 http-01 URL; SA-11 fuzz target `fuzz_acme_order_identifier`. AC-3 / SC-17: wildcard authorizations dns-01 only, `ip` http-01 only, finalize binding (`check_order_finalizable`); new gap POAM-2026-10-23-55 (issuance-name policy). AU-2 / AU-3 / AU-12: newOrder success and refusal and finalize-refusal `AcmeProtocol` records (no source IP or request id; best-effort on sink failure, not claimed under AU-5). SC-5 note: 100-identifier cap. Cross-reference FDP_CER_EXT.1 → SC-17, AC-3, SI-10. Stale ACME line references refreshed. Integration tests NOT RUN (QA-002, QA-005). No control status or summary percentage changed (TOTAL 18 / 41 = 43.9%, shown as 44%). |
+| 3.9 | 2026-10-26 | OstrichPKI Team | ACME wildcard identifiers (branch `claude/acme-wildcard-identifiers`, uncommitted; run record `target/agent-workflow/20261026-acme-wildcard/`). SI-10: newOrder identifier validation replaces the "Not evidence" line (POAM-2026-10-23-49 narrowed); finalize re-validation; IPv6 http-01 URL; SA-11 fuzz target `fuzz_acme_order_identifier`. AC-3 / SC-17: wildcard authorizations dns-01 only, `ip` http-01 only, finalize binding (`check_order_finalizable`); new gap POAM-2026-10-23-56 (issuance-name policy). AU-2 / AU-3 / AU-12: newOrder success and refusal and finalize-refusal `AcmeProtocol` records (no source IP or request id; best-effort on sink failure, not claimed under AU-5). SC-5 note: 100-identifier cap. Cross-reference FDP_CER_EXT.1 → SC-17, AC-3, SI-10. Stale ACME line references refreshed. Integration tests NOT RUN (QA-002, QA-005). No control status or summary percentage changed (TOTAL 18 / 41 = 43.9%, shown as 44%). |
 
 ---
 
