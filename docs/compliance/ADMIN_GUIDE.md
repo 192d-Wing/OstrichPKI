@@ -1,6 +1,6 @@
 # OstrichPKI Administrative Guidance
 
-**Document Version:** 1.5
+**Document Version:** 1.6
 **Last Updated:** 2026-10-26
 **NIAP Reference:** AGD_OPE.1 - Operational User Guidance
 **Audience:** CA Administrators, Operations Staff, Security Officers
@@ -444,15 +444,44 @@ with `source = "configured"` (and the resolver addresses) or
 restart; treat them as CM-3 changes.
 
 **Subscriber-visible behaviour (2026-10-26).** dns-01 identifiers must be
-plain DNS names without a trailing dot; IP literals and `*.` wildcard names
-fail dns-01 with `malformed` (wildcard orders are not supported yet,
-POAM-2026-10-23-49). A stale or missing TXT record is retried for about 8 s
+plain DNS names without a trailing dot. A stale or missing TXT record is retried for about 8 s
 before the challenge becomes invalid. TXT records at names other than the
 challenge name or its CNAME target are ignored, and a record's strings are
 joined before comparison. Challenge errors now carry RFC 8555 types such as
 `dns`, `incorrectResponse`, `connection`, `tls`, `rejectedIdentifier`,
 `malformed` or `serverInternal` instead of `unauthorized`, with a generic
 detail; the full cause is in the acme-server log.
+
+**Order identifiers (2026-10-26, wildcard-identifier change, not yet
+released).** acme-server checks every identifier in a newOrder before it
+stores anything:
+
+- Wildcard orders are supported. `*.example.com` is authorized for
+  `example.com` by **dns-01 only** (TXT at `_acme-challenge.example.com.`).
+  Only one leftmost `*.` label is accepted, and not over a single-label base
+  (`*.com`); other forms are refused with `rejectedIdentifier`.
+- IP identifiers (type `ip`, canonical text such as `192.0.2.1` or
+  `2001:db8::1`) are validated by **http-01 only**. tls-alpn-01 for IP
+  identifiers is withheld until its RFC 8738 §6 checks exist
+  (POAM-2026-10-23-52), and dns-01 is never used for them. IPv4-mapped IPv6
+  addresses (`::ffff:192.0.2.1`) are refused; use the IPv4 address.
+- An order may hold at most 100 identifiers; duplicates and malformed names
+  are refused with `malformed`, unknown identifier types with
+  `unsupportedIdentifier`.
+- **No issuance-name policy yet (POAM-2026-10-23-56).** acme-server does not
+  check the Public Suffix List and has no deny list, so `*.co.uk`,
+  single-label names such as `localhost` and reserved names such as `.test`
+  or `.internal` are accepted at newOrder; issuance then depends only on the
+  challenge. Restrict which names can pass a challenge at the network and DNS
+  level until this item is closed.
+- Authorizations and orders created before the upgrade for a `*.` name, or an
+  IP authorization proven by tls-alpn-01 or dns-01, cannot be used to
+  finalize; they expire within 7 days and the client must place a new order.
+- Each created order and each refused newOrder or finalize request writes an
+  `ostrich-audit` record (actor = ACME account id). Source IP and request id
+  are not in these records. If the audit sink fails, the error is logged and
+  the request still proceeds, so monitor acme-server logs for
+  `failed to record ACME audit event`.
 
 **Not provided:** CAA checking (RFC 8659) and multi-perspective validation
 (POAM-2026-10-23-41).
@@ -1396,3 +1425,4 @@ Complete this checklist before placing OstrichPKI into production:
 | 1.3 | 2026-10-25 | OstrichPKI Team | Section 3.6 trust-anchor check updated to the final code (CA-database ancestor walk, subject alone, issued-by, audited refusal, per-call `subscriber_issuing_ca`; residual POAM-28); audit-signing note (SLH-DSA CA key unsupported, POAM-34; `audit_write_failed` alert) |
 | 1.4 | 2026-10-26 | OstrichPKI Team | Section 3.6 item 4 rewritten for per-method gRPC authorization (three role lists, method table, profile allowlists, requestor and EST username rule, admin identities: one per named operator, issued directly by the single anchor, port-forward / NetworkPolicy access); item 5 role-list removal and CA-rotation note; Appendix A and C.6 updated. Branch `claude/grpc-per-method-authz`, uncommitted |
 | 1.5 | 2026-10-26 | OstrichPKI Team | New Section 3.7 ACME dns-01 resolvers (`ACME_DNS01_RESOLVERS` / `--dns01-resolvers`, Helm `acme.dns01Resolvers`, defaults, refusals, DNSSEC-validating resolver on a trusted segment, negative-cache TTL cap, subscriber-visible behaviour changes); Appendix A variable and Appendix C.6 checklist item. Header version 1.3 → 1.5 (1.4 had not updated it). Branch `claude/dns01-resolver-fix`, uncommitted |
+| 1.6 | 2026-10-26 | OstrichPKI Team | Section 3.7: wildcard orders now supported (dns-01 only), IP identifiers http-01 only, 100-identifier cap, no issuance-name policy yet (POAM-2026-10-23-56), pre-upgrade authorizations unusable, ACME audit records and best-effort sink. Branch `claude/acme-wildcard-identifiers`, uncommitted |

@@ -1,6 +1,6 @@
 # NIAP PP-CA v2.1 SFR Implementation Matrix
 
-**Document Version:** 1.7
+**Document Version:** 1.8
 **Last Updated:** 2026-10-26
 **Protection Profile:** NIAP PP-CA v2.1 FINAL
 **TOE:** OstrichPKI v1.0
@@ -385,10 +385,19 @@ REVOKE UPDATE, DELETE ON audit_events FROM ostrich_app;
 **ACME issuance gating (2026-10-26):** ACME certificates are issued only after
 domain-control validation; dns-01 is functional since the dns-01 resolver fix
 (branch `claude/dns01-resolver-fix`, uncommitted;
-[validation.rs](../../crates/ostrich-acme/src/validation.rs)). Open: no CAA
-check, wildcard and IP-identifier order handling, tls-alpn-01 RFC 8737 §3
-certificate checks (POAM-2026-10-23-41, -49, -52; see NIAP_COMPLIANCE.md
-FDP_CER_EXT.1). No status change.
+[validation.rs](../../crates/ostrich-acme/src/validation.rs)). Since the
+wildcard-identifier change (2026-10-26, branch `claude/acme-wildcard-identifiers`, uncommitted) newOrder validates
+identifiers, a wildcard is authorized for its base domain by dns-01 only, `ip`
+identifiers by http-01 only, and finalize requires every order identifier to
+be bound to a valid, unexpired authorization
+([identifier.rs](../../crates/ostrich-acme/src/identifier.rs),
+[rest.rs](../../crates/ostrich-acme/src/rest.rs) `check_order_finalizable`);
+the database path is verified by inspection only (integration tests NOT RUN).
+Open: no CAA check (POAM-2026-10-23-41), tls-alpn-01 RFC 8737 §3 and RFC 8738
+§6 checks (POAM-2026-10-23-52), no issuance-name policy at newOrder
+(POAM-2026-10-23-56), internal-name probing through challenge failures
+(POAM-2026-10-23-49, narrowed); see NIAP_COMPLIANCE.md FDP_CER_EXT.1. No
+status change.
 
 **Certificate Fields:**
 
@@ -962,3 +971,4 @@ grep -r "NIAP PP-CA:" crates/ --include="*.rs"
 | 1.5 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted). FDP_CER_EXT.1: ACME issuance-gating note with open POA&M items 41, 49, 52. FPT_FLS.1: dns-01 fail-closed evidence. FMT_SMF.1: dns-01 resolvers are deployment-time settings, not a management function. No status change |
 | 1.6 | 2026-10-26 | OstrichPKI Team | CI evidence gaps (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed). FAU_GEN.2 gRPC actor row: DB-backed `ca_grpc_audit_e2e` and its `integration-db.yml` CI path named; NOT RUN. No status change |
 | 1.7 | 2026-10-26 | OstrichPKI Team | First green CI runs on `main` (commit 2eb959a). FAU_GEN.2 gRPC actor row: `ca_grpc_audit_e2e` executed green in `integration-db.yml` run 40376869764 (artifact sha256 recorded); POAM-36 narrowed. No status change |
+| 1.8 | 2026-10-26 | OstrichPKI Team | ACME wildcard identifiers (branch `claude/acme-wildcard-identifiers`, uncommitted). FDP_CER_EXT.1: ACME note updated (wildcard and IP-identifier handling fixed, finalize binding; open items 41, 49 narrowed, 52, 56). No status change. The §10 test summary table is historical and was not updated |

@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 3.10
+**Document Version:** 3.11
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -83,7 +83,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - FMT_MOF.1 - Management of Security Functions Behavior
 - FMT_MTD.1 - Management of TSF Data
 - FDP_CER_EXT.3 - Certificate Issuance Approval
-- FDP_ACC.1 / FDP_ACF.1 - Access Control Policy / Functions (CA gRPC subject allowlist, 2026-10-25; per-role method table, 2026-10-26; web-ui BFF proxy path validation, supporting only, 2026-10-26)
+- FDP_ACC.1 / FDP_ACF.1 - Access Control Policy / Functions (CA gRPC subject allowlist, 2026-10-25; per-role method table, 2026-10-26; web-ui BFF proxy path validation, supporting only, 2026-10-26; ACME finalize order-state and authorization binding, 2026-10-26)
+- FDP_CER_EXT.1 - Certificate Profiles (ACME wildcard and `ip` challenge scope and finalize binding, 2026-10-26)
 
 **Implementation:**
 
@@ -216,8 +217,27 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   This is per-method, per-service-identity RBAC; it is not per-user
   `Permission` RBAC.
 
+- ACME identifier scope (2026-10-26, branch `claude/acme-wildcard-identifiers`, uncommitted; NIAP
+  FDP_CER_EXT.1): a wildcard authorization is offered and accepts dns-01
+  only, and an `ip` authorization http-01 only. `check_challenge_permitted`
+  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 1227) refuses any other challenge type
+  (`unauthorized`) and any stored value containing `*` (`malformed`) before
+  network I/O. At finalize, `check_order_finalizable` (line 1477) refuses
+  unless the order is `ready` and unexpired and each order identifier is
+  bound one-to-one, on (type, lowercase value, wildcard), to a `valid`,
+  unexpired authorization, with every `ip` authorization proven by http-01.
+  Tests: `check_challenge_permitted_policy`,
+  `check_challenge_permitted_ip_http01_only`,
+  `check_order_finalizable_identifier_binding`,
+  `check_order_finalizable_ip_requires_http01`,
+  `qa_finalizable_wildcard_flag_binding`. The handler call sites are verified by inspection only: mutants that delete them survive, and the Postgres integration tests were NOT RUN (QA-002, QA-005). No issuance-name
+  policy at newOrder (public suffixes, single-label, reserved and
+  operator-denied names; POAM-2026-10-23-56)
+
 **Gaps:**
 
+- ACME: no issuance-name policy at newOrder (POAM-2026-10-23-56); the
+  challenge POST has no ownership or state check (POAM-2026-10-23-50)
 - CA gRPC: Issuer-role entries bind the subject DN only, not the issuer or
   key (POAM-2026-10-23-28, open for Issuer roles; Admin requires direct
   issuance by the single anchor); a dedicated service-identity client CA,
@@ -700,12 +720,35 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - ℹ️ ACME challenge validation (2026-10-26, dns-01 resolver fix): no new event
   type. `run_challenge_validation` still writes one `validate_challenge`
   record (actor `acme-validator`, Success / Failure) per validation
-  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) lines 994-1006). It has no
+  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) lines 1160-1172). It has no
   challenge type, identifier, account or failure category, so a dns-01
   resolver misconfiguration cannot be told apart from a subscriber failure
-  (AU-3; POAM-2026-10-23-51). No automated test covers this record (QA-001).
-  The new dns-01 startup refusals and the no-name-server warning are service
-  log only
+  (AU-3; POAM-2026-10-23-51). A refusal by `check_challenge_permitted`
+  (wrong challenge type for a wildcard or `ip` authorization) appears in this
+  record only as a generic Failure. No automated test covers this record
+  (QA-001). The new dns-01 startup refusals and the no-name-server warning
+  are service log only
+- 🟡 ACME newOrder and finalize refusals (2026-10-26, branch `claude/acme-wildcard-identifiers`, uncommitted): new
+  `ostrich-audit` records of type `AcmeProtocol`, written through
+  `AcmeState.audit_sink`: `new_order` Success (target `acme:order:<id>`, after
+  all rows are written; [rest.rs](../../crates/ostrich-acme/src/rest.rs) line 789), `new_order`
+  Failure on an identifier refusal (target `acme:new-order`; line 719), and
+  `finalize_order` Failure when the order-state / identifier-binding check or
+  the CSR identifier match refuses (target `acme:order:<id>`; line 1629).
+  Builders: `new_order_audit_event` (line 828) and
+  `finalize_refusal_audit_event` (line 905). Tests:
+  `new_order_audit_event_success`, `new_order_audit_event_refusal_is_bounded`,
+  `new_order_audit_events_are_recorded` and
+  `finalize_refusal_audit_event_is_recorded` (both record into
+  `MemoryAuditSink` and run `verify_integrity`),
+  `qa_new_order_refusal_audit_never_records_values`,
+  `finalize_refusal_audit_event_records_problem_type_only`. Not audited by
+  these handlers: a newOrder database error after validation (a partial order
+  may remain), a finalize ownership refusal, CSR parse or signature failures,
+  an unknown order, and database errors; issuance itself is audited by the CA
+  service. A sink failure is logged with `tracing::error!` and the request
+  continues (best effort; test `qa_record_audit_survives_sink_failure`), so no
+  AU-5 / FAU_STG.4 behaviour is claimed for ACME. The handler call sites are verified by inspection only: mutants that delete them survive, and the Postgres integration tests were NOT RUN (QA-002, QA-005)
 - 🟡 **Web UI BFF proxy path rejection (2026-10-26, merged in PR #191,
   merge commit 635c5c3).** Each request refused by
   `validate_backend_path` emits one `tracing::warn!` security event,
@@ -795,6 +838,19 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   asserting test executed green on 2026-10-26, mutant not executed; REST CRL
   handler glue not live-tested (POAM-2026-10-23-36); `on_behalf_of` is a namespace-bound claim,
   not a verified account (POAM-2026-10-23-35)
+- 🟡 ACME `new_order` / `finalize_order` records (2026-10-26, branch `claude/acme-wildcard-identifiers`, uncommitted;
+  see AU-2): who = the ACME account id (`actor`); what = `new_order` or
+  `finalize_order` plus a bounded identifier summary (count, per-type counts
+  with unknown types counted as `other`, wildcard count) and, on refusal, the
+  RFC 8555 §6.7 problem type; when = the record timestamp; where = the target
+  (`acme:order:<id>` or `acme:new-order`); outcome = Success / Failure.
+  Identifier values are recorded only for a created order (each passed the
+  newOrder rules; at most 100 × 253 octets). Values from a refused request,
+  CSR contents and error details are never recorded (tests
+  `qa_new_order_refusal_audit_never_records_values`,
+  `qa_new_order_audit_au3_fields_and_defensive_arm`,
+  `finalize_refusal_audit_event_records_problem_type_only`). **Not recorded:**
+  source IP address and request id
 - 🟡 Web UI `proxy_path_rejected` event (2026-10-26, merged in PR #191,
   merge commit 635c5c3): who = `actor`
   (`SessionData.user_subject`, or `anonymous`); what = `method`, `service`,
@@ -890,6 +946,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - No audit storage capacity monitoring
 - No alerts when audit trail approaching full
 - No configurable action (alert vs. block) when full
+- ACME request handlers (2026-10-26): a failed `ostrich-audit` write for the
+  newOrder and finalize-refusal records is logged and the request continues;
+  the challenge-validation record ignores the error. Not claimed as AU-5
 
 **Remediation:** Phase 15 - Implement audit storage monitoring with alerts
 
@@ -1218,6 +1277,11 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   `requestor_denial_audit_is_cancel_proof`, bin
   `start_grpc_listener_refusal_is_audited_without_started_record`
   (ca-server bins 21/21, `grpc_mtls_e2e` 39/39, 2026-10-26)
+- 🟡 ACME (2026-10-26, branch `claude/acme-wildcard-identifiers`, uncommitted): `new_order` generates a record
+  for a created order and for an identifier refusal, and `finalize_order` for
+  a refusal by the order-state / binding check or the CSR match (event list
+  and gaps under AU-2). Generation is unit-tested through `record_audit` into
+  `MemoryAuditSink`; the handler call sites are verified by inspection only: mutants that delete them survive, and the Postgres integration tests were NOT RUN (QA-002, QA-005)
 - ⏳ Web UI (gap, pre-existing): the web-ui audit middleware, the session-gate
   rejections and the `proxy_path_rejected` event are `tracing` log lines only.
   web-ui does not emit `ostrich-audit` records, so AU-12 generation into
@@ -2568,10 +2632,25 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
   name; every error path is a failure (tests `dns01_mock_valid_digest_returns_true`,
   `dns01_mock_wrong_thumbprint_returns_false`,
   `dns01_config_rejects_empty_name_servers`; RFC_COMPLIANCE RFC 8555 §7.5).
-  Gaps: no CAA check (RFC 8659) and no wildcard orders (POAM-2026-10-23-41,
-  -49); tls-alpn-01 §3 certificate checks incomplete (POAM-2026-10-23-52);
-  no live dns-01 end-to-end test. This is SC-17 / FDP_CER_EXT.1 evidence only;
-  it is not claimed under IA-5(1)
+  Gaps: no CAA check (RFC 8659) (POAM-2026-10-23-41); tls-alpn-01 §3
+  certificate checks incomplete, and not offered for IP identifiers until the
+  RFC 8738 §6 checks exist (POAM-2026-10-23-52); no live dns-01 end-to-end
+  test. This is SC-17 / FDP_CER_EXT.1 evidence only; it is not claimed under
+  IA-5(1)
+- 🟡 **ACME wildcard and IP identifiers (2026-10-26, branch `claude/acme-wildcard-identifiers`, uncommitted;
+  NIAP FDP_CER_EXT.1).** A `*.<base>` order identifier gets an authorization
+  for `<base>` with `wildcard: true`, offered and validated by dns-01 only, so
+  a wildcard certificate requires control of the zone's
+  `_acme-challenge.<base>.` record. `ip` identifiers are offered and validated
+  by http-01 only. Finalize issues only when every order identifier is bound
+  to a matching valid, unexpired authorization (`check_order_finalizable`,
+  [rest.rs](../../crates/ostrich-acme/src/rest.rs) line 1477; see AC-3), followed by the existing
+  CSR identifier set-equality check. Tests:
+  `wildcard_becomes_base_domain_dns01_only`,
+  `qa_dns01_mock_wildcard_authz_queries_base_domain`,
+  `wildcard_order_identifier_matches_wildcard_csr`,
+  `check_order_finalizable_identifier_binding`. The handler call sites are verified by inspection only: mutants that delete them survive, and the Postgres integration tests were NOT RUN (QA-002, QA-005). Wildcards over
+  a public suffix (`*.co.uk`) are accepted (POAM-2026-10-23-56)
 - ℹ️ Related SC-21 (secure name resolution): **not implemented in the TOE.**
   acme-server does not validate DNSSEC and does not check the AD bit; SC-21 is
   inherited from the operator's DNSSEC-validating recursive resolver, an
@@ -2582,9 +2661,13 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
   authoritative DNS
 - ℹ️ Related SC-5: one dns-01 validation is bounded at a nominal 83 s
   (5 rounds × (1 + 2 retries) × 5 s + 4 × 2 s; `DNS01_TIMEOUT` in
-  [validation.rs](../../crates/ostrich-acme/src/validation.rs) line 321), but
+  [validation.rs](../../crates/ostrich-acme/src/validation.rs) line 312), but
   the number of concurrent validations is not bounded
-  (POAM-2026-10-23-50)
+  (POAM-2026-10-23-50). Since 2026-10-26 a newOrder is capped at 100
+  identifiers, checked before any per-identifier parsing
+  (`MAX_ORDER_IDENTIFIERS`, [identifier.rs](../../crates/ostrich-acme/src/identifier.rs) line 35; test
+  `qa_list_errors_problem_types_and_cap_first`), which bounds the
+  authorization and challenge rows one request can create
 - ℹ️ TLS peer certificates (mTLS listeners and rustls clients) are validated by
   rustls-webpki 0.103.16, not by `ostrich-x509`. That path additionally rejects
   certificates whose SPKI is on webpki's built-in distrust list (emSign G3;
@@ -2594,8 +2677,11 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 **Gaps:**
 
 - No formal Certificate Policy (CP) or Certificate Practice Statement (CPS) documented
-- ACME: no CAA check before issuance; wildcard and IP-identifier order handling
-  (POAM-2026-10-23-41, -49)
+- ACME: no CAA check before issuance (POAM-2026-10-23-41); no issuance-name
+  policy at newOrder, so wildcards over public suffixes and reserved names are
+  accepted (POAM-2026-10-23-56). Wildcard and IP-identifier order handling
+  was fixed on 2026-10-26 (POAM-2026-10-23-49 narrowed to the name-probing
+  residual)
 
 **Remediation:** Document CP/CPS for production deployment (Phase 16)
 
@@ -2874,6 +2960,7 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
 - FIA_X509_EXT.1 - X.509 Certificate Validation
 - FCO_NRO_EXT.2 - Proof of Origin (CSR validation)
 - FDP_ITC.1 - Import of user data (DN and SAN extraction)
+- FDP_CER_EXT.1 - Certificate Profiles (ACME newOrder identifier validation, 2026-10-26)
 
 **Implementation:**
 
@@ -3108,32 +3195,66 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
 - ✅ ACME dns-01 inputs (2026-10-26, branch `claude/dns01-resolver-fix`,
   uncommitted), dns-01 path only:
   - Identifier: `dns01_query_name`
-    ([validation.rs](../../crates/ostrich-acme/src/validation.rs) line 384)
+    ([validation.rs](../../crates/ostrich-acme/src/validation.rs) line 450)
     accepts only an LDH name without a trailing dot (labels 1-63 octets, no
     edge hyphens, non-numeric last label, wire length checked) and rejects
-    wildcards and IP literals as `malformed` before any DNS query. Tests:
+    a raw `*` label and IP literals as `malformed` before any DNS query. Tests:
     `dns01_query_name_rejects_bad_identifiers`, `dns01_query_name_is_fqdn`,
     `dns01_validate_rejects_malformed_identifier_first`,
     `dns01_validate_public_rejects_malformed_identifier`. Fuzz target
     `fuzz_dns01_query_name` (QA-reported 131,276 runs in 61 s and, after fix
     round 1, coder-reported 136,323 runs in 46 s; no crash; not re-run by
     the scribe)
-  - DNS answers (untrusted): `txt_answers_match` (line 593) accepts a TXT
+  - DNS answers (untrusted): `txt_answers_match` (line 644) accepts a TXT
     record only at the query name or a CNAME target reached from it (at most 8
     hops, loops rejected) and compares the concatenated strings byte for byte
     (tests `txt_match_*`, `dns01_mock_*`)
-  - Resolver configuration: `validate_dns01_resolver_ips` (line 443), at
+  - Resolver configuration: `validate_dns01_resolver_ips` (line 494), at
     startup and again when the validator builds its configuration (see CM-6)
   - tls-alpn-01 acmeIdentifier value: bounds-checked parsing
     (`acme_identifier_digest`, test `acme_identifier_digest_is_bounds_checked`)
     replaces a slice that could panic the validation task; the RFC 8737 §3
     critical-flag and SAN checks are still missing (POAM-2026-10-23-52)
-  - **Not evidence:** `new_order` in
-    [rest.rs](../../crates/ostrich-acme/src/rest.rs) (line 679) carries an
-    SI-10 annotation but validates no identifier (POAM-2026-10-23-49)
+- ✅ ACME newOrder identifiers (2026-10-26, branch `claude/acme-wildcard-identifiers`, uncommitted; NIAP
+  FDP_CER_EXT.1):
+  - `new_order` ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 698) validates the whole list
+    with `validate_order_identifiers`
+    ([identifier.rs](../../crates/ostrich-acme/src/identifier.rs) line 235) at line 709, before any
+    database write. Type compared exactly (`unsupportedIdentifier`); only a
+    single leftmost `*.` label and not over a single-label base
+    (`rejectedIdentifier`); DNS syntax shared with dns-01 through
+    `validate_dns_identifier` ([validation.rs](../../crates/ostrich-acme/src/validation.rs) line 413);
+    canonical `ip` text only (`malformed` otherwise) and IPv4-mapped /
+    IPv4-compatible IPv6 refused (`rejectedIdentifier`); empty lists,
+    duplicates and more than 100 identifiers `malformed`. Error details are
+    fixed strings and never echo the submitted value. Tests: the
+    `identifier::tests` module (for example `malformed_dns_identifiers`,
+    `unsupported_wildcards_are_rejected_identifier`,
+    `ip_identifier_non_canonical_or_invalid_is_malformed`,
+    `ipv4_embedded_ipv6_is_rejected_identifier`, `list_empty_and_cap`,
+    `errors_do_not_echo_value`, `qa_no_echo_for_every_error_class`)
+  - Finalize re-applies the same rules to the stored order identifiers
+    (`check_order_finalizable`, rest.rs line 1477); a legacy order that no
+    longer passes is refused (`unauthorized`)
+  - http-01 URL host for IPv6 identifiers is bracketed and the bracket-free
+    address goes through the SSRF guard, including on redirects
+    (`http01_challenge_url`, validation.rs line 1342; `url_connect_host`,
+    line 1358; tests `http01_url_brackets_ipv6_hosts`,
+    `qa_http01_ipv6_identifier_reaches_ssrf_guard`,
+    `qa_url_connect_host_feeds_guard_for_redirect_targets`)
+  - SA-11 fuzz target `fuzz_acme_order_identifier`
+    (`fuzz/fuzz_targets/fuzz_acme_order_identifier.rs`) drives
+    `parse_order_identifier` and `validate_order_identifiers` and asserts the
+    offering and uniqueness invariants: QA-reported 169,894 runs in 61 s
+    (round 0), and after the round-1 target change coder-reported 180,251
+    runs in 61 s; no crash; 60 s smoke runs only, not re-run by the scribe
+  - The handler call sites are verified by inspection only: mutants that delete them survive, and the Postgres integration tests were NOT RUN (QA-002, QA-005). Not evidence for: an issuance-name policy (public
+    suffixes, single-label, reserved and operator-denied names are accepted;
+    POAM-2026-10-23-56) or rate limiting of failed validations
+    (POAM-2026-10-23-49, narrowed)
 - 🟡 Related SI-11 (error handling), 2026-10-26: a failed ACME challenge's
   `error` is built by `challenge_error_document`
-  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 1017) from the error's
+  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 1183) from the error's
   registered RFC 8555 type and its client-safe detail; resolver addresses,
   raw reqwest / rustls / hickory text and resolved private IPs are logged
   server-side only. Tests: `challenge_error_document_uses_type_and_client_detail`,
@@ -3320,6 +3441,14 @@ SC-21 and SI-11 are cited as related controls inside existing sections, not
 counted as new rows; SC-20 is not claimed. TOTAL stays
 (6 + 0.5 × 24) / 41 = 18 / 41 = 43.9%, shown as 44%.
 
+On 2026-10-26 (ACME wildcard identifiers) no control was added and no control
+status changed: AC-3 stays 🟢 Implemented, AU-2 🟢, AU-3 ✅, AU-5 🔴 (no ACME
+claim), AU-12 🟢, SC-17 🟢 (98%) and SI-10 🟢 Good (85%); the new ACME items
+are 🟡 evidence lines inside those sections because the handler wiring is not
+integration-tested. SC-5 and SA-11 are cited inside existing sections, not
+counted as new rows. The row counts are unchanged, so TOTAL stays
+(6 + 0.5 × 24) / 41 = 18 / 41 = 43.9%, shown as 44%.
+
 ---
 
 ## Cross-Reference: NIAP SFR ↔ NIST 800-53
@@ -3341,7 +3470,7 @@ counted as new rows; SC-20 is not claimed. TOTAL stays
 | FCS_TLSS_EXT.1 | SC-8, AC-17 |
 | FCS_TLSS_EXT.2 | SC-8, AC-17, IA-3 |
 | FCO_NRO_EXT.2 | AU-10, SI-10 |
-| FDP_CER_EXT.1 | SC-17 |
+| FDP_CER_EXT.1 | SC-17, AC-3, SI-10 |
 | FDP_CER_EXT.2 | AU-10 |
 | FDP_ACC.1 | AC-3, AC-6 |
 | FDP_ACF.1 | AC-3, AC-6 |
@@ -3607,6 +3736,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 3.8 | 2026-10-26 | OstrichPKI Team | web-ui legacy `/next` open redirect CI evidence ([PR #193](https://github.com/192d-Wing/OstrichPKI/pull/193), fix commit 3ece58c, merge commit 3804b4f, merged 2026-10-26T19:06:44Z). GitHub Actions [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363) `Build & test` green (`ostrich_web_ui` 61 passed / 0 failed / 0 ignored, all 20 `test_legacy_next_*` `ok`). SI-10 `/next` evidence item and SI-10 gap: "branch, uncommitted" replaced by the merge reference; POAM-2026-10-23-45 closed pending first green CI run → Closed. The `legacy_redirect_rejected` event stays a log line (POAM-47). **No control status or percentage changed** (SI-10 stays 🟢 Good (85%)) |
 | 3.9 | 2026-10-26 | OstrichPKI Team | First green CI runs on `main` (commit 2eb959a, PR #189 merged; run record `target/agent-workflow/20261026-191500-ci-evidence-runs/`): `integration-db.yml` run 40376869764, artifact `live-db-softhsm-results` sha256 `12fd4a28…e91f`. AU-9 / AU-9(3): Postgres tests `chain_concurrency`, `signed_chain_tamper`, `sign_timeout_db` executed green, "Implemented, not Tested" → Tested on Postgres (POAM-2026-10-23-31 closed; hung-HSM residual now POAM-2026-10-23-55). AU-10: the "Live tamper-detection proof" and "Live end-to-end proof" ✅ items and AU-9(3) "passes against live DB" now carry the run evidence (they had no recorded run of the current tests before); CA gRPC actor bullet 🟡 → ✅. AU-3: gRPC handler-glue bullet 🟡 → ✅ (executed); M13h mutant still not executed. AU-12 stored denial record executed, stays 🟡 (test-assembled stack). AC-6(9) evidence updated, stays 🟡. Control statuses and the summary-table percentages unchanged (AU-9 stays 🟡 Partial: deletion prevention and query access control still missing) |
 | 3.10 | 2026-10-26 | OstrichPKI Team | npe-portal BFF proxy raw path and shared validator (branch `claude/npe-portal-proxy-raw-path`, uncommitted, based on `main` @ 2eb959a; run record `target/agent-workflow/20261026-113138-npe-proxy-raw-path/`). SI-10: new evidence item for `ostrich_common::util::proxy_path` (canonical) and npe-portal `checked_backend_path` / `invalid_path_response`, with the fuzz target `fuzz_proxy_path` (259,220 runs, no crash) and a mutation check as SA-11 evidence; the POAM-46 gap was removed (POAM-45 remains) and a two-copies gap added (web-ui switch is a follow-up). AC-3: new npe-portal bullet (identity forwarded only on a validated path), the POAM-46 gap sentence removed, code references added. AC-4: application-layer supporting bullet for both BFF proxies (status and scope unchanged). AU-2 / AU-3: npe-portal `proxy_path_rejected` warn event and `ostrich_audit` Authorization / Failure record (no session id; `client_ip` relies on the load balancer overwriting XFF / X-Real-IP), recorded as 🟡 because the records are not in `DatabaseAuditSink`. AU-12: npe-portal denial-record bullet (🟡). NPE portal section: proxy denial record and identity-bridge target-integrity bullet. POAM-43 references were left unchanged; branch `claude/close-poam-43` updates them. Local evidence only (`ostrich-npe-portal` 42 / 0, `ostrich-common` lib 278 / 0, `ostrich-web-ui` 41 / 0, re-run by the scribe). **No control status or percentage changed** (AC-3 🟢 Implemented, AC-4 🟡 Partial, SI-10 🟢 Good (85%), AU-2 / AU-12 🟢 Compliant, AU-3 ✅) |
+| 3.11 | 2026-10-26 | OstrichPKI Team | ACME wildcard identifiers (branch `claude/acme-wildcard-identifiers`, uncommitted; run record `target/agent-workflow/20261026-acme-wildcard/`). SI-10: newOrder identifier validation replaces the "Not evidence" line (POAM-2026-10-23-49 narrowed); finalize re-validation; IPv6 http-01 URL; SA-11 fuzz target `fuzz_acme_order_identifier`. AC-3 / SC-17: wildcard authorizations dns-01 only, `ip` http-01 only, finalize binding (`check_order_finalizable`); new gap POAM-2026-10-23-56 (issuance-name policy). AU-2 / AU-3 / AU-12: newOrder success and refusal and finalize-refusal `AcmeProtocol` records (no source IP or request id; best-effort on sink failure, not claimed under AU-5). SC-5 note: 100-identifier cap. Cross-reference FDP_CER_EXT.1 → SC-17, AC-3, SI-10. Stale ACME line references refreshed. Integration tests NOT RUN (QA-002, QA-005). No control status or summary percentage changed (TOTAL 18 / 41 = 43.9%, shown as 44%). |
 
 ---
 

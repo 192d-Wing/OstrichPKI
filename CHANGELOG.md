@@ -155,10 +155,10 @@ These are recorded as residuals in the POAM-2026-10-23-46 row
   - the CA-to-resolver channel is unauthenticated (no TSIG or DoT, and the AD bit is not checked);
   - no multi-perspective validation and no 0x20 case randomisation;
   - no live dns-01 end-to-end test.
-- POAM-2026-10-23-49: `new_order` does not validate identifiers. `*.` wildcards are stored with
-  `wildcard: false`, and dns-01 is offered for IP identifiers (RFC 8555 §7.1.4, RFC 8738 §7).
-  Until this is fixed, the dns-01 validator rejects wildcard identifiers, so wildcard
-  certificates cannot be issued.
+- POAM-2026-10-23-49 is narrowed. The identifier handling is fixed (see "ACME newOrder identifier
+  validation and wildcard authorizations" below). Still open: which names resolve to non-public
+  addresses can be inferred from which challenges fail, and failed validations are not
+  rate-limited (SI-10, SC-7, SC-5).
 - POAM-2026-10-23-50: `respond_to_challenge` has no ownership or state check, and validation
   tasks are spawned with no concurrency bound (AC-3, SC-5; RFC 8555 §7.5.1). A dns-01 validation
   is bounded at about 83 s nominal.
@@ -168,7 +168,87 @@ These are recorded as residuals in the POAM-2026-10-23-46 row
 - POAM-2026-10-23-52: tls-alpn-01 does not check that the `acmeIdentifier` extension is marked
   critical or that the certificate has exactly one dNSName SAN. It also accepts a bare 32-byte
   extension value as well as the DER OCTET STRING (RFC 8737 §3; SI-10). The digest itself is
-  still compared.
+  still compared. It also covers RFC 8738 §6 for IP identifiers (no reverse-name SNI, no check
+  for exactly one matching iPAddress SAN), so tls-alpn-01 is no longer offered for IP
+  identifiers until it is fixed.
+
+#### ACME newOrder identifier validation and wildcard authorizations (POAM-2026-10-23-49)
+
+##### ostrich-acme
+
+- `new_order` now validates every identifier before it writes any row. Refusals use the
+  RFC 8555 §6.7 problem types:
+  - `unsupportedIdentifier`: the `type` is not exactly `"dns"` or `"ip"`;
+  - `rejectedIdentifier`: a `*` anywhere except one leftmost `*.` label (`*foo.example.com`,
+    `a.*.example.com`, `*.*.example.com`), a wildcard over a single-label base (`*.com`), or an
+    IPv4-mapped or IPv4-compatible IPv6 address (`::ffff:192.0.2.1`);
+  - `malformed`: DNS syntax errors (the same rules as `dns01_query_name`: LDH labels, no
+    trailing dot, at most 253 octets, no all-numeric last label), an IP literal sent as type
+    `dns`, a non-canonical IP (`2001:DB8::1`, `[::1]`, zone IDs, leading zeros), an empty list,
+    more than 100 identifiers, or a duplicate (case-insensitive).
+
+  Error details are fixed strings and never echo the submitted value (SI-10, SI-11).
+- Challenges are offered per identifier. A dns identifier gets http-01, dns-01 and tls-alpn-01.
+  dns-01 is left out when `_acme-challenge.<name>.` would exceed 255 octets. A wildcard gets
+  dns-01 only. An IP identifier gets http-01 only. dns-01 is never offered for IP
+  (RFC 8738 §7), and tls-alpn-01 for IP is withdrawn until the RFC 8738 §6 checks exist
+  (POAM-2026-10-23-52).
+- Before any network I/O, challenge validation refuses a challenge type the authorization does
+  not allow. A wildcard authorization accepts only dns-01, and an IP authorization accepts only
+  http-01; anything else gives `unauthorized`. An identifier value that still contains `*` gives
+  `malformed` for every challenge type.
+- Finalize now binds the order to its authorizations before it checks the CSR or changes any
+  state:
+  - the order must be `ready` and not expired, otherwise `orderNotReady`;
+  - the stored identifiers must pass the newOrder rules again, and they must match the
+    authorization rows one to one on (type, lowercased value, wildcard flag), otherwise
+    `unauthorized`;
+  - every authorization must be `valid` and not expired, otherwise `orderNotReady`;
+  - an IP authorization must have a `valid` http-01 challenge, otherwise `unauthorized`.
+
+  A wildcard certificate can therefore no longer be issued on an authorization proven by
+  http-01 for the base name (AC-3, SC-17).
+- http-01 for IPv6 identifiers now works. The challenge URL brackets the address
+  (`http://[2001:db8::1]/...`, RFC 3986 §3.2.2), and the brackets are stripped before the SSRF
+  guard, on the first request and on redirects (RFC 8738 §5).
+- New audit records (`EventType::AcmeProtocol`):
+  - `new_order` success: actor = account, target `acme:order:<id>`, identifier counts by type,
+    wildcard count, and the validated `type:value` list.
+  - `new_order` refusal: target `acme:new-order`, counts and the problem type. Values from a
+    refused request are never recorded.
+  - `finalize_order` refusal from the binding check or the CSR identifier match: target
+    `acme:order:<id>` and the problem type only. CSR contents are never recorded.
+
+  An audit-sink failure is logged and does not fail the request, as on the challenge path.
+- Tests: the `identifier::tests` module, plus `check_order_finalizable_*`,
+  `check_challenge_permitted_*`, `new_order_audit_event*`, `finalize_refusal_audit_event*`,
+  `authorization_json_wildcard_only_when_true`, `http01_url_brackets_ipv6_hosts` and the
+  `qa_*` tests in `rest.rs` and `validation.rs`. `cargo test -p ostrich-acme --lib`: 125 passed.
+  The handler call sites (finalize binding, new_order audit) need Postgres and are verified by
+  inspection only.
+- **NIST 800-53**: SI-10, SI-11, AC-3, AU-2, AU-3, AU-12, SC-17. **NIAP PP-CA**: FDP_CER_EXT.1,
+  FAU_GEN.1, FAU_GEN.2. RFC 8555 §6.7, §7.1.3, §7.1.4, §7.4, §8; RFC 8738 §5, §7
+
+##### ostrich-fuzz
+
+- New fuzz target `fuzz_acme_order_identifier` for `parse_order_identifier` and
+  `validate_order_identifiers`. It checks the challenge offering, the 100-identifier cap,
+  uniqueness and that no accepted value contains `*`. Smoke run: 180,251 runs in 61 s with no
+  crash.
+- `.github/workflows/fuzz.yml` now also runs `fuzz_acme_order_identifier` and the existing
+  `fuzz_dns01_query_name` (weekly, dispatch, and a 60 s PR smoke run on changes to the ACME
+  identifier, validation, order and error modules). Not yet run in CI.
+
+##### Known limitations (POA&M)
+
+- POAM-2026-10-23-56 (new): newOrder has no issuance-name policy. Wildcard bases are not checked
+  against the Public Suffix List (`*.co.uk` is accepted; only single-label bases are refused).
+  Single-label and reserved names (RFC 6761 / RFC 8375: `localhost`, `.internal`, `.local`,
+  `.test`) are accepted, and there is no operator deny list (AC-3, SI-10).
+- Order creation is not transactional. A database error part-way through can leave a partial
+  order, and that case is not audited (pre-existing).
+- The finalize handler does not audit an ownership refusal, a CSR parse or signature failure,
+  or a request for an unknown order.
 
 #### web-ui legacy `/next` redirect stays same-origin (open redirect, CWE-601)
 
@@ -366,6 +446,20 @@ the new jobs or live tests has run yet; see "Known limitations" below.
 - `helm.yml` downloads the live Bitnami chart index on every run. This is an availability risk,
   deferred.
 
+#### ACME wildcard certificate orders
+
+##### ostrich-acme
+
+- Wildcard orders (`*.example.com`) are now supported. The order keeps the `*.example.com`
+  identifier, and the CSR is matched against it at finalize (RFC 8555 §7.1.3). The
+  authorization is for the base domain `example.com` with `"wildcard": true`, and dns-01 is
+  its only challenge (RFC 8555 §7.1.4, §8). The dns-01 validator queries
+  `_acme-challenge.example.com.`. `example.com` and `*.example.com` in one order give two
+  authorizations.
+- New public module `ostrich_acme::identifier`: `MAX_ORDER_IDENTIFIERS` (100), `AuthzIdentifier`
+  (`challenge_types()`), `parse_order_identifier` and `validate_order_identifiers`. New
+  `validation::validate_dns_identifier`.
+
 ### Changed
 
 #### ACME challenge validation behaviour
@@ -403,6 +497,26 @@ the new jobs or live tests has run yet; see "Known limitations" below.
   83 s nominal (5 rounds x 3 sends x 5 s, plus 4 x 2 s).
 - **NIST 800-53**: SI-11, SC-17, SC-5. RFC 8555 §6.7, §8.3, §8.4; RFC 8737 §3
 
+#### ACME orders, authorizations and IP identifiers
+
+> **Upgrade note.** Authorizations created before this release for wildcard or IP identifiers
+> are refused at finalize: a legacy `*.<name>` row with `wildcard: false`, or an IP
+> authorization proven by tls-alpn-01 or dns-01, gives `unauthorized`. No data migration is
+> needed. Clients must create a new order. Orders for plain DNS names are not affected.
+
+##### ostrich-acme
+
+- The authorization `wildcard` field is now omitted unless it is `true` (RFC 8555 §7.1.4). It
+  used to be `"wildcard": false` on every authorization.
+- newOrder can now refuse a request with `unsupportedIdentifier`, `rejectedIdentifier` or
+  `malformed` (see Security). Requests with more than 100 identifiers are refused.
+- IP identifiers are offered http-01 only. tls-alpn-01 and dns-01 are no longer offered for IP,
+  and a request to validate either on an IP authorization fails with `unauthorized`.
+- IPv4-mapped and IPv4-compatible IPv6 identifiers are refused with `rejectedIdentifier`.
+- A finalize request for an order that is not `ready` now gets `orderNotReady` before the CSR
+  is checked.
+- **NIST 800-53**: SI-10, AC-3. RFC 8555 §7.1.4, §7.4; RFC 8738 §6, §7
+
 ### Removed
 
 #### `ostrich_acme::Error::ChallengeValidation` and `ChallengeFailed`
@@ -437,8 +551,9 @@ the new jobs or live tests has run yet; see "Known limitations" below.
 - The challenge name is queried as a fully qualified name (`_acme-challenge.<domain>.`). Caching
   is off, and a fresh resolver is built per attempt, so the retry loop never reuses a cached
   negative answer.
-- Closes the functional part of POAM-2026-10-23-41. The POA&M stays open for CAA, DNSSEC and
-  wildcards (see Security: "ACME challenge validation hardening").
+- Closes the functional part of POAM-2026-10-23-41. The POA&M stays open for CAA and DNSSEC
+  (see Security: "ACME challenge validation hardening"). Wildcard orders are now supported (see
+  Added: "ACME wildcard certificate orders").
 - Tests:
   - `dns01_config_rejects_empty_name_servers`
   - `dns01_validate_fails_closed_without_name_servers`

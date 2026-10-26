@@ -150,14 +150,7 @@ impl Http01Validator {
 
         // Construct challenge URL. RFC 8555 §8.3: port 80; the override
         // exists for dev/E2E environments only.
-        let initial_url = if self.http_port == 80 {
-            format!("http://{}/.well-known/acme-challenge/{}", domain, token)
-        } else {
-            format!(
-                "http://{}:{}/.well-known/acme-challenge/{}",
-                domain, self.http_port, token
-            )
-        };
+        let initial_url = http01_challenge_url(domain, self.http_port, token);
 
         // Dev/E2E override: keep the permissive shared client (private addresses
         // allowed, reqwest follows redirects). NOT for production.
@@ -202,10 +195,8 @@ impl Http01Validator {
                     "HTTP-01 redirect for {domain} used a disallowed URL scheme"
                 )));
             }
-            let host = url
-                .host_str()
-                .ok_or_else(|| Error::Malformed("Challenge URL has no host".to_string()))?
-                .to_string();
+            let host = url_connect_host(&url)
+                .ok_or_else(|| Error::Malformed("Challenge URL has no host".to_string()))?;
             let port = url.port_or_known_default().unwrap_or(80);
 
             // Resolve + validate + pin: the request goes to a checked address.
@@ -357,11 +348,86 @@ fn is_ldh_label(label: &str) -> bool {
     }
 }
 
+/// Why a string is not an acceptable `dns` identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DnsIdentifierViolation {
+    /// Empty, trailing dot, over 253 octets, non-LDH or over-long label, or an
+    /// all-numeric last label.
+    Syntax,
+    /// An IPv4 or IPv6 address literal.
+    IpLiteral,
+}
+
+/// The shared `dns` identifier rules used by `new_order` and dns-01.
+fn dns_identifier_violation(domain: &str) -> Option<DnsIdentifierViolation> {
+    // RFC-008: a trailing dot is not certificate (dNSName) form; reject it
+    // rather than normalise, so the validated name is the name certified.
+    let d = domain;
+    if d.is_empty() || d.ends_with('.') || d.len() > MAX_DOMAIN_LEN {
+        return Some(DnsIdentifierViolation::Syntax);
+    }
+
+    // RFC 8738 §3 / §7: IP addresses use the `ip` identifier type, and dns-01
+    // is not a valid challenge for them.
+    if d.parse::<IpAddr>().is_ok() {
+        return Some(DnsIdentifierViolation::IpLiteral);
+    }
+
+    let mut last_label = "";
+    for label in d.split('.') {
+        if !is_ldh_label(label) {
+            return Some(DnsIdentifierViolation::Syntax);
+        }
+        last_label = label;
+    }
+
+    // RFC 3696 §2: a top-level label is never all-numeric. This also rejects
+    // dotted-numeric forms that `IpAddr::from_str` does not accept (e.g. `127.1`).
+    if last_label.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(DnsIdentifierViolation::Syntax);
+    }
+    None
+}
+
+/// Validate a `dns` identifier value (no wildcard) in certificate form.
+///
+/// This is the single definition of an acceptable DNS identifier: `new_order`
+/// applies it to every `dns` identifier (to the base domain of a `*.`
+/// wildcard) and [`dns01_query_name`] applies it again before any DNS query.
+///
+/// # Errors
+///
+/// [`Error::Malformed`] if the identifier is empty, ends with a dot, has an
+/// empty or non-LDH label (this includes `*`), a label over 63 octets, is
+/// longer than 253 octets, has an all-numeric last label, or is an IP address
+/// literal.
+///
+// COMPLIANCE MAPPING:
+// - NIST 800-53: SI-10 (Information Input Validation)
+// - NIAP PP-CA: FDP_CER_EXT.1 (certificate profile: subject identifier verified
+//   before issuance)
+// - RFC 8555 §7.1.4 / RFC 5280 §4.2.1.6 - dns identifiers are ASCII A-labels
+//   in certificate form (no trailing dot; RFC-008)
+// - RFC 8738 §3 - IP addresses are `ip` identifiers, never `dns`
+// - RFC 1035 §2.3.1 / §2.3.4 - LDH labels, 63-octet label limit
+pub fn validate_dns_identifier(domain: &str) -> Result<()> {
+    match dns_identifier_violation(domain) {
+        None => Ok(()),
+        Some(DnsIdentifierViolation::Syntax) => Err(Error::Malformed(
+            "dns identifier is not a valid DNS name".to_string(),
+        )),
+        Some(DnsIdentifierViolation::IpLiteral) => Err(Error::Malformed(
+            "IP address identifiers must use identifier type \"ip\"".to_string(),
+        )),
+    }
+}
+
 /// Build the dns-01 query name `_acme-challenge.<domain>.` from an ACME identifier.
 ///
 /// The returned name is always fully qualified, so the resolver never applies
 /// `domain` / `search` / `ndots` rewriting to it. The identifier itself must be
-/// in certificate form, without a trailing dot.
+/// in certificate form, without a trailing dot. For a wildcard authorization
+/// the identifier is the base domain (`*.` already stripped by `new_order`).
 ///
 /// # Errors
 ///
@@ -386,37 +452,22 @@ pub fn dns01_query_name(domain: &str) -> Result<hickory_proto::rr::Name> {
 
     let malformed = || Error::Malformed("dns-01 identifier is not a valid DNS name".to_string());
 
-    // RFC-008: a trailing dot is not certificate (dNSName) form; reject it
-    // rather than normalise, so the validated name is the name certified.
-    let d = domain;
-    if d.is_empty() || d.ends_with('.') || d.len() > MAX_DOMAIN_LEN {
-        return Err(malformed());
-    }
-
-    // RFC 8738 §7: dns-01 is not a valid challenge for IP identifiers.
-    if d.parse::<IpAddr>().is_ok() {
-        return Err(Error::Malformed(
-            "dns-01 is not valid for IP address identifiers".to_string(),
-        ));
-    }
-
-    let mut last_label = "";
-    for label in d.split('.') {
-        if !is_ldh_label(label) {
-            return Err(malformed());
+    // Shared identifier rules (also enforced by `new_order`).
+    match dns_identifier_violation(domain) {
+        None => {}
+        Some(DnsIdentifierViolation::Syntax) => return Err(malformed()),
+        // RFC 8738 §7: dns-01 is not a valid challenge for IP identifiers.
+        Some(DnsIdentifierViolation::IpLiteral) => {
+            return Err(Error::Malformed(
+                "dns-01 is not valid for IP address identifiers".to_string(),
+            ));
         }
-        last_label = label;
-    }
-
-    // RFC 3696 §2: a top-level label is never all-numeric. This also rejects
-    // dotted-numeric forms that `IpAddr::from_str` does not accept (e.g. `127.1`).
-    if last_label.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(malformed());
     }
 
     // `from_ascii`, not `from_utf8`: ACME identifiers are already A-labels and
     // must not be IDNA-mapped. The trailing dot makes the name an FQDN.
-    let name = Name::from_ascii(format!("{ACME_CHALLENGE_LABEL}.{d}.")).map_err(|_| malformed())?;
+    let name =
+        Name::from_ascii(format!("{ACME_CHALLENGE_LABEL}.{domain}.")).map_err(|_| malformed())?;
     if !name.is_fqdn() {
         return Err(malformed());
     }
@@ -682,8 +733,12 @@ async fn system_resolver_config_off_runtime()
 // in-process DNSSEC validation (RFC 8555 §11.2); no multi-perspective validation
 // and no 0x20 query-name case randomisation. The CA-to-recursor channel is
 // unauthenticated (no TSIG/DoT, AD bit not checked); deploy the recursor on a
-// trusted segment. Wildcard identifiers are rejected until new_order stores the
-// base domain with `wildcard: true` (RFC 8555 §7.1.4; POAM-2026-10-23-49).
+// trusted segment.
+//
+// Wildcards (RFC 8555 §7.1.4 / §8.4; the identifier-handling part of
+// POAM-2026-10-23-49, fixed 2026-10-26): `new_order` stores a `*.<base>`
+// order identifier as an authorization for `<base>` with `wildcard: true`, so this validator queries `_acme-challenge.<base>.`. A raw
+// `*` label is still rejected here, which fails closed for legacy rows.
 pub struct Dns01Validator {
     /// DNS resolver timeout in seconds
     timeout_secs: u64,
@@ -962,7 +1017,7 @@ impl TlsAlpn01Validator {
         // - RFC 8737 - TLS-ALPN-01 validation procedure
         // - RFC 8555 §8.1 - Key authorization computation
         //
-        // POAM: POAM-2026-10-23-52 - tls-alpn-01 does not check acmeIdentifier criticality or single-dNSName SAN, and accepts a bare 32-byte value (RFC 8737 §3; SI-10)
+        // POAM: POAM-2026-10-23-52 - tls-alpn-01 does not check acmeIdentifier criticality or single-dNSName SAN, and accepts a bare 32-byte value (RFC 8737 §3; SI-10); for IP identifiers it sends no reverse-name (in-addr.arpa / ip6.arpa) SNI and does not require exactly one matching iPAddress SAN (RFC 8738 §6), so tls-alpn-01 is not offered for IP identifiers until then
 
         // SI-10: SSRF prevention. Resolve the domain, require every resolved
         // address to be globally routable, and connect to that VALIDATED address
@@ -1276,6 +1331,39 @@ async fn resolve_pinned(
         .ok_or_else(|| Error::Dns(format!("{host} did not resolve to any address")))
 }
 
+/// The http-01 challenge URL for `domain` (RFC 8555 §8.3).
+///
+/// An IPv6 identifier is bracketed as the URI host (RFC 3986 §3.2.2), so
+/// `2001:db8::1` becomes `http://[2001:db8::1]/...` rather than an
+/// unparseable URL. Port 80 is left implicit.
+// COMPLIANCE MAPPING:
+// - RFC 8738 §5 - http-01 for IP identifiers
+// - RFC 3986 §3.2.2 - IP-literal host syntax
+fn http01_challenge_url(domain: &str, port: u16, token: &str) -> String {
+    let host = match domain.parse::<IpAddr>() {
+        Ok(IpAddr::V6(v6)) => format!("[{v6}]"),
+        _ => domain.to_string(),
+    };
+    if port == 80 {
+        format!("http://{host}/.well-known/acme-challenge/{token}")
+    } else {
+        format!("http://{host}:{port}/.well-known/acme-challenge/{token}")
+    }
+}
+
+/// The host to resolve and connect to for `url`, without IPv6 brackets.
+///
+/// `Url::host_str` keeps the brackets of an IPv6 literal (`[::1]`), which
+/// the resolver cannot parse; this returns the bare address instead.
+fn url_connect_host(url: &reqwest::Url) -> Option<String> {
+    let host = url.host_str()?;
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    Some(bare.to_string())
+}
+
 /// A failed host lookup for http-01 / tls-alpn-01 as the RFC 8555 §6.7 `dns`
 /// problem type. The raw resolver error is logged server-side only.
 // COMPLIANCE MAPPING:
@@ -1293,6 +1381,7 @@ fn host_resolution_error(host: &str, e: &std::io::Error) -> Error {
 /// the check but an internal one for the actual connection.
 ///
 /// COMPLIANCE: NIST 800-53 SI-10; RFC 8555 §10.1 (SSRF in validation).
+// POAM: POAM-2026-10-23-49 - (narrowed) SEC-005 name-probing residual: the refusal detail no longer contains the resolved address, but which names resolve to non-public addresses can still be inferred from which challenges fail, so a subscriber can probe internal names; no rate limit on failed validations (SI-10, SC-7, SC-5).
 async fn resolve_public(host: &str, port: u16) -> Result<std::net::SocketAddr> {
     let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
         .await
@@ -1871,6 +1960,37 @@ mod tests {
         );
     }
 
+    /// QA: a wildcard order identifier `*.Example.com` yields an authz for the
+    /// base domain; the dns-01 validator run on that authz value queries
+    /// exactly `_acme-challenge.Example.com.` TXT (RFC 8555 §8.4) and validates.
+    #[tokio::test]
+    async fn qa_dns01_mock_wildcard_authz_queries_base_domain() {
+        let authz = crate::identifier::parse_order_identifier(&crate::order::Identifier {
+            id_type: "dns".to_string(),
+            value: "*.Example.com".to_string(),
+        })
+        .expect("wildcard accepted");
+        assert!(authz.wildcard);
+        assert_eq!(authz.challenge_types(), &["dns-01"]);
+
+        let dns = mock_dns(vec![MockAnswer::Txt(vec![KAT_DIGEST.to_string()])]).await;
+        let port = dns.port;
+        let result = Dns01Validator::new()
+            .with_retry_delay(TEST_RETRY_DELAY)
+            .validate_with_system(&authz.value, KAT_TOKEN, KAT_THUMBPRINT, || {
+                Ok(mock_system_config(port))
+            })
+            .await;
+        assert!(matches!(result, Ok(true)), "got {result:?}");
+        assert_eq!(
+            dns.queries(),
+            vec![(
+                "_acme-challenge.Example.com.".to_string(),
+                hickory_proto::rr::RecordType::TXT
+            )]
+        );
+    }
+
     /// RFC-006: a record whose character-strings concatenate to the digest
     /// validates (RFC 1035 §3.3.14).
     #[tokio::test]
@@ -2405,5 +2525,122 @@ mod tests {
             let v = vec![0x04; len];
             assert_eq!(acme_identifier_digest(&v), None, "len {len}");
         }
+    }
+
+    /// RFC-002 / RFC 8738 §5 / RFC 3986 §3.2.2: IPv6 identifiers are
+    /// bracketed in the http-01 URL, the URL parses, and the connect host is
+    /// the bare address the resolver accepts.
+    #[tokio::test]
+    async fn http01_url_brackets_ipv6_hosts() {
+        let cases = [
+            (
+                "::1",
+                80,
+                "http://[::1]/.well-known/acme-challenge/tok",
+                "::1",
+            ),
+            (
+                "2001:db8::1",
+                8080,
+                "http://[2001:db8::1]:8080/.well-known/acme-challenge/tok",
+                "2001:db8::1",
+            ),
+            (
+                "192.0.2.1",
+                80,
+                "http://192.0.2.1/.well-known/acme-challenge/tok",
+                "192.0.2.1",
+            ),
+            (
+                "example.com",
+                5002,
+                "http://example.com:5002/.well-known/acme-challenge/tok",
+                "example.com",
+            ),
+        ];
+        for (domain, port, want_url, want_host) in cases {
+            let u = http01_challenge_url(domain, port, "tok");
+            assert_eq!(u, want_url);
+            let parsed = reqwest::Url::parse(&u).expect(&u);
+            assert_eq!(url_connect_host(&parsed).as_deref(), Some(want_host));
+            assert_eq!(parsed.port_or_known_default(), Some(port));
+        }
+        // `[::1]` URL forms (as an http-01 redirect target might use) parse
+        // and yield an address the SSRF guard resolves without a DNS query.
+        for u in [
+            "http://[::1]/x",
+            "https://[::1]:443/x",
+            "http://[2001:db8::1]/",
+        ] {
+            let parsed = reqwest::Url::parse(u).expect(u);
+            let host = url_connect_host(&parsed).expect("host");
+            assert!(host.parse::<IpAddr>().is_ok(), "{u}: {host}");
+        }
+        // The bare loopback is then refused by the SSRF guard as before.
+        let e = resolve_public("::1", 80).await.expect_err("loopback");
+        assert!(matches!(e, Error::RejectedIdentifier(_)), "{e:?}");
+    }
+
+    // ---- QA round 1 (RFC-002) ----
+
+    /// RFC-002 + SI-10: an IPv6 identifier goes through `validate` (URL
+    /// build, bracket stripping, `resolve_public`) and a non-public address
+    /// is refused as `rejectedIdentifier` by the SSRF guard, not as a `dns`
+    /// lookup failure on `[addr]`, and without any connection attempt.
+    #[tokio::test]
+    async fn qa_http01_ipv6_identifier_reaches_ssrf_guard() {
+        for (v, port) in [
+            ("::1", 80),
+            ("::1", 8080),
+            ("fe80::1", 80),
+            ("fc00::1", 80),
+            ("::ffff:7f00:1", 80),
+            ("::ffff:a9fe:a9fe", 80),
+        ] {
+            let r = Http01Validator::new()
+                .with_http_port(port)
+                .validate(v, "tok", "thumb")
+                .await;
+            let Err(e) = r else {
+                panic!("{v}: expected refusal, got {r:?}");
+            };
+            assert!(
+                matches!(e, Error::RejectedIdentifier(_)),
+                "{v}:{port}: {e:?}"
+            );
+            assert_eq!(
+                e.error_type(),
+                "urn:ietf:params:acme:error:rejectedIdentifier"
+            );
+        }
+    }
+
+    /// RFC-002 + SI-10: a redirect `Location` with a bracketed non-public
+    /// IPv6 literal (including IPv4-mapped spellings that the URL parser
+    /// normalises to hex) yields a bare host the guard refuses; a DNS host
+    /// is passed through unchanged and a host-less URL yields `None`.
+    #[tokio::test]
+    async fn qa_url_connect_host_feeds_guard_for_redirect_targets() {
+        let base =
+            reqwest::Url::parse("http://example.com/.well-known/acme-challenge/t").expect("base");
+        for loc in [
+            "http://[::1]/",
+            "http://[::ffff:127.0.0.1]/x",
+            "https://[::ffff:169.254.169.254]:443/latest/meta-data",
+            "http://[fe80::1]:8080/",
+            "//[fc00::5]/rel",
+        ] {
+            let url = base.join(loc).expect(loc);
+            let host = url_connect_host(&url).expect("host");
+            assert!(!host.contains('['), "{loc}: {host}");
+            assert!(host.parse::<IpAddr>().is_ok(), "{loc}: {host}");
+            let port = url.port_or_known_default().unwrap_or(80);
+            let e = resolve_public(&host, port).await.expect_err(loc);
+            assert!(matches!(e, Error::RejectedIdentifier(_)), "{loc}: {e:?}");
+        }
+        let dns = reqwest::Url::parse("http://Example.COM:81/").expect("dns");
+        assert_eq!(url_connect_host(&dns).as_deref(), Some("example.com"));
+        let no_host = reqwest::Url::parse("data:text/plain,hi").expect("data");
+        assert_eq!(url_connect_host(&no_host), None);
     }
 }

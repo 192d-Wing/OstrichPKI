@@ -1,6 +1,6 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 2.10
+**Document Version:** 2.11
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Excellent (85%)
@@ -826,11 +826,12 @@ certificate** from an ACME directory using the HTTP-01 challenge (§8.3):
 
 #### §7.1: Resources
 
-**Status:** 🟡 **Partial** (corrected 2026-10-26, was "🟢 Compliant"; POAM-2026-10-23-49)
+**Status:** 🟢 **Implemented** (updated 2026-10-26, branch `claude/acme-wildcard-identifiers`, uncommitted; was "🟡 Partial", POAM-2026-10-23-49). Not "Compliant": the database path of `new_order` and the finalize handler wiring are verified by inspection only (Postgres integration tests NOT RUN), and §7.1.6 has one recorded deviation (RFC-006 below)
 
 **Implementation:**
 
 - [crates/ostrich-acme/src/rest.rs](../../crates/ostrich-acme/src/rest.rs) - ACME REST endpoints
+- [crates/ostrich-acme/src/identifier.rs](../../crates/ostrich-acme/src/identifier.rs) - newOrder identifier rules and challenge offering (2026-10-26)
 
 **Resources:**
 
@@ -838,13 +839,44 @@ Section numbers corrected 2026-10-26 (RFC 8555 §7.1.1 is the directory; the
 list previously numbered accounts as §7.1.1 through challenges as §7.1.4).
 
 - ✅ §7.1.2 - Account objects
-- 🟡 §7.1.3 - Order objects: `new_order` does not validate identifiers, and a
-  `*.` identifier is stored as a literal name with `wildcard = false`, so
-  wildcard orders cannot complete (POAM-2026-10-23-49)
-- 🟡 §7.1.4 - Authorization objects: the `wildcard` field is always present,
-  including `false`, although §7.1.4 says it MUST be absent unless true; all
-  three challenge types are offered for every identifier, including dns-01
-  for IP identifiers (RFC 8738 §7 forbids it) (POAM-2026-10-23-49)
+- ✅ §7.1.3 - Order objects (2026-10-26): `new_order`
+  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 698) validates every identifier with
+  `validate_order_identifiers` ([identifier.rs](../../crates/ostrich-acme/src/identifier.rs) line 235)
+  before any database write. The order keeps the `*.<base>` identifier as
+  requested, so the finalize CSR match uses it. Only a single leftmost `*.`
+  label is accepted, and not over a single-label base. Tests:
+  `wildcard_becomes_base_domain_dns01_only`,
+  `unsupported_wildcards_are_rejected_identifier`,
+  `list_base_and_wildcard_together`,
+  `wildcard_order_identifier_matches_wildcard_csr`. No Public Suffix List or
+  reserved-name policy (`*.co.uk`, `localhost` and `.test` names are
+  accepted): server policy, not an RFC 8555 requirement, tracked as
+  POAM-2026-10-23-56
+- ✅ §7.1.4 - Authorization objects (2026-10-26): a `*.<base>` order
+  identifier gets an authorization for `<base>` with `"wildcard": true`; the
+  `wildcard` field is omitted unless true (`map_db_authorization_to_service`,
+  rest.rs line 1835; tests `authorization_json_wildcard_only_when_true`,
+  `qa_authorization_json_wildcard_text`). Challenges offered per identifier
+  (`AuthzIdentifier::challenge_types`, identifier.rs line 88): dns →
+  http-01, dns-01, tls-alpn-01 (dns-01 omitted when `_acme-challenge.<name>.`
+  would exceed 255 octets); wildcard → dns-01 only; ip → http-01 only (RFC 8738
+  §6 / §7, see RFC 8738 below)
+- ✅ §7.1.5 - Challenge objects. Since 2026-10-26 a failed challenge's `error`
+  is a problem document with a registered type (see §7.5). A challenge that
+  must never run for its authorization (non-dns-01 on a wildcard
+  authorization, non-http-01 on an `ip` authorization, a stored value
+  containing `*` from before the fix) is refused by `check_challenge_permitted`
+  (rest.rs line 1227) before any network I/O
+- 🟡 §7.1.6 - Status changes: finalize accepts only a `ready`, unexpired order
+  whose authorizations are all `valid` and unexpired (see §7.4 Finalizing an
+  Order). **Deviation (RFC-006, 2026-10-26 wildcard run; pre-existing):** an
+  order or authorization that passes its `expires` time is not moved to
+  `invalid` (orders) or `expired` (authorizations); it keeps its stored status
+  and finalize refuses it with `orderNotReady`. Fails closed
+- **Legacy rows (2026-10-26):** authorizations created before the fix with a
+  `*.x` value and `wildcard = false` are not migrated. They fail closed: every
+  challenge on them is refused (`malformed`) and finalize refuses their order
+  (`unauthorized`). They expire within 7 days of creation
 - ✅ §7.1.5 - Challenge objects. Since 2026-10-26 a failed challenge's `error`
   is a problem document with a registered type (see §7.5)
 
@@ -854,6 +886,10 @@ list previously numbered accounts as §7.1.1 through challenges as §7.1.4).
 - [rest.rs:237-362](../../crates/ostrich-acme/src/rest.rs#L237-L362) - Order lifecycle
 - [rest.rs:305-424](../../crates/ostrich-acme/src/rest.rs#L305-L424) - Authorizations
 - [rest.rs:464-522](../../crates/ostrich-acme/src/rest.rs#L464-L522) - Challenges
+- `new_order` ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 698), `check_challenge_permitted`
+  (line 1227), `check_order_finalizable` (line 1477) and
+  [identifier.rs](../../crates/ostrich-acme/src/identifier.rs) - identifier handling (2026-10-26). The four
+  line ranges above predate this change and were not re-verified
 
 ---
 
@@ -898,6 +934,30 @@ of identifiers authorized in the order.
 - ✅ CSR signature verified (proof-of-possession) before issuance
 - ✅ Order ownership checked against the authenticated account
 - ✅ All authorizations must be `valid` before issuance (§7.1.6)
+- ✅ **Order state and identifier binding (2026-10-26, branch `claude/acme-wildcard-identifiers`, uncommitted):**
+  `check_order_finalizable` ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 1477, called at
+  line 1616 after the ownership check and before the CSR match and any state
+  change) refuses unless the order is `ready` and unexpired
+  (`orderNotReady`). It re-applies the newOrder identifier rules to the stored
+  identifiers and requires the order's authorizations to match them
+  one-to-one on (type, lowercase value, wildcard): a missing, extra, duplicate
+  or legacy row is `unauthorized`. Then every authorization must be `valid`
+  and unexpired (`orderNotReady`), and every `ip` authorization must have a
+  `valid` http-01 challenge (`unauthorized`; RFC 8738 §7, POAM-2026-10-23-52).
+  The binding pass runs over all rows before the status pass, so the error
+  type does not depend on row order (RFC-007). Tests:
+  `check_order_finalizable_happy_path`, `check_order_finalizable_order_state`,
+  `check_order_finalizable_authz_state`,
+  `check_order_finalizable_identifier_binding`,
+  `check_order_finalizable_error_type_independent_of_row_order`,
+  `check_order_finalizable_ip_requires_http01`,
+  `qa_finalizable_wildcard_flag_binding`,
+  `qa_finalizable_fails_closed_on_any_bad_row`. The call in `finalize_order`
+  is verified by inspection only (Postgres integration tests NOT RUN; QA-005)
+- ⚠️ **Deviation (RFC-006):** expired orders and authorizations are refused
+  but not moved to `invalid` / `expired` (see §7.1.6)
+- ⚠️ Concurrent finalize requests for one `ready` order are not serialized
+  (pre-existing; SEC-006, wildcard run). Both requests pass the checks above
 - ✅ **Identifier binding (RFC 8555 §7.4):** `validate_csr_identifiers` enforces
   set equality between the order's authorized identifiers and the CSR's
   Subject Alternative Names (DNS case-insensitive; non-DNS/IP SANs rejected).
@@ -943,7 +1003,7 @@ of identifiers authorized in the order.
   (`internal_errors_do_not_leak_detail`, `client_errors_keep_descriptive_detail`).
   **Challenge errors (2026-10-26):** a failed challenge's stored `error` is now
   built by `challenge_error_document`
-  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 1017) from
+  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 1183) from
   `Error::error_type()` and `Error::client_detail()`, so it carries a type
   registered in §6.7 and no internal text (previously always `unauthorized`
   with the raw error string). `Error::ChallengeValidation` and
@@ -997,15 +1057,25 @@ of identifiers authorized in the order.
 
 #### §7.5: Identifier Validation Challenges
 
-**Status:** 🟡 **Partial** (HTTP-01, DNS-01 and TLS-ALPN-01 functional; no CAA check, no DNSSEC validation in the TOE, no wildcard orders; POAM-2026-10-23-41, -49, -52. Updated 2026-10-26: DNS-01 was "implemented but non-functional")
+**Status:** 🟡 **Partial** (HTTP-01, DNS-01 and TLS-ALPN-01 functional; no CAA check, no DNSSEC validation in the TOE; tls-alpn-01 §3 checks incomplete; POAM-2026-10-23-41, -52. Updated 2026-10-26: DNS-01 was "implemented but non-functional"; wildcard orders work since the same day, branch `claude/acme-wildcard-identifiers`, uncommitted, and were removed from this list)
 
 **Challenges:**
 
-- ✅ §8.3 - HTTP-01 Challenge (validator implemented)
+- ✅ §8.3 - HTTP-01 Challenge (validator implemented). Since 2026-10-26 an
+  IPv6 identifier is bracketed in the URL (`http01_challenge_url`,
+  [validation.rs](../../crates/ostrich-acme/src/validation.rs) line 1342; RFC 3986 §3.2.2) and the
+  brackets are stripped before the SSRF guard (`url_connect_host`, line 1358),
+  including on redirects (tests `http01_url_brackets_ipv6_hosts`,
+  `qa_http01_ipv6_identifier_reaches_ssrf_guard`,
+  `qa_url_connect_host_feeds_guard_for_redirect_targets`)
 - 🟡 §8.4 - DNS-01 Challenge: implemented and functional since 2026-10-26
-  (branch `claude/dns01-resolver-fix`, uncommitted). Stays partial: no CAA
-  check (RFC 8659), no DNSSEC validation (RFC 8555 §11.2) and wildcard
-  identifiers are rejected (POAM-2026-10-23-41, -49)
+  (branch `claude/dns01-resolver-fix`, uncommitted). A wildcard authorization
+  carries the base domain, so the validator queries `_acme-challenge.<base>.`
+  (branch `claude/acme-wildcard-identifiers`, uncommitted; test `qa_dns01_mock_wildcard_authz_queries_base_domain`).
+  dns-01 is not offered for a name whose `_acme-challenge.<name>.` would
+  exceed 255 octets, and such a name is refused as a wildcard base
+  (`malformed`). Stays partial: no CAA check (RFC 8659) and no DNSSEC
+  validation (RFC 8555 §11.2) (POAM-2026-10-23-41)
 - 🟡 §8.5 - TLS-ALPN-01 Challenge (RFC 8737; self-signed challenge cert
   accepted, acmeIdentifier digest verified; §3 critical-flag and single-SAN
   checks missing, POAM-2026-10-23-52)
@@ -1039,7 +1109,7 @@ of identifiers authorized in the order.
 - ✅ DNS-01 (§8.4): the TXT value is base64url(SHA-256(key authorization)),
   and the lookup is for `_acme-challenge.<domain>.`
 - ✅ **DNS-01 resolver (2026-10-26):** `dns01_resolver_config`
-  ([validation.rs](../../crates/ostrich-acme/src/validation.rs) line 511) uses
+  ([validation.rs](../../crates/ostrich-acme/src/validation.rs) line 562) uses
   the operator list `--dns01-resolvers` / `ACME_DNS01_RESOLVERS` (at most 8 IP
   literals, port 53, UDP with TCP fallback) or, when it is unset or `""`, the
   host's system resolver configuration. An empty name-server list, a
@@ -1050,19 +1120,23 @@ of identifiers authorized in the order.
   `dns01_config_uses_upstreams_and_skips_system`,
   `dns01_validate_rejects_invalid_upstreams_without_fallback`
 - ✅ **DNS-01 query name (RFC 8555 §7.1.4, RFC 1035 §2.3.1):**
-  `dns01_query_name` (line 384) builds the name as an FQDN, so search domains
+  `dns01_query_name` (line 450) builds the name as an FQDN, so search domains
   and `ndots` cannot rewrite it (the system `domain` and `search` list are also
   dropped). The identifier must be an LDH name without a trailing dot (labels
   1-63 octets, no edge hyphens, non-numeric last label, wire length checked);
-  wildcards, IP literals and anything else are `malformed` before any query.
-  Tests: `dns01_query_name_is_fqdn`, `dns01_query_name_rejects_bad_identifiers`,
-  `dns01_mock_trailing_dot_identifier_is_malformed`; fuzz target
-  `fuzz_dns01_query_name`
+  a raw `*` label, IP literals and anything else are `malformed` before any
+  query (a wildcard authorization holds the base domain, see §8.4 above). The
+  same rules are shared with newOrder through `validate_dns_identifier`
+  (line 413). Tests: `dns01_query_name_is_fqdn`,
+  `dns01_query_name_rejects_bad_identifiers`,
+  `dns01_mock_trailing_dot_identifier_is_malformed`,
+  `qa_validate_dns_identifier_shared_rules`; fuzz targets
+  `fuzz_dns01_query_name` and `fuzz_acme_order_identifier`
 - ✅ **DNS-01 TXT matching (§8.4, RFC 1035 §3.3.14):** a TXT record matches only
   if the concatenation of its character-strings equals the expected digest byte
   for byte (no case folding or trimming), and only records whose owner is the
   query name or a CNAME target reached from it in the same answer (at most 8
-  hops, loops rejected) count (`txt_answers_match`, line 593). Tests:
+  hops, loops rejected) count (`txt_answers_match`, line 644). Tests:
   `txt_match_requires_concatenation_equal_to_digest`,
   `txt_match_requires_owner_on_cname_chain`,
   `txt_match_bounds_cname_chain_length`,
@@ -1100,9 +1174,17 @@ of identifiers authorized in the order.
   | tls-alpn-01 | acmeIdentifier missing or malformed | `incorrectResponse` |
   | dns-01 | All 5 lookup rounds failed | `dns` |
 
-- ℹ️ **RFC 8738 §7:** dns-01 MUST NOT be used for IP identifiers. The dns-01
-  validator refuses IP literals (`malformed`), but `new_order` still offers
-  dns-01 for IP identifiers (POAM-2026-10-23-49)
+- ✅ **RFC 8738 §7 (2026-10-26):** dns-01 is not offered for IP identifiers,
+  `check_challenge_permitted` refuses it on an `ip` authorization before any
+  I/O, and the dns-01 validator refuses IP literals (`malformed`). See
+  RFC 8738 below
+- ✅ **Wildcard authorizations (RFC 8555 §7.1.4 / §8.4, 2026-10-26):** only
+  dns-01 is offered, and `check_challenge_permitted` refuses any other
+  challenge type on a wildcard authorization (`unauthorized`) before any I/O
+  (tests `check_challenge_permitted_policy`,
+  `qa_check_challenge_permitted_problem_types`,
+  `qa_offered_challenges_are_permitted`). The call site in
+  `validate_challenge_inner` is verified by inspection only
 - ⚠️ **Gap: no CAA check (RFC 8659 §3).** Issuance does not check CAA
   records. `urn:ietf:params:acme:error:caa` is defined
   ([error.rs](../../crates/ostrich-acme/src/error.rs) line 135) but never
@@ -1116,14 +1198,14 @@ of identifiers authorized in the order.
   an operational-environment assumption (SECURITY_TARGET A.DNS_RESOLVER). The
   path from acme-server to that resolver is not authenticated (no TSIG or
   DoT) (POAM-2026-10-23-41)
-- ⚠️ **Gap: wildcard identifiers** cannot be validated until `new_order` stores
-  the base domain with `wildcard: true` (POAM-2026-10-23-49)
 - ⚠️ No live dns-01 end-to-end test against a real DNS server; the offline
   tests use a loopback mock DNS server that drives the real hickory resolver
 
 **Remediation:** add the CAA check; decide on in-process DNSSEC versus the
-environment assumption; fix wildcard and IP-identifier handling in
-`new_order`; add a live dns-01 integration test (POAM-2026-10-23-41, -49)
+environment assumption; add a live dns-01 integration test
+(POAM-2026-10-23-41); rate-limit failed validations to slow name probing
+(POAM-2026-10-23-49, narrowed 2026-10-26). Wildcard and IP-identifier
+handling in `new_order` was fixed on 2026-10-26
 
 ---
 
@@ -1136,6 +1218,21 @@ environment assumption; fix wildcard and IP-identifier handling in
 - ✅ §6.2 - Request authentication via JWS
 - ✅ §6.2 - Protected header with "alg", "nonce", "url"
 - ✅ §6.2 - JWK or "kid" in protected header
+- ✅ §6.7 - newOrder identifier errors (2026-10-26, branch `claude/acme-wildcard-identifiers`, uncommitted): an
+  unknown identifier type (compared exactly; `DNS`, `email`) is
+  `unsupportedIdentifier`; a wildcard form the server does not support (`*`,
+  `*foo.example.com`, `a.*.example.com`, `*.*.example.com`, `*.com`) and an
+  IPv4-mapped or IPv4-compatible IPv6 address are `rejectedIdentifier`; DNS
+  syntax errors, IP literals sent as type `dns`, non-canonical `ip` text, an
+  empty list, duplicates and more than 100 identifiers are `malformed`. All
+  are HTTP 400. Details are fixed strings and never echo the submitted value
+  (tests `unknown_type_is_unsupported_identifier`,
+  `unsupported_wildcards_are_rejected_identifier`, `malformed_dns_identifiers`,
+  `list_empty_and_cap`, `list_duplicates_are_malformed`,
+  `errors_do_not_echo_value`, `qa_no_echo_for_every_error_class`)
+- ⚠️ **Deviation (RFC-004, 2026-10-26 wildcard run):** newOrder errors carry
+  no §6.7.1 `subproblems`, so a client is not told which identifier in a
+  multi-identifier order was refused. §6.7.1 subproblems are optional (MAY)
 
 **Implementation (Phase 11):**
 
@@ -1197,7 +1294,7 @@ environment assumption; fix wildcard and IP-identifier handling in
   in-cluster ACME smoke test.
 - ✅ SSRF policy honors `allow_private_ip_domains` uniformly with HTTP-01 (see SI-10 above).
 - ✅ **Bounds-checked acmeIdentifier parsing (2026-10-26):** `acme_identifier_digest`
-  ([validation.rs](../../crates/ostrich-acme/src/validation.rs) line 1140)
+  ([validation.rs](../../crates/ostrich-acme/src/validation.rs) line 1195)
   replaces an index slice that could panic the validation task on a 32- or
   33-octet extension value beginning `04 20`; a value that is neither
   `04 20` + 32 octets nor exactly 32 octets is `incorrectResponse`
@@ -1212,6 +1309,56 @@ environment assumption; fix wildcard and IP-identifier handling in
   identifier; the SAN is not checked
 - ⚠️ The extension value is accepted either as a DER OCTET STRING
   (`04 20` + 32 octets) or as a bare 32-octet value; §3 requires the DER form
+- ⚠️ RFC 8738 §6 (IP identifiers): no reverse-name SNI and no iPAddress SAN
+  check, so tls-alpn-01 is not offered or accepted for `ip` identifiers
+  (since 2026-10-26; see RFC 8738 below)
+
+---
+
+### RFC 8738: ACME IP Identifier Validation Extension
+
+**Status:** 🟡 **Partial** (added 2026-10-26, branch `claude/acme-wildcard-identifiers`, uncommitted; §6 deferred, POAM-2026-10-23-52)
+
+**Implementation:**
+
+- [crates/ostrich-acme/src/identifier.rs](../../crates/ostrich-acme/src/identifier.rs) - `parse_ip`
+  (line 179), `is_ipv4_embedded` (line 209), `IP_CHALLENGES` (line 59)
+- [crates/ostrich-acme/src/rest.rs](../../crates/ostrich-acme/src/rest.rs) - `check_challenge_permitted`
+  (line 1227), `check_order_finalizable` (line 1477)
+- [crates/ostrich-acme/src/validation.rs](../../crates/ostrich-acme/src/validation.rs) - `http01_challenge_url`
+  (line 1342), `url_connect_host` (line 1358)
+
+**Sections:**
+
+- ✅ §3 - Identifier: type `ip`; the value must be the canonical text form
+  (IPv4 dotted decimal, IPv6 per RFC 5952), otherwise `malformed`, because
+  finalize compares IP SANs as text. IPv4-mapped (`::ffff:0:0/96`) and
+  IPv4-compatible (`::/96` except `::` and `::1`) IPv6 addresses are refused
+  with `rejectedIdentifier`. Tests: `ip_identifier_canonical_http01_only`,
+  `ip_identifier_non_canonical_or_invalid_is_malformed`,
+  `ipv4_embedded_ipv6_is_rejected_identifier`, `qa_ip_canonical_forms`,
+  `qa_ipv4_embedded_boundaries`
+- ✅ §5 - http-01 for IPv4 and IPv6: the IPv6 URL host is bracketed (RFC 3986
+  §3.2.2) and the bare address goes through the SSRF guard (see RFC 8555 §8.3
+  above). No live end-to-end http-01 test against a public IPv6 address
+- 🟡 §6 - tls-alpn-01 for IP identifiers: not implemented. The validator sends
+  no `in-addr.arpa` / `ip6.arpa` reverse-name SNI and does not require exactly
+  one iPAddress SAN matching the address. Until then tls-alpn-01 is not
+  offered for `ip` identifiers, `check_challenge_permitted` refuses it on `ip`
+  authorizations (rows created before 2026-10-26 included), and finalize
+  requires a `valid` http-01 challenge for every `ip` authorization
+  (POAM-2026-10-23-52). Tests: `check_challenge_permitted_ip_http01_only`,
+  `qa_check_challenge_permitted_ip_variants`,
+  `check_order_finalizable_ip_requires_http01`,
+  `qa_ip_offering_is_http01_only_everywhere`
+- ✅ §7 - dns-01 MUST NOT be used for IP identifiers: not offered, refused
+  before any I/O, and refused by the dns-01 validator
+- ℹ️ Private and reserved addresses are not refused at newOrder; the http-01
+  SSRF guard refuses them at validation time (`rejectedIdentifier`)
+
+**Evidence limits:** the authorization and challenge rows written by
+`new_order` and the finalize handler wiring are verified by inspection only;
+the Postgres integration tests were NOT RUN (QA-002, QA-005).
 
 ---
 
@@ -1853,7 +2000,8 @@ compliance figure.
    - Corrected 2026-10-23: this item previously said "Weak TLS configuration possible", which no longer describes the REST listeners
 
 2. **RFC 8555 - ACME Challenge Validators** (🟡 Partial)
-   - Impact: no CAA check (RFC 8659) and no DNSSEC validation in the TOE (RFC 8555 §11.2) (POAM-2026-10-23-41); wildcard orders and dns-01 offered for IP identifiers (POAM-2026-10-23-49); RFC 8737 §3 certificate checks incomplete (POAM-2026-10-23-52)
+   - Impact: no CAA check (RFC 8659) and no DNSSEC validation in the TOE (RFC 8555 §11.2) (POAM-2026-10-23-41); RFC 8737 §3 certificate checks incomplete, and RFC 8738 §6 not implemented so tls-alpn-01 is not offered for IP identifiers (POAM-2026-10-23-52); internal-name probing through challenge failures (POAM-2026-10-23-49, narrowed)
+   - Updated 2026-10-26 (branch `claude/acme-wildcard-identifiers`, uncommitted): wildcard orders work (base-domain authorization, dns-01 only) and IP identifiers are offered http-01 only; this item previously listed both as gaps (POAM-2026-10-23-49)
    - Updated 2026-10-26: DNS-01 is functional (resolver built from `ACME_DNS01_RESOLVERS` or the system configuration; fails closed with no name servers). It was previously listed here as not functional
    - Corrected 2026-10-26: this item previously also listed TLS-ALPN-01, which was fixed by commits 5b1a034 (self-signed challenge certificate accepted, RFC 8737) and 5e8ab3f (critical acmeIdentifier extension accepted)
    - Phase: 16
@@ -2003,6 +2151,7 @@ consumed by the TAMP messages above.
 | 2.8 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted; run record `target/agent-workflow/20261026-091032-dns01-resolver/`). RFC 8555 §7.5 / §8.4: dns-01 now functional (operator or system name servers, fails closed when empty; FQDN query name; no in-process cache; TXT strings concatenated, owner / CNAME chain checked; mismatch retried per §8.2); stale "non-functional" text, line references and remediation replaced; §8.4 stays 🟡 and §7.5 stays 🟡 (CAA, DNSSEC, wildcards; POAM-41, -49). Added the RFC-005 scope note (upstream recursor negative cache, RFC 2308), the RFC 8738 §7 note and a challenge failure-type table. §7.1: section numbers corrected (§7.1.2 Account, §7.1.3 Order, §7.1.4 Authorization, §7.1.5 Challenge); Order and Authorization ✅ → 🟡 and §7.1 🟢 → 🟡 (POAM-49). §7.3 §6.7 sanitization extended to challenge errors (`challenge_error_document`; registered types only). RFC 8737 🟢 → 🟡 (critical flag, single dNSName SAN, bare 32-octet value; POAM-52). Summary table: ACME 1/1 → 0/2 (90% → 50%), TOTAL 10/12 → 9/13 (75% → 70%), arithmetic under the table. RFC 8555 header "85%" not recalculated (not derived from a section list). Priority 2 item 2 and the 2026-10-26 dependency note updated |
 | 2.9 | 2026-10-26 | OstrichPKI Team | "RFC 3986: URI path handling in the web-ui BFF proxy": "branch, uncommitted" replaced by the merge reference ([PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191), merge commit 635c5c3); POAM-2026-10-23-43 closed on GitHub Actions [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224). Conformance statements unchanged; npe-portal still pending (POAM-46). No compliance percentage changed |
 | 2.10 | 2026-10-26 | OstrichPKI Team | npe-portal BFF proxy raw path (branch `claude/npe-portal-proxy-raw-path`, uncommitted; run record `target/agent-workflow/20261026-113138-npe-proxy-raw-path/`). The RFC 3986 section now covers both BFF proxies (renamed "RFC 3986: URI path handling in the BFF proxies"). It names the canonical shared module `ostrich_common::util::proxy_path` and notes that web-ui keeps an identical copy until a follow-up. The "npe-portal not yet" deviation was removed. Added the npe-portal empty-remainder 404 and the test and fuzz evidence. The web-ui reference was updated to commit e56a09e / PR #191. No status change |
+| 2.11 | 2026-10-26 | OstrichPKI Team | ACME wildcard identifiers (branch `claude/acme-wildcard-identifiers`, uncommitted; run record `target/agent-workflow/20261026-acme-wildcard/`). RFC 8555 §7.1 🟡 Partial → 🟢 Implemented (not Compliant: DB path and handler wiring not integration-tested; §7.1.6 deviation RFC-006). §7.1.3 / §7.1.4 ✅ (newOrder identifier validation; wildcard authorization for the base domain with `wildcard: true`, field omitted unless true; per-identifier challenge offering); §7.1.5 challenge refusal before I/O; §7.1.6 deviation RFC-006 (expired orders not moved to `invalid`). §7.4 finalize binding checks added (ready / unexpired order, one-to-one authorization binding, `ip` proven by http-01); concurrent finalize not serialized recorded. §6.7 newOrder error mapping added; deviation RFC-004 (no §6.7.1 subproblems). §7.5 status text: wildcard gap removed, stays 🟡 Partial; §8.3 IPv6 bracketing; §8.4 base-domain lookup and 255-octet offering rule. New RFC 8738 section (🟡 Partial: §3, §5, §7 ✅; §6 deferred under POAM-2026-10-23-52). RFC 8737 gaps note RFC 8738 §6. Stale validation.rs / rest.rs line references refreshed. RFC 8555 summary percentage (85%) not recalculated. |
 
 ---
 

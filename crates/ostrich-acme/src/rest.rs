@@ -668,14 +668,33 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
 ///
 /// - **FIA_UAU.1**: Request authenticated via JWS with kid.
 /// - **FDP_ACC.1**: Order created with account-scoped access control.
-/// - **FAU_GEN.1**: Order creation audited with identifiers.
+/// - **FAU_GEN.1**: Order creation and identifier refusal are audited
+///   ([`new_order_audit_event`]): account, order, outcome, identifier
+///   summary and, on refusal, the problem type.
 /// - **FPT_STM.1**: Order expiration timestamp set from reliable source.
 ///
 /// # NIST 800-53 Controls
 ///
-/// - **SI-10**: Input validation on domain identifiers.
-/// - **AU-2/AU-3**: Order lifecycle events logged.
-// POAM: POAM-2026-10-23-49 - identifiers are not validated here (SI-10 claim above is not yet met), `*.` wildcards are stored with wildcard=false, and dns-01 is offered for IP identifiers (RFC 8555 §7.1.4, RFC 8738 §7).
+/// - **SI-10**: Every identifier is validated (type, syntax, wildcard form,
+///   canonical IP, duplicates, list size) before any database write.
+/// - **AU-2/AU-3**: A successful order and an identifier refusal each emit an
+///   `ostrich-audit` record (who: account id; what: `new_order`; when: record
+///   timestamp; where: order id or `acme:new-order`; outcome).
+///
+// COMPLIANCE MAPPING:
+// - NIST 800-53: SI-10 (Information Input Validation) - identifiers validated
+//   by `identifier::validate_order_identifiers` before `create_order`
+// - NIST 800-53: AC-3 (Access Enforcement), SC-17 (PKI Certificates) - a
+//   wildcard authorization is offered dns-01 only
+// - NIAP PP-CA: FDP_CER_EXT.1 (certificate profile: subject identifiers
+//   verified before issuance)
+// - RFC 8555 §6.7 - unsupportedIdentifier / rejectedIdentifier / malformed
+// - RFC 8555 §7.1.3 - the order keeps the `*.` identifier as requested
+// - RFC 8555 §7.1.4 - wildcard authz is for the base domain, `wildcard: true`
+// - RFC 8555 §7.4 - newOrder
+// - RFC 8738 §3 / §7 - canonical `ip` identifiers, never offered dns-01
+// - NIST 800-53: AU-2, AU-3, AU-12; NIAP PP-CA: FAU_GEN.1 - order creation
+//   and identifier refusal audited
 async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Response> {
     // Validate JWS and extract payload
     let url = format!("{}/acme/new-order", state.base_url);
@@ -684,11 +703,23 @@ async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Respon
     let request = validated.payload;
     let account_id = validated.account_id;
 
-    if request.identifiers.is_empty() {
-        return Err(Error::Malformed(
-            "Identifiers list cannot be empty".to_string(),
-        ));
-    }
+    // NIST 800-53: SI-10 - validate every identifier before any write, so a
+    // rejected request leaves no order, authorization or challenge behind.
+    let authz_identifiers =
+        match crate::identifier::validate_order_identifiers(&request.identifiers) {
+            Ok(a) => a,
+            Err(e) => {
+                // AU-2: the policy refusal is a security-relevant event.
+                let mut event = new_order_audit_event(
+                    &account_id.to_string(),
+                    None,
+                    &request.identifiers,
+                    Some(&e),
+                );
+                record_audit(state.audit_sink.as_ref(), &mut event).await;
+                return Err(e);
+            }
+        };
 
     let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
 
@@ -710,13 +741,14 @@ async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Respon
         )
         .await?;
 
-    // Create authorizations for each identifier
+    // Create one authorization per order identifier. RFC 8555 §7.1.4: a `*.`
+    // identifier is authorized as its base domain with `wildcard: true`.
     let mut authorization_urls = Vec::new();
-    for identifier in &request.identifiers {
+    for identifier in &authz_identifiers {
         let authz_id = format!("authz-{}", Uuid::new_v4());
         let authz_expires = Utc::now() + chrono::Duration::days(7);
 
-        let _db_authz = repo
+        let db_authz = repo
             .create_authorization(
                 &authz_id,
                 db_order.id,
@@ -724,18 +756,19 @@ async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Respon
                 &identifier.value,
                 "pending",
                 authz_expires,
-                false, // wildcard
+                identifier.wildcard,
             )
             .await?;
 
-        // Create challenges for this authorization
-        for challenge_type in &["http-01", "dns-01", "tls-alpn-01"] {
+        // Only the challenges valid for this identifier kind (RFC 8555
+        // §7.1.3 / §8: wildcard -> dns-01 only; RFC 8738 §7: ip -> no dns-01).
+        for challenge_type in identifier.challenge_types() {
             let challenge_id = format!("chall-{}", Uuid::new_v4());
             let token = Uuid::new_v4().to_string();
 
             repo.create_challenge(
                 &challenge_id,
-                _db_authz.id,
+                db_authz.id,
                 challenge_type,
                 &token,
                 "pending",
@@ -745,6 +778,15 @@ async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Respon
 
         authorization_urls.push(format!("{}/acme/authz/{}", state.base_url, authz_id));
     }
+
+    // AU-2 / AU-3: order created.
+    let mut event = new_order_audit_event(
+        &account_id.to_string(),
+        Some(&order_id_str),
+        &request.identifiers,
+        None,
+    );
+    record_audit(state.audit_sink.as_ref(), &mut event).await;
 
     // Map to service order
     let order = map_db_order_to_service(db_order, authorization_urls, &state.base_url);
@@ -763,6 +805,130 @@ async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Respon
         Json(order),
     )
         .into_response())
+}
+
+/// The `ostrich-audit` record for a newOrder request.
+///
+/// `order_id` is `Some` for a created order (target `acme:order:<id>`) and
+/// `None` for a refused request (target `acme:new-order`); `refusal` is the
+/// identifier error, whose RFC 8555 §6.7 problem type is recorded.
+///
+/// The identifier summary is bounded: the count, per-type counts (`dns`,
+/// `ip`, anything else as `other`, so an untrusted type string is never
+/// stored) and the wildcard count. Identifier values are recorded only for a
+/// created order, where each passed the newOrder rules (LDH name or canonical
+/// IP, at most 253 octets, at most [`crate::identifier::MAX_ORDER_IDENTIFIERS`]
+/// of them). Values of a refused request are untrusted and not recorded.
+///
+// COMPLIANCE MAPPING:
+// - NIST 800-53: AU-2 (Event Logging), AU-3 (Content of Audit Records),
+//   AU-12 (Audit Record Generation)
+// - NIST 800-53: SI-10 - untrusted refused values kept out of the record
+// - NIAP PP-CA: FAU_GEN.1 (Audit Data Generation), FAU_GEN.2 (actor)
+fn new_order_audit_event(
+    account_id: &str,
+    order_id: Option<&str>,
+    identifiers: &[Identifier],
+    refusal: Option<&Error>,
+) -> ostrich_audit::AuditEvent {
+    let (mut dns, mut ip, mut other, mut wildcards) = (0usize, 0usize, 0usize, 0usize);
+    for id in identifiers {
+        match id.id_type.as_str() {
+            "dns" => {
+                dns += 1;
+                if id.value.starts_with("*.") {
+                    wildcards += 1;
+                }
+            }
+            "ip" => ip += 1,
+            _ => other += 1,
+        }
+    }
+    let mut details = serde_json::json!({
+        "identifier_count": identifiers.len(),
+        "identifier_types": { "dns": dns, "ip": ip, "other": other },
+        "wildcard_count": wildcards,
+    });
+
+    let (target, outcome) = match (order_id, refusal) {
+        (_, Some(e)) => {
+            details["problem_type"] = serde_json::Value::from(e.error_type());
+            (
+                "acme:new-order".to_string(),
+                ostrich_audit::EventOutcome::Failure,
+            )
+        }
+        (Some(order_id), None) => {
+            details["identifiers"] = serde_json::Value::from(
+                identifiers
+                    .iter()
+                    .map(|id| format!("{}:{}", id.id_type, id.value))
+                    .collect::<Vec<_>>(),
+            );
+            (
+                format!("acme:order:{order_id}"),
+                ostrich_audit::EventOutcome::Success,
+            )
+        }
+        (None, None) => (
+            "acme:new-order".to_string(),
+            ostrich_audit::EventOutcome::Failure,
+        ),
+    };
+
+    ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::AcmeProtocol,
+        account_id,
+        target,
+        "new_order",
+        outcome,
+    )
+    .with_details(details)
+    .build()
+}
+
+/// The `ostrich-audit` record for a refused finalize request: the order
+/// state or identifier binding check ([`check_order_finalizable`]) or the CSR
+/// identifier match ([`validate_csr_identifiers`]) failed.
+///
+/// Actor is the account id, target `acme:order:<order_id>`, action
+/// `finalize_order`, outcome Failure; the only detail is the RFC 8555 §6.7
+/// problem type. The error detail, CSR contents and CSR SAN values are
+/// untrusted or derived from the request and are not recorded.
+///
+// COMPLIANCE MAPPING:
+// - NIST 800-53: AU-2 (Event Logging), AU-3 (Content of Audit Records),
+//   AU-12 (Audit Record Generation) - finalize refusals after the ownership
+//   check; source IP and request id are not recorded
+// - NIST 800-53: SI-10 - untrusted submitted values kept out of the record
+// - NIAP PP-CA: FAU_GEN.1 (Audit Data Generation), FAU_GEN.2 (actor)
+fn finalize_refusal_audit_event(
+    account_id: &str,
+    order_id: &str,
+    refusal: &Error,
+) -> ostrich_audit::AuditEvent {
+    ostrich_audit::AuditEventBuilder::new(
+        ostrich_audit::EventType::AcmeProtocol,
+        account_id,
+        format!("acme:order:{order_id}"),
+        "finalize_order",
+        ostrich_audit::EventOutcome::Failure,
+    )
+    .with_details(serde_json::json!({ "problem_type": refusal.error_type() }))
+    .build()
+}
+
+/// Record an audit event, logging (not failing the request) if the sink
+/// errors; matches the challenge-validation audit path.
+async fn record_audit(sink: &dyn AuditSink, event: &mut ostrich_audit::AuditEvent) {
+    if let Err(e) = sink.record(event).await {
+        tracing::error!(
+            action = %event.action,
+            target = %event.target,
+            error = %e,
+            "failed to record ACME audit event"
+        );
+    }
 }
 
 /// Update account (RFC 8555 §7.3.2)
@@ -1033,6 +1199,53 @@ async fn outcome_recorded(
         .map(|c| c.status == "valid")
 }
 
+/// Refuse a challenge that must never be validated for this authorization.
+///
+/// - RFC 8555 §7.1.3 / §8: a wildcard authorization is only ever offered
+///   dns-01; any other challenge on it would prove control of the base host,
+///   not the zone, so it is refused rather than validated.
+/// - An `ip` authorization is validated by http-01 only: RFC 8738 §7 forbids
+///   dns-01, and tls-alpn-01 lacks the RFC 8738 §6 checks
+///   (POAM-2026-10-23-52). Rows created before this rule offered both, so
+///   they are refused here.
+/// - A `*` in a stored identifier is a legacy row from before the
+///   identifier-handling part of POAM-2026-10-23-49 was fixed (2026-10-26;
+///   `*.x` stored with `wildcard = false`); no validator may run on it.
+///
+/// # Errors
+///
+/// [`Error::Unauthorized`] for a non-dns-01 challenge on a wildcard
+/// authorization or a non-http-01 challenge on an `ip` authorization;
+/// [`Error::Malformed`] for an identifier containing `*`.
+///
+// COMPLIANCE MAPPING:
+// - NIST 800-53: AC-3 (Access Enforcement) - fail closed
+// - NIST 800-53: SI-10 (Information Input Validation)
+// - NIAP PP-CA: FDP_CER_EXT.1
+// - RFC 8555 §7.1.4 / §8.4 - wildcard authorizations are validated by dns-01
+// - RFC 8738 §6 / §7 - ip authorizations: no dns-01; tls-alpn-01 withheld
+fn check_challenge_permitted(
+    authz: &ostrich_db::models::AcmeAuthorization,
+    challenge_type: &str,
+) -> Result<()> {
+    if authz.wildcard && challenge_type != "dns-01" {
+        return Err(Error::Unauthorized(
+            "wildcard authorizations can only be validated with dns-01".to_string(),
+        ));
+    }
+    if authz.identifier_type == "ip" && challenge_type != "http-01" {
+        return Err(Error::Unauthorized(
+            "ip authorizations can only be validated with http-01".to_string(),
+        ));
+    }
+    if authz.identifier_value.contains('*') {
+        return Err(Error::Malformed(
+            "authorization identifier is not a valid DNS name".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// The fallible part of challenge validation.
 async fn validate_challenge_inner(
     state: &AcmeState,
@@ -1044,6 +1257,10 @@ async fn validate_challenge_inner(
         .find_authorization_by_uuid(challenge.authorization_id)
         .await?
         .ok_or_else(|| Error::ServerInternal("Authorization not found".to_string()))?;
+
+    // Defence in depth: refuse before any network traffic.
+    check_challenge_permitted(&authz, &challenge.challenge_type)?;
+
     let order = repo
         .find_order_by_uuid(authz.order_id)
         .await?
@@ -1148,8 +1365,15 @@ async fn get_order(State(state): State<AcmeState>, Path(id): Path<String>) -> Re
 ///
 /// - **FIA_UAU.1**: Request authenticated via JWS with kid.
 /// - **FDP_ACC.1**: Order ownership verified before finalization.
-/// - **FDP_ACF.1**: Order must be in "ready" state (all authorizations valid).
-/// - **FAU_GEN.1**: Finalization request and outcome audited.
+/// - **FDP_ACF.1**: Order must be `ready` and unexpired, with every order
+///   identifier bound to a valid, unexpired authorization
+///   ([`check_order_finalizable`]); an `ip` authorization must have been
+///   validated by http-01.
+/// - **FAU_GEN.1**: A finalize refused by [`check_order_finalizable`] or the
+///   CSR identifier match is audited as a Failure with the problem type
+///   ([`finalize_refusal_audit_event`]); issuance is audited by the CA
+///   service. CSR parse/signature failures, an ownership refusal and
+///   database errors are not audited by this handler.
 /// - **FCS_COP.1**: CSR signature verification (proof of possession).
 ///
 /// # NIST 800-53 Controls
@@ -1203,6 +1427,113 @@ fn validate_csr_identifiers(order_identifiers: &[Identifier], csr_sans: &[String
              (RFC 8555 §7.4): authorized {:?}, requested {:?}",
             authorized, requested
         )));
+    }
+    Ok(())
+}
+
+/// Refuse finalization unless the order is `ready`, unexpired, and every
+/// order identifier is bound one-to-one to a `valid`, unexpired authorization.
+///
+/// The order identifiers are re-parsed with the newOrder rules
+/// ([`crate::identifier::validate_order_identifiers`]) into the expected
+/// authorization keys `(type, lowercase value, wildcard)`; the order's
+/// authorization rows must form exactly that set, with no missing, extra or
+/// duplicate rows. So a `*.example.com` order identifier needs a `wildcard`
+/// authorization for `example.com`; a legacy row (`*.example.com` stored with
+/// `wildcard = false`, possibly validated by http-01 before the fix) never
+/// matches and the order cannot be finalized. An order whose authorization
+/// loop failed part-way (missing rows) is refused too.
+///
+/// `challenges` are the challenge rows of the order's `ip` authorizations
+/// (rows of other authorizations are ignored). A `valid` `ip` authorization
+/// must have a `valid` `http-01` challenge row: an `ip` authorization proven
+/// before the fix by tls-alpn-01 or dns-01 is not usable (RFC 8738 §6/§7).
+///
+/// The checks run in three passes over all rows, so the error type does not
+/// depend on row order: order state, then the identifier binding of every row
+/// (`unauthorized`), then the status and expiry of every row
+/// (`orderNotReady`), then the `ip` validation method (`unauthorized`).
+///
+/// # Errors
+///
+/// - [`Error::OrderNotReady`] if the order is not `ready` or has expired, or
+///   (once every row is bound) an authorization is not `valid` or has expired.
+/// - [`Error::Unauthorized`] if the stored order identifiers no longer pass
+///   the newOrder rules, the authorizations do not match them one-to-one, or
+///   an `ip` authorization has no `valid` `http-01` challenge.
+///
+// COMPLIANCE MAPPING:
+// - NIST 800-53: AC-3 (Access Enforcement) - fail closed before issuance
+// - NIST 800-53: SC-17 (PKI Certificates) - issue only for names whose
+//   control was proven by a matching authorization
+// - NIAP PP-CA: FDP_CER_EXT.1 (identifier control proven before issuance)
+// - RFC 8555 §7.1.3 / §7.1.4 - authorizations match order identifiers,
+//   wildcard flag included
+// - RFC 8555 §7.1.6 - only a `ready` order may be finalized; expired orders
+//   and authorizations are not usable
+// - RFC 8555 §7.4 - orderNotReady
+// - RFC 8738 §7 - `ip` identifiers proven by http-01 only (tls-alpn-01 for
+//   IP is deferred, POAM-2026-10-23-52)
+fn check_order_finalizable(
+    order: &ostrich_db::models::AcmeOrder,
+    order_identifiers: &[Identifier],
+    authzs: &[ostrich_db::models::AcmeAuthorization],
+    challenges: &[ostrich_db::models::AcmeChallenge],
+    now: chrono::DateTime<Utc>,
+) -> Result<()> {
+    if order.status != "ready" || order.expires <= now {
+        return Err(Error::OrderNotReady);
+    }
+
+    let expected =
+        crate::identifier::validate_order_identifiers(order_identifiers).map_err(|_| {
+            Error::Unauthorized(
+                "order identifiers do not satisfy the current identifier policy".to_string(),
+            )
+        })?;
+    let mut expected_keys: std::collections::HashSet<(String, String, bool)> = expected
+        .into_iter()
+        .map(|a| (a.id_type, a.value.to_ascii_lowercase(), a.wildcard))
+        .collect();
+
+    // Pass 1 - binding (RFC-007: before any status check).
+    if authzs.len() != expected_keys.len() {
+        return Err(Error::Unauthorized(
+            "order authorizations do not match the order identifiers".to_string(),
+        ));
+    }
+    for authz in authzs {
+        let key = (
+            authz.identifier_type.clone(),
+            authz.identifier_value.to_ascii_lowercase(),
+            authz.wildcard,
+        );
+        // Removing makes the match one-to-one: a duplicate row finds nothing.
+        if !expected_keys.remove(&key) {
+            return Err(Error::Unauthorized(
+                "order authorizations do not match the order identifiers".to_string(),
+            ));
+        }
+    }
+
+    // Pass 2 - status and expiry.
+    if authzs
+        .iter()
+        .any(|authz| authz.status != "valid" || authz.expires <= now)
+    {
+        return Err(Error::OrderNotReady);
+    }
+
+    // Pass 3 - an `ip` authorization must have been proven by http-01.
+    for authz in authzs.iter().filter(|a| a.identifier_type == "ip") {
+        let proven_by_http01 = challenges.iter().any(|c| {
+            c.authorization_id == authz.id && c.challenge_type == "http-01" && c.status == "valid"
+        });
+        if !proven_by_http01 {
+            return Err(Error::Unauthorized(
+                "ip authorization was not validated by http-01".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -1268,14 +1599,35 @@ async fn finalize_order(
         Error::ServerInternal(format!("Failed to parse order identifiers: {}", e))
     })?;
 
-    validate_csr_identifiers(&order_identifiers, &parsed_csr.subject_alternative_names)?;
-
-    // Verify all authorizations are valid
+    // RFC 8555 §7.1.6 / §7.4; AC-3, SC-17: the order must be ready and
+    // unexpired, and each order identifier bound to its own valid, unexpired
+    // authorization (type, value, wildcard). Fails closed before the CSR
+    // match and before any state change.
     let db_authzs = repo.list_authorizations_by_order(db_order.id).await?;
-    let all_valid = db_authzs.iter().all(|authz| authz.status == "valid");
+    // RFC 8738 §7 / SEC-005: the challenge rows of `ip` authorizations, so
+    // the check can require that each was proven by http-01.
+    let mut ip_challenges = Vec::new();
+    for authz in db_authzs.iter().filter(|a| a.identifier_type == "ip") {
+        ip_challenges.extend(repo.list_challenges_by_authorization(authz.id).await?);
+    }
 
-    if !all_valid {
-        return Err(Error::OrderNotReady);
+    // NIST 800-53: AU-2, AU-12 - a refused finalize is audited (Failure, with
+    // the problem type only; no CSR contents or submitted values).
+    let refusal = check_order_finalizable(
+        &db_order,
+        &order_identifiers,
+        &db_authzs,
+        &ip_challenges,
+        Utc::now(),
+    )
+    .and_then(|()| {
+        validate_csr_identifiers(&order_identifiers, &parsed_csr.subject_alternative_names)
+    });
+    if let Err(e) = refusal {
+        let mut event =
+            finalize_refusal_audit_event(&validated.account_id.to_string(), &db_order.order_id, &e);
+        record_audit(state.audit_sink.as_ref(), &mut event).await;
+        return Err(e);
     }
 
     // Update order status to processing
@@ -1478,7 +1830,9 @@ fn map_db_authorization_to_service(
         },
         expires: Some(db.expires),
         challenges,
-        wildcard: Some(db.wildcard),
+        // RFC 8555 §7.1.4: `wildcard` MUST be present and true for a wildcard
+        // authorization and absent otherwise (never `false`).
+        wildcard: db.wildcard.then_some(true),
         created_at: db.created_at,
         updated_at: db.updated_at,
     }
@@ -1630,6 +1984,819 @@ mod tests {
         assert!(validate_csr_identifiers(&ip_order, &["IP:192.0.2.2".into()]).is_err());
     }
 
+    fn db_authz(value: &str, wildcard: bool) -> ostrich_db::models::AcmeAuthorization {
+        let now = Utc::now();
+        ostrich_db::models::AcmeAuthorization {
+            id: Uuid::new_v4(),
+            authorization_id: "authz-test".to_string(),
+            order_id: Uuid::new_v4(),
+            identifier_type: "dns".to_string(),
+            identifier_value: value.to_string(),
+            status: "pending".to_string(),
+            expires: now,
+            wildcard,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// RFC 8555 §7.1.4: `wildcard` is present and true for a wildcard
+    /// authorization, and absent (never `false`) otherwise.
+    #[test]
+    fn authorization_json_wildcard_only_when_true() {
+        let json = serde_json::to_value(map_db_authorization_to_service(
+            db_authz("example.com", true),
+            vec![],
+        ))
+        .expect("serialize");
+        assert_eq!(json["wildcard"], serde_json::Value::Bool(true));
+        assert_eq!(json["identifier"]["value"], "example.com");
+
+        let json = serde_json::to_value(map_db_authorization_to_service(
+            db_authz("example.com", false),
+            vec![],
+        ))
+        .expect("serialize");
+        let obj = json.as_object().expect("object");
+        assert!(!obj.contains_key("wildcard"), "{json}");
+    }
+
+    /// Defence in depth: a wildcard authz is validated only via dns-01, and a
+    /// legacy `*.` identifier is never validated.
+    #[test]
+    fn check_challenge_permitted_policy() {
+        let wild = db_authz("example.com", true);
+        assert!(check_challenge_permitted(&wild, "dns-01").is_ok());
+        for t in ["http-01", "tls-alpn-01", "unknown"] {
+            assert!(
+                matches!(
+                    check_challenge_permitted(&wild, t),
+                    Err(Error::Unauthorized(_))
+                ),
+                "{t}"
+            );
+        }
+
+        let plain = db_authz("example.com", false);
+        for t in ["http-01", "dns-01", "tls-alpn-01"] {
+            assert!(check_challenge_permitted(&plain, t).is_ok(), "{t}");
+        }
+
+        let legacy = db_authz("*.example.com", false);
+        for t in ["http-01", "dns-01", "tls-alpn-01"] {
+            assert!(
+                matches!(
+                    check_challenge_permitted(&legacy, t),
+                    Err(Error::Malformed(_))
+                ),
+                "{t}"
+            );
+        }
+    }
+
+    /// RFC 8555 §7.4: the order keeps `*.example.com`, so a CSR for the
+    /// wildcard name finalizes while one for only the base name does not.
+    #[test]
+    fn wildcard_order_identifier_matches_wildcard_csr() {
+        let order = vec![Identifier {
+            id_type: "dns".to_string(),
+            value: "*.example.com".to_string(),
+        }];
+        assert!(validate_csr_identifiers(&order, &["DNS:*.Example.com".into()]).is_ok());
+        assert!(validate_csr_identifiers(&order, &["DNS:example.com".into()]).is_err());
+    }
+
+    // ---- QA additions (SA-11 / CA-2 evidence) ----
+
+    /// RFC 8555 §6.7: the defence-in-depth refusals carry the registered
+    /// problem-type URNs (they reach the challenge `error` document).
+    #[test]
+    fn qa_check_challenge_permitted_problem_types() {
+        let e = check_challenge_permitted(&db_authz("example.com", true), "http-01")
+            .expect_err("wildcard http-01");
+        assert_eq!(e.error_type(), "urn:ietf:params:acme:error:unauthorized");
+        let e = check_challenge_permitted(&db_authz("*.example.com", false), "dns-01")
+            .expect_err("legacy row");
+        assert_eq!(e.error_type(), "urn:ietf:params:acme:error:malformed");
+        // A wildcard-flagged row that still holds a `*` value fails closed
+        // for dns-01 as well.
+        assert!(check_challenge_permitted(&db_authz("*.example.com", true), "dns-01").is_err());
+        // Challenge type is compared exactly.
+        for t in ["DNS-01", "dns-01 ", ""] {
+            assert!(
+                check_challenge_permitted(&db_authz("example.com", true), t).is_err(),
+                "{t:?}"
+            );
+        }
+    }
+
+    /// Offering and enforcement agree: every challenge new_order would create
+    /// for an identifier passes `check_challenge_permitted` on the resulting
+    /// authz row, and for a wildcard every non-offered type is refused.
+    #[test]
+    fn qa_offered_challenges_are_permitted() {
+        let authzs = crate::identifier::validate_order_identifiers(&[
+            Identifier {
+                id_type: "dns".to_string(),
+                value: "example.com".to_string(),
+            },
+            Identifier {
+                id_type: "dns".to_string(),
+                value: "*.example.com".to_string(),
+            },
+            Identifier {
+                id_type: "ip".to_string(),
+                value: "192.0.2.1".to_string(),
+            },
+        ])
+        .expect("valid");
+        for a in &authzs {
+            let mut row = db_authz(&a.value, a.wildcard);
+            row.identifier_type = a.id_type.clone();
+            for t in a.challenge_types() {
+                assert!(check_challenge_permitted(&row, t).is_ok(), "{a:?} {t}");
+            }
+            if a.wildcard {
+                for t in ["http-01", "tls-alpn-01"] {
+                    assert!(!a.challenge_types().contains(&t));
+                    assert!(check_challenge_permitted(&row, t).is_err(), "{a:?} {t}");
+                }
+            }
+        }
+        // The IP authz is never offered dns-01, and the dns-01 validator
+        // refuses an IP literal if one reached it anyway (RFC 8738 §7).
+        assert!(!authzs[2].challenge_types().contains(&"dns-01"));
+        assert!(crate::validation::dns01_query_name(&authzs[2].value).is_err());
+    }
+
+    /// RFC 8555 §7.1.4: the serialized text never contains a `wildcard` key
+    /// for a non-wildcard authorization (not even `null`), and the wildcard
+    /// authorization identifier is the base domain without `*.`.
+    #[test]
+    fn qa_authorization_json_wildcard_text() {
+        let plain = serde_json::to_string(&map_db_authorization_to_service(
+            db_authz("example.com", false),
+            vec![],
+        ))
+        .expect("serialize");
+        assert!(!plain.contains("wildcard"), "{plain}");
+
+        let wild = serde_json::to_string(&map_db_authorization_to_service(
+            db_authz("example.com", true),
+            vec![],
+        ))
+        .expect("serialize");
+        assert!(wild.contains("\"wildcard\":true"), "{wild}");
+        assert!(!wild.contains('*'), "{wild}");
+    }
+
+    // ---- Fix round 1 (SEC-001, RFC-001, NIST-001) ----
+
+    fn ident(t: &str, v: &str) -> Identifier {
+        Identifier {
+            id_type: t.to_string(),
+            value: v.to_string(),
+        }
+    }
+
+    fn db_order(status: &str, expires: chrono::DateTime<Utc>) -> ostrich_db::models::AcmeOrder {
+        let now = Utc::now();
+        ostrich_db::models::AcmeOrder {
+            id: Uuid::new_v4(),
+            order_id: "order-test".to_string(),
+            account_id: Uuid::new_v4(),
+            status: status.to_string(),
+            identifiers: serde_json::Value::Null,
+            not_before: None,
+            not_after: None,
+            expires,
+            certificate_id: None,
+            csr_der: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// A `valid`, unexpired authorization row.
+    fn valid_authz(
+        t: &str,
+        v: &str,
+        wildcard: bool,
+        expires: chrono::DateTime<Utc>,
+    ) -> ostrich_db::models::AcmeAuthorization {
+        let mut a = db_authz(v, wildcard);
+        a.identifier_type = t.to_string();
+        a.status = "valid".to_string();
+        a.expires = expires;
+        a
+    }
+
+    /// A `valid` http-01 challenge row for each `ip` authorization, i.e. what
+    /// finalize loads for rows proven after the fix (SEC-005).
+    fn http01_valid(
+        authzs: &[ostrich_db::models::AcmeAuthorization],
+    ) -> Vec<ostrich_db::models::AcmeChallenge> {
+        authzs
+            .iter()
+            .filter(|a| a.identifier_type == "ip")
+            .map(|a| challenge_row(a, "http-01", "valid"))
+            .collect()
+    }
+
+    fn challenge_row(
+        authz: &ostrich_db::models::AcmeAuthorization,
+        challenge_type: &str,
+        status: &str,
+    ) -> ostrich_db::models::AcmeChallenge {
+        let now = Utc::now();
+        ostrich_db::models::AcmeChallenge {
+            id: Uuid::new_v4(),
+            challenge_id: "chall-test".to_string(),
+            authorization_id: authz.id,
+            challenge_type: challenge_type.to_string(),
+            token: "token".to_string(),
+            status: status.to_string(),
+            validated_at: None,
+            error_detail: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// [`check_order_finalizable`] with every `ip` row proven by http-01, so
+    /// the pre-SEC-005 tests keep testing the order state and the binding.
+    fn finalizable(
+        order: &ostrich_db::models::AcmeOrder,
+        ids: &[Identifier],
+        authzs: &[ostrich_db::models::AcmeAuthorization],
+        now: chrono::DateTime<Utc>,
+    ) -> Result<()> {
+        check_order_finalizable(order, ids, authzs, &http01_valid(authzs), now)
+    }
+
+    /// SEC-001: finalize requires a ready, unexpired order whose identifiers
+    /// are bound one-to-one to valid, unexpired authorizations.
+    #[test]
+    fn check_order_finalizable_happy_path() {
+        let now = Utc::now();
+        let later = now + chrono::Duration::days(1);
+        let order = db_order("ready", later);
+        let ids = [
+            ident("dns", "Example.com"),
+            ident("dns", "*.example.com"),
+            ident("ip", "192.0.2.1"),
+        ];
+        let authzs = [
+            valid_authz("ip", "192.0.2.1", false, later),
+            valid_authz("dns", "example.com", true, later),
+            valid_authz("dns", "EXAMPLE.com", false, later),
+        ];
+        assert!(finalizable(&order, &ids, &authzs, now).is_ok());
+    }
+
+    #[test]
+    fn check_order_finalizable_order_state() {
+        let now = Utc::now();
+        let later = now + chrono::Duration::days(1);
+        let ids = [ident("dns", "example.com")];
+        let authzs = [valid_authz("dns", "example.com", false, later)];
+        for status in ["pending", "processing", "valid", "invalid", "READY"] {
+            let e = finalizable(&db_order(status, later), &ids, &authzs, now).expect_err(status);
+            assert!(matches!(e, Error::OrderNotReady), "{status}: {e:?}");
+        }
+        // Expired (or expiring now) order.
+        for exp in [now, now - chrono::Duration::seconds(1)] {
+            let e = finalizable(&db_order("ready", exp), &ids, &authzs, now)
+                .expect_err("expired order");
+            assert!(matches!(e, Error::OrderNotReady), "{e:?}");
+        }
+    }
+
+    #[test]
+    fn check_order_finalizable_authz_state() {
+        let now = Utc::now();
+        let later = now + chrono::Duration::days(1);
+        let order = db_order("ready", later);
+        let ids = [ident("dns", "example.com")];
+        for status in ["pending", "invalid", "deactivated", "expired", "revoked"] {
+            let mut a = valid_authz("dns", "example.com", false, later);
+            a.status = status.to_string();
+            let e = finalizable(&order, &ids, &[a], now).expect_err(status);
+            assert!(matches!(e, Error::OrderNotReady), "{status}: {e:?}");
+        }
+        let expired = valid_authz("dns", "example.com", false, now);
+        let e = finalizable(&order, &ids, &[expired], now).expect_err("expired");
+        assert!(matches!(e, Error::OrderNotReady), "{e:?}");
+    }
+
+    /// The identifier binding: missing, extra, duplicate, wrong-type,
+    /// wrong-value and wrong-wildcard rows are all `unauthorized`.
+    #[test]
+    fn check_order_finalizable_identifier_binding() {
+        let now = Utc::now();
+        let later = now + chrono::Duration::days(1);
+        let order = db_order("ready", later);
+        let a = |t: &str, v: &str, w: bool| valid_authz(t, v, w, later);
+        let ids = [ident("dns", "example.com"), ident("dns", "*.example.com")];
+
+        let cases: Vec<(&str, Vec<ostrich_db::models::AcmeAuthorization>)> = vec![
+            ("missing row", vec![a("dns", "example.com", false)]),
+            ("no rows", vec![]),
+            (
+                "extra row",
+                vec![
+                    a("dns", "example.com", false),
+                    a("dns", "example.com", true),
+                    a("dns", "other.example", false),
+                ],
+            ),
+            (
+                "duplicate row instead of wildcard",
+                vec![
+                    a("dns", "example.com", false),
+                    a("dns", "example.com", false),
+                ],
+            ),
+            (
+                "wildcard flag missing",
+                vec![
+                    a("dns", "example.com", false),
+                    a("dns", "victim.example", true),
+                ],
+            ),
+            (
+                // Legacy row: `*.` value stored with wildcard = false.
+                "legacy wildcard row",
+                vec![
+                    a("dns", "example.com", false),
+                    a("dns", "*.example.com", false),
+                ],
+            ),
+            (
+                "wrong type",
+                vec![a("ip", "example.com", false), a("dns", "example.com", true)],
+            ),
+        ];
+        for (name, authzs) in cases {
+            let e = finalizable(&order, &ids, &authzs, now).expect_err(name);
+            assert!(matches!(e, Error::Unauthorized(_)), "{name}: {e:?}");
+        }
+
+        // Stored order identifiers that no longer pass the newOrder rules
+        // (legacy orders) are refused even with "matching" rows.
+        for bad in [
+            vec![ident("dns", "*.com")],
+            vec![ident("dns", "a.*.example.com")],
+            vec![ident("ip", "::ffff:192.0.2.1")],
+            vec![],
+        ] {
+            let rows: Vec<_> = bad.iter().map(|i| a(&i.id_type, &i.value, false)).collect();
+            let e = finalizable(&order, &bad, &rows, now).expect_err("legacy order");
+            assert!(matches!(e, Error::Unauthorized(_)), "{bad:?}: {e:?}");
+        }
+    }
+
+    /// RFC-001: an `ip` authorization is validated by http-01 only; legacy
+    /// rows that were offered tls-alpn-01 or dns-01 are refused before I/O.
+    #[test]
+    fn check_challenge_permitted_ip_http01_only() {
+        let mut row = db_authz("192.0.2.1", false);
+        row.identifier_type = "ip".to_string();
+        assert!(check_challenge_permitted(&row, "http-01").is_ok());
+        for t in ["tls-alpn-01", "dns-01", "HTTP-01", ""] {
+            let e = check_challenge_permitted(&row, t).expect_err(t);
+            assert!(matches!(e, Error::Unauthorized(_)), "{t:?}: {e:?}");
+            assert_eq!(e.error_type(), "urn:ietf:params:acme:error:unauthorized");
+        }
+        // dns authorizations keep tls-alpn-01.
+        assert!(check_challenge_permitted(&db_authz("example.com", false), "tls-alpn-01").is_ok());
+    }
+
+    /// NIST-001: a created order is audited as success with the actor, the
+    /// order target and the (validated) identifier values.
+    #[test]
+    fn new_order_audit_event_success() {
+        let ids = [
+            ident("dns", "example.com"),
+            ident("dns", "*.example.com"),
+            ident("ip", "192.0.2.1"),
+        ];
+        let ev = new_order_audit_event("acct-1", Some("order-abc"), &ids, None);
+        assert_eq!(ev.event_type, ostrich_audit::EventType::AcmeProtocol);
+        assert_eq!(ev.actor, "acct-1");
+        assert_eq!(ev.target, "acme:order:order-abc");
+        assert_eq!(ev.action, "new_order");
+        assert_eq!(ev.outcome, ostrich_audit::EventOutcome::Success);
+        let d = ev.details.expect("details");
+        assert_eq!(d["identifier_count"], 3);
+        assert_eq!(d["identifier_types"]["dns"], 2);
+        assert_eq!(d["identifier_types"]["ip"], 1);
+        assert_eq!(d["identifier_types"]["other"], 0);
+        assert_eq!(d["wildcard_count"], 1);
+        assert_eq!(
+            d["identifiers"],
+            serde_json::json!(["dns:example.com", "dns:*.example.com", "ip:192.0.2.1"])
+        );
+        assert!(d.get("problem_type").is_none());
+    }
+
+    /// NIST-001: a refusal is audited as failure with the problem type, and
+    /// no untrusted value or type string reaches the record.
+    #[test]
+    fn new_order_audit_event_refusal_is_bounded() {
+        let marker = "zzauditmarker";
+        let ids = [
+            ident("dns", &format!("*.{marker}.com")),
+            ident(marker, "x"),
+            ident("ip", marker),
+        ];
+        let err = crate::identifier::validate_order_identifiers(&ids).expect_err("refused");
+        let ev = new_order_audit_event("acct-2", None, &ids, Some(&err));
+        assert_eq!(ev.actor, "acct-2");
+        assert_eq!(ev.target, "acme:new-order");
+        assert_eq!(ev.outcome, ostrich_audit::EventOutcome::Failure);
+        let d = ev.details.clone().expect("details");
+        assert_eq!(d["problem_type"], err.error_type());
+        assert_eq!(d["identifier_count"], 3);
+        assert_eq!(d["identifier_types"]["other"], 1);
+        assert!(d.get("identifiers").is_none());
+        let rendered = serde_json::to_string(&ev).expect("serialize");
+        assert!(!rendered.contains(marker), "{rendered}");
+
+        // A 1000-identifier refusal still yields a constant-size record.
+        let many: Vec<Identifier> = (0..1000).map(|_| ident("dns", marker)).collect();
+        let err = crate::identifier::validate_order_identifiers(&many).expect_err("cap");
+        let ev = new_order_audit_event("acct-2", None, &many, Some(&err));
+        let rendered = serde_json::to_string(&ev.details).expect("serialize");
+        assert!(rendered.len() < 256, "{rendered}");
+        assert!(rendered.contains("\"identifier_count\":1000"), "{rendered}");
+        assert_eq!(
+            ev.details.as_ref().expect("details")["problem_type"],
+            "urn:ietf:params:acme:error:malformed"
+        );
+    }
+
+    /// NIST-001: the events reach the audit sink (and its hash chain).
+    #[tokio::test]
+    async fn new_order_audit_events_are_recorded() {
+        use ostrich_audit::AuditSink as _;
+        let sink = ostrich_audit::sink::MemoryAuditSink::new();
+        let ids = [ident("dns", "*.com")];
+        let err = crate::identifier::validate_order_identifiers(&ids).expect_err("refused");
+        let mut refused = new_order_audit_event("acct-3", None, &ids, Some(&err));
+        record_audit(&sink, &mut refused).await;
+        let ok_ids = [ident("dns", "example.com")];
+        let mut created = new_order_audit_event("acct-3", Some("order-1"), &ok_ids, None);
+        record_audit(&sink, &mut created).await;
+
+        let events = sink
+            .query_events(ostrich_audit::sink::QueryCriteria {
+                actor: Some("acct-3".to_string()),
+                event_type: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+                offset: None,
+            })
+            .await
+            .expect("query");
+        assert_eq!(events.len(), 2);
+        let outcomes: Vec<_> = events.iter().map(|e| e.outcome).collect();
+        assert!(outcomes.contains(&ostrich_audit::EventOutcome::Failure));
+        assert!(outcomes.contains(&ostrich_audit::EventOutcome::Success));
+        let refusal = events
+            .iter()
+            .find(|e| e.outcome == ostrich_audit::EventOutcome::Failure)
+            .expect("refusal");
+        assert_eq!(
+            refusal.details.as_ref().expect("details")["problem_type"],
+            "urn:ietf:params:acme:error:rejectedIdentifier"
+        );
+        assert!(sink.verify_integrity().await.expect("verify"));
+    }
+
+    // ---- QA round 1 (SEC-001, RFC-001, NIST-001) ----
+
+    /// SEC-001: the wildcard flag is part of the binding in both directions.
+    /// A wildcard order identifier is never satisfied by a non-wildcard
+    /// authorization for the same base (which may have been proven by
+    /// http-01 or tls-alpn-01), and vice versa; case is not significant.
+    #[test]
+    fn qa_finalizable_wildcard_flag_binding() {
+        let now = Utc::now();
+        let later = now + chrono::Duration::days(1);
+        let order = db_order("ready", later);
+        let a = |t: &str, v: &str, w: bool| valid_authz(t, v, w, later);
+
+        let denied: Vec<(
+            &str,
+            Vec<Identifier>,
+            Vec<ostrich_db::models::AcmeAuthorization>,
+        )> = vec![
+            (
+                "wildcard order, non-wildcard authz",
+                vec![ident("dns", "*.example.com")],
+                vec![a("dns", "example.com", false)],
+            ),
+            (
+                "plain order, wildcard authz",
+                vec![ident("dns", "example.com")],
+                vec![a("dns", "example.com", true)],
+            ),
+            (
+                "wildcard authz still carrying `*.`",
+                vec![ident("dns", "*.example.com")],
+                vec![a("dns", "*.example.com", true)],
+            ),
+            (
+                "ip authz flagged wildcard",
+                vec![ident("ip", "192.0.2.1")],
+                vec![a("ip", "192.0.2.1", true)],
+            ),
+            (
+                "ip order bound to a dns-typed row",
+                vec![ident("ip", "2001:db8::1")],
+                vec![a("dns", "2001:db8::1", false)],
+            ),
+            (
+                "wildcard for a different base",
+                vec![ident("dns", "*.example.com")],
+                vec![a("dns", "a.example.com", true)],
+            ),
+            (
+                "101 identifiers with 101 matching rows (cap)",
+                (0..101)
+                    .map(|i| ident("dns", &format!("h{i}.example.com")))
+                    .collect(),
+                (0..101)
+                    .map(|i| a("dns", &format!("h{i}.example.com"), false))
+                    .collect(),
+            ),
+        ];
+        for (name, ids, rows) in denied {
+            let e = finalizable(&order, &ids, &rows, now).expect_err(name);
+            assert!(matches!(e, Error::Unauthorized(_)), "{name}: {e:?}");
+            assert_eq!(
+                e.error_type(),
+                "urn:ietf:params:acme:error:unauthorized",
+                "{name}"
+            );
+        }
+
+        // Case-insensitive on both sides, for wildcard and IPv6 values.
+        let ids = [ident("dns", "*.Example.COM"), ident("ip", "2001:db8::a")];
+        let rows = [a("ip", "2001:DB8::A", false), a("dns", "eXample.com", true)];
+        assert!(finalizable(&order, &ids, &rows, now).is_ok());
+    }
+
+    /// SEC-001 fail-closed matrix: a single bad row denies the whole order,
+    /// whatever its position, and the problem types are the RFC 8555 URNs.
+    #[test]
+    fn qa_finalizable_fails_closed_on_any_bad_row() {
+        let now = Utc::now();
+        let later = now + chrono::Duration::days(1);
+        let order = db_order("ready", later);
+        let ids = [
+            ident("dns", "a.example.com"),
+            ident("dns", "*.example.com"),
+            ident("ip", "192.0.2.7"),
+        ];
+        let good = || {
+            vec![
+                valid_authz("dns", "a.example.com", false, later),
+                valid_authz("dns", "example.com", true, later),
+                valid_authz("ip", "192.0.2.7", false, later),
+            ]
+        };
+        assert!(finalizable(&order, &ids, &good(), now).is_ok());
+        for i in 0..3 {
+            let mut pending = good();
+            pending[i].status = "pending".to_string();
+            let e = finalizable(&order, &ids, &pending, now).expect_err("pending");
+            assert!(matches!(e, Error::OrderNotReady), "row {i}: {e:?}");
+            assert_eq!(e.error_type(), "urn:ietf:params:acme:error:orderNotReady");
+
+            let mut expired = good();
+            expired[i].expires = now - chrono::Duration::seconds(1);
+            let e = finalizable(&order, &ids, &expired, now).expect_err("expired");
+            assert!(matches!(e, Error::OrderNotReady), "row {i}: {e:?}");
+
+            let mut swapped = good();
+            swapped[i].identifier_value = "evil.example".to_string();
+            let e = finalizable(&order, &ids, &swapped, now).expect_err("swap");
+            assert!(matches!(e, Error::Unauthorized(_)), "row {i}: {e:?}");
+        }
+        // An authorization valid one second past `now` is still usable.
+        let mut edge = good();
+        for r in &mut edge {
+            r.expires = now + chrono::Duration::seconds(1);
+        }
+        assert!(finalizable(&order, &ids, &edge, now).is_ok());
+        // A not-ready order is `orderNotReady` even when the rows also
+        // mismatch: the order state is checked first, and both deny.
+        let e =
+            finalizable(&db_order("pending", later), &ids, &[], now).expect_err("pending order");
+        assert!(matches!(e, Error::OrderNotReady), "{e:?}");
+    }
+
+    /// RFC-001: the ip rule holds for IPv6 rows and for rows also flagged
+    /// wildcard (dns-01 passes the wildcard rule but not the ip rule).
+    #[test]
+    fn qa_check_challenge_permitted_ip_variants() {
+        let mut v6 = db_authz("2001:db8::1", false);
+        v6.identifier_type = "ip".to_string();
+        assert!(check_challenge_permitted(&v6, "http-01").is_ok());
+        assert!(matches!(
+            check_challenge_permitted(&v6, "tls-alpn-01"),
+            Err(Error::Unauthorized(_))
+        ));
+        let mut flagged = db_authz("192.0.2.1", true);
+        flagged.identifier_type = "ip".to_string();
+        for t in ["dns-01", "http-01", "tls-alpn-01"] {
+            assert!(
+                matches!(
+                    check_challenge_permitted(&flagged, t),
+                    Err(Error::Unauthorized(_))
+                ),
+                "{t}"
+            );
+        }
+        // Offering and enforcement agree for ip authorizations.
+        for a in crate::identifier::validate_order_identifiers(&[
+            ident("ip", "192.0.2.1"),
+            ident("ip", "2001:db8::1"),
+        ])
+        .expect("valid")
+        {
+            let mut row = db_authz(&a.value, a.wildcard);
+            row.identifier_type = a.id_type.clone();
+            for t in a.challenge_types() {
+                assert!(check_challenge_permitted(&row, t).is_ok(), "{t}");
+            }
+        }
+    }
+
+    /// NIST-001 / SI-10: for every newOrder refusal class, the audit record
+    /// is a Failure on `acme:new-order` with the matching problem type and
+    /// carries none of the request's identifier values or type strings.
+    #[test]
+    fn qa_new_order_refusal_audit_never_records_values() {
+        let m = "qamarkerq";
+        let cases: Vec<(&str, Vec<Identifier>)> = vec![
+            ("unsupported type", vec![ident(m, "x.example")]),
+            (
+                "unsupported type (value)",
+                vec![ident("email", &format!("{m}@x"))],
+            ),
+            ("rejected wildcard", vec![ident("dns", &format!("*.{m}"))]),
+            (
+                "nested wildcard",
+                vec![ident("dns", &format!("a.*.{m}.com"))],
+            ),
+            ("malformed dns", vec![ident("dns", &format!("{m} .com"))]),
+            ("dns ip literal", vec![ident("dns", "203.0.113.9")]),
+            ("non-canonical ip", vec![ident("ip", &format!("{m}::1"))]),
+            ("ipv4-mapped", vec![ident("ip", "::ffff:203.0.113.9")]),
+            (
+                "duplicate",
+                vec![
+                    ident("dns", &format!("{m}.com")),
+                    ident("dns", &format!("{}.COM", m.to_uppercase())),
+                ],
+            ),
+            (
+                "valid then refused",
+                vec![
+                    ident("dns", &format!("{m}.example")),
+                    ident("dns", &format!("*.{m}")),
+                ],
+            ),
+            (
+                "cap",
+                (0..101)
+                    .map(|i| ident("dns", &format!("{m}{i}.com")))
+                    .collect(),
+            ),
+        ];
+        for (name, ids) in cases {
+            let err = crate::identifier::validate_order_identifiers(&ids).expect_err(name);
+            let ev = new_order_audit_event("acct-qa", None, &ids, Some(&err));
+            assert_eq!(ev.outcome, ostrich_audit::EventOutcome::Failure, "{name}");
+            assert_eq!(ev.target, "acme:new-order", "{name}");
+            assert_eq!(ev.action, "new_order", "{name}");
+            assert_eq!(ev.actor, "acct-qa", "{name}");
+            let d = ev.details.as_ref().expect("details");
+            assert_eq!(d["problem_type"], err.error_type(), "{name}");
+            assert_eq!(d["identifier_count"], ids.len(), "{name}");
+            assert!(d.get("identifiers").is_none(), "{name}");
+            let rendered = serde_json::to_string(&ev).expect("serialize");
+            let lower = rendered.to_ascii_lowercase();
+            for needle in [m, "203.0.113.9", "x.example", "email"] {
+                assert!(!lower.contains(needle), "{name}: {needle} in {rendered}");
+            }
+        }
+    }
+
+    /// NIST-001 / AU-3: the record has who (actor), what (event type,
+    /// action), when (timestamp), outcome and object; `wildcard_count`
+    /// counts only `dns` `*.` identifiers. The defensive (no order, no
+    /// error) arm is a Failure that records no values.
+    #[test]
+    fn qa_new_order_audit_au3_fields_and_defensive_arm() {
+        let before = Utc::now();
+        let ids = [
+            ident("dns", "*.a.example"),
+            ident("dns", "*.b.example"),
+            ident("dns", "c.example"),
+            ident("ip", "192.0.2.1"),
+        ];
+        let ev = new_order_audit_event("acct-au3", Some("order-xyz"), &ids, None);
+        assert!(ev.timestamp >= before && ev.timestamp <= Utc::now());
+        assert_eq!(ev.event_type, ostrich_audit::EventType::AcmeProtocol);
+        let d = ev.details.as_ref().expect("details");
+        assert_eq!(d["wildcard_count"], 2);
+        assert_eq!(d["identifier_types"]["dns"], 3);
+        assert_eq!(d["identifier_types"]["ip"], 1);
+
+        // `*.` on a non-dns type is not a wildcard and is not stored.
+        let odd = [ident("ip", "*.x"), ident("other", "*.y")];
+        let ev = new_order_audit_event("acct-au3", None, &odd, None);
+        assert_eq!(ev.outcome, ostrich_audit::EventOutcome::Failure);
+        assert_eq!(ev.target, "acme:new-order");
+        let d = ev.details.as_ref().expect("details");
+        assert_eq!(d["wildcard_count"], 0);
+        assert_eq!(d["identifier_types"]["ip"], 1);
+        assert_eq!(d["identifier_types"]["other"], 1);
+        assert!(d.get("identifiers").is_none());
+        assert!(d.get("problem_type").is_none());
+        let rendered = serde_json::to_string(&ev).expect("serialize");
+        assert!(!rendered.contains("*.x") && !rendered.contains("*.y"));
+    }
+
+    /// An audit sink that always fails.
+    struct FailingSink;
+
+    impl ostrich_audit::AuditSink for FailingSink {
+        fn record<'a, 'b, 'r>(
+            &'a self,
+            _event: &'b mut ostrich_audit::AuditEvent,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = ostrich_audit::Result<()>> + Send + 'r>,
+        >
+        where
+            'a: 'r,
+            'b: 'r,
+            Self: 'r,
+        {
+            Box::pin(async {
+                Err(ostrich_audit::Error::Serialization(
+                    "sink unavailable".to_string(),
+                ))
+            })
+        }
+
+        fn verify_integrity<'a, 'r>(
+            &'a self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = ostrich_audit::Result<bool>> + Send + 'r>,
+        >
+        where
+            'a: 'r,
+            Self: 'r,
+        {
+            Box::pin(async { Ok(false) })
+        }
+
+        fn query_events<'a, 'r>(
+            &'a self,
+            _criteria: ostrich_audit::sink::QueryCriteria,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = ostrich_audit::Result<Vec<ostrich_audit::AuditEvent>>,
+                    > + Send
+                    + 'r,
+            >,
+        >
+        where
+            'a: 'r,
+            Self: 'r,
+        {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    /// A failing audit sink neither panics nor propagates into the request
+    /// (documented behaviour, consistent with challenge validation; no
+    /// AU-5 fail-closed). `record_audit` returns normally.
+    #[tokio::test]
+    async fn qa_record_audit_survives_sink_failure() {
+        let ids = [ident("dns", "example.com")];
+        let mut ev = new_order_audit_event("acct-f", Some("order-f"), &ids, None);
+        record_audit(&FailingSink, &mut ev).await;
+        assert_eq!(ev.outcome, ostrich_audit::EventOutcome::Success);
+    }
+
     #[test]
     fn test_directory_structure() {
         // Test ACME Directory struct per RFC 8555 §7.1.1
@@ -1719,5 +2886,152 @@ mod tests {
             serde_json::to_string(&AccountStatus::Revoked).unwrap(),
             r#""revoked""#
         );
+    }
+
+    // ---- Fix round 2 (NIST-007, RFC-007, SEC-005) ----
+
+    /// NIST-007: a finalize refusal is a Failure for `acme:order:<id>` with
+    /// the problem type only; the error detail (which may echo CSR SANs) and
+    /// CSR values never reach the record.
+    #[test]
+    fn finalize_refusal_audit_event_records_problem_type_only() {
+        let marker = "zzcsrmarker";
+        let ids = [ident("dns", "example.com")];
+        let err = validate_csr_identifiers(&ids, &[format!("DNS:{marker}.example")])
+            .expect_err("CSR mismatch");
+        assert!(format!("{err:?}").contains(marker), "precondition");
+        let ev = finalize_refusal_audit_event("acct-9", "order-xyz", &err);
+        assert_eq!(ev.event_type, ostrich_audit::EventType::AcmeProtocol);
+        assert_eq!(ev.actor, "acct-9");
+        assert_eq!(ev.target, "acme:order:order-xyz");
+        assert_eq!(ev.action, "finalize_order");
+        assert_eq!(ev.outcome, ostrich_audit::EventOutcome::Failure);
+        assert_eq!(
+            ev.details.clone().expect("details"),
+            serde_json::json!({ "problem_type": "urn:ietf:params:acme:error:unauthorized" })
+        );
+        let rendered = serde_json::to_string(&ev).expect("serialize");
+        assert!(!rendered.contains(marker), "{rendered}");
+
+        let now = Utc::now();
+        let e = finalizable(&db_order("pending", now), &ids, &[], now).expect_err("pending");
+        let ev = finalize_refusal_audit_event("acct-9", "order-xyz", &e);
+        assert_eq!(
+            ev.details.expect("details")["problem_type"],
+            "urn:ietf:params:acme:error:orderNotReady"
+        );
+    }
+
+    /// NIST-007: the refusal reaches the audit sink and its hash chain.
+    #[tokio::test]
+    async fn finalize_refusal_audit_event_is_recorded() {
+        use ostrich_audit::AuditSink as _;
+        let sink = ostrich_audit::sink::MemoryAuditSink::new();
+        let mut ev = finalize_refusal_audit_event("acct-10", "order-1", &Error::OrderNotReady);
+        record_audit(&sink, &mut ev).await;
+        let events = sink
+            .query_events(ostrich_audit::sink::QueryCriteria {
+                actor: Some("acct-10".to_string()),
+                event_type: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+                offset: None,
+            })
+            .await
+            .expect("query");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "finalize_order");
+        assert_eq!(events[0].target, "acme:order:order-1");
+        assert_eq!(events[0].outcome, ostrich_audit::EventOutcome::Failure);
+        assert!(sink.verify_integrity().await.expect("verify"));
+    }
+
+    /// RFC-007: the binding pass runs over every row before the status pass,
+    /// so a pending row plus a mismatched row is `unauthorized` in either
+    /// order; a pending row plus an ip row not proven by http-01 is
+    /// `orderNotReady` in either order.
+    #[test]
+    fn check_order_finalizable_error_type_independent_of_row_order() {
+        let now = Utc::now();
+        let later = now + chrono::Duration::days(1);
+        let order = db_order("ready", later);
+        let ids = [ident("dns", "a.example.com"), ident("dns", "b.example.com")];
+        let mut pending = valid_authz("dns", "a.example.com", false, later);
+        pending.status = "pending".to_string();
+        let mismatched = valid_authz("dns", "evil.example", false, later);
+        for rows in [
+            [pending.clone(), mismatched.clone()],
+            [mismatched, pending.clone()],
+        ] {
+            let e = finalizable(&order, &ids, &rows, now).expect_err("denied");
+            assert!(matches!(e, Error::Unauthorized(_)), "{e:?}");
+        }
+
+        let ids = [ident("dns", "a.example.com"), ident("ip", "192.0.2.1")];
+        let ip = valid_authz("ip", "192.0.2.1", false, later);
+        let tls = [challenge_row(&ip, "tls-alpn-01", "valid")];
+        for rows in [[pending.clone(), ip.clone()], [ip.clone(), pending.clone()]] {
+            let e = check_order_finalizable(&order, &ids, &rows, &tls, now).expect_err("denied");
+            assert!(matches!(e, Error::OrderNotReady), "{e:?}");
+        }
+    }
+
+    /// SEC-005: a `valid` ip authorization is usable only with a `valid`
+    /// http-01 challenge row of that authorization.
+    #[test]
+    fn check_order_finalizable_ip_requires_http01() {
+        let now = Utc::now();
+        let later = now + chrono::Duration::days(1);
+        let order = db_order("ready", later);
+        let ids = [ident("dns", "example.com"), ident("ip", "2001:db8::1")];
+        let dns = valid_authz("dns", "example.com", false, later);
+        let ip = valid_authz("ip", "2001:db8::1", false, later);
+        let rows = [dns.clone(), ip.clone()];
+        let other = valid_authz("ip", "2001:db8::1", false, later);
+
+        let denied: Vec<(&str, Vec<ostrich_db::models::AcmeChallenge>)> = vec![
+            ("no challenge rows", vec![]),
+            (
+                "legacy tls-alpn-01",
+                vec![
+                    challenge_row(&ip, "tls-alpn-01", "valid"),
+                    challenge_row(&ip, "http-01", "pending"),
+                ],
+            ),
+            ("legacy dns-01", vec![challenge_row(&ip, "dns-01", "valid")]),
+            (
+                "http-01 invalid",
+                vec![challenge_row(&ip, "http-01", "invalid")],
+            ),
+            (
+                "http-01 processing",
+                vec![challenge_row(&ip, "http-01", "processing")],
+            ),
+            ("type case", vec![challenge_row(&ip, "HTTP-01", "valid")]),
+            (
+                "http-01 of another authorization",
+                vec![challenge_row(&other, "http-01", "valid")],
+            ),
+            (
+                "http-01 of the dns authorization",
+                vec![challenge_row(&dns, "http-01", "valid")],
+            ),
+        ];
+        for (name, challs) in denied {
+            let e = check_order_finalizable(&order, &ids, &rows, &challs, now).expect_err(name);
+            assert!(matches!(e, Error::Unauthorized(_)), "{name}: {e:?}");
+            assert_eq!(e.error_type(), "urn:ietf:params:acme:error:unauthorized");
+        }
+
+        // Proven by http-01 (other rows of the authorization do not matter);
+        // dns authorizations need no challenge rows here.
+        let ok = [
+            challenge_row(&ip, "tls-alpn-01", "invalid"),
+            challenge_row(&ip, "http-01", "valid"),
+        ];
+        assert!(check_order_finalizable(&order, &ids, &rows, &ok, now).is_ok());
+        let dns_only = [ident("dns", "example.com")];
+        assert!(check_order_finalizable(&order, &dns_only, &[dns], &[], now).is_ok());
     }
 }

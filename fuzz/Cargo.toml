@@ -95,3 +95,9 @@ name = "fuzz_proxy_path"
 path = "fuzz_targets/fuzz_proxy_path.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_acme_order_identifier"
+path = "fuzz_targets/fuzz_acme_order_identifier.rs"
+test = false
+doc = false

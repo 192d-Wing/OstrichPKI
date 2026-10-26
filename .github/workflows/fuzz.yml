@@ -1,8 +1,9 @@
-# Coverage-guided fuzzing of the gRPC authorization input parsers
+# Coverage-guided fuzzing of the gRPC authorization and ACME identifier input parsers
 #
 # COMPLIANCE MAPPING:
 # - NIST 800-53: SI-10 (Information Input Validation: client-asserted
-#   requestor and peer-certificate subject parsing must never panic), SA-11
+#   requestor and peer-certificate subject parsing, and ACME newOrder
+#   identifiers and dns-01 query names, must never panic), SA-11
 #   (SA-11(8) dynamic code analysis), CA-2
 # - NIST 800-53: CM-2 / SA-15 / SR-3 (nightly pinned by date, cargo-fuzz by
 #   version, actions by SHA; `cargo fetch --locked` enforces fuzz/Cargo.lock;
@@ -10,7 +11,8 @@
 # - NIST 800-53: CM-6 - least-privilege token (contents: read), no secrets
 # Weekly + manual (time budget 60..3600 s per target), plus a fixed 60 s
 # smoke run on PRs that touch the fuzz crate, this workflow or the fuzzed
-# code (both targets call `ostrich_common::grpc_tls` only). The manual budget
+# code (the gRPC targets call `ostrich_common::grpc_tls` only; the ACME
+# targets call `ostrich_acme::identifier` and `ostrich_acme::validation`). The manual budget
 # is passed through env (never interpolated into a script) and range-checked.
 # The corpus is persisted in the Actions cache; only non-PR runs save it.
 
@@ -27,6 +29,11 @@ on:
       - crates/ostrich-common/src/tls.rs
       - crates/ostrich-common/src/auth/**
       - crates/ostrich-common/Cargo.toml
+      - crates/ostrich-acme/src/identifier.rs
+      - crates/ostrich-acme/src/validation.rs
+      - crates/ostrich-acme/src/order.rs
+      - crates/ostrich-acme/src/error.rs
+      - crates/ostrich-acme/Cargo.toml
       - Cargo.toml
       - rust-toolchain.toml
   workflow_dispatch:
@@ -64,7 +71,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [fuzz_grpc_requestor, fuzz_grpc_peer_subject]
+        target: [fuzz_grpc_requestor, fuzz_grpc_peer_subject, fuzz_acme_order_identifier, fuzz_dns01_query_name]
     env:
       T: ${{ matrix.target }}
       # PR: fixed 60 s. Schedule: 600 s. Dispatch: the input (validated below).
