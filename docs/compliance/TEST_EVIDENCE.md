@@ -1,9 +1,9 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.4
+**Document Version:** 2.5
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
-**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 667 unit tests passed, 0 failed, 1 ignored, 2026-10-24 (§2.6)
+**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 817 unit tests passed, 0 failed, 1 ignored, 2026-10-26 (§2.13, `make test-unit`)
 
 ---
 
@@ -469,8 +469,8 @@ reported by the coder, except where the QA round is named.
 | Mutation | QA script plus the coder's round 1 / round 2 / nit-pass scripts; each mutation reverted and the file hash verified | PASS except M13h | Killed: M1-M11, M14-M17 (QA round); M12, M12r, M13, M18-M22 (round 1, after QA-002 / QA-003 fixes; M12, M13, M18 had survived the QA round); M23-M29 (round 2); DN-only fallback restored in `issued_directly` (nit pass). **M13h (GenerateCrl handler passes `crl_actor(None)`) NOT RUN / survives without a database** |
 | Format / lint / release | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo check --release ... --all-targets`, `cargo build --release -p ostrich-ca-server` | PASS | rc=0 |
 | Supply chain | `cargo deny check`, `cargo audit` | PASS | implementer-reported (round 0); Cargo.lock gained dependency edges only (`tonic-prost`, `time` for tests) |
-| Helm / compose render | scratch `helm lint` / `helm template` (v3.19, postgresql dependency stripped), compose-go loader | PASS | deploy coder; QA did not re-verify (no `helm` on the QA host). Negative cases (legacy key, no issuer, overlap, `intermediate_ca`, empty profile list) fail rendering as intended. Scripted as `scripts/helm-chart-check.sh` on 2026-10-26 (§2.13) |
-| DB-gated | `ca_core_test`, `ocsp_revocation_test` (`--ignored`), `est_serverkeygen_e2e`, live `audit_signing_e2e` / `crl_delta_e2e` | **NOT RUN** | no Postgres or Docker on the host; tracked as POAM-2026-10-23-36. CI path added 2026-10-26 for all but `ca_core_test` / `ocsp_revocation_test`, still NOT RUN (§2.13) |
+| Helm / compose render | scratch `helm lint` / `helm template` (v3.19, postgresql dependency stripped), compose-go loader | PASS | deploy coder; QA did not re-verify (no `helm` on the QA host). Negative cases (legacy key, no issuer, overlap, `intermediate_ca`, empty profile list) fail rendering as intended. Scripted as `scripts/helm-chart-check.sh` on 2026-10-26 (§2.14) |
+| DB-gated | `ca_core_test`, `ocsp_revocation_test` (`--ignored`), `est_serverkeygen_e2e`, live `audit_signing_e2e` / `crl_delta_e2e` | **NOT RUN** | no Postgres or Docker on the host; tracked as POAM-2026-10-23-36. CI path added 2026-10-26 for all but `ca_core_test` / `ocsp_revocation_test`, still NOT RUN (§2.14) |
 | CI | GitHub / GitLab pipelines | **NOT RUN** | change not committed |
 
 **Key `grpc_mtls_e2e` additions (39 total):** `role_method_matrix`
@@ -638,7 +638,81 @@ either way, QA G-1); no fuzz or property test for the validator (QA G-4). The
 rejection event is a `tracing` log line, not an `ostrich-audit` record
 (POAM-2026-10-23-47).
 
-### 2.13 Test Run 2026-10-26 (CI evidence gaps: live DB + SoftHSM, Helm and fuzz jobs)
+### 2.13 Test Run 2026-10-26 (ACME dns-01 resolver fix)
+
+**Scope:** branch `claude/dns01-resolver-fix`, uncommitted (run record
+`target/agent-workflow/20261026-091032-dns01-resolver/`): the dns-01 resolver
+gets real name servers (operator list or system configuration, fail closed
+when empty), an FQDN query name, no in-process cache, TXT concatenation and
+owner / CNAME checks, retry on mismatch, and registered RFC 8555 problem types
+for http-01, dns-01 and tls-alpn-01 failures (POAM-2026-10-23-41 narrowed).
+**Sources:** `qa-report.md` (QA round, PASS), `fixes-round-1.md` to
+`fixes-round-3.md`. Rows marked **scribe** were re-run by the compliance
+scribe on the final tree on 2026-10-26.
+
+| Gate | Command | Result | Counts |
+|------|---------|--------|--------|
+| Unit (workspace) | `make test-unit` | PASS (**scribe**) | **817 passed, 0 failed, 1 ignored** (pre-existing ignore; 16 suites). QA round 800; fix round 1 810 |
+| Unit + bins | `cargo test -p ostrich-acme -p ostrich-acme-server --all-features` | PASS (**scribe**) | `ostrich-acme` lib **72 passed**, acme-server bins **7 passed**, 0 failed (QA round 55 / 7; fix round 1 65 / 7) |
+| Fuzz | `cargo +nightly fuzz run fuzz_dns01_query_name -- -max_total_time=60` (new target) | PASS | 131,276 runs / 61 s with the QA oracle; 136,323 runs / 46 s after fix round 1 (`-max_total_time=45`); no crash (not re-run by the scribe) |
+| Mutation | temporary mutations of `validation.rs`, `cargo test -p ostrich-acme --lib dns01`, restore verified with `diff -q` | PASS | 5 of 5 QA mutants killed (empty-list guard, FQDN dot, `cache_size`, original `ResolverConfig::default()` bug, case-insensitive compare); owner-filter mutation killed in fix round 1 |
+| Format / lint | `cargo fmt --all -- --check`, `make clippy`, fuzz crate `rustfmt` and `clippy` | PASS | rc=0 (fix rounds 1-3) |
+| Supply chain | `make security` | PASS | 614 crates, no vulnerabilities (QA round, fix round 1) |
+| Helm render | `helm lint` / `helm template deploy/helm/ostrich-pki` | **NOT RUN** | helm not installed; only a Go `text/template` stub render (release engineer, REL-001) |
+| Integration | `make test-integration` | **NOT RUN** | no Postgres; no dns-01 integration test exists |
+| Live dns-01 E2E | real recursive / authoritative DNS | **NOT RUN** | no such test exists |
+| Binary smoke | `ostrich-acme-server --dns01-resolvers ""` | **NOT RUN** | local aws-lc-fips dylib load failure, unrelated to the change |
+
+**New tests (final tree, names checked against `cargo test` output):**
+
+- `validation.rs` resolver configuration: `dns01_config_rejects_empty_name_servers`,
+  `dns01_config_rejects_system_error`, `dns01_config_uses_upstreams_and_skips_system`,
+  `dns01_config_rejects_invalid_upstreams`, `dns01_config_uses_system_name_servers_only`,
+  `dns01_opts_disable_caching`, `validate_dns01_resolver_ips_policy`
+- `validation.rs` query name and validator: `dns01_query_name_is_fqdn`,
+  `dns01_query_name_rejects_bad_identifiers`,
+  `dns01_validate_fails_closed_without_name_servers`,
+  `dns01_validate_rejects_malformed_identifier_first`,
+  `dns01_validate_rejects_invalid_upstreams_without_fallback`,
+  `dns01_validate_public_rejects_malformed_identifier`
+- `validation.rs` TXT matching: `txt_match_requires_concatenation_equal_to_digest`,
+  `txt_match_requires_owner_on_cname_chain`, `txt_match_bounds_cname_chain_length`
+- `validation.rs` loopback mock DNS (real hickory resolver):
+  `dns01_mock_valid_digest_returns_true`,
+  `dns01_mock_split_strings_joining_to_digest_returns_true`,
+  `dns01_mock_junk_and_digest_in_one_record_returns_false`,
+  `dns01_mock_foreign_owner_txt_returns_false`,
+  `dns01_mock_cname_delegated_txt_returns_true`,
+  `dns01_mock_trailing_dot_identifier_is_malformed`,
+  `dns01_mock_near_miss_digests_return_false`,
+  `dns01_mock_mismatch_then_match_returns_true`,
+  `dns01_mock_wrong_thumbprint_returns_false`,
+  `dns01_mock_retry_after_nxdomain_is_not_cached`,
+  `dns01_mock_persistent_nxdomain_fails_closed`
+- `validation.rs` http-01 / tls-alpn-01 error mapping:
+  `http01_connect_failure_is_connection_with_generic_detail`,
+  `http01_non_2xx_is_incorrect_response`, `http01_wrong_body_is_not_valid`,
+  `unresolvable_challenge_host_is_dns`, `acme_identifier_digest_is_bounds_checked`;
+  `resolve_pinned_enforces_ssrf_guard_unless_allowed` extended
+  (`rejectedIdentifier`, no IP in the detail)
+- `error.rs`: `every_error_type_is_registered`
+- `rest.rs`: `challenge_error_document_uses_type_and_client_detail`,
+  `challenge_error_document_only_emits_registered_types`
+- `services/acme-server/src/main.rs` (bins; not run by `make test-unit`):
+  `dns01_resolvers_arg_parses`, `dns01_resolvers_invalid_refuses_startup`,
+  `dns01_resolvers_boundaries`, `dns01_resolvers_empty_value_means_system_resolvers`
+
+**Not covered:** the `validate_challenge` audit record and the
+`AcmeState.dns01_resolvers` → `with_resolvers` wiring (need Postgres; QA-001,
+POAM-2026-10-23-51); TCP fallback, truncation and SERVFAIL against a real
+server; the env-var form `ACME_DNS01_RESOLVERS=""` at runtime (the parser is
+tested directly); Helm rendering; CAA and DNSSEC (not implemented,
+POAM-2026-10-23-41); tls-alpn-01 RFC 8737 §3 critical-flag and SAN checks
+(not implemented, POAM-2026-10-23-52).
+
+---
+
+### 2.14 Test Run 2026-10-26 (CI evidence gaps: live DB + SoftHSM, Helm and fuzz jobs)
 
 **Scope:** branch `pr/hopeful-sammet-b6708c` on `main` @ 460f62c, uncommitted
 and not pushed (run record
@@ -1121,8 +1195,9 @@ closed pending first green CI run).
 | gRPC peer subject / allowlist (`fuzz_grpc_peer_subject`, 2026-10-25) | 237,187 (61 s) after the fix | 1 before the fix (OID-arc overflow panic, fixed) | Pass after fix (implementer-reported, §2.8) |
 | gRPC peer subject / role lists (`fuzz_grpc_peer_subject`, 2026-10-26) | 135,145 (61 s) after the fix | 1 before the fix (const-oid `Display` panic on an undecodable numeric OID, fixed) | Pass after fix (coder-reported, §2.10) |
 | gRPC requestor binding (`fuzz_grpc_requestor`, new 2026-10-26) | 246,720 (61 s) | 0 | Pass (coder-reported, §2.10) |
-| gRPC requestor binding (`fuzz_grpc_requestor`, 2026-10-26 smoke, `nightly-2026-10-23`, cargo-fuzz 0.13.2, ASan, aarch64-apple-darwin) | 128,734 (31 s) | 0 | Pass (coder-reported, §2.13; local smoke, not the CI job) |
-| gRPC peer subject (`fuzz_grpc_peer_subject`, 2026-10-26 smoke, same toolchain) | 80,018 (31 s) | 0 | Pass (coder-reported, §2.13; local smoke, not the CI job) |
+| ACME dns-01 query name (`fuzz_dns01_query_name`, new 2026-10-26) | 131,276 (61 s, QA oracle); 136,323 (46 s) after fix round 1 | 0 | Pass (QA- and coder-reported, §2.13) |
+| gRPC requestor binding (`fuzz_grpc_requestor`, 2026-10-26 smoke, `nightly-2026-10-23`, cargo-fuzz 0.13.2, ASan, aarch64-apple-darwin) | 128,734 (31 s) | 0 | Pass (coder-reported, §2.14; local smoke, not the CI job) |
+| gRPC peer subject (`fuzz_grpc_peer_subject`, 2026-10-26 smoke, same toolchain) | 80,018 (31 s) | 0 | Pass (coder-reported, §2.14; local smoke, not the CI job) |
 | Both gRPC targets, scheduled / dispatch / PR job ([fuzz.yml](../../.github/workflows/fuzz.yml)) | n/a | n/a | **NOT RUN** (workflow added 2026-10-26, not pushed; scheduled and dispatch runs need the workflow on `main`) |
 
 ### 5.5 Secrets Scanning
@@ -1241,13 +1316,13 @@ earlier text listed one).
 | [ci.yml](../../.github/workflows/ci.yml) `CI` | pull request, push to `main` | fmt, clippy, `cargo test --workspace --lib --bins`, offline `grpc_mtls_e2e` / `fips_gate_preinstalled` (no database), web-ui build | `web-ui-sbom` | not recorded in this document |
 | [audit.yml](../../.github/workflows/audit.yml) `dependency gate` | pull request, push to `main`, weekly, dispatch | `cargo audit --deny warnings`, `cargo deny check` | none | PR 181 checks green (§2.5) |
 | [hsm-integration.yml](../../.github/workflows/hsm-integration.yml) `HSM integration` | pull request, push to `main`, dispatch | PKCS#11 suite on SoftHSM2 | `pkcs11-softhsm-results` (90 days) | run 40063317654: 28 / 0 / 1 (§2.5) |
-| [integration-db.yml](../../.github/workflows/integration-db.yml) `Live DB + SoftHSM tests` (added 2026-10-26) | pull request, push to `main`, dispatch | Postgres + SoftHSM live suites; fails on a skipped or missing test (§2.13) | `live-db-softhsm-results` (90 days) | **NOT RUN** |
-| [helm.yml](../../.github/workflows/helm.yml) `Helm chart` (added 2026-10-26) | pull request, push to `main`, dispatch | Helm v3.22.1 lint, template and 15 positive / negative cases (§2.13) | `helm-chart-results` (90 days) | **NOT RUN** |
+| [integration-db.yml](../../.github/workflows/integration-db.yml) `Live DB + SoftHSM tests` (added 2026-10-26) | pull request, push to `main`, dispatch | Postgres + SoftHSM live suites; fails on a skipped or missing test (§2.14) | `live-db-softhsm-results` (90 days) | **NOT RUN** |
+| [helm.yml](../../.github/workflows/helm.yml) `Helm chart` (added 2026-10-26) | pull request, push to `main`, dispatch | Helm v3.22.1 lint, template and 15 positive / negative cases (§2.14) | `helm-chart-results` (90 days) | **NOT RUN** |
 | [fuzz.yml](../../.github/workflows/fuzz.yml) `Fuzz` (added 2026-10-26) | weekly, dispatch, path-filtered pull request | `fuzz_grpc_requestor`, `fuzz_grpc_peer_subject` (§5.4) | `fuzz-log-<target>`, `fuzz-crash-<target>` (30 days) | **NOT RUN** |
 | `docker-publish.yml` | push to `main`, tags, dispatch | image build and publish (no tests) | build output | not test evidence (tag-pinned actions, POAM-2026-10-23-15) |
 
 GitLab `test:integration` (`.gitlab-ci.yml`) was corrected on 2026-10-26
-(§2.13) and has no recorded pipeline run. A job counts as evidence only with
+(§2.14) and has no recorded pipeline run. A job counts as evidence only with
 its run URL, the commit SHA and the sha256 of the downloaded artifact,
 archived in the run record before the artifact expires (ATO_EVIDENCE.md
 Appendix B).
@@ -1316,4 +1391,5 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 2.1 | 2026-10-26 | OstrichPKI Team | §5.2: recorded the Dependabot alert remediation result (`cargo audit` exit 0, 1378 advisories / 614 crates; full web-ui `pnpm audit` 28 → 2 moderate; `make test-unit` 782 / 0 / 1); "latest recorded" moved to it. No new tests. Local only |
 | 2.2 | 2026-10-26 | OstrichPKI Team | Added §2.11, the web-ui react-router v7 migration run: frozen install, typecheck, lint, build pass; full `pnpm audit` 0 and react-router 7.18.4 (re-run by the scribe); manual guard vectors `safe-path-check.mjs` 181 / 0 and `router-smoke.mjs` 5 / 0 (re-run by the scribe; run-record scripts, not committed); browser smoke against a mock BFF (OIDC and logout not covered); CI NOT RUN. §5.2: 2026-10-26 react-router result added and "latest recorded" moved to it. No automated test added (no web-ui test runner, POAM-2026-10-23-44) |
 | 2.3 | 2026-10-26 | OstrichPKI Team | Added §2.12, the web-ui BFF proxy raw-path run (closes POAM-2026-10-23-43 pending first green CI run): `cargo test -p ostrich-web-ui` 41 / 0 / 0 with 22 new tests (validator, router-level zero-backend-hit, AU-3 log capture, inbound header stripping, `SessionData` `Debug` redaction); fmt and clippy clean (re-run by the scribe); QA flake check 120 / 120; workspace, supply-chain, fuzz and CI NOT RUN. §2.11 "Not covered" cross-referenced to §2.12 |
-| 2.4 | 2026-10-26 | OstrichPKI Team | Added §2.13, the CI evidence-gaps run (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; coder- and QA-reported, not re-run by the scribe): fmt / clippy clean; `ostrich-ca` lib 85 / 0; `OSTRICH_REQUIRE_LIVE_TESTS=1` negative runs exit 101; live-gate unit tests; `helm-chart-check.sh` 15 / 15 with Helm 3.19 (not the pinned 3.22.1); fuzz 30 s smoke 128,734 / 80,018 runs. New jobs `integration-db.yml`, `helm.yml`, `fuzz.yml` and the GitLab `test:integration` fixes: **NOT RUN**. All live DB + SoftHSM suites, including the new `ca_grpc_audit_e2e`, NOT RUN; M13h kill argued by construction, not executed. §2.10 Helm and DB-gated rows cross-referenced. §5.4: smoke and CI rows. §8.2: workflow table; the "nightly builds" claim removed (no such workflow) |
+| 2.4 | 2026-10-26 | OstrichPKI Team | Added §2.13, the ACME dns-01 resolver fix run: `make test-unit` 817 / 0 / 1 and `ostrich-acme` lib 72 / acme-server bins 7 (re-run by the scribe); fuzz `fuzz_dns01_query_name` (new) and mutation checks recorded; Helm render, integration, live dns-01 E2E and binary smoke NOT RUN. §5.4: new fuzz row. Header "latest recorded run" updated |
+| 2.5 | 2026-10-26 | OstrichPKI Team | Added §2.14, the CI evidence-gaps run (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; coder- and QA-reported, not re-run by the scribe): fmt / clippy clean; `ostrich-ca` lib 85 / 0; `OSTRICH_REQUIRE_LIVE_TESTS=1` negative runs exit 101; live-gate unit tests; `helm-chart-check.sh` 15 / 15 with Helm 3.19 (not the pinned 3.22.1); fuzz 30 s smoke 128,734 / 80,018 runs. New jobs `integration-db.yml`, `helm.yml`, `fuzz.yml` and the GitLab `test:integration` fixes: **NOT RUN**. All live DB + SoftHSM suites, including the new `ca_grpc_audit_e2e`, NOT RUN; M13h kill argued by construction, not executed. §2.10 Helm and DB-gated rows cross-referenced. §5.4: smoke and CI rows. §8.2: workflow table; the "nightly builds" claim removed (no such workflow) |

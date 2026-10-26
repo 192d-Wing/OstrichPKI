@@ -1,6 +1,6 @@
 # NIAP Protection Profile for Certification Authorities v2.1 Compliance Matrix
 
-**Document Version:** 3.10
+**Document Version:** 3.11
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Protection Profile:** NIAP PP-CA v2.1
@@ -753,10 +753,26 @@ pub struct TlsConfig {
   - Code: [parser.rs:93-174](../../crates/ostrich-x509/src/parser.rs#L93-L174)
   - Integration: [ACME ca_integration.rs:153-177](../../crates/ostrich-acme/src/ca_integration.rs#L153-L177), [EST ca_integration.rs:197-221](../../crates/ostrich-est/src/ca_integration.rs#L197-L221)
   - Test coverage: 2 unit tests with real OpenSSL CSRs
+- 🟡 **ACME issuance gated on domain-control validation (2026-10-26, branch
+  `claude/dns01-resolver-fix`, uncommitted):** an ACME order is finalized only
+  after its authorizations are valid (RFC 8555 §7.1.6), and dns-01 is now
+  functional: the TXT record at `_acme-challenge.<domain>.` must equal the
+  key-authorization digest byte for byte, at the query name or its CNAME chain
+  (`txt_answers_match`, [validation.rs](../../crates/ostrich-acme/src/validation.rs)
+  line 593; tests `txt_match_requires_concatenation_equal_to_digest`,
+  `txt_match_requires_owner_on_cname_chain`, `dns01_mock_valid_digest_returns_true`,
+  `dns01_mock_wrong_thumbprint_returns_false`). The http-01, dns-01 and
+  tls-alpn-01 validator annotations in `validation.rs` now cite
+  FDP_CER_EXT.1 instead of FIA_UAU.1 (`challenge.rs` line 168 still cites
+  FIA_UAU.1 for the key-authorization binding). Gaps:
+  no CAA check (POAM-2026-10-23-41), wildcard and IP-identifier order handling
+  (POAM-2026-10-23-49), tls-alpn-01 RFC 8737 §3 certificate checks
+  (POAM-2026-10-23-52), no live dns-01 end-to-end test
 
 **Gaps:**
 
 - 🔴 Serial number generation not using DRBG (FCS_RBG_EXT.1 gap)
+- 🟡 ACME identifier handling before issuance (POAM-2026-10-23-41, -49, -52)
 - ⚠️ Need verification of ≥20 bits random in serial numbers
 
 **Remediation Plan:**
@@ -765,7 +781,9 @@ pub struct TlsConfig {
 
 **NIAP Annotation Required:** ✅ Phase 15 Task
 
-**Related RFC:** RFC 5280 §4.1, §4.2
+**Related RFC:** RFC 5280 §4.1, §4.2; RFC 8555 §7.5, §8 (ACME domain-control validation)
+
+**Related NIST 800-53:** SC-17
 
 ---
 
@@ -1612,6 +1630,12 @@ Router::new()
   - Database connection settings
   - Service-specific configuration (ACME, EST, OCSP, KRA)
   - Logging configuration
+- ℹ️ **ACME dns-01 resolvers (2026-10-26):** set only at deployment time
+  (`ACME_DNS01_RESOLVERS` / `--dns01-resolvers`, Helm `acme.dns01Resolvers`)
+  by the platform operator and effective at restart; there is no runtime
+  management interface and no audit record of the setting (the effective
+  source is written to the service log). Invalid values refuse startup. See
+  ADMIN_GUIDE Section 3.7. Not claimed as a new PP-CA management function
 - ✅ **Key Management:**
   - KRA configuration (Shamir threshold, total shares)
   - PKCS#11 module path configuration
@@ -1756,6 +1780,7 @@ impl Role {
 - 🟡 **Start-up gate and CA gRPC fail-closed (2026-10-25, branch `claude/grpc-mtls`, uncommitted):** `fips_gate` exits every service before database, NATS, listeners or clients if AWS-LC or the process-default provider is not FIPS; ca-server exits before the database on missing, partial or ambiguous gRPC configuration, an empty or unparsable allowlist, or the dev plaintext flag in a release build; exits after the CA loads (writing a `grpc_listener_refused` record) if the CA-database ancestor walk fails or a client-CA anchor belongs to its own chain; a CA with an SLH-DSA key does not start because the audit sink refuses SLH-DSA audit signing (POAM-2026-10-23-34); a failed or timed-out audit-chain write is not written (fail closed); acme/est refuse plaintext and partial client configuration in release builds; allowlist failures always deny. The ca-server gRPC listener no longer starts before the gate. Tests: `fips_gate_preinstalled` 1/1, `grpc_mtls_e2e` 21/21 (re-run on the final code), ca-server bin tests 13 (coder-reported after round 3) (2026-10-25). Still open: plain-HTTP REST mode, no audit record for the pre-database refusals (POAM-2026-10-23-05). No SFR status change
 
 - 🟡 **CA gRPC per-method authorization fails closed (2026-10-26, branch `claude/grpc-per-method-authz`, uncommitted):** an unmapped path is denied; the layer admits no Admin call unless a single client trust anchor is configured; `CaGrpcService` built for mTLS denies a call that reaches it without a verified peer (`require_peer`; the plaintext constructor is debug-only); startup is refused on the removed single allowlist, overlapping roles, no issuer, invalid profile lists, admin with several anchors or an anchor without SKI (the last two after the database connects, audited `grpc_listener_refused` / `grpc_authorization_layer`, socket not bound); `issue()` refuses CA profiles to gRPC callers at call time. An audit write failure never turns a deny into an allow. gRPC errors that are not client-correctable return a generic `INTERNAL` message (SI-11); REST 5xx bodies still carry internal error text (POAM-2026-10-23-37). No SFR status change
+- 🟡 **ACME dns-01 fails closed (2026-10-26, branch `claude/dns01-resolver-fix`, uncommitted):** a resolver configuration with no name servers, a system-configuration read error (including a `spawn_blocking` `JoinError`, `system_resolver_config_off_runtime` in [validation.rs](../../crates/ostrich-acme/src/validation.rs) line 637), an invalid upstream list or a resolver build error gives a generic `serverInternal` and an invalid challenge and authorization; it never falls back to another resolver. Exhausted lookups give `dns` and a non-matching answer gives `incorrectResponse`; the only success path is a byte-exact digest match. An invalid `ACME_DNS01_RESOLVERS` refuses startup. Tests: `dns01_config_rejects_empty_name_servers`, `dns01_config_rejects_system_error`, `dns01_validate_fails_closed_without_name_servers`, `dns01_validate_rejects_invalid_upstreams_without_fallback`, `dns01_mock_persistent_nxdomain_fails_closed`, `dns01_resolvers_invalid_refuses_startup` (QA mutants M1 and M4 killed). The challenge-to-authorization status update and its audit record were not exercised (no Postgres; QA-001, POAM-2026-10-23-51). No SFR status change
 
 **Code Patterns:**
 
@@ -2459,7 +2484,8 @@ ingress with ssl-passthrough) — `Dockerfile`, `deploy/helm/ostrich-pki/`.
 | 3.7 | 2026-10-25 | OstrichPKI Team | CA gRPC mTLS final refresh after fix round 3 (same branch). FAU_GEN.1: `grpc_listener_refused` and `subscriber_issuing_ca` added, summary fields, pre-database refusals still log-only, SEC-015 shutdown residual. FCS_TLSS_EXT.2 / FIA_X509_EXT.1: trust-anchor guard over the CA-database lineage (subject alone, issued-by, issuer, ancestors; refusal audited), per-call `subscriber_issuing_ca`; residual siblings / grandchildren / external roots (POAM-28). FPT_FLS.1: trust-anchor and SLH-DSA refusals. FAU_STG.4: audit-write timeout note (informational). Test counts `grpc_mtls_e2e` 21/21, 41 `grpc_tls::tests`. **No SFR status or overall percentage changed** |
 | 3.8 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization and verified audit actor (branch `claude/grpc-per-method-authz`, uncommitted; run record `target/agent-workflow/20261025-202226-grpc-per-method/`). FAU_GEN.1: new denial reasons and details, `grpc_listener_started` `clients` / `method_rules` / `issuer_profiles`, `grpc_listener_refused` `grpc_authorization_layer`, revocation / CRL Failure records (DB paths not executed); stale POAM-25 statement removed. FAU_GEN.2: gRPC actor = verified peer (POAM-25 closed pending commit), REST delta CRL actor = user; residuals POAM-35, -36. FCS_TLSS_EXT.2 / FIA_X509_EXT.1: per-call leaf validity, Admin direct-issuance rule, `UNAUTHENTICATED` for unparsable leaves; POAM-28 narrowed for Admin. FMT_MTD.1: per-role method table replaces the listener-wide statement (POAM-26 closed pending commit); role and profile lists as TSF data. FMT_SMR.2: gRPC Issuer / Admin roles, Admin = CA Operations Staff, one admin certificate per named operator. FPT_FLS.1: gRPC fail-closed bullet. Test counts (coder-reported, final tree): `grpc_tls` 66, `grpc_mtls_e2e` 39, `ostrich-ca` 78, ca-server bins 21. **No SFR status or percentage changes** (49/50 unchanged) |
 | 3.9 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path (branch `claude/web-ui-proxy-raw-path`, uncommitted; run record `target/agent-workflow/20261026-093447-proxy-raw-path/`). FMT_MTD.1 TSF data access control: web-ui proxy path validation added as supporting evidence for the backends' FDP_ACF.1 rules (POAM-2026-10-23-43 closed pending first green CI run; POAM-46 and POAM-48 open). **No SFR status or compliance percentage changed** |
-| 3.10 | 2026-10-26 | OstrichPKI Team | CI evidence gaps (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; run record `target/agent-workflow/20261026-082358-ci-evidence-gaps/`). FAU_GEN.2: test-coverage line names `tests/integration/ca_grpc_audit_e2e.rs` and its `integration-db.yml` CI path, NOT RUN; M13h kill argued by construction, not executed. **No SFR status or percentage changes** (49/50 unchanged) |
+| 3.10 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted; run record `target/agent-workflow/20261026-091032-dns01-resolver/`). FDP_CER_EXT.1: 🟡 evidence item for ACME domain-control validation (dns-01 functional; challenge annotations moved from FIA_UAU.1 to FDP_CER_EXT.1) and a gap line (POAM-41, -49, -52); Related NIST SC-17 added to match the NIST cross-reference. FPT_FLS.1: 🟡 dns-01 fail-closed item. FMT_SMF.1: dns-01 resolvers are deploy-time configuration only (not a new management function). **No SFR status or percentage changed** (FDP_CER_EXT.1 stays 🟢 95%, FPT_FLS.1 and FMT_SMF.1 stay 🟢) |
+| 3.11 | 2026-10-26 | OstrichPKI Team | CI evidence gaps (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; run record `target/agent-workflow/20261026-082358-ci-evidence-gaps/`). FAU_GEN.2: test-coverage line names `tests/integration/ca_grpc_audit_e2e.rs` and its `integration-db.yml` CI path, NOT RUN; M13h kill argued by construction, not executed. **No SFR status or percentage changes** (49/50 unchanged) |
 
 ---
 

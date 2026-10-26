@@ -368,3 +368,73 @@ Container security context
 {{- define "ostrich-pki.securityContext" -}}
 {{- toYaml .Values.securityContext }}
 {{- end }}
+
+{{/*
+ACME dns-01 upstream resolvers (acme.dns01Resolvers -> ACME_DNS01_RESOLVERS).
+
+(root context) Validates the list and returns it ","-joined ("" when empty).
+Used by the acme Deployment (env value) and the acme NetworkPolicy (one
+ipBlock per entry). Fails rendering when:
+- the value is not a list, or has more than 8 entries (MAX_DNS01_RESOLVERS);
+- an entry is not a plain IPv4 dotted-quad or a plain hex IPv6 literal. No
+  prefix length ('/'), port, zone ('%'), whitespace or newline is accepted,
+  so an entry can never widen the rendered ipBlock or inject YAML;
+- an entry is an IPv4-mapped IPv6 address (::ffff:a.b.c.d / ::ffff:xxxx:xxxx).
+  acme-server canonicalises those to IPv4, so a /128 ipBlock for the mapped
+  form would never match the actual traffic. List the plain IPv4 literal;
+- the same string appears twice.
+This is an early, syntax-level check. acme-server repeats full validation at
+startup (unspecified, multicast, broadcast and duplicate after
+canonicalisation all refuse startup), so both layers fail closed.
+
+COMPLIANCE MAPPING:
+- NIST 800-53: CM-6 (Configuration Settings), SC-7 (Boundary Protection),
+  SI-10 (Information Input Validation)
+*/}}
+{{- define "ostrich-pki.acmeDns01Resolvers" -}}
+{{- $resolvers := .Values.acme.dns01Resolvers | default list -}}
+{{- if not (kindIs "slice" $resolvers) -}}
+{{- fail (printf "acme.dns01Resolvers must be a list of IP literals (one per item), not %s" (kindOf $resolvers)) -}}
+{{- end -}}
+{{- if gt (len $resolvers) 8 -}}
+{{- fail (printf "acme.dns01Resolvers has %d entries; at most 8 are allowed (MAX_DNS01_RESOLVERS)" (len $resolvers)) -}}
+{{- end -}}
+{{- $ipv4 := `^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$` -}}
+{{- $ipv6 := `^[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){2,7}$` -}}
+{{- $mapped := `(?i)^[0:]*:ffff:` -}}
+{{- range $resolvers -}}
+{{- if not (kindIs "string" .) -}}
+{{- fail (printf "acme.dns01Resolvers entry %v must be a string IP literal, not %s" . (kindOf .)) -}}
+{{- end -}}
+{{- if not (or (regexMatch $ipv4 .) (regexMatch $ipv6 .)) -}}
+{{- fail (printf "acme.dns01Resolvers entry %q is not a plain IPv4 or IPv6 literal (no prefix length '/', port, zone, whitespace or newline)" .) -}}
+{{- end -}}
+{{- if regexMatch $mapped . -}}
+{{- fail (printf "acme.dns01Resolvers entry %q is an IPv4-mapped IPv6 address; list the plain IPv4 literal instead (the NetworkPolicy ipBlock must match the address acme-server actually uses)" .) -}}
+{{- end -}}
+{{- end -}}
+{{- if ne (len (uniq $resolvers)) (len $resolvers) -}}
+{{- fail "acme.dns01Resolvers contains a duplicate entry" -}}
+{{- end -}}
+{{- join "," $resolvers -}}
+{{- end }}
+
+{{/*
+namespaceSelector (inline flow map) for the cluster DNS egress peer used by
+every NetworkPolicy. Default networkPolicy.dnsNamespace "" renders {} (any
+namespace; unchanged behaviour). Setting it (recommended: "kube-system", or
+the namespace that runs cluster DNS) renders a kubernetes.io/metadata.name
+match (label set on every namespace by Kubernetes >= 1.22), so a pod labelled
+k8s-app=kube-dns in any other namespace cannot receive the services' DNS
+traffic. Opt-in SC-7 hardening.
+
+COMPLIANCE MAPPING:
+- NIST 800-53: SC-7 (Boundary Protection), AC-4 (Information Flow Enforcement)
+*/}}
+{{- define "ostrich-pki.dnsNamespaceSelector" -}}
+{{- with .Values.networkPolicy.dnsNamespace -}}
+{{- dict "matchLabels" (dict "kubernetes.io/metadata.name" (toString .)) | toJson -}}
+{{- else -}}
+{}
+{{- end -}}
+{{- end }}

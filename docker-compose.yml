@@ -139,6 +139,8 @@ services:
       # ACME Configuration
       ACME_BIND_ADDRESS: 0.0.0.0:8080
       ACME_BASE_URL: ${ACME_BASE_URL:-http://localhost:8080}
+      # dns-01 resolvers; empty (default) = container system resolvers (see .env.example)
+      ACME_DNS01_RESOLVERS: ${ACME_DNS01_RESOLVERS:-}
       # CA gRPC client (TLS 1.3 mTLS, subject must be in CA_GRPC_ACME_CLIENT_SUBJECTS)
       CA_GRPC_URL: ${ACME_CA_GRPC_URL:-https://ca:50051}
       CA_GRPC_CLIENT_CERT_FILE: ${ACME_CA_GRPC_CLIENT_CERT_FILE:-/app/ca-grpc-client/tls.crt}
