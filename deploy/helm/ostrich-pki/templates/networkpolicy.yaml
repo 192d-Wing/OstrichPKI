@@ -66,7 +66,7 @@ spec:
   egress:
     # Allow DNS
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector: {{ include "ostrich-pki.dnsNamespaceSelector" . }}
           podSelector:
             matchLabels:
               k8s-app: kube-dns
@@ -110,15 +110,35 @@ spec:
         - protocol: TCP
           port: 8080
   egress:
-    # Allow DNS
+    # Allow DNS (cluster DNS is the dns-01 resolver when acme.dns01Resolvers
+    # is empty). TCP 53 is needed for the resolver's TCP fallback on truncated
+    # TXT answers (RFC 8555 §8.4 dns-01 validation).
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector: {{ include "ostrich-pki.dnsNamespaceSelector" . }}
           podSelector:
             matchLabels:
               k8s-app: kube-dns
       ports:
         - protocol: UDP
           port: 53
+        - protocol: TCP
+          port: 53
+    {{- /* Fails rendering on any malformed, mapped, duplicate or 9th+ entry. */}}
+    {{- $_ := include "ostrich-pki.acmeDns01Resolvers" . }}
+    {{- with .Values.acme.dns01Resolvers }}
+    # dns-01 upstream recursive resolvers (ACME_DNS01_RESOLVERS): port 53 only,
+    # to exactly the configured addresses (/32 or /128). NIST 800-53: SC-7, CM-6
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ printf "%s/%s" . (ternary "128" "32" (contains ":" .)) | quote }}
+        {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
     # Allow CA service access
     - to:
         - podSelector:
@@ -136,14 +156,27 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
-    # Allow external HTTP for challenge validation
+    # Allow external HTTP for challenge validation (http-01, tls-alpn-01).
+    # Public IPv4 only: private, shared, loopback, link-local (incl. cloud
+    # metadata 169.254.169.254), benchmarking, multicast and reserved ranges
+    # are excluded as defence in depth behind the validator's SSRF guard.
+    # No IPv6 peer is opened, so IPv6-only challenge targets fail closed.
+    # NIST 800-53: SC-7, AC-4
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
-              - 10.0.0.0/8
-              - 172.16.0.0/12
-              - 192.168.0.0/16
+              - 0.0.0.0/8         # "this network" (RFC 791)
+              - 10.0.0.0/8        # private (RFC 1918)
+              - 100.64.0.0/10     # shared address space / CGNAT (RFC 6598)
+              - 127.0.0.0/8       # loopback (RFC 1122)
+              - 169.254.0.0/16    # link-local, cloud metadata (RFC 3927)
+              - 172.16.0.0/12     # private (RFC 1918)
+              - 192.0.0.0/24      # IETF protocol assignments (RFC 6890)
+              - 192.168.0.0/16    # private (RFC 1918)
+              - 198.18.0.0/15     # benchmarking (RFC 2544)
+              - 224.0.0.0/4       # multicast (RFC 5771)
+              - 240.0.0.0/4       # reserved + limited broadcast (RFC 1112)
       ports:
         - protocol: TCP
           port: 80
@@ -177,7 +210,7 @@ spec:
   egress:
     # Allow DNS
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector: {{ include "ostrich-pki.dnsNamespaceSelector" . }}
           podSelector:
             matchLabels:
               k8s-app: kube-dns

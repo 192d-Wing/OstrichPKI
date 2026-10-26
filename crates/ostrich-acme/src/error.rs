@@ -38,12 +38,6 @@ pub enum Error {
     #[error("CAA error: {0}")]
     Caa(String),
 
-    #[error("Challenge failed: {0}")]
-    ChallengeFailed(String),
-
-    #[error("Challenge validation error: {0}")]
-    ChallengeValidation(String),
-
     #[error("Connection error: {0}")]
     Connection(String),
 
@@ -122,6 +116,13 @@ pub struct AcmeError {
 
 impl Error {
     /// Get ACME error type URN
+    ///
+    /// Every arm returns a type registered in RFC 8555 §6.7 (checked by the
+    /// `every_error_type_is_registered` test). Challenge failures use the
+    /// specific registered types (`connection`, `dns`, `tls`,
+    /// `incorrectResponse`, ...); there is no generic "challenge failed" type.
+    // COMPLIANCE MAPPING:
+    // - RFC 8555 §6.7 - only registered `urn:ietf:params:acme:error:` types
     pub fn error_type(&self) -> &'static str {
         match self {
             Self::AccountDoesNotExist => "urn:ietf:params:acme:error:accountDoesNotExist",
@@ -132,8 +133,6 @@ impl Error {
             Self::BadRevocationReason => "urn:ietf:params:acme:error:badRevocationReason",
             Self::BadSignatureAlgorithm => "urn:ietf:params:acme:error:badSignatureAlgorithm",
             Self::Caa(_) => "urn:ietf:params:acme:error:caa",
-            Self::ChallengeFailed(_) => "urn:ietf:params:acme:error:challengeFailed",
-            Self::ChallengeValidation(_) => "urn:ietf:params:acme:error:challengeFailed",
             Self::Connection(_) => "urn:ietf:params:acme:error:connection",
             Self::Dns(_) => "urn:ietf:params:acme:error:dns",
             Self::ExternalAccountRequired => "urn:ietf:params:acme:error:externalAccountRequired",
@@ -165,8 +164,6 @@ impl Error {
             Self::BadRevocationReason => StatusCode::BAD_REQUEST,
             Self::BadSignatureAlgorithm => StatusCode::BAD_REQUEST,
             Self::Caa(_) => StatusCode::FORBIDDEN,
-            Self::ChallengeFailed(_) => StatusCode::BAD_REQUEST,
-            Self::ChallengeValidation(_) => StatusCode::BAD_REQUEST,
             Self::Connection(_) => StatusCode::BAD_REQUEST,
             Self::Dns(_) => StatusCode::BAD_REQUEST,
             Self::ExternalAccountRequired => StatusCode::FORBIDDEN,
@@ -207,7 +204,7 @@ impl Error {
     /// unauthorized, badNonce, ...) keep their descriptive detail — those are
     /// actionable and reveal no internals.
     /// COMPLIANCE: NIST 800-53 SI-11 (error handling), SI-10; RFC 8555 §6.7.
-    fn client_detail(&self) -> String {
+    pub(crate) fn client_detail(&self) -> String {
         if self.is_internal() {
             "Internal server error".to_string()
         } else {
@@ -236,7 +233,7 @@ impl IntoResponse for Error {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -260,6 +257,117 @@ mod tests {
         // ...but the problem type/status are still correct for the client.
         assert_eq!(db.error_type(), "urn:ietf:params:acme:error:serverInternal");
         assert_eq!(db.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// The `urn:ietf:params:acme:error:` types registered by RFC 8555 §6.7.
+    pub(crate) const RFC8555_REGISTERED_TYPES: &[&str] = &[
+        "accountDoesNotExist",
+        "alreadyRevoked",
+        "badCSR",
+        "badNonce",
+        "badPublicKey",
+        "badRevocationReason",
+        "badSignatureAlgorithm",
+        "caa",
+        "compound",
+        "connection",
+        "dns",
+        "externalAccountRequired",
+        "incorrectResponse",
+        "invalidContact",
+        "malformed",
+        "orderNotReady",
+        "rateLimited",
+        "rejectedIdentifier",
+        "serverInternal",
+        "tls",
+        "unauthorized",
+        "unsupportedContact",
+        "unsupportedIdentifier",
+        "userActionRequired",
+    ];
+
+    /// One value of every `Error` variant. The `match` has no wildcard arm, so
+    /// adding a variant fails to compile until it is listed here too.
+    pub(crate) fn one_of_every_variant() -> Vec<Error> {
+        let s = || "x".to_string();
+        let all = vec![
+            Error::AccountDoesNotExist,
+            Error::AlreadyRevoked,
+            Error::BadCsr(s()),
+            Error::BadNonce,
+            Error::BadPublicKey,
+            Error::BadRevocationReason,
+            Error::BadSignatureAlgorithm,
+            Error::Caa(s()),
+            Error::Connection(s()),
+            Error::Dns(s()),
+            Error::ExternalAccountRequired,
+            Error::IncorrectResponse(s()),
+            Error::InvalidContact(s()),
+            Error::Malformed(s()),
+            Error::OrderNotReady,
+            Error::RateLimited,
+            Error::RejectedIdentifier(s()),
+            Error::ServerInternal(s()),
+            Error::Tls(s()),
+            Error::Unauthorized(s()),
+            Error::UnsupportedContact(s()),
+            Error::UnsupportedIdentifier(s()),
+            Error::UserActionRequired(s()),
+            Error::NotFound,
+            Error::Database(ostrich_db::Error::ConstraintViolation(s())),
+            Error::Common(ostrich_common::Error::Config(s())),
+        ];
+        for e in &all {
+            match e {
+                Error::AccountDoesNotExist
+                | Error::AlreadyRevoked
+                | Error::BadCsr(_)
+                | Error::BadNonce
+                | Error::BadPublicKey
+                | Error::BadRevocationReason
+                | Error::BadSignatureAlgorithm
+                | Error::Caa(_)
+                | Error::Connection(_)
+                | Error::Dns(_)
+                | Error::ExternalAccountRequired
+                | Error::IncorrectResponse(_)
+                | Error::InvalidContact(_)
+                | Error::Malformed(_)
+                | Error::OrderNotReady
+                | Error::RateLimited
+                | Error::RejectedIdentifier(_)
+                | Error::ServerInternal(_)
+                | Error::Tls(_)
+                | Error::Unauthorized(_)
+                | Error::UnsupportedContact(_)
+                | Error::UnsupportedIdentifier(_)
+                | Error::UserActionRequired(_)
+                | Error::NotFound
+                | Error::Database(_)
+                | Error::Common(_) => {}
+            }
+        }
+        all
+    }
+
+    /// RFC-013: no variant maps to a problem type outside RFC 8555 §6.7 (the
+    /// removed `ChallengeValidation` variant emitted `challengeFailed`).
+    #[test]
+    fn every_error_type_is_registered() {
+        let all = one_of_every_variant();
+        assert_eq!(all.len(), 26);
+        for e in &all {
+            let t = e.error_type();
+            let name = t
+                .strip_prefix("urn:ietf:params:acme:error:")
+                .unwrap_or_else(|| panic!("{t} lacks the ACME error namespace"));
+            assert!(
+                RFC8555_REGISTERED_TYPES.contains(&name),
+                "{e:?} maps to unregistered type {t}"
+            );
+        }
     }
 
     #[test]

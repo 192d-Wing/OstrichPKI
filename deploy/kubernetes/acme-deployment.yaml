@@ -9,6 +9,13 @@
 # placeholder here — set it per environment to the externally reachable
 # directory URL. The SSRF guard stays ON (ACME_ALLOW_PRIVATE_IP_DOMAINS=false);
 # only an in-cluster E2E flips it.
+#
+# dns-01 resolvers: ACME_DNS01_RESOLVERS is unset here, so dns-01 uses the
+# pod's resolv.conf (cluster DNS). In production set it to the enclave's
+# DNSSEC-validating recursive resolver(s) on a trusted network segment, e.g.
+# "10.0.0.53,10.0.1.53", and cap their negative-cache TTL (RFC 2308). The
+# CA-to-resolver channel is unauthenticated (no TSIG/DoT, AD bit not checked).
+# (NIST 800-53 CM-6; POAM-2026-10-23-41 tracks in-process DNSSEC).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
