@@ -799,7 +799,8 @@ Integration test INT-001 demonstrates successful implementation of certificate i
 
 **Expected Results:**
 
-- **cargo-audit:** 0 known vulnerabilities in dependencies
+- **cargo-audit:** 0 known vulnerabilities in dependencies (RustSec database only; GitHub-only advisories come from Dependabot alerts)
+- **pnpm audit (full, including development dependencies):** 0 known vulnerabilities, or each remaining advisory on the POA&M, for every committed JavaScript lockfile
 - **clippy:** 0 warnings with strict lints
 - **OWASP ZAP:** No high/critical findings
 
@@ -908,6 +909,35 @@ also unused and its removal is tracked as POAM-2026-10-23-23.
 Limits: local run only (the audit and deny exit codes were re-run by the
 compliance scribe on 2026-10-24). No CI run of the gate is recorded for this
 change, so POAM-11, -16 and -22 are "Closed pending first green CI run".
+
+**Recorded result — 2026-10-26, Dependabot alert remediation (RA-5 / SI-2 / CM-2 / SR-3):**
+
+Branch `claude/dependabot-remediation` (from `main` @ 1294f63), uncommitted.
+Run record `target/agent-workflow/20261026-dependabot-remediation/`
+(`qa-report.md`, `gates-final.log`, `pnpm-audit-before.txt`,
+`pnpm-audit-after.txt`). Changes: `Cargo.lock` hickory-resolver, hickory-net
+and hickory-proto 0.26.1 → 0.26.2 only; web-ui `pnpm-lock.yaml` and two
+`package.json` floors (`vite` ^8.1.6, `react-router-dom` ^6.30.6).
+
+| Scan | Command | Result |
+|------|---------|--------|
+| Dependabot alerts | GitHub API `dependabot/alerts?state=open`, 2026-10-26 | 21 open before the change (3 Rust runtime; 18 npm: 15 development, 3 runtime). 19 remediated by this change; 2 remain (react-router GHSA-wrjc-x8rr-h8h6, GHSA-337j-9hxr-rhxg; POAM-2026-10-23-39). Auto-close happens only after merge |
+| Advisories (gate form) | `cargo audit --deny warnings` (in `make security`) | exit 0; 1378 advisories loaded, 614 crates (final re-run). The 3 hickory GHSAs have no RustSec alias, so this tool did not report them before the change either |
+| Supply-chain policy | `cargo deny check` (in `make security`) | exit 0: `advisories ok, bans ok, licenses ok, sources ok` |
+| Web UI, full audit | `pnpm audit` (`services/web-ui/web`) | before: 28 vulnerabilities (1 low / 9 moderate / 18 high); after: 2 moderate (the two react-router advisories) |
+| Web UI, CI gate form | `pnpm audit --prod --audit-level=high` | exit 0 before and after: this gate does not discriminate for this change (POAM-2026-10-23-42) |
+| Web UI build chain | `pnpm install --frozen-lockfile` (pnpm 9.15.9), `pnpm typecheck`, `pnpm lint`, `pnpm build` | pass (pre-existing >500 kB chunk warning) |
+| Regression | `make clippy`, `make test-unit` | pass; 782 passed / 0 failed / 1 ignored |
+
+Limits of this evidence:
+
+- Local run only; the first CI run is pending. After merge, attach the CI run
+  and the Dependabot auto-close of the 19 alerts
+- The npe-portal SPA was not scanned: it has no lockfile (POAM-2026-10-23-40)
+- Integration tests were not run (no database on the host); no source code
+  changed
+- Per-advisory versions, scope and timeliness: NIST SI-2 in
+  [NIST_800-53_MAPPING.md](NIST_800-53_MAPPING.md#si-2-flaw-remediation)
 
 **CM-6: CI workflow secure defaults (2026-10-23, CI hardening):**
 

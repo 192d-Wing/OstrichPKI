@@ -1,6 +1,6 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.0
+**Document Version:** 2.1
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
 **Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 667 unit tests passed, 0 failed, 1 ignored, 2026-10-24 (§2.6)
@@ -835,7 +835,7 @@ $ cargo audit
 # 0 vulnerabilities found
 ```
 
-**2026-10-23 (latest recorded):** `cargo audit` with 1351 advisories loaded,
+**2026-10-23:** `cargo audit` with 1351 advisories loaded,
 642 crates scanned: **0 vulnerabilities, 0 warnings**, exit 0, after
 remediating 18 vulnerabilities and 4 warnings found on `main` @ 88c10cd (see
 §2.3 and NIST SI-2). At that time the CI `cargo audit` job was advisory.
@@ -845,10 +845,19 @@ with no `continue-on-error`, so a new advisory fails the workflow. It is not
 yet a required status check, so it does not by itself block merges (POA&M).
 Local result: exit 0, 642 crates, 0 vulnerabilities, 0 warnings (§2.4).
 
-**2026-10-24, dependency cleanup (latest recorded):** `cargo audit --deny
+**2026-10-24, dependency cleanup:** `cargo audit --deny
 warnings` exit 0 (1352 advisories, 614 crates) after `rand` 0.8.5 → 0.8.6 and
 the removal of `openidconnect` and `p256`. The ignore list is down to 3 IDs
 (RUSTSEC-2023-0071, -2024-0436, -2025-0134). Local only (§2.7).
+
+**2026-10-26, Dependabot alert remediation (latest recorded):** `cargo audit
+--deny warnings` exit 0 (1378 advisories, 614 crates) and `cargo deny check`
+exit 0 after hickory-resolver/-net/-proto 0.26.1 → 0.26.2. Those three GHSAs
+have no RustSec alias and were found by Dependabot, not `cargo audit`. Web UI
+full `pnpm audit`: 28 (1 low / 9 moderate / 18 high) → 2 moderate (react-router
+v6, POAM-2026-10-23-39). Regression: `make test-unit` 782 / 0 / 1, `make clippy`
+and the web-ui frozen install, typecheck, lint and build pass. No tests were
+added. Local only; first CI run pending (ATO_EVIDENCE.md §2.3).
 
 ### 5.3 License Compliance
 
@@ -1054,3 +1063,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 1.8 | 2026-10-25 | OstrichPKI Team | Added §2.8, the CA gRPC mTLS run: `grpc_mtls_e2e` 20 / 0 and `fips_gate_preinstalled` 1 / 0 (re-run by the scribe); unit `ostrich-common` 229, `ostrich-audit` 13, `ostrich-db` 54, `ostrich-ca` 54, `ostrich-est` 43 (re-run); ca/acme/est `--bins` 9 / 3 / 8 (re-run); fuzz `fuzz_grpc_peer_subject` 237,187 runs clean after the OID-overflow fix and mutations M1-M5 caught (implementer); Postgres `chain_concurrency` NOT RUN (the skip-pass without `DATABASE_URL` is not evidence); docker, kubectl, release start-up and CI NOT RUN. §2.6 "Not covered" cross-referenced. §5.4 fuzz row added. Header version 1.6 → 1.8 (1.7 had not updated it). |
 | 1.9 | 2026-10-25 | OstrichPKI Team | Added §2.9, the CA gRPC mTLS final-code run after fix rounds 2-3: `grpc_mtls_e2e` 21/21, `fips_gate_preinstalled` 1/1, 41 `grpc_tls::tests`, `ostrich-audit` lib 20/20 (re-run by the scribe); `make test-unit` 732/0 and service bins (coder). Postgres tests incl. new `sign_timeout_db.rs` NOT RUN |
 | 2.0 | 2026-10-26 | OstrichPKI Team | Added §2.10, the per-method CA gRPC authorization run (coder-reported, final tree; not re-run by the scribe): `make test-unit` 782 / 0 / 1, `grpc_tls` 66, `ostrich-ca` 78, ca-server bins 21, `ostrich-est` 44, `grpc_mtls_e2e` 39; fuzz `fuzz_grpc_requestor` 246,720 runs and `fuzz_grpc_peer_subject` 135,145 runs after a const-oid panic fix; mutations M1-M29 killed except M13h (NOT RUN). DB-gated suites NOT RUN (POAM-2026-10-23-36). §5.4 fuzz rows added |
+| 2.1 | 2026-10-26 | OstrichPKI Team | §5.2: recorded the Dependabot alert remediation result (`cargo audit` exit 0, 1378 advisories / 614 crates; full web-ui `pnpm audit` 28 → 2 moderate; `make test-unit` 782 / 0 / 1); "latest recorded" moved to it. No new tests. Local only |

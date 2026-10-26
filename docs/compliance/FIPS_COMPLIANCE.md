@@ -1,6 +1,6 @@
 # FIPS Cryptographic Standards Compliance Matrix
 
-**Document Version:** 2.2
+**Document Version:** 2.3
 **Date:** 2026-10-25
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Enhanced (70-75%)
@@ -953,7 +953,8 @@ workspace `fips` feature.
 
 3. **Challenge Tokens**
    - ✅ DRBG provides unpredictable tokens
-   - ✅ ACME HTTP-01, DNS-01, TLS-ALPN-01 ready
+   - ✅ ACME HTTP-01 and TLS-ALPN-01 tokens in use
+   - 🟡 DNS-01: tokens are generated, but dns-01 validation is non-functional (resolver has no name servers; POAM-2026-10-23-41)
 
 4. **ECDSA k values**
    - ✅ DRBG ready for random k generation
@@ -1247,6 +1248,7 @@ allowed_pqc_algorithms = [
 | 2.0 | 2026-10-24 | OstrichPKI Team | Dependency cleanup (branch `claude/deps-cleanup`). SP 800-90A: added a pre-existing gap (PQC-001, POAM-2026-10-23-24): Shamir KEK coefficients, `secure_random_bytes` (PKCS#12 salt/IV), EST one-time password and enrollment token, and session tokens use `rand` `ThreadRng`, not the AWS-LC DRBG. No status changed. The non-FIPS `aws-lc-sys` note was re-checked with `cargo tree -i aws-lc-sys -e normal` (aws-lc-rs dependents still rustls, rustls-webpki, rcgen, instant-acme, ostrich-common, ostrich-crypto); no edit needed. Removing `openidconnect`, `p256` and `crypto-bigint` 0.5.5 changes no algorithm, module or boundary statement |
 | 2.1 | 2026-10-25 | OstrichPKI Team | CA gRPC behind mTLS (branch `claude/grpc-mtls`, uncommitted). FIPS 197 TLS endpoints: process-level `fips_gate` (all ten mains) and CA gRPC server/client `fips()` assertions added; "Not covered" list narrowed (tonic `tls-ring` and the gRPC ordering gap removed; plain-HTTP REST, non-gRPC client configs, process-default clients, refusal audit and KATs remain, POAM-05). New CA gRPC provider note: SECP256R1MLKEM768 first, narrowed signature algorithms, CMVP pending. Runtime FIPS-mode evidence stays 🟡 with the extended scope. `ring` inventory rewritten: gRPC no longer uses `ring`; KRA `wrap.rs`, async-nats SHA-256 (POAM-30) and the rustls `ring` feature via lettre / reqwest 0.12 / async-nats / tokio-websockets remain (POAM-08 narrowed, not closed). Header version 1.9 → 2.1 (2.0 had not updated it). **FIPS module unchanged** (AWS-LC FIPS 4.2.0); no algorithm added; no status raised. |
 | 2.2 | 2026-10-25 | OstrichPKI Team | CA gRPC mTLS final refresh after fix round 3. FIPS 205: SLH-DSA CA keys not supported by ca-server (CA key signs audit records; audit sink refuses SLH-DSA; POAM-2026-10-23-34; currently moot, no provider signs SLH-DSA). FIPS 197 TLS endpoints: `grpc_mtls_e2e` 21/21. PR 152 finding cited as PR152-PQC-010. No algorithm, module or status change |
+| 2.3 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation: no algorithm, parameter set, module or self-test changed (hickory DNS and web-ui build-chain lockfile updates only). Challenge-token item corrected: DNS-01 validation is non-functional (POAM-2026-10-23-41); no FIPS claim changed |
 
 ---
 

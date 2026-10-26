@@ -369,8 +369,12 @@ FROM node:22-bookworm-slim AS npe-portal-web-builder
 WORKDIR /web
 
 # Install dependencies first so this layer is cached until package.json changes.
-# No lockfile is committed for the SPA (matches services/web-ui/web), so `npm
-# install` resolves fresh — pinned, audited dependency upgrades happen in PRs.
+# No lockfile is committed for this SPA, so `npm install` resolves a fresh
+# tree on every build, and Dependabot and the CI audit gate do not cover it.
+# This differs from services/web-ui/web, which commits pnpm-lock.yaml and builds
+# with `pnpm install --frozen-lockfile`.
+# POAM: POAM-2026-10-23-40 - commit a lockfile, build with `npm ci`, add a
+# Dependabot npm entry and an audit gate (NIST 800-53: CM-2, SR-3, SI-7).
 COPY services/npe-portal/web/package.json ./
 RUN npm install --no-audit --no-fund
 
