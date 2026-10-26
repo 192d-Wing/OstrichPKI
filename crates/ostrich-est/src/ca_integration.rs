@@ -51,6 +51,34 @@ use x509_cert::der::Decode;
 use x509_cert::request::CertReq;
 use x509_parser::der_parser::asn1_rs::FromDer;
 
+/// Message for an EST client identifier the CA would refuse as requestor.
+pub(crate) const CLIENT_ID_NOT_ISSUABLE: &str = "the EST client identifier cannot be used for \
+     certificate issuance: it must be 1 to 250 printable ASCII characters (no spaces or \
+     control characters)";
+
+/// The CA gRPC requestor for EST client `client_id` (`est::<client_id>`),
+/// checked with the same rule the CA applies
+/// ([`ostrich_common::grpc_tls::validate_requestor`]: at most
+/// `MAX_REQUESTOR_LEN` = 255 bytes in total, id of printable ASCII
+/// `0x21..=0x7E`), so an unusable identifier gets a clear EST error
+/// ([`Error::Forbidden`], HTTP 403 per RFC 7030 §4.2.3) before any CA call
+/// instead of an opaque CA denial (RFC-007).
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-10 (input validation), SI-11 (clear client error), AU-3
+/// - NIAP PP-CA: FAU_GEN.2
+/// - RFC 7030 §4.2.3 (enrollment error response)
+pub fn ca_requestor(client_id: &str) -> Result<String> {
+    let requestor = format!("est::{client_id}");
+    match ostrich_common::grpc_tls::validate_requestor(
+        ostrich_common::GrpcClientIdentity::EST,
+        &requestor,
+    ) {
+        Ok(Some(bound)) => Ok(bound),
+        _ => Err(Error::Forbidden(CLIENT_ID_NOT_ISSUABLE.to_string())),
+    }
+}
+
 /// Whether a gRPC endpoint targets the local loopback interface.
 ///
 /// Used to decide whether a plaintext CA channel is acceptable: loopback traffic
@@ -221,7 +249,7 @@ impl EstCaClient {
             subject: Some(proto_subject),
             subject_alt_names,
             public_key: public_key_der,
-            requestor: format!("est::{}", client_id),
+            requestor: ca_requestor(client_id)?,
             metadata,
             // Forward the CSR so the CA verifies proof-of-possession (RFC 2986).
             csr_der: csr_der.to_vec(),
@@ -421,6 +449,34 @@ fn plaintext_policy(
 
 #[cfg(test)]
 mod tests {
+    /// RFC-007 / SEC-002: EST identifiers the CA would refuse are caught
+    /// before the CA call with a clear 403.
+    #[test]
+    fn ca_requestor_matches_ca_rule() {
+        use super::{CLIENT_ID_NOT_ISSUABLE, ca_requestor};
+        assert_eq!(ca_requestor("device-42").unwrap(), "est::device-42");
+        assert_eq!(
+            ca_requestor("user@example.mil").unwrap(),
+            "est::user@example.mil"
+        );
+        let max = "a".repeat(250);
+        assert_eq!(ca_requestor(&max).unwrap().len(), 255);
+        for bad in [
+            "a".repeat(251),
+            "a".repeat(255),
+            String::new(),
+            "has space".to_string(),
+            "line\nbreak".to_string(),
+            "bidi\u{202E}".to_string(),
+            "sep\u{2028}".to_string(),
+            "ünïcode".to_string(),
+        ] {
+            let err = ca_requestor(&bad).expect_err("refused");
+            assert_eq!(err.status_code(), axum::http::StatusCode::FORBIDDEN);
+            assert!(err.to_string().contains(CLIENT_ID_NOT_ISSUABLE), "{err}");
+        }
+    }
+
     use super::*;
 
     /// CM-6 / SC-8: release builds refuse `allow_insecure` and the loopback

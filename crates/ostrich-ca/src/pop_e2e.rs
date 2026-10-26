@@ -80,6 +80,7 @@ fn req(profile_name: &str, public_key: Vec<u8>, csr_der: Option<Vec<u8>>) -> Iss
         subject_alt_names: vec![SubjectAltName::DnsName("www.example.com".to_string())],
         public_key,
         requestor: "pop-e2e".to_string(),
+        authenticated_caller: None,
         metadata: None,
         csr_der,
         approval_request_id: None,

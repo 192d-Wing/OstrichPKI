@@ -1,7 +1,7 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 1.9
-**Last Updated:** 2026-10-25
+**Document Version:** 2.0
+**Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
 **Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 667 unit tests passed, 0 failed, 1 ignored, 2026-10-24 (§2.6)
 
@@ -443,6 +443,63 @@ POAM-2026-10-23-31); sibling and grandchild CA detection (not implemented,
 POAM-2026-10-23-28); a hung real HSM; release-build container start; deployed
 NetworkPolicy enforcement.
 
+### 2.10 Test Run 2026-10-26 (CA gRPC per-method authorization and verified audit actor)
+
+**Scope:** branch `claude/grpc-per-method-authz`, uncommitted (run record
+`target/agent-workflow/20261025-202226-grpc-per-method/`): per-role client
+subject lists, the default-deny method table, requestor binding, issuer
+profile allowlists, per-call leaf validity, the Admin direct-issuance rule,
+the verified peer as audit actor, revocation and CRL Failure records, and the
+const-oid fuzz fix. §2.8 and §2.9 counts are superseded for these suites.
+**Sources:** `qa-report.md` (QA round, PASS WITH FINDINGS), `fixes-round-1.md`,
+`fixes-round-2.md` and `fixes-nits.md` (final tree). The compliance scribe did
+**not** re-run these commands; all counts below are from the final tree as
+reported by the coder, except where the QA round is named.
+
+| Gate | Command | Result | Counts |
+|------|---------|--------|--------|
+| Unit (workspace) | `make test-unit` | PASS | **782 passed, 0 failed, 1 ignored** (pre-existing ignore; 16 suites). QA round: 759; round 1: 776 |
+| Unit | `cargo test -p ostrich-common --lib grpc_tls` | PASS | **66 passed, 0 failed** (QA round 59, round 1 63) |
+| Unit | `cargo test -p ostrich-ca` | PASS | **78 passed, 0 failed**. The DB / PKCS#11 `*_e2e` modules (`audit_signing_e2e`, `crl_delta_e2e`, `pop_e2e`, `issuance_aia_e2e`) report `ok` but skip internally without `DATABASE_URL` / `PKCS11_*`; that is **not** evidence |
+| Service binaries | `cargo test -p ostrich-ca-server --bins` | PASS | **21 passed, 0 failed** (adds `start_grpc_listener_refusal_is_audited_without_started_record` in the nit pass) |
+| Unit | `cargo test -p ostrich-est` | PASS | **44 passed, 0 failed** (2 ignored doctests; incl. `ca_requestor_matches_ca_rule`) |
+| Integration (offline) | `cargo test -p ostrich-integration-tests --test grpc_mtls_e2e --locked` | PASS | **39 passed, 0 failed** (#15 ran the real `scripts/gen-dev-grpc-certs.sh`) |
+| Fuzz | `cargo +nightly fuzz run fuzz_grpc_requestor -- -max_total_time=60` (new target) | PASS | **246,720 runs / 61 s**, no crash (final tree) |
+| Fuzz | `cargo +nightly fuzz run fuzz_grpc_peer_subject -- -max_total_time=60` | PASS after fix | First run in round 2 **crashed** after about 5.6k runs: const-oid 0.9.6 encodes the numeric OID `2.2.106.2.2.2122195112` but cannot decode it, and `Display` panics ("OID malformed: ArcTooBig") in `canonicalize_dn` on operator configuration text (pre-existing). Fixed in `check_attribute_type` (decode round trip); after the fix **135,145 runs / 61 s**, no crash, both crash artifacts replay clean; regression test `allowlist_refuses_undecodable_numeric_oid` |
+| Mutation | QA script plus the coder's round 1 / round 2 / nit-pass scripts; each mutation reverted and the file hash verified | PASS except M13h | Killed: M1-M11, M14-M17 (QA round); M12, M12r, M13, M18-M22 (round 1, after QA-002 / QA-003 fixes; M12, M13, M18 had survived the QA round); M23-M29 (round 2); DN-only fallback restored in `issued_directly` (nit pass). **M13h (GenerateCrl handler passes `crl_actor(None)`) NOT RUN / survives without a database** |
+| Format / lint / release | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo check --release ... --all-targets`, `cargo build --release -p ostrich-ca-server` | PASS | rc=0 |
+| Supply chain | `cargo deny check`, `cargo audit` | PASS | implementer-reported (round 0); Cargo.lock gained dependency edges only (`tonic-prost`, `time` for tests) |
+| Helm / compose render | scratch `helm lint` / `helm template` (v3.19, postgresql dependency stripped), compose-go loader | PASS | deploy coder; QA did not re-verify (no `helm` on the QA host). Negative cases (legacy key, no issuer, overlap, `intermediate_ca`, empty profile list) fail rendering as intended |
+| DB-gated | `ca_core_test`, `ocsp_revocation_test` (`--ignored`), `est_serverkeygen_e2e`, live `audit_signing_e2e` / `crl_delta_e2e` | **NOT RUN** | no Postgres or Docker on the host; tracked as POAM-2026-10-23-36 |
+| CI | GitHub / GitLab pipelines | **NOT RUN** | change not committed |
+
+**Key `grpc_mtls_e2e` additions (39 total):** `role_method_matrix`
+(4 callers × 6 RPCs), `unknown_method_denied`,
+`requestor_namespace_mismatch_denied_and_audited`,
+`empty_requestor_denied_for_issuer`, `invalid_requestor_denied`,
+`admin_revoke_without_requestor_ok`, `bound_caller_actor_is_peer`,
+`admin_list_empty_default_denies_revoke_crl_status_for_all`,
+`requestor_denial_audit_is_cancel_proof`, `config_errors_refuse_to_start`,
+`qa_unmapped_path_variants_denied_over_the_wire` (14 paths × 4 callers),
+`qa_requestor_edge_cases_denied_and_audited_per_role`,
+`qa_valid_requestors_bind_to_peer_for_each_role`,
+`issuer_profile_allowlist_enforced_and_audited` (#34),
+`certificate_expiring_on_live_connection_is_refused` (#35, 3 s leaf on a
+live HTTP/2 connection), requestor Unicode cases over the wire (#36),
+`admin_under_intermediate_is_refused` (#37). The e2e suite uses a stub CA
+behind the real layer and `bind_caller`; it does not exercise
+`CaGrpcService` against a database.
+
+**Not covered:** handler glue from `CaGrpcService` and the REST CRL handlers
+into the audit records (M13h; POAM-2026-10-23-36); live signed records with
+the peer as actor; CRL failure audits and the call-time
+`ca_profile_not_permitted` refusal on the database paths; client-certificate
+revocation (POAM-2026-10-23-27); issuer / SPKI binding for the Issuer roles
+(POAM-2026-10-23-28); per-call validity of intermediates and the anchor; the
+env-var form of the role lists (only the CLI flag, the same clap argument, is
+tested); how an EST client sees a CA requestor refusal beyond the HTTP 403
+pre-check; deployed NetworkPolicy and port-forward admin access.
+
 ---
 
 ## 3. Unit Test Results
@@ -822,6 +879,8 @@ closed pending first green CI run).
 | JWS Parser | 1,000,000 | 0 | Pass |
 | OCSP Request | 1,000,000 | 0 | Pass |
 | gRPC peer subject / allowlist (`fuzz_grpc_peer_subject`, 2026-10-25) | 237,187 (61 s) after the fix | 1 before the fix (OID-arc overflow panic, fixed) | Pass after fix (implementer-reported, §2.8) |
+| gRPC peer subject / role lists (`fuzz_grpc_peer_subject`, 2026-10-26) | 135,145 (61 s) after the fix | 1 before the fix (const-oid `Display` panic on an undecodable numeric OID, fixed) | Pass after fix (coder-reported, §2.10) |
+| gRPC requestor binding (`fuzz_grpc_requestor`, new 2026-10-26) | 246,720 (61 s) | 0 | Pass (coder-reported, §2.10) |
 
 ### 5.5 Secrets Scanning
 
@@ -994,3 +1053,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 1.7 | 2026-10-24 | OstrichPKI Team | Added §2.7, the dependency-cleanup run: `make test-unit` 667 / 0 / 1; web-ui `--bins` 19 / 0; npe-portal `--bins` 30 / 0; two new offline fixture tests 2 / 0 (`ca_core_test` health/readiness fail without docker, pre-existing QA-001); fmt, clippy pass; `cargo audit --deny warnings` and `cargo deny check` pass without the RUSTSEC-2026-0097 and RUSTSEC-2026-0387 ignores (3 IDs left); live `test_ca_issue_certificate_ecdsa` and CI NOT RUN. §5.2: 2026-10-24 result added. §2.5: ignore-count note. |
 | 1.8 | 2026-10-25 | OstrichPKI Team | Added §2.8, the CA gRPC mTLS run: `grpc_mtls_e2e` 20 / 0 and `fips_gate_preinstalled` 1 / 0 (re-run by the scribe); unit `ostrich-common` 229, `ostrich-audit` 13, `ostrich-db` 54, `ostrich-ca` 54, `ostrich-est` 43 (re-run); ca/acme/est `--bins` 9 / 3 / 8 (re-run); fuzz `fuzz_grpc_peer_subject` 237,187 runs clean after the OID-overflow fix and mutations M1-M5 caught (implementer); Postgres `chain_concurrency` NOT RUN (the skip-pass without `DATABASE_URL` is not evidence); docker, kubectl, release start-up and CI NOT RUN. §2.6 "Not covered" cross-referenced. §5.4 fuzz row added. Header version 1.6 → 1.8 (1.7 had not updated it). |
 | 1.9 | 2026-10-25 | OstrichPKI Team | Added §2.9, the CA gRPC mTLS final-code run after fix rounds 2-3: `grpc_mtls_e2e` 21/21, `fips_gate_preinstalled` 1/1, 41 `grpc_tls::tests`, `ostrich-audit` lib 20/20 (re-run by the scribe); `make test-unit` 732/0 and service bins (coder). Postgres tests incl. new `sign_timeout_db.rs` NOT RUN |
+| 2.0 | 2026-10-26 | OstrichPKI Team | Added §2.10, the per-method CA gRPC authorization run (coder-reported, final tree; not re-run by the scribe): `make test-unit` 782 / 0 / 1, `grpc_tls` 66, `ostrich-ca` 78, ca-server bins 21, `ostrich-est` 44, `grpc_mtls_e2e` 39; fuzz `fuzz_grpc_requestor` 246,720 runs and `fuzz_grpc_peer_subject` 135,145 runs after a const-oid panic fix; mutations M1-M29 killed except M13h (NOT RUN). DB-gated suites NOT RUN (POAM-2026-10-23-36). §5.4 fuzz rows added |

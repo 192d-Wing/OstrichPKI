@@ -39,7 +39,9 @@ service CertificateAuthorityService {
 
 // Certificate issuance request
 message IssueCertificateRequest {
-  // Profile to use for issuance
+  // Profile to use for issuance. Must be in the caller namespace's allowed
+  // profile list (CA_GRPC_ACME_ALLOWED_PROFILES / CA_GRPC_EST_ALLOWED_PROFILES;
+  // CA profiles never), else PERMISSION_DENIED.
   string profile_name = 1;
 
   // Subject distinguished name
@@ -51,7 +53,10 @@ message IssueCertificateRequest {
   // Public key (DER-encoded SubjectPublicKeyInfo)
   bytes public_key = 4;
 
-  // Requestor identity (for audit)
+  // Claimed principal (`acme::<account_id>` / `est::<client_id>`); must be in
+  // the caller's namespace, at most 255 bytes, with an id of printable ASCII
+  // (0x21-0x7E) only (else PERMISSION_DENIED), and is recorded as
+  // on_behalf_of. The audit actor is the verified mTLS client subject.
   string requestor = 5;
 
   // Additional metadata (optional)
@@ -97,7 +102,9 @@ message RevokeCertificateRequest {
   // Revocation reason
   RevocationReason reason = 2;
 
-  // Requestor identity (for audit)
+  // Claimed principal (`admin::<id>`, or empty); must be in the caller's
+  // namespace (else PERMISSION_DENIED) and is recorded as on_behalf_of. The
+  // audit actor is the verified mTLS client subject.
   string requestor = 3;
 
   // Justification (optional)

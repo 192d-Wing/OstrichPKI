@@ -22,6 +22,7 @@ pub use auth::{
 pub use error::{Error, Result};
 pub use grpc_client::{CaGrpcClient, CircuitBreaker, GrpcClientConfig, read_private_key_pem};
 pub use grpc_tls::{
-    AuthorizedGrpcPeer, ClientSubjectAllowlist, GrpcPeerInfo, GrpcServerMode, GrpcServerOptions,
-    SubjectAllowlistLayer,
+    AuthorizedGrpcPeer, ClientSubjectAllowlist, GrpcClientIdentity, GrpcClientRegistry,
+    GrpcClientRole, GrpcMethodRule, GrpcPeerInfo, GrpcServerMode, GrpcServerOptions,
+    RequestorRejection, SubjectAllowlistLayer, validate_requestor,
 };

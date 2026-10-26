@@ -1,7 +1,7 @@
 # Authority to Operate (ATO) Evidence Collection Guide
 
-**Document Version:** 1.5
-**Generated:** 2026-01-04 (revised 2026-10-25)
+**Document Version:** 1.6
+**Generated:** 2026-01-04 (revised 2026-10-26)
 **OstrichPKI Version:** 0.15.0
 **Framework:** NIST Risk Management Framework (RMF)
 **Compliance Standards:** NIST 800-53 Rev 5, NIAP PP-CA v2.1, FIPS 140-2/140-3
@@ -1792,7 +1792,9 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | SC-13 / SC-24 | `tls::tests`: `ensure_fips_rejects_non_fips_server_configs`, `ensure_fips_accepts_loaded_config`, `serve_with_config_refuses_non_fips_config`, `load_builds_fips_config_with_alpn`, `fips_server_config_kx_groups_exclude_x25519_keep_mlkem_hybrid`; npe-portal `build_mtls_server_config_reports_fips_mode` | Test results: `cargo test -p ostrich-common --lib tls::` 26 passed / 0 failed; service `--bins` 58 passed / 0 failed; mutation check (gate forced to `Ok`) fails the refusal tests (TEST_EVIDENCE.md §2.6) |
 | SC-13 / SC-24 / FPT_FLS.1 (supports FPT_TST_EXT.1) | `crates/ostrich-common/src/tls.rs` `fips_gate`; first call after tracing setup in all ten `services/*/src/main.rs` | Code implementation (2026-10-25, branch `claude/grpc-mtls`, uncommitted): each service exits before database, NATS, listeners or clients unless AWS-LC and the process-default rustls provider report FIPS. Test: `fips_gate_preinstalled` 1 / 0 (re-run by the compliance scribe 2026-10-25 on the final code). Gate refusals are error logs only, no audit record (POAM-2026-10-23-05 (d)) |
 | AC-17 / SC-8 / SC-8(1) / SC-13 / IA-3 / IA-5(2) / FTP_ITC.1 / FCS_TLSS_EXT.2 / FCS_TLSC_EXT.2 | `crates/ostrich-common/src/grpc_tls.rs`, `crates/ostrich-common/src/grpc_client.rs`, `services/ca-server/src/main.rs` (`start_grpc_listener`), `crates/ostrich-acme/src/ca_integration.rs`, `crates/ostrich-est/src/ca_integration.rs` | Code implementation (2026-10-25, uncommitted): CA gRPC TLS 1.3 mTLS on the aws-lc-rs FIPS provider, `fips()` asserted on server and client, ALPN `h2`. Tests: `grpc_mtls_e2e` 21 / 0 (re-run by the scribe on the final code; TEST_EVIDENCE.md §2.8). Revocation not checked (POAM-2026-10-23-27) |
-| AC-3 / AC-6 / FDP_ACC.1 / FDP_ACF.1 | `SubjectAllowlistLayer`, `authorize_peer`, `ensure_dedicated_client_ca` in `grpc_tls.rs` | Code implementation: default-deny subject allowlist, clientAuth EKU extension required, dedicated client CA enforced at startup over the CA-database lineage (`walk_ca_ancestors` + `ensure_dedicated_client_ca`: issuing SPKI or subject, issued by the issuing CA, its issuer, database ancestors; refusal audited), per-call `subscriber_issuing_ca` denial. Tests: `disallowed_subject_permission_denied_and_audited`, `leaf_without_eku_is_permission_denied`; `grpc_tls` unit tests `dedicated_client_ca_refuses_chain_relatives`, `issued_by_checks_cover_name_and_key_id_independently`, `authorize_peer_refuses_subscriber_issuing_ca_leaf` (41 / 0); ca-server `grpc_client_ca_must_not_be_the_issuing_ca`, `walk_ca_ancestors_follows_parent_ca_id_and_fails_closed`, `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal`. Gaps: listener-wide (POAM-26), subject-only, siblings / grandchildren / roots outside the lineage not detected (POAM-28) |
+| AC-3 / AC-6 / FDP_ACC.1 / FDP_ACF.1 | `SubjectAllowlistLayer`, `authorize_peer`, `ensure_dedicated_client_ca` in `grpc_tls.rs` | Code implementation (2026-10-25; the single allowlist is superseded by the per-role lists in the next row): default-deny subject allowlist, clientAuth EKU extension required, dedicated client CA enforced at startup over the CA-database lineage (`walk_ca_ancestors` + `ensure_dedicated_client_ca`: issuing SPKI or subject, issued by the issuing CA, its issuer, database ancestors; refusal audited), per-call `subscriber_issuing_ca` denial. Tests: `disallowed_subject_permission_denied_and_audited`, `leaf_without_eku_is_permission_denied`; `grpc_tls` unit tests `dedicated_client_ca_refuses_chain_relatives`, `issued_by_checks_cover_name_and_key_id_independently`, `authorize_peer_refuses_subscriber_issuing_ca_leaf` (41 / 0); ca-server `grpc_client_ca_must_not_be_the_issuing_ca`, `walk_ca_ancestors_follows_parent_ca_id_and_fails_closed`, `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal`. Gaps: listener-wide (POAM-26), subject-only, siblings / grandchildren / roots outside the lineage not detected (POAM-28) |
+| AC-3 / AC-5 / AC-6 / AC-6(10) / CM-7 / IA-3 / IA-9 / FDP_ACC.1 / FDP_ACF.1 / FMT_SMR.2 | `crates/ostrich-ca/src/grpc_authz.rs` (`CA_GRPC_METHOD_RULES`, `IssuerProfilePolicy`, `bind_caller`); `crates/ostrich-common/src/grpc_tls.rs` (`GrpcClientRegistry`, `authorize_peer_at`, `validate_requestor`, `AdminTrustAnchor`); `services/ca-server/src/main.rs` | Code implementation (2026-10-26, branch `claude/grpc-per-method-authz`, uncommitted): three role lists, default-deny per-method table, namespace-bound requestor, per-namespace profile allowlists, per-call leaf validity, Admin leaf issued directly by the single anchor. Supersedes the listener-wide allowlist in the row above (POAM-2026-10-23-26 closed pending commit). Tests: see "CA gRPC per-method authorization evidence (2026-10-26)" below |
+| AU-3 / AU-10 / FAU_GEN.2 | `crates/ostrich-ca/src/grpc.rs` (`issuance_request`, `revocation_request`, `crl_actor`); `crates/ostrich-ca/src/issuance.rs` (`audit_identity`, `AuthenticatedCaller`); `crates/ostrich-ca/src/revocation.rs` (`CrlActor`, `crl_audit_event`, `crl_failure_event`); `crates/ostrich-ca/src/rest.rs` (`generate_crl`, `generate_delta_crl`) | Code implementation (2026-10-26, uncommitted): gRPC actor = verified peer DN with issuer and serial, `on_behalf_of` = validated requestor; REST CRL actor = user. Pure-builder unit tests passed; DB-backed handler and `audit_signing_e2e` assertions NOT RUN (POAM-2026-10-23-36). POAM-2026-10-23-25 closed pending commit |
 | AU-2 / AU-12 / FAU_GEN.1 | `crates/ostrich-audit/src/auth_hook.rs`; `grpc_tls.rs` `RateLimitedAudit`; ca-server `audit_grpc_listener` | Events `access_denied`, `access_denied_suppressed`, `tls_handshake_failed`, `tls_handshake_failures_suppressed`, `grpc_listener_started`, `grpc_insecure_dev_plaintext_enabled`, `grpc_listener_refused` (see "CA gRPC mTLS evidence" below). Tests in `grpc_mtls_e2e` (21 / 0), `ostrich-audit` lib (20 / 0, re-run by the scribe) and ca-server `--bins` (13 / 0, coder-reported after round 3) |
 | AU-9 / AU-9(3) / FAU_STG.4 | `crates/ostrich-db/src/repository/audit.rs` `begin_append` (`pg_advisory_xact_lock`); `crates/ostrich-audit/src/sink.rs` | Code implementation (Implemented, not Tested): serialised chain append, checked `append`, lock / statement / idle-in-transaction timeouts (5 s / 10 s / 7 s), begin / sign / commit bounds (10 s / 5 s / 10 s) with the sign on the blocking pool, fail-closed `alert="audit_write_failed"` (commit timeout: `outcome=unknown`), `details.occurred_at` on a moved timestamp, SLH-DSA audit key refused (POAM-2026-10-23-34). Offline unit tests in `ostrich-audit` lib (20 / 0, incl. `sign_timeout_fires_for_blocking_signer`). Postgres tests `chain_concurrency.rs`, `signed_chain_tamper.rs`, `sign_timeout_db.rs` **NOT RUN**; with `OSTRICH_DB_TESTS=1` they fail on an unreachable database, so a green GitLab `test:integration` log will be evidence (POAM-2026-10-23-31) |
 | CM-6 / CM-2 | `deploy/helm/ostrich-pki/values.yaml` (`ca.grpc.*`, `acme.caGrpc.*`, `est.caGrpc.*`), `deploy/kubernetes/{ca,acme,est}-deployment.yaml`, `docker-compose*.y*ml`, `.env.example`, `scripts/gen-dev-grpc-certs.sh` | Configuration baseline (see "CA gRPC mTLS evidence" below). `helm template` fails closed without the required secrets |
@@ -1825,10 +1827,13 @@ secrets; every default is the secure one.
 | Service | Setting | Default | Refusal |
 |---|---|---|---|
 | ca-server | `CA_GRPC_TLS_CERT_FILE`, `CA_GRPC_TLS_KEY_FILE`, `CA_GRPC_TLS_CLIENT_CA_FILE` | none | none set ⇒ exit before the database; some set ⇒ exit ("partial CA gRPC TLS configuration") |
-| ca-server | `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` (`;`-delimited) | empty | empty or unparsable ⇒ exit before the database |
+| ca-server | `CA_GRPC_ACME_CLIENT_SUBJECTS`, `CA_GRPC_EST_CLIENT_SUBJECTS` (`;`-delimited; Issuer role) | none (deployments: `CN=acme-server`, `CN=est-server`) | both empty, an unparsable entry (incl. an undecodable numeric OID) or a subject in two role lists (also by ASCII case) ⇒ exit before the database (2026-10-26) |
+| ca-server | `CA_GRPC_ADMIN_CLIENT_SUBJECTS` (Admin role) | **empty** (no gRPC revocation / CRL / status) | unparsable ⇒ exit; non-empty with more than one distinct client trust anchor ⇒ exit before the database; non-empty with an anchor without SKI ⇒ exit after the database connects, audited `grpc_listener_refused` / `grpc_authorization_layer` (2026-10-26) |
+| ca-server | `CA_GRPC_ACME_ALLOWED_PROFILES` / `CA_GRPC_EST_ALLOWED_PROFILES` | `acme-default` / `tls_client;tls_server;tls_server_client;efs` | unknown profile, CA profile, or empty while that namespace has subjects ⇒ exit before the database (2026-10-26) |
+| ca-server | `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` (removed 2026-10-26; Helm `ca.grpc.allowedClientSubjects`) | unset | any non-blank value ⇒ exit with a migration message; the Helm key fails rendering |
 | ca-server | client-CA anchor from the CA's own chain (issuing SPKI or subject, issued by the issuing CA, its issuer, or a CA-database ancestor); ancestor walk failure (missing row, cycle, depth > 16) | n/a | exit after the CA loads (after the database connects), with a `grpc_listener_refused` audit record |
 | ca-server | CA key algorithm SLH-DSA (audit records are signed with the CA key) | n/a | CA fails to start (POAM-2026-10-23-34) |
-| ca-server | `CA_GRPC_INSECURE_DEV_PLAINTEXT` | `false` | release build ⇒ exit; set together with TLS options or the allowlist ⇒ exit (ambiguous) |
+| ca-server | `CA_GRPC_INSECURE_DEV_PLAINTEXT` | `false` | release build ⇒ exit; set together with TLS options or any role list ⇒ exit (ambiguous) |
 | acme-server | `CA_GRPC_INSECURE` / `--ca-insecure` | `false` | release build ⇒ exit |
 | est-server | `CA_GRPC_INSECURE` / `--ca-insecure` / `caInsecure`; loopback plaintext exception | `false` | release build ⇒ refused (both) |
 | acme-server, est-server | `CA_GRPC_CLIENT_CERT_FILE`, `CA_GRPC_CLIENT_KEY_FILE`, `CA_GRPC_CA_CERT_FILE` | none | partial ⇒ refused; none ⇒ plaintext refused unless the debug-only flag is set |
@@ -1844,13 +1849,14 @@ see the runbook troubleshooting table.
 
 | action | event_type / outcome | actor / target / details |
 |---|---|---|
-| `access_denied` | authorization / failure | peer DN or `unknown` / gRPC method path / `reason` (`subject_not_allowlisted`, `unparsable_certificate`, `no_client_certificate`, `missing_client_auth_eku`, `subscriber_issuing_ca`), `listener` |
+| `access_denied` | authorization / failure | peer DN or `unknown` / gRPC method path / `reason` (`subject_not_allowlisted`, `unparsable_certificate`, `no_client_certificate`, `missing_client_auth_eku`, `subscriber_issuing_ca`; since 2026-10-26 also `certificate_not_valid_now`, `method_not_mapped`, `method_not_permitted`, `admin_issuer_not_anchor`, `requestor_missing`, `requestor_namespace_mismatch`, `requestor_invalid`, `profile_not_permitted`), `listener`, `peer_issuer`, `peer_serial`, `role`, `namespace` (plus `claimed_namespace` / `expected_namespace` or `requested_profile`) |
 | `access_denied_suppressed` | authorization / failure | `system` / `ca-grpc` / `count`, `window_secs`, `window_start`, `window_end`, `distinct_sources`, `distinct_sources_capped` |
 | `tls_handshake_failed` | authentication / failure | `unauthenticated` (verified subject for `no_alpn_h2`) / `ca-grpc` / `reason` (e.g. `untrusted_client_certificate`, `client_certificate_wrong_eku`, `expired_client_certificate`, `peer_incompatible`, `no_application_protocol`, `handshake_timeout`, `per_source_handshake_limit`, `no_alpn_h2`) |
 | `tls_handshake_failures_suppressed` | authentication / failure | `system` / `ca-grpc` / same fields as `access_denied_suppressed` |
-| `grpc_listener_started` | system / success | `ca-server` / `ca-grpc` / `mode`, `tls`, `fips`, `aws_lc_version`, `allowed_subjects`, `address` |
+| `grpc_listener_started` | system / success | `ca-server` / `ca-grpc` / `mode`, `tls`, `fips`, `aws_lc_version`, `clients` (`acme`, `est`, `admin`), `method_rules`, `issuer_profiles`, `address` (2026-10-26; replaces `allowed_subjects`) |
 | `grpc_insecure_dev_plaintext_enabled` | configuration_change / success | `ca-server` / `ca-grpc` / `build: debug`, `address` (debug builds only) |
-| `grpc_listener_refused` | configuration_change / failure | `ca-server` / `ca-grpc` / `check: client_ca_trust_anchor_separation`, `reason` |
+| `grpc_listener_refused` | configuration_change / failure | `ca-server` / `ca-grpc` / `check: client_ca_trust_anchor_separation` or (2026-10-26) `grpc_authorization_layer`, `reason` |
+| issuance / revocation / CRL generation (gRPC) | certificate_issuance, certificate_revocation, crl_generation / success or failure | verified peer DN / certificate or CA / `authenticated_caller`, `authenticated_caller_issuer`, `authenticated_caller_serial`, `on_behalf_of`; Failure records add `failure` (2026-10-26) |
 
 Failure records: at most 60 per 60 s per listener, then one summary per
 window (timer-flushed, and flushed when the accept loop exits).
@@ -1862,7 +1868,82 @@ rows; a NetworkPolicy denial from a non-RA pod; a `grpc_listener_refused`
 row from a deliberate trust-anchor misconfiguration; the GitLab
 `test:integration` job log with `chain_concurrency`, `signed_chain_tamper` and
 `sign_timeout_db` run against Postgres (`OSTRICH_DB_TESTS=1`;
-POAM-2026-10-23-31).
+POAM-2026-10-23-31). Added 2026-10-26: runbook verification cases 7-9
+(issuer denied GenerateCrl, admin denied IssueCertificate, admin read) with
+their `access_denied` rows; a signed issuance and revocation record from a
+live CA showing the peer DN as actor and `on_behalf_of`
+(POAM-2026-10-23-36).
+
+### CA gRPC per-method authorization evidence (2026-10-26)
+
+Branch `claude/grpc-per-method-authz`, uncommitted; run record
+`target/agent-workflow/20261025-202226-grpc-per-method/`. Operator procedure:
+[docs/runbooks/ca-grpc-mtls.md](../runbooks/ca-grpc-mtls.md) (Roles and
+methods, Admin access, Upgrade, Denial reasons, Audit records). Counts are
+from the final tree after the nit pass, as reported by the coder
+(`fixes-nits.md`, `fixes-round-2.md`); the compliance scribe did not re-run
+them.
+
+| Gate | Command | Result |
+|---|---|---|
+| Workspace unit tests | `make test-unit` | 782 passed, 0 failed, 1 ignored (pre-existing), 16 suites |
+| gRPC TLS / authorization unit tests | `cargo test -p ostrich-common --lib grpc_tls` | 66 passed, 0 failed |
+| CA crate | `cargo test -p ostrich-ca` | 78 passed, 0 failed (DB / PKCS#11 `*_e2e` modules skip internally) |
+| ca-server bins | `cargo test -p ostrich-ca-server --bins` | 21 passed, 0 failed |
+| EST crate | `cargo test -p ostrich-est` | 44 passed, 0 failed |
+| gRPC mTLS e2e (no DB) | `cargo test -p ostrich-integration-tests --test grpc_mtls_e2e --locked` | 39 passed, 0 failed |
+| Fuzz | `cargo +nightly fuzz run fuzz_grpc_requestor -- -max_total_time=60` | 246,720 runs in 61 s, no crash |
+| Fuzz | `cargo +nightly fuzz run fuzz_grpc_peer_subject -- -max_total_time=60` | first run crashed (const-oid `Display` panic on an undecodable numeric OID in operator configuration; pre-existing); after the fix 135,145 runs in 61 s, no crash, both artifacts replay clean |
+| Mutation checks | QA and coder scripts (each mutation reverted, file hash verified) | M1-M11, M14-M17 (QA round), M12, M12r, M13, M18-M22 (round 1), M23-M29 (round 2) and the nit-pass DN-only-fallback mutation killed; **M13h (GenerateCrl handler glue) NOT RUN** (needs a database) |
+| Lint / format / release build | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo build --release -p ostrich-ca-server` | rc=0 |
+| DB-gated | `ca_core_test`, `ocsp_revocation_test`, `est_serverkeygen_e2e`, live `audit_signing_e2e` / `crl_delta_e2e` | **NOT RUN** (no Postgres or Docker on the host; POAM-2026-10-23-36) |
+
+Key tests by control:
+
+- AC-3 / AC-6 / CM-7: `authorize_peer_method_matrix`,
+  `qa_authorize_peer_non_canonical_paths_are_not_mapped`,
+  `rules_cover_every_proto_rpc`, `rules_match_policy_table`; e2e
+  `role_method_matrix`, `unknown_method_denied`,
+  `qa_unmapped_path_variants_denied_over_the_wire`,
+  `admin_list_empty_default_denies_revoke_crl_status_for_all`
+- AC-6(10): `profile_policy_refuses_bad_configuration`,
+  `caller_profile_refusal_blocks_ca_profiles_for_service_callers`; e2e
+  `issuer_profile_allowlist_enforced_and_audited`
+- AC-5 / FMT_SMR.2 / CM-6: `registry_rejects_overlap_canonical`,
+  `registry_refuses_case_variant_overlap`,
+  `resolve_rejects_legacy_allowed_subjects`; bins
+  `grpc_overlapping_role_lists_refuse_to_start`,
+  `grpc_legacy_allowed_subjects_refuses_to_start`,
+  `grpc_profile_lists_refuse_to_start`
+- IA-3 / IA-9 / FIA_X509_EXT.1: `authorize_peer_refuses_leaf_outside_validity`,
+  `admin_requires_leaf_issued_directly_by_anchor`,
+  `layer_admin_anchor_builder_and_denial`,
+  `resolve_refuses_admin_with_several_client_anchors`; e2e
+  `certificate_expiring_on_live_connection_is_refused`,
+  `admin_under_intermediate_is_refused`; bin
+  `grpc_admin_requires_single_client_anchor`
+- AU-3 / AU-10 / FAU_GEN.2: `issuance_request_carries_verified_caller`,
+  `revocation_request_carries_verified_caller`, `crl_actor_is_verified_peer`,
+  `audit_identity_with_caller_uses_peer_as_actor`,
+  `delta_crl_audit_event_actor`, `authenticated_caller_is_never_deserialized`;
+  e2e `bound_caller_actor_is_peer`,
+  `qa_valid_requestors_bind_to_peer_for_each_role`
+- AU-2 / AU-12: `crl_failure_event_contents`,
+  `revocation_failure_event_contents`,
+  `qa_layer_denies_and_audits_unmapped_paths`; e2e
+  `requestor_denial_audit_is_cancel_proof`; bin
+  `start_grpc_listener_refusal_is_audited_without_started_record`
+- SI-10: `validate_requestor_cases`, `qa_validate_requestor_boundaries`,
+  `allowlist_refuses_undecodable_numeric_oid`, `ca_requestor_matches_ca_rule`
+  (EST)
+- SI-11: `grpc_status_hides_internal_errors` (REST 5xx bodies still leak
+  detail: POAM-2026-10-23-37)
+
+Not claimed: live-database evidence of the handler wiring (M13h, CRL failure
+paths, call-time CA-profile refusal through `issue()`), audit records for
+authorized `CheckRevocationStatus` reads (not generated by design), per-call
+validity of intermediates and the anchor, and issuer / SPKI binding for the
+Issuer roles (POAM-2026-10-23-28).
 
 ### SC-8 / SC-18 — Web console CSP deployment capture
 

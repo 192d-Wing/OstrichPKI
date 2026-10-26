@@ -3,13 +3,17 @@
 # Mirrors the Helm chart's CA NetworkPolicy gRPC rule
 # (deploy/helm/ostrich-pki/templates/networkpolicy.yaml): only the RA front ends
 # (acme-server, est-server pods) may open a TCP connection to the gRPC port.
-# This is defence in depth in front of TLS 1.3 mTLS + the client-subject
-# allowlist, and it keeps arbitrary in-cluster pods from holding the CA's
+# This is defence in depth in front of TLS 1.3 mTLS + the per-role client
+# subject lists and method table, and it keeps arbitrary in-cluster pods from holding the CA's
 # pre-handshake connection slots (SEC-002). The REST port (8080) is left
 # reachable as before: it carries its own authentication, and the ingress
 # controller, npe-portal and web-ui consumers live outside this base. Kubelet
 # health probes come from the host and are allowed by Cilium's default host
 # policy.
+#
+# Admin-role tools (CA_GRPC_ADMIN_CLIENT_SUBJECTS) are not admitted here; they
+# connect via `kubectl port-forward` (needs pods/portforward RBAC, part of the
+# AC-3 / AC-17 access path) or an operator-supplied NetworkPolicy.
 #
 # This policy restricts INGRESS only (egress to Postgres/NATS/HSM is unchanged).
 #

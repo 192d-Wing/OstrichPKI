@@ -1,17 +1,21 @@
 //! Offline e2e for the CA gRPC mTLS listener (`ostrich_common::grpc_tls`).
 //!
 //! Serves a stub `CertificateAuthorityService` through the real
-//! `bind_mtls_incoming` + `SubjectAllowlistLayer` stack on 127.0.0.1 and talks
-//! to it with the real `CaGrpcClient` (and raw rustls clients for the negative
-//! cases). The PKI is generated with rcgen; no database, no network beyond
-//! loopback.
+//! `bind_mtls_incoming` + `SubjectAllowlistLayer` stack (with the production
+//! `ostrich_ca::grpc_authz::CA_GRPC_METHOD_RULES`, `bind_caller` and
+//! `authorize_issue` with the per-namespace profile policy) on
+//! 127.0.0.1 and talks to it with the real `CaGrpcClient` (and raw rustls
+//! clients for the negative cases). The PKI is generated with rcgen; no
+//! database, no network beyond loopback.
 //!
 //! COMPLIANCE MAPPING:
-//! - NIST 800-53: SA-11 (Developer Security Testing), AC-3 / AC-6 (allowlist),
+//! - NIST 800-53: SA-11 (Developer Security Testing), AC-3 / AC-5 / AC-6
+//!   (per-role, per-method rules; role x RPC matrix), AU-3 / AU-10 (actor =
+//!   verified peer, requestor bound to its namespace), SI-10 (requestor),
 //!   AC-17 / IA-3 / IA-5(2) (mTLS), SC-8 / SC-13 (TLS 1.3, FIPS provider),
 //!   AU-2 / AU-3 (denial and handshake-failure audit)
 //! - NIAP PP-CA: FTP_ITC.1, FCS_TLSS_EXT.1/.2, FCS_TLSC_EXT.2, FIA_X509_EXT.1,
-//!   FDP_ACF.1, FAU_GEN.1
+//!   FDP_ACC.1, FDP_ACF.1, FMT_SMR.2, FAU_GEN.1, FAU_GEN.2
 //! - RFC 8446 (TLS 1.3 only), RFC 7301 (ALPN h2), RFC 5280 §4.2.1.12 (EKU)
 
 use std::net::SocketAddr;
@@ -20,6 +24,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use ostrich_ca::grpc_authz::{
+    authorize_issue, bind_caller, IssuerProfilePolicy, CA_GRPC_METHOD_RULES, PROFILE_DENIED_MESSAGE,
+};
 use ostrich_common::auth::{AuthAuditEvent, AuthAuditHook, AuthAuditKind};
 use ostrich_common::grpc_tls::{
     bind_mtls_incoming, bind_mtls_incoming_with, grpc_client_config, grpc_server_config,
@@ -27,7 +34,7 @@ use ostrich_common::grpc_tls::{
 };
 use ostrich_common::tls::TlsSettings;
 use ostrich_common::{
-    AuthorizedGrpcPeer, CaGrpcClient, ClientSubjectAllowlist, GrpcClientConfig, GrpcServerOptions,
+    AuthorizedGrpcPeer, CaGrpcClient, GrpcClientConfig, GrpcClientRegistry, GrpcServerOptions,
     SubjectAllowlistLayer,
 };
 use ostrich_protocol::certificate_authority_service_client::CertificateAuthorityServiceClient;
@@ -52,6 +59,17 @@ use tonic::{Code, Request, Response, Status};
 
 const LISTENER: &str = "ca-grpc";
 const ISSUE_PATH: &str = "/ostrich.ca.v1.CertificateAuthorityService/IssueCertificate";
+const SERVICE_PREFIX: &str = "/ostrich.ca.v1.CertificateAuthorityService/";
+const RPCS: [&str; 6] = [
+    "IssueCertificate",
+    "RevokeCertificate",
+    "GenerateCrl",
+    "CheckRevocationStatus",
+    "GetCaInfo",
+    "ListProfiles",
+];
+/// Requestor sent by the generic acme-server test calls.
+const ACME_REQUESTOR: &str = "acme::grpc-mtls-e2e";
 
 // ---------------------------------------------------------------- test PKI ---
 
@@ -107,12 +125,29 @@ impl Pki {
         self.ca.pem()
     }
 
+    /// A subordinate CA `cn` signed by this CA (with AKI).
+    fn sub_ca(&self, cn: &str) -> Pki {
+        let mut p = CertificateParams::new(Vec::<String>::new()).expect("sub ca params");
+        p.distinguished_name = DistinguishedName::new();
+        p.distinguished_name.push(DnType::CommonName, cn);
+        p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        p.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        p.use_authority_key_identifier_extension = true;
+        let key = KeyPair::generate().expect("sub ca key");
+        Pki {
+            ca: CertifiedIssuer::signed_by(p, key, &self.ca).expect("sub ca cert"),
+        }
+    }
+
     fn leaf(&self, cn: &str, sans: &[&str], eku: ExtendedKeyUsagePurpose) -> Leaf {
         let sans: Vec<String> = sans.iter().map(|s| s.to_string()).collect();
         let mut p = CertificateParams::new(sans).expect("leaf params");
         p.distinguished_name = DistinguishedName::new();
         p.distinguished_name.push(DnType::CommonName, cn);
         p.extended_key_usages = vec![eku];
+        // RFC 5280 §4.2.1.1: AKI in non-self-signed certificates (admin
+        // leaves are matched to the anchor by AKI, SEC-201).
+        p.use_authority_key_identifier_extension = true;
         let key = KeyPair::generate().expect("leaf key");
         let cert = p.signed_by(&key, &self.ca).expect("leaf cert");
         Leaf {
@@ -123,6 +158,26 @@ impl Pki {
 
     fn client(&self, cn: &str) -> Leaf {
         self.leaf(cn, &[cn], ExtendedKeyUsagePurpose::ClientAuth)
+    }
+
+    /// clientAuth leaf for `cn` that expires `secs` seconds from now.
+    fn client_expiring_in(&self, cn: &str, secs: u64) -> Leaf {
+        let mut p = CertificateParams::new(vec![cn.to_string()]).expect("leaf params");
+        p.distinguished_name = DistinguishedName::new();
+        p.distinguished_name.push(DnType::CommonName, cn);
+        p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        let now = time::OffsetDateTime::now_utc();
+        p.not_before = now - Duration::from_secs(60);
+        p.not_after = now + Duration::from_secs(secs);
+        // RFC 5280 §4.2.1.1: AKI in non-self-signed certificates (admin
+        // leaves are matched to the anchor by AKI, SEC-201).
+        p.use_authority_key_identifier_extension = true;
+        let key = KeyPair::generate().expect("leaf key");
+        let cert = p.signed_by(&key, &self.ca).expect("leaf cert");
+        Leaf {
+            cert_pem: cert.pem(),
+            key_pem: key.serialize_pem(),
+        }
     }
 }
 
@@ -136,10 +191,85 @@ fn tmp_file(tag: &str, contents: &str) -> PathBuf {
 
 // ------------------------------------------------------------- stub server ---
 
-/// Stub CA: returns a fixed issuance response and records the authorised peer.
-#[derive(Clone, Default)]
+/// One call that reached the stub's inner logic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SeenCall {
+    rpc: &'static str,
+    /// Verified peer (from `AuthorizedGrpcPeer`).
+    peer: String,
+    /// Issue / Revoke: the bound audit actor and requestor (`bind_caller`).
+    bound: Option<(Option<String>, String)>,
+}
+
+/// Stub CA: Issue and Revoke bind the requestor exactly as `CaGrpcService`
+/// does (`authorize_issue` / `bind_caller` with `require_peer = true`, and
+/// the per-namespace profile policy for Issue); every RPC records the call
+/// and answers OK.
+#[derive(Clone)]
 struct StubCa {
     seen_peers: Arc<Mutex<Vec<String>>>,
+    calls: Arc<Mutex<Vec<SeenCall>>>,
+    profiles: Arc<IssuerProfilePolicy>,
+}
+
+impl Default for StubCa {
+    fn default() -> Self {
+        Self {
+            seen_peers: Arc::default(),
+            calls: Arc::default(),
+            profiles: Arc::new(stub_profile_policy()),
+        }
+    }
+}
+
+/// The profiles ca-server registers (names only matter here) and the
+/// dev/test compose allow lists: ACME `acme-default;tls_client`, EST the
+/// default list.
+fn stub_profile_policy() -> IssuerProfilePolicy {
+    use ostrich_x509::profile::CertificateProfile;
+    let named = |mut p: CertificateProfile, name: &str| {
+        p.name = name.to_string();
+        p
+    };
+    let profiles = [
+        named(CertificateProfile::tls_server(90), "acme-default"),
+        named(CertificateProfile::tls_client(365), "tls_client"),
+        named(CertificateProfile::tls_server(397), "tls_server"),
+        named(CertificateProfile::tls_server(397), "tls_server_client"),
+        named(CertificateProfile::efs(730), "efs"),
+        named(
+            CertificateProfile::intermediate_ca(1825, 0),
+            "intermediate_ca",
+        ),
+    ];
+    let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    IssuerProfilePolicy::parse(
+        &v(&["acme-default", "tls_client"]),
+        &v(&["tls_client", "tls_server", "tls_server_client", "efs"]),
+        None,
+        &profiles,
+    )
+    .expect("stub profile policy")
+}
+
+impl StubCa {
+    fn record<T>(
+        &self,
+        rpc: &'static str,
+        request: &Request<T>,
+        bound: Option<(Option<String>, String)>,
+    ) {
+        let peer = request
+            .extensions()
+            .get::<AuthorizedGrpcPeer>()
+            .map(|p| p.subject_dn.clone())
+            .unwrap_or_else(|| "<none>".to_string());
+        self.seen_peers.lock().unwrap().push(peer.clone());
+        self.calls
+            .lock()
+            .unwrap()
+            .push(SeenCall { rpc, peer, bound });
+    }
 }
 
 #[tonic::async_trait]
@@ -148,12 +278,19 @@ impl CertificateAuthorityService for StubCa {
         &self,
         request: Request<IssueCertificateRequest>,
     ) -> Result<Response<IssueCertificateResponse>, Status> {
-        let peer = request
-            .extensions()
-            .get::<AuthorizedGrpcPeer>()
-            .map(|p| p.subject_dn.clone())
-            .unwrap_or_else(|| "<none>".to_string());
-        self.seen_peers.lock().unwrap().push(peer);
+        let caller = authorize_issue(
+            &request,
+            &request.get_ref().requestor,
+            &request.get_ref().profile_name,
+            &self.profiles,
+            true,
+        )
+        .await?;
+        self.record(
+            "IssueCertificate",
+            &request,
+            Some((caller.actor().map(str::to_string), caller.requestor)),
+        );
         Ok(Response::new(IssueCertificateResponse {
             certificate_id: "00000000-0000-0000-0000-000000000001".to_string(),
             serial_number: vec![1],
@@ -166,81 +303,134 @@ impl CertificateAuthorityService for StubCa {
 
     async fn revoke_certificate(
         &self,
-        _r: Request<RevokeCertificateRequest>,
+        request: Request<RevokeCertificateRequest>,
     ) -> Result<Response<RevokeCertificateResponse>, Status> {
-        Err(Status::unimplemented("stub"))
+        let caller = bind_caller(&request, &request.get_ref().requestor, true).await?;
+        self.record(
+            "RevokeCertificate",
+            &request,
+            Some((caller.actor().map(str::to_string), caller.requestor)),
+        );
+        Ok(Response::new(RevokeCertificateResponse {
+            success: true,
+            revocation_time: 1,
+        }))
     }
 
     async fn generate_crl(
         &self,
-        _r: Request<GenerateCrlRequest>,
+        request: Request<GenerateCrlRequest>,
     ) -> Result<Response<GenerateCrlResponse>, Status> {
-        Err(Status::unimplemented("stub"))
+        self.record("GenerateCrl", &request, None);
+        Ok(Response::new(GenerateCrlResponse::default()))
     }
 
     async fn check_revocation_status(
         &self,
-        _r: Request<CheckRevocationStatusRequest>,
+        request: Request<CheckRevocationStatusRequest>,
     ) -> Result<Response<CheckRevocationStatusResponse>, Status> {
-        Err(Status::unimplemented("stub"))
+        self.record("CheckRevocationStatus", &request, None);
+        Ok(Response::new(CheckRevocationStatusResponse::default()))
     }
 
     async fn get_ca_info(
         &self,
-        _r: Request<GetCaInfoRequest>,
+        request: Request<GetCaInfoRequest>,
     ) -> Result<Response<GetCaInfoResponse>, Status> {
-        Err(Status::unimplemented("stub"))
+        self.record("GetCaInfo", &request, None);
+        Ok(Response::new(GetCaInfoResponse::default()))
     }
 
     async fn list_profiles(
         &self,
-        _r: Request<ListProfilesRequest>,
+        request: Request<ListProfilesRequest>,
     ) -> Result<Response<ListProfilesResponse>, Status> {
-        Err(Status::unimplemented("stub"))
+        self.record("ListProfiles", &request, None);
+        Ok(Response::new(ListProfilesResponse::default()))
     }
 }
 
-/// Audit hook that forwards every event to a channel.
-struct RecordingHook(mpsc::UnboundedSender<AuthAuditEvent>);
+/// Audit hook that forwards every event to a channel, optionally after a
+/// delay (to prove a denial record survives a cancelled call).
+struct RecordingHook {
+    tx: mpsc::UnboundedSender<AuthAuditEvent>,
+    delay: Option<Duration>,
+}
 
 #[async_trait]
 impl AuthAuditHook for RecordingHook {
     async fn record_auth_event(&self, event: AuthAuditEvent) {
-        let _ = self.0.send(event);
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
+        let _ = self.tx.send(event);
     }
 }
 
-/// A running stub CA behind the real mTLS listener + allowlist layer.
+/// Client subject lists per role (`CA_GRPC_{ACME,EST,ADMIN}_CLIENT_SUBJECTS`).
+#[derive(Clone, Copy)]
+struct Roles<'a> {
+    acme: &'a [&'a str],
+    est: &'a [&'a str],
+    admin: &'a [&'a str],
+}
+
+impl<'a> Roles<'a> {
+    /// Only an ACME list (the shape of the pre-role tests).
+    fn acme(acme: &'a [&'a str]) -> Self {
+        Self {
+            acme,
+            est: &[],
+            admin: &[],
+        }
+    }
+
+    fn registry(&self) -> GrpcClientRegistry {
+        let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        GrpcClientRegistry::parse(&v(self.acme), &v(self.est), &v(self.admin)).expect("registry")
+    }
+}
+
+/// The role lists of the method-matrix tests.
+const MATRIX_ROLES: Roles<'static> = Roles {
+    acme: &["CN=acme-server"],
+    est: &["CN=est-server"],
+    admin: &["CN=ops-admin"],
+};
+
+/// A running stub CA behind the real mTLS listener + authorization layer.
 struct Served {
     addr: SocketAddr,
     events: mpsc::UnboundedReceiver<AuthAuditEvent>,
     seen_peers: Arc<Mutex<Vec<String>>>,
+    calls: Arc<Mutex<Vec<SeenCall>>>,
     server_config: Arc<rustls::ServerConfig>,
 }
 
-/// Serve the stub CA with the given TLS files and allowlist (the same
-/// `grpc_server_config` + `bind_mtls_incoming` + `SubjectAllowlistLayer` stack
-/// ca-server uses), with the production limits.
-async fn serve_stub(settings: &TlsSettings, allowed: &[&str]) -> Served {
-    serve_stub_with(settings, allowed, None).await
+/// Serve the stub CA with the given TLS files and role lists (the same
+/// `grpc_server_config` + `bind_mtls_incoming` + `SubjectAllowlistLayer` +
+/// `CA_GRPC_METHOD_RULES` stack ca-server uses), with the production limits.
+async fn serve_stub(settings: &TlsSettings, roles: Roles<'_>) -> Served {
+    serve_stub_with(settings, roles, None, None).await
 }
 
 /// [`serve_stub`] with explicit listener / audit limits (`None` = defaults,
 /// through the same `bind_mtls_incoming` / `SubjectAllowlistLayer::new` calls
-/// ca-server makes).
+/// ca-server makes) and an optional audit-hook delay.
 async fn serve_stub_with(
     settings: &TlsSettings,
-    allowed: &[&str],
+    roles: Roles<'_>,
     limits: Option<GrpcListenerLimits>,
+    audit_delay: Option<Duration>,
 ) -> Served {
     let server_config = grpc_server_config(settings).expect("server config");
-    let allowlist = Arc::new(
-        ClientSubjectAllowlist::parse(&allowed.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-            .expect("allowlist"),
-    );
+    let clients = Arc::new(roles.registry());
 
     let (tx, events) = mpsc::unbounded_channel();
-    let hook: Arc<dyn AuthAuditHook> = Arc::new(RecordingHook(tx));
+    let hook: Arc<dyn AuthAuditHook> = Arc::new(RecordingHook {
+        tx,
+        delay: audit_delay,
+    });
     let incoming = match &limits {
         None => {
             bind_mtls_incoming(
@@ -265,12 +455,33 @@ async fn serve_stub_with(
     .expect("bind");
     let addr = incoming.local_addr();
     let layer = match &limits {
-        None => SubjectAllowlistLayer::new(allowlist, Some(hook), LISTENER),
-        Some(limits) => SubjectAllowlistLayer::with_limits(allowlist, Some(hook), LISTENER, limits),
+        None => SubjectAllowlistLayer::new(clients, CA_GRPC_METHOD_RULES, Some(hook), LISTENER),
+        Some(limits) => SubjectAllowlistLayer::with_limits(
+            clients,
+            CA_GRPC_METHOD_RULES,
+            Some(hook),
+            LISTENER,
+            limits,
+        ),
     };
+    // SEC-101: the client trust anchors, as ca-server passes them.
+    let anchors: Vec<CertificateDer<'static>> = settings
+        .client_ca_path
+        .as_ref()
+        .map(|path| {
+            CertificateDer::pem_file_iter(path)
+                .expect("client ca")
+                .collect::<Result<_, _>>()
+                .expect("client ca pem")
+        })
+        .unwrap_or_default();
+    let layer = layer
+        .with_client_trust_anchors(&anchors)
+        .expect("client trust anchors");
 
     let stub = StubCa::default();
     let seen_peers = stub.seen_peers.clone();
+    let calls = stub.calls.clone();
     tokio::spawn(async move {
         tonic::transport::Server::builder()
             .layer(layer)
@@ -284,6 +495,7 @@ async fn serve_stub_with(
         addr,
         events,
         seen_peers,
+        calls,
         server_config,
     }
 }
@@ -294,20 +506,32 @@ struct Harness {
     client_pki: Pki,
     events: mpsc::UnboundedReceiver<AuthAuditEvent>,
     seen_peers: Arc<Mutex<Vec<String>>>,
+    calls: Arc<Mutex<Vec<SeenCall>>>,
     server_config: Arc<rustls::ServerConfig>,
 }
 
 impl Harness {
-    /// Start the real mTLS listener + allowlist layer around the stub CA.
-    async fn start(allowed: &[&str]) -> Self {
-        Self::start_with(allowed, None, &rcgen::PKCS_ECDSA_P256_SHA256).await
+    /// Start the real mTLS listener + authorization layer around the stub CA,
+    /// with `acme` as the only (ACME) client list.
+    async fn start(acme: &[&str]) -> Self {
+        Self::start_with(acme, None, &rcgen::PKCS_ECDSA_P256_SHA256).await
     }
 
     /// [`Self::start`] with explicit limits and PKI key algorithm.
     async fn start_with(
-        allowed: &[&str],
+        acme: &[&str],
         limits: Option<GrpcListenerLimits>,
         alg: &'static rcgen::SignatureAlgorithm,
+    ) -> Self {
+        Self::start_roles(Roles::acme(acme), limits, alg, None).await
+    }
+
+    /// Start with explicit role lists, limits, key algorithm and audit delay.
+    async fn start_roles(
+        roles: Roles<'_>,
+        limits: Option<GrpcListenerLimits>,
+        alg: &'static rcgen::SignatureAlgorithm,
+        audit_delay: Option<Duration>,
     ) -> Self {
         let server_pki = Pki::new_with("E2E gRPC Server CA", alg);
         let client_pki = Pki::new_with("E2E gRPC Client CA", alg);
@@ -323,13 +547,14 @@ impl Harness {
             client_ca_path: Some(tmp_file("cli-ca", &client_pki.ca_pem())),
             optional_client_auth: false,
         };
-        let served = serve_stub_with(&settings, allowed, limits).await;
+        let served = serve_stub_with(&settings, roles, limits, audit_delay).await;
         Self {
             addr: served.addr,
             server_pki,
             client_pki,
             events: served.events,
             seen_peers: served.seen_peers,
+            calls: served.calls,
             server_config: served.server_config,
         }
     }
@@ -362,12 +587,16 @@ impl Harness {
 }
 
 fn issue_request() -> IssueCertificateRequest {
+    issue_request_as(ACME_REQUESTOR)
+}
+
+fn issue_request_as(requestor: &str) -> IssueCertificateRequest {
     IssueCertificateRequest {
         profile_name: "tls_client".to_string(),
         subject: None,
         subject_alt_names: vec![],
         public_key: vec![],
-        requestor: "grpc-mtls-e2e".to_string(),
+        requestor: requestor.to_string(),
         metadata: Default::default(),
         csr_der: vec![],
         request_id: String::new(),
@@ -375,10 +604,60 @@ fn issue_request() -> IssueCertificateRequest {
 }
 
 async fn issue_via(client: &CaGrpcClient) -> Result<IssueCertificateResponse, Status> {
+    issue_via_as(client, ACME_REQUESTOR).await
+}
+
+async fn issue_via_as(
+    client: &CaGrpcClient,
+    requestor: &str,
+) -> Result<IssueCertificateResponse, Status> {
     CertificateAuthorityServiceClient::new(client.channel())
-        .issue_certificate(Request::new(issue_request()))
+        .issue_certificate(Request::new(issue_request_as(requestor)))
         .await
         .map(Response::into_inner)
+}
+
+fn revoke_request(requestor: &str) -> RevokeCertificateRequest {
+    RevokeCertificateRequest {
+        certificate_id: "00000000-0000-0000-0000-000000000001".to_string(),
+        reason: 1,
+        requestor: requestor.to_string(),
+        justification: String::new(),
+    }
+}
+
+/// Call one CA RPC by name with `requestor` (Issue / Revoke only).
+async fn call_rpc(client: &CaGrpcClient, rpc: &str, requestor: &str) -> Result<(), Status> {
+    let mut c = CertificateAuthorityServiceClient::new(client.channel());
+    match rpc {
+        "IssueCertificate" => c
+            .issue_certificate(Request::new(issue_request_as(requestor)))
+            .await
+            .map(drop),
+        "RevokeCertificate" => c
+            .revoke_certificate(Request::new(revoke_request(requestor)))
+            .await
+            .map(drop),
+        "GenerateCrl" => c
+            .generate_crl(Request::new(GenerateCrlRequest {}))
+            .await
+            .map(drop),
+        "CheckRevocationStatus" => c
+            .check_revocation_status(Request::new(CheckRevocationStatusRequest {
+                certificate_id: "00000000-0000-0000-0000-000000000001".to_string(),
+            }))
+            .await
+            .map(drop),
+        "GetCaInfo" => c
+            .get_ca_info(Request::new(GetCaInfoRequest {}))
+            .await
+            .map(drop),
+        "ListProfiles" => c
+            .list_profiles(Request::new(ListProfilesRequest {}))
+            .await
+            .map(drop),
+        other => panic!("unknown rpc {other}"),
+    }
 }
 
 /// Raw rustls client (aws-lc-rs) for negative cases.
@@ -454,6 +733,359 @@ async fn allowed_subject_issue_ok() {
         &["CN=acme-server".to_string()]
     );
     assert!(h.events.try_recv().is_err(), "no audit event on success");
+}
+
+// ------------------------------------- per-method authorization (POAM-26) ---
+
+/// One client identity of the matrix tests.
+struct Caller {
+    name: &'static str,
+    cn: &'static str,
+    requestor: &'static str,
+    allowed: &'static [&'static str],
+}
+
+const ISSUER_RPCS: &[&str] = &["IssueCertificate", "GetCaInfo", "ListProfiles"];
+const ADMIN_RPCS: &[&str] = &[
+    "RevokeCertificate",
+    "GenerateCrl",
+    "CheckRevocationStatus",
+    "GetCaInfo",
+    "ListProfiles",
+];
+
+/// 21. AC-3 / AC-5 / AC-6: {acme, est, admin, stranger} x six RPCs, each
+/// with a valid requestor for its namespace. Allowed cells reach the stub;
+/// denied cells get PERMISSION_DENIED, never reach the stub, and are audited
+/// with the exact path and reason `method_not_permitted` (stranger:
+/// `subject_not_allowlisted`).
+#[tokio::test]
+async fn role_method_matrix() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let callers = [
+        Caller {
+            name: "acme",
+            cn: "acme-server",
+            requestor: "acme::acct-1",
+            allowed: ISSUER_RPCS,
+        },
+        Caller {
+            name: "est",
+            cn: "est-server",
+            requestor: "est::client-1",
+            allowed: ISSUER_RPCS,
+        },
+        Caller {
+            name: "admin",
+            cn: "ops-admin",
+            requestor: "admin::ops",
+            allowed: ADMIN_RPCS,
+        },
+        Caller {
+            name: "stranger",
+            cn: "stranger",
+            requestor: "acme::x",
+            allowed: &[],
+        },
+    ];
+    for caller in &callers {
+        let leaf = h.client_pki.client(caller.cn);
+        let client = CaGrpcClient::new(h.client_config(&leaf))
+            .await
+            .expect("mTLS connect");
+        for rpc in RPCS {
+            let before = h.calls.lock().unwrap().len();
+            let result = call_rpc(&client, rpc, caller.requestor).await;
+            let after = h.calls.lock().unwrap().clone();
+            if caller.allowed.contains(&rpc) {
+                result.unwrap_or_else(|e| panic!("{} {rpc}: {e}", caller.name));
+                assert_eq!(after.len(), before + 1, "{} {rpc} reached", caller.name);
+                let seen = after.last().expect("call");
+                assert_eq!(seen.rpc, rpc);
+                assert_eq!(seen.peer, format!("CN={}", caller.cn));
+                if let Some((actor, requestor)) = &seen.bound {
+                    assert_eq!(actor.as_deref(), Some(seen.peer.as_str()));
+                    assert_eq!(requestor, caller.requestor);
+                }
+            } else {
+                let status = result.expect_err("denied");
+                assert_eq!(
+                    status.code(),
+                    Code::PermissionDenied,
+                    "{} {rpc}",
+                    caller.name
+                );
+                assert_eq!(after.len(), before, "{} {rpc} must not reach", caller.name);
+                let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+                assert_eq!(ev.subject, format!("CN={}", caller.cn));
+                assert_eq!(
+                    ev.resource.as_deref(),
+                    Some(format!("{SERVICE_PREFIX}{rpc}").as_str())
+                );
+                let expected = if caller.name == "stranger" {
+                    "subject_not_allowlisted"
+                } else {
+                    "method_not_permitted"
+                };
+                assert_eq!(
+                    ev.reason.as_deref(),
+                    Some(expected),
+                    "{} {rpc}",
+                    caller.name
+                );
+            }
+        }
+    }
+    assert!(
+        h.events.try_recv().is_err(),
+        "allowed calls are not audited"
+    );
+}
+
+/// 22. Default deny: a path that is not in the method table is refused with
+/// PERMISSION_DENIED (not UNIMPLEMENTED) and audited as `method_not_mapped`.
+#[tokio::test]
+async fn unknown_method_denied() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    for cn in ["acme-server", "ops-admin"] {
+        let leaf = h.client_pki.client(cn);
+        let client = CaGrpcClient::new(h.client_config(&leaf))
+            .await
+            .expect("connect");
+        let mut grpc = tonic::client::Grpc::new(client.channel());
+        grpc.ready().await.expect("ready");
+        let path = "/ostrich.ca.v1.CertificateAuthorityService/DeleteEverything";
+        let status = grpc
+            .unary::<GetCaInfoRequest, GetCaInfoResponse, _>(
+                Request::new(GetCaInfoRequest {}),
+                tonic::codegen::http::uri::PathAndQuery::from_static(path),
+                tonic_prost::ProstCodec::default(),
+            )
+            .await
+            .expect_err("unmapped method");
+        assert_eq!(status.code(), Code::PermissionDenied, "{cn}");
+        let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+        assert_eq!(ev.reason.as_deref(), Some("method_not_mapped"));
+        assert_eq!(ev.resource.as_deref(), Some(path));
+        assert_eq!(ev.subject, format!("CN={cn}"));
+    }
+    assert!(h.calls.lock().unwrap().is_empty());
+}
+
+/// 23. AU-3 / SI-10: acme-server claiming `est::x` (and est-server claiming
+/// `acme::x`) is refused before the service logic and audited with the peer
+/// as subject and the expected namespace.
+#[tokio::test]
+async fn requestor_namespace_mismatch_denied_and_audited() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    for (cn, claimed, expected) in [
+        ("acme-server", "est::x", "acme"),
+        ("est-server", "acme::x", "est"),
+    ] {
+        let leaf = h.client_pki.client(cn);
+        let client = CaGrpcClient::new(h.client_config(&leaf))
+            .await
+            .expect("connect");
+        let status = issue_via_as(&client, claimed)
+            .await
+            .expect_err("namespace mismatch");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+        assert_eq!(ev.reason.as_deref(), Some("requestor_namespace_mismatch"));
+        assert_eq!(ev.subject, format!("CN={cn}"));
+        assert_eq!(ev.resource.as_deref(), Some(ISSUE_PATH));
+        assert_eq!(ev.ip_address.as_deref(), Some("127.0.0.1"));
+        let d = ev.details.expect("details");
+        assert_eq!(d["expected_namespace"], expected);
+        assert_eq!(d["claimed_namespace"], claimed.split("::").next().unwrap());
+        assert_eq!(d["role"], "issuer");
+        assert_eq!(d["listener"], LISTENER);
+    }
+    assert!(
+        h.calls.lock().unwrap().is_empty(),
+        "inner logic never reached"
+    );
+}
+
+/// 24. An issuer must name its principal: an empty requestor is refused.
+#[tokio::test]
+async fn empty_requestor_denied_for_issuer() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let leaf = h.client_pki.client("acme-server");
+    let client = CaGrpcClient::new(h.client_config(&leaf))
+        .await
+        .expect("connect");
+    let status = issue_via_as(&client, "").await.expect_err("empty");
+    assert_eq!(status.code(), Code::PermissionDenied);
+    let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+    assert_eq!(ev.reason.as_deref(), Some("requestor_missing"));
+    assert!(h.calls.lock().unwrap().is_empty());
+}
+
+/// 25. SI-10: control characters and over-long requestors are refused; the
+/// audited claimed namespace is escaped.
+#[tokio::test]
+async fn invalid_requestor_denied() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let leaf = h.client_pki.client("acme-server");
+    let client = CaGrpcClient::new(h.client_config(&leaf))
+        .await
+        .expect("connect");
+    let long = format!("acme::{}", "a".repeat(250));
+    assert_eq!(long.len(), 256);
+    for bad in ["acme::a\u{1b}[2Jb", "acme::\u{202e}x", long.as_str()] {
+        let status = issue_via_as(&client, bad).await.expect_err("invalid");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+        assert_eq!(ev.reason.as_deref(), Some("requestor_invalid"), "{bad:?}");
+    }
+    // A control character in the namespace part is escaped in the record.
+    let status = issue_via_as(&client, "ac\nme::x")
+        .await
+        .expect_err("mismatch");
+    assert_eq!(status.code(), Code::PermissionDenied);
+    let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+    assert_eq!(ev.reason.as_deref(), Some("requestor_namespace_mismatch"));
+    assert_eq!(ev.details.expect("details")["claimed_namespace"], "ac\\nme");
+    assert!(h.calls.lock().unwrap().is_empty());
+}
+
+/// 26. AU-3: an admin may revoke without an on-behalf-of principal; the
+/// actor is the verified admin peer.
+#[tokio::test]
+async fn admin_revoke_without_requestor_ok() {
+    let h = Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let leaf = h.client_pki.client("ops-admin");
+    let client = CaGrpcClient::new(h.client_config(&leaf))
+        .await
+        .expect("connect");
+    call_rpc(&client, "RevokeCertificate", "")
+        .await
+        .expect("admin revoke");
+    let calls = h.calls.lock().unwrap();
+    assert_eq!(
+        calls.as_slice(),
+        &[SeenCall {
+            rpc: "RevokeCertificate",
+            peer: "CN=ops-admin".to_string(),
+            bound: Some((Some("CN=ops-admin".to_string()), String::new())),
+        }]
+    );
+}
+
+/// 27. An admin may not claim another namespace.
+#[tokio::test]
+async fn admin_revoke_with_acme_namespace_denied() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let leaf = h.client_pki.client("ops-admin");
+    let client = CaGrpcClient::new(h.client_config(&leaf))
+        .await
+        .expect("connect");
+    let status = call_rpc(&client, "RevokeCertificate", "acme::victim")
+        .await
+        .expect_err("admin claiming acme::");
+    assert_eq!(status.code(), Code::PermissionDenied);
+    let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+    assert_eq!(ev.reason.as_deref(), Some("requestor_namespace_mismatch"));
+    assert_eq!(ev.subject, "CN=ops-admin");
+    let d = ev.details.expect("details");
+    assert_eq!(d["expected_namespace"], "admin");
+    assert_eq!(d["role"], "admin");
+    assert!(h.calls.lock().unwrap().is_empty());
+}
+
+/// 28. AU-3 / AU-10: for an ACME issuance the bound actor is the verified
+/// peer and the requestor is the claimed ACME account.
+#[tokio::test]
+async fn bound_caller_actor_is_peer() {
+    let h = Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let leaf = h.client_pki.client("acme-server");
+    let client = CaGrpcClient::new(h.client_config(&leaf))
+        .await
+        .expect("connect");
+    issue_via_as(&client, "acme::acct-1").await.expect("issue");
+    let calls = h.calls.lock().unwrap();
+    assert_eq!(
+        calls.as_slice(),
+        &[SeenCall {
+            rpc: "IssueCertificate",
+            peer: "CN=acme-server".to_string(),
+            bound: Some((
+                Some("CN=acme-server".to_string()),
+                "acme::acct-1".to_string()
+            )),
+        }]
+    );
+}
+
+/// 29. CM-6: with the default empty admin list nobody (not even an
+/// otherwise valid client) may Revoke, GenerateCrl or CheckRevocationStatus.
+#[tokio::test]
+async fn admin_list_empty_default_denies_revoke_crl_status_for_all() {
+    let mut h = Harness::start_roles(
+        Roles {
+            acme: &["CN=acme-server"],
+            est: &["CN=est-server"],
+            admin: &[],
+        },
+        None,
+        &rcgen::PKCS_ECDSA_P256_SHA256,
+        None,
+    )
+    .await;
+    for (cn, requestor, reason) in [
+        ("acme-server", "acme::x", "method_not_permitted"),
+        ("est-server", "est::x", "method_not_permitted"),
+        ("ops-admin", "admin::x", "subject_not_allowlisted"),
+    ] {
+        let leaf = h.client_pki.client(cn);
+        let client = CaGrpcClient::new(h.client_config(&leaf))
+            .await
+            .expect("connect");
+        for rpc in ["RevokeCertificate", "GenerateCrl", "CheckRevocationStatus"] {
+            let status = call_rpc(&client, rpc, requestor)
+                .await
+                .expect_err("no admin configured");
+            assert_eq!(status.code(), Code::PermissionDenied, "{cn} {rpc}");
+            let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+            assert_eq!(ev.reason.as_deref(), Some(reason), "{cn} {rpc}");
+        }
+    }
+    assert!(h.calls.lock().unwrap().is_empty());
+}
+
+/// 30. SEC-010 for service-side denials: the client gives up (deadline,
+/// RST_STREAM) while the requestor-denial record is still being written;
+/// the record still arrives.
+#[tokio::test]
+async fn requestor_denial_audit_is_cancel_proof() {
+    let mut h = Harness::start_roles(
+        MATRIX_ROLES,
+        None,
+        &rcgen::PKCS_ECDSA_P256_SHA256,
+        Some(Duration::from_millis(800)),
+    )
+    .await;
+    let leaf = h.client_pki.client("acme-server");
+    let client = CaGrpcClient::new(h.client_config(&leaf))
+        .await
+        .expect("connect");
+    let cancelled =
+        tokio::time::timeout(Duration::from_millis(200), issue_via_as(&client, "est::x")).await;
+    assert!(
+        cancelled.is_err(),
+        "call must still be pending when dropped"
+    );
+    let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+    assert_eq!(ev.reason.as_deref(), Some("requestor_namespace_mismatch"));
+    assert_eq!(ev.subject, "CN=acme-server");
+    assert!(h.calls.lock().unwrap().is_empty());
 }
 
 /// 2. A trusted but non-allow-listed subject gets PERMISSION_DENIED + audit.
@@ -715,6 +1347,65 @@ async fn refuses_to_start_without_config() {
     std::net::TcpListener::bind(("127.0.0.1", port)).expect("port still free");
 }
 
+/// 10b. CM-6 / SC-24 / AC-5: role-list configuration errors refuse to start
+/// (overlap, removed legacy variable, admin only, malformed admin entry).
+#[tokio::test]
+async fn config_errors_refuse_to_start() {
+    let server_pki = Pki::new("Config Server CA");
+    let client_pki = Pki::new("Config Client CA");
+    let leaf = server_pki.leaf(
+        "ca-service",
+        &["localhost"],
+        ExtendedKeyUsagePurpose::ServerAuth,
+    );
+    let cert = tmp_file("cfg-cert", &leaf.cert_pem).display().to_string();
+    let key = tmp_file("cfg-key", &leaf.key_pem).display().to_string();
+    let ca = tmp_file("cfg-ca", &client_pki.ca_pem())
+        .display()
+        .to_string();
+    let base = || GrpcServerOptions {
+        cert_path: Some(cert.clone()),
+        key_path: Some(key.clone()),
+        client_ca_path: Some(ca.clone()),
+        acme_subjects: vec!["CN=acme-server".to_string()],
+        est_subjects: vec!["CN=est-server".to_string()],
+        admin_subjects: vec![String::new()],
+        ..Default::default()
+    };
+    base().resolve(true).expect("baseline resolves");
+
+    let mut overlap = base();
+    overlap.admin_subjects = vec!["CN = acme-server".to_string()];
+    let err = overlap.resolve(true).expect_err("overlap");
+    assert!(err.to_string().contains("listed in both"), "{err}");
+
+    let mut legacy = base();
+    legacy.legacy_allowed_subjects = vec!["CN=acme-server".to_string()];
+    let err = legacy.resolve(true).expect_err("legacy variable");
+    assert!(
+        err.to_string().contains("CA_GRPC_ALLOWED_CLIENT_SUBJECTS"),
+        "{err}"
+    );
+
+    let mut admin_only = base();
+    admin_only.acme_subjects = vec![String::new()];
+    admin_only.est_subjects.clear();
+    admin_only.admin_subjects = vec!["CN=ops-admin".to_string()];
+    let err = admin_only.resolve(true).expect_err("no issuer");
+    assert!(
+        err.to_string().contains("no issuer client configured"),
+        "{err}"
+    );
+
+    let mut malformed = base();
+    malformed.admin_subjects = vec![r"CN=a\".to_string()];
+    let err = malformed.resolve(true).expect_err("malformed admin entry");
+    assert!(
+        err.to_string().contains("CA_GRPC_ADMIN_CLIENT_SUBJECTS"),
+        "{err}"
+    );
+}
+
 // ------------------------------------------------- QA additions (SA-11) ---
 
 /// Wait up to `within` for the next audit event of `kind`, skipping others.
@@ -961,9 +1652,12 @@ fn good_roots(ca_pem: &str) -> rustls::RootCertStore {
 /// 15. CM-6 / SC-8: material from `scripts/gen-dev-grpc-certs.sh` works with
 /// the Rust server and client exactly as compose wires it: the server resolves
 /// in release mode from the files, acme-server / est-server issue through the
-/// compose allowlist under every server name compose dials (`ca-service`,
-/// `ca`, `localhost`), `integration-tests` is refused unless allow-listed, and
-/// the generated env file points at the generated files. Needs `bash` and
+/// `docker-compose.yml` role defaults under every server name compose dials
+/// (`ca-service`, `ca`, `localhost`), `integration-tests` is refused unless
+/// listed; with the `tests/integration/docker-compose.yml` roles
+/// `integration-tests` issues (ACME namespace) but cannot revoke and
+/// `integration-admin` revokes but cannot issue; and the generated env file
+/// points at the generated files (incl. the admin identity). Needs `bash` and
 /// `openssl` (skips otherwise, like `fips_signature_openssl_interop`).
 #[tokio::test]
 async fn dev_cert_script_material_works_with_rust_server_and_client() {
@@ -1004,25 +1698,65 @@ async fn dev_cert_script_material_works_with_rust_server_and_client() {
     let file = |n: &str| out.join(n);
     let read = |n: &str| std::fs::read_to_string(file(n)).expect(n);
 
+    assert!(
+        names.iter().any(|n| n == "integration-admin.crt")
+            && names.iter().any(|n| n == "integration-admin.key"),
+        "admin identity missing: {names:?}"
+    );
+
     // Server side, exactly as ca-server resolves it (release-build rules).
-    const COMPOSE_ALLOWLIST: &[&str] = &["CN=acme-server", "CN=est-server"];
-    let mode = GrpcServerOptions {
-        cert_path: Some(file("ca-service.crt").display().to_string()),
-        key_path: Some(file("ca-service.key").display().to_string()),
-        client_ca_path: Some(file("ca.crt").display().to_string()),
-        allowed_subjects: COMPOSE_ALLOWLIST.iter().map(|s| s.to_string()).collect(),
-        insecure_dev_plaintext: false,
-    }
+    // docker-compose.yml defaults: ACME / EST service identities, no admin.
+    const COMPOSE_ROLES: Roles<'static> = Roles {
+        acme: &["CN=acme-server"],
+        est: &["CN=est-server"],
+        admin: &[],
+    };
+    // tests/integration/docker-compose.yml (and docker-compose.dev.yml).
+    const INTEGRATION_ROLES: Roles<'static> = Roles {
+        acme: &["CN=acme-server", "CN=integration-tests"],
+        est: &["CN=est-server"],
+        admin: &["CN=integration-admin"],
+    };
+    let role_options = |roles: Roles<'_>, cert: PathBuf, key: PathBuf, ca: PathBuf| {
+        let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        GrpcServerOptions {
+            cert_path: Some(cert.display().to_string()),
+            key_path: Some(key.display().to_string()),
+            client_ca_path: Some(ca.display().to_string()),
+            acme_subjects: v(roles.acme),
+            est_subjects: v(roles.est),
+            // compose always renders the admin variable, usually as "".
+            admin_subjects: if roles.admin.is_empty() {
+                vec![String::new()]
+            } else {
+                v(roles.admin)
+            },
+            ..Default::default()
+        }
+    };
+    let mode = role_options(
+        COMPOSE_ROLES,
+        file("ca-service.crt"),
+        file("ca-service.key"),
+        file("ca.crt"),
+    )
     .resolve(true)
     .expect("dev material resolves to mTLS");
     match mode {
         ostrich_common::GrpcServerMode::Mtls {
             config,
-            allowlist,
+            clients,
             client_anchors,
         } => {
             assert!(config.fips());
-            assert_eq!(allowlist.subjects(), COMPOSE_ALLOWLIST);
+            assert_eq!(
+                clients.summary(),
+                serde_json::json!({
+                    "acme": ["CN=acme-server"],
+                    "est": ["CN=est-server"],
+                    "admin": [],
+                })
+            );
             assert_eq!(
                 client_anchors.len(),
                 1,
@@ -1038,7 +1772,7 @@ async fn dev_cert_script_material_works_with_rust_server_and_client() {
             client_ca_path: Some(file("ca.crt")),
             optional_client_auth: false,
         },
-        COMPOSE_ALLOWLIST,
+        COMPOSE_ROLES,
     )
     .await;
 
@@ -1053,12 +1787,12 @@ async fn dev_cert_script_material_works_with_rust_server_and_client() {
         ..Default::default()
     };
 
-    for identity in ["acme-server", "est-server"] {
+    for (identity, requestor) in [("acme-server", "acme::dev"), ("est-server", "est::dev")] {
         for server_name in ["ca-service", "ca", "localhost"] {
             let client = CaGrpcClient::new(client_cfg(identity, server_name))
                 .await
                 .unwrap_or_else(|e| panic!("{identity} -> {server_name}: {e}"));
-            issue_via(&client)
+            issue_via_as(&client, requestor)
                 .await
                 .unwrap_or_else(|e| panic!("{identity} -> {server_name}: {e}"));
         }
@@ -1066,7 +1800,7 @@ async fn dev_cert_script_material_works_with_rust_server_and_client() {
     assert_eq!(served.seen_peers.lock().unwrap().len(), 6);
 
     // integration-tests is a valid client but not in the compose default
-    // allowlist: PERMISSION_DENIED + audit.
+    // role lists: PERMISSION_DENIED + audit.
     let client = CaGrpcClient::new(client_cfg("integration-tests", "localhost"))
         .await
         .expect("trusted client connects");
@@ -1080,6 +1814,83 @@ async fn dev_cert_script_material_works_with_rust_server_and_client() {
     .await
     .expect("access_denied audit");
     assert_eq!(ev.subject, "CN=integration-tests");
+    assert_eq!(ev.reason.as_deref(), Some("subject_not_allowlisted"));
+    // Nobody may revoke with the compose defaults (empty admin list).
+    let client = CaGrpcClient::new(client_cfg("integration-admin", "localhost"))
+        .await
+        .expect("trusted admin client connects");
+    let status = call_rpc(&client, "RevokeCertificate", "")
+        .await
+        .expect_err("admin not configured");
+    assert_eq!(status.code(), Code::PermissionDenied);
+
+    // Integration-test compose roles: issuer vs admin separation (AC-5).
+    let mut served_it = serve_stub(
+        &TlsSettings {
+            cert_path: file("ca-service.crt"),
+            key_path: file("ca-service.key"),
+            client_ca_path: Some(file("ca.crt")),
+            optional_client_auth: false,
+        },
+        INTEGRATION_ROLES,
+    )
+    .await;
+    role_options(
+        INTEGRATION_ROLES,
+        file("ca-service.crt"),
+        file("ca-service.key"),
+        file("ca.crt"),
+    )
+    .resolve(true)
+    .expect("integration compose roles resolve");
+    let it_cfg = |identity: &str| GrpcClientConfig {
+        endpoint: format!("https://127.0.0.1:{}", served_it.addr.port()),
+        ..client_cfg(identity, "localhost")
+    };
+    let tests_client = CaGrpcClient::new(it_cfg("integration-tests"))
+        .await
+        .expect("connect");
+    issue_via_as(&tests_client, "acme::integration-tests-ca-core")
+        .await
+        .expect("integration-tests issues in the acme namespace");
+    let status = call_rpc(&tests_client, "RevokeCertificate", "acme::x")
+        .await
+        .expect_err("issuer cannot revoke");
+    assert_eq!(status.code(), Code::PermissionDenied);
+    let ev = next_event_within(
+        &mut served_it.events,
+        AuthAuditKind::AccessDenied,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("access_denied audit");
+    assert_eq!(ev.reason.as_deref(), Some("method_not_permitted"));
+    let admin_client = CaGrpcClient::new(it_cfg("integration-admin"))
+        .await
+        .expect("connect");
+    for rpc in ["RevokeCertificate", "GenerateCrl", "CheckRevocationStatus"] {
+        call_rpc(&admin_client, rpc, "admin::integration-tests")
+            .await
+            .unwrap_or_else(|e| panic!("integration-admin {rpc}: {e}"));
+    }
+    let status = issue_via_as(&admin_client, "admin::integration-tests")
+        .await
+        .expect_err("admin cannot issue");
+    assert_eq!(status.code(), Code::PermissionDenied);
+    {
+        let calls = served_it.calls.lock().unwrap();
+        let revoke = calls
+            .iter()
+            .find(|c| c.rpc == "RevokeCertificate")
+            .expect("revoke reached the stub");
+        assert_eq!(
+            revoke.bound,
+            Some((
+                Some("CN=integration-admin".to_string()),
+                "admin::integration-tests".to_string()
+            ))
+        );
+    }
 
     // A name not in the server SAN is refused by the client.
     assert!(
@@ -1094,6 +1905,8 @@ async fn dev_cert_script_material_works_with_rust_server_and_client() {
         ("CA_GRPC_CLIENT_CERT_FILE", "integration-tests.crt"),
         ("CA_GRPC_CLIENT_KEY_FILE", "integration-tests.key"),
         ("CA_GRPC_CA_CERT_FILE", "ca.crt"),
+        ("CA_GRPC_ADMIN_CLIENT_CERT_FILE", "integration-admin.crt"),
+        ("CA_GRPC_ADMIN_CLIENT_KEY_FILE", "integration-admin.key"),
     ] {
         let line = env
             .lines()
@@ -1148,13 +1961,12 @@ async fn dev_cert_script_material_works_with_rust_server_and_client() {
     }
 
     // Server: resolve exactly as ca-server does with the compose defaults.
-    let mode = GrpcServerOptions {
-        cert_path: Some(sub("ca-server", "tls.crt").display().to_string()),
-        key_path: Some(sub("ca-server", "tls.key").display().to_string()),
-        client_ca_path: Some(sub("ca-server", "client-ca.crt").display().to_string()),
-        allowed_subjects: COMPOSE_ALLOWLIST.iter().map(|s| s.to_string()).collect(),
-        insecure_dev_plaintext: false,
-    }
+    let mode = role_options(
+        COMPOSE_ROLES,
+        sub("ca-server", "tls.crt"),
+        sub("ca-server", "tls.key"),
+        sub("ca-server", "client-ca.crt"),
+    )
     .resolve(true)
     .expect("ca-server/ subdir resolves to mTLS");
     let ostrich_common::GrpcServerMode::Mtls { client_anchors, .. } = mode else {
@@ -1192,7 +2004,7 @@ async fn dev_cert_script_material_works_with_rust_server_and_client() {
             client_ca_path: Some(sub("ca-server", "client-ca.crt")),
             optional_client_auth: false,
         },
-        COMPOSE_ALLOWLIST,
+        COMPOSE_ROLES,
     )
     .await;
     let sub_client_cfg = |d: &str, server_name: &str| GrpcClientConfig {
@@ -1204,12 +2016,12 @@ async fn dev_cert_script_material_works_with_rust_server_and_client() {
         max_retries: 1,
         ..Default::default()
     };
-    for d in ["acme-server", "est-server"] {
+    for (d, requestor) in [("acme-server", "acme::dev"), ("est-server", "est::dev")] {
         // "ca" is the compose service name used in CA_GRPC_URL=https://ca:50051.
         let client = CaGrpcClient::new(sub_client_cfg(d, "ca"))
             .await
             .unwrap_or_else(|e| panic!("{d}/ -> ca: {e}"));
-        issue_via(&client)
+        issue_via_as(&client, requestor)
             .await
             .unwrap_or_else(|e| panic!("{d}/ -> ca: {e}"));
     }
@@ -1217,7 +2029,7 @@ async fn dev_cert_script_material_works_with_rust_server_and_client() {
         let seen = served_sub.seen_peers.lock().unwrap();
         assert_eq!(seen.len(), 2, "{seen:?}");
     }
-    // The CA server identity is not a client (serverAuth-only EKU, CN not allow-listed).
+    // The CA server identity is not a client (serverAuth-only EKU, CN not in a role list).
     let ca_as_client = GrpcClientConfig {
         client_cert_pem: std::fs::read_to_string(sub("ca-server", "tls.crt")).unwrap(),
         client_key_pem: ostrich_common::read_private_key_pem(&sub("ca-server", "tls.key"))
@@ -1397,4 +2209,464 @@ async fn x25519_only_client_rejected() {
     let ev = h.next_event(AuthAuditKind::TlsHandshakeFailed).await;
     assert_eq!(ev.reason.as_deref(), Some("peer_incompatible"));
     assert!(h.seen_peers.lock().unwrap().is_empty());
+}
+
+// ------------------------------- QA additions: per-method authz (SA-11) ---
+
+/// Raw unary call to an arbitrary `:path` (bypasses the generated client).
+async fn raw_unary(client: &CaGrpcClient, path: &str) -> Result<GetCaInfoResponse, Status> {
+    let mut grpc = tonic::client::Grpc::new(client.channel());
+    grpc.ready().await.expect("ready");
+    let path = tonic::codegen::http::uri::PathAndQuery::try_from(path.to_string())
+        .unwrap_or_else(|e| panic!("{path:?} is not a valid :path: {e}"));
+    grpc.unary::<GetCaInfoRequest, GetCaInfoResponse, _>(
+        Request::new(GetCaInfoRequest {}),
+        path,
+        tonic_prost::ProstCodec::default(),
+    )
+    .await
+    .map(Response::into_inner)
+}
+
+/// 31. QA / AC-3 / SI-10: non-canonical spellings of mapped paths (case
+/// variants, trailing slash, extra / empty segments, other service names,
+/// percent-encoding) are refused over the wire for every role with
+/// PERMISSION_DENIED and audited as `method_not_mapped` with the raw path;
+/// a stranger is refused as `subject_not_allowlisted`. The stub is never
+/// reached.
+#[tokio::test]
+async fn qa_unmapped_path_variants_denied_over_the_wire() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let paths = [
+        "/ostrich.ca.v1.certificateauthorityservice/IssueCertificate",
+        "/ostrich.ca.v1.CertificateAuthorityService/issueCertificate",
+        "/ostrich.ca.v1.CertificateAuthorityService/GENERATECRL",
+        "/ostrich.ca.v1.CertificateAuthorityService/GetCaInfo/",
+        "/ostrich.ca.v1.CertificateAuthorityService/RevokeCertificate/extra",
+        "/ostrich.ca.v1.CertificateAuthorityService//ListProfiles",
+        "//ostrich.ca.v1.CertificateAuthorityService/GetCaInfo",
+        "/ostrich.ca.v2.CertificateAuthorityService/IssueCertificate",
+        "/ostrich.ca.v1.CertificateAuthorityServiceX/GetCaInfo",
+        "/grpc.health.v1.Health/Check",
+        "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo",
+        "/ostrich.ca.v1.CertificateAuthorityService/Issue%43ertificate",
+        "/ostrich.ca.v1.CertificateAuthorityService%2FGetCaInfo",
+        "/ostrich.ca.v1.CertificateAuthorityService/GetCaInfo%20",
+    ];
+    for (cn, reason) in [
+        ("acme-server", "method_not_mapped"),
+        ("est-server", "method_not_mapped"),
+        ("ops-admin", "method_not_mapped"),
+        ("stranger", "subject_not_allowlisted"),
+    ] {
+        let leaf = h.client_pki.client(cn);
+        let client = CaGrpcClient::new(h.client_config(&leaf))
+            .await
+            .expect("connect");
+        for path in paths {
+            let status = raw_unary(&client, path).await.expect_err("must be denied");
+            assert_eq!(status.code(), Code::PermissionDenied, "{cn} {path}");
+            assert_eq!(status.message(), "client is not authorised for this call");
+            let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+            assert_eq!(ev.reason.as_deref(), Some(reason), "{cn} {path}");
+            assert_eq!(ev.resource.as_deref(), Some(path), "{cn}");
+            assert_eq!(ev.subject, format!("CN={cn}"));
+        }
+    }
+    assert!(h.calls.lock().unwrap().is_empty(), "stub never reached");
+}
+
+/// 32. QA / SI-10 / AU-2: requestor edge cases for every role are refused
+/// over the wire before the service logic, each audited with the peer as
+/// subject, the exact reason, the caller's role and expected namespace; the
+/// status message is generic and never echoes the requestor.
+#[tokio::test]
+async fn qa_requestor_edge_cases_denied_and_audited_per_role() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let est_256 = format!("est::{}", "a".repeat(251));
+    assert_eq!(est_256.len(), 256);
+    let acme_mb_256 = format!("acme::{}", "\u{e9}".repeat(125));
+    assert_eq!(acme_mb_256.len(), 256);
+    let admin_256 = format!("admin::{}", "a".repeat(249));
+    assert_eq!(admin_256.len(), 256);
+    let cases: Vec<(&str, &str, &str, String, &str)> = vec![
+        // (cn, rpc, role, requestor, reason)
+        (
+            "acme-server",
+            "IssueCertificate",
+            "issuer",
+            "acme::".into(),
+            "requestor_invalid",
+        ),
+        (
+            "acme-server",
+            "IssueCertificate",
+            "issuer",
+            "acme".into(),
+            "requestor_namespace_mismatch",
+        ),
+        (
+            "acme-server",
+            "IssueCertificate",
+            "issuer",
+            "ACME::x".into(),
+            "requestor_namespace_mismatch",
+        ),
+        (
+            "acme-server",
+            "IssueCertificate",
+            "issuer",
+            "admin::x".into(),
+            "requestor_namespace_mismatch",
+        ),
+        (
+            "acme-server",
+            "IssueCertificate",
+            "issuer",
+            acme_mb_256,
+            "requestor_invalid",
+        ),
+        (
+            "acme-server",
+            "IssueCertificate",
+            "issuer",
+            "acme::a\u{200b}".into(),
+            "requestor_invalid",
+        ),
+        (
+            "acme-server",
+            "IssueCertificate",
+            "issuer",
+            "acme::a\u{85}".into(),
+            "requestor_invalid",
+        ),
+        (
+            "acme-server",
+            "IssueCertificate",
+            "issuer",
+            "acme::a\u{2067}".into(),
+            "requestor_invalid",
+        ),
+        (
+            "est-server",
+            "IssueCertificate",
+            "issuer",
+            String::new(),
+            "requestor_missing",
+        ),
+        (
+            "est-server",
+            "IssueCertificate",
+            "issuer",
+            "est::".into(),
+            "requestor_invalid",
+        ),
+        (
+            "est-server",
+            "IssueCertificate",
+            "issuer",
+            est_256,
+            "requestor_invalid",
+        ),
+        (
+            "est-server",
+            "IssueCertificate",
+            "issuer",
+            "est::a\tb".into(),
+            "requestor_invalid",
+        ),
+        (
+            "est-server",
+            "IssueCertificate",
+            "issuer",
+            "est".into(),
+            "requestor_namespace_mismatch",
+        ),
+        (
+            "ops-admin",
+            "RevokeCertificate",
+            "admin",
+            "admin::".into(),
+            "requestor_invalid",
+        ),
+        (
+            "ops-admin",
+            "RevokeCertificate",
+            "admin",
+            "admin::\u{7}".into(),
+            "requestor_invalid",
+        ),
+        (
+            "ops-admin",
+            "RevokeCertificate",
+            "admin",
+            admin_256,
+            "requestor_invalid",
+        ),
+        (
+            "ops-admin",
+            "RevokeCertificate",
+            "admin",
+            "est::x".into(),
+            "requestor_namespace_mismatch",
+        ),
+        (
+            "ops-admin",
+            "RevokeCertificate",
+            "admin",
+            " ".into(),
+            "requestor_namespace_mismatch",
+        ),
+    ];
+    for (cn, rpc, role, requestor, reason) in &cases {
+        let leaf = h.client_pki.client(cn);
+        let client = CaGrpcClient::new(h.client_config(&leaf))
+            .await
+            .expect("connect");
+        let status = call_rpc(&client, rpc, requestor)
+            .await
+            .expect_err("requestor must be refused");
+        assert_eq!(status.code(), Code::PermissionDenied, "{cn} {requestor:?}");
+        assert_eq!(status.message(), "client is not authorised for this call");
+        let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+        assert_eq!(ev.reason.as_deref(), Some(*reason), "{cn} {requestor:?}");
+        assert_eq!(ev.subject, format!("CN={cn}"));
+        assert_eq!(
+            ev.resource.as_deref(),
+            Some(format!("{SERVICE_PREFIX}{rpc}").as_str())
+        );
+        let d = ev.details.expect("details");
+        assert_eq!(d["role"], *role, "{cn}");
+        assert_eq!(d["listener"], LISTENER);
+        let expected_ns = cn
+            .split('-')
+            .next()
+            .map(|n| if n == "ops" { "admin" } else { n });
+        assert_eq!(d["expected_namespace"], expected_ns.unwrap(), "{cn}");
+        let claimed = d["claimed_namespace"].as_str().expect("claimed_namespace");
+        assert!(claimed.chars().count() <= 32 * 10, "bounded: {claimed:?}");
+        assert!(
+            !claimed.chars().any(|c| c.is_control()),
+            "escaped: {claimed:?}"
+        );
+    }
+    assert!(
+        h.calls.lock().unwrap().is_empty(),
+        "inner logic never reached"
+    );
+}
+
+/// 33. QA / AU-3: accepted requestors are bound verbatim for every role and
+/// the bound actor is always the verified peer (EST with a nested `::`,
+/// ACME at exactly 255 bytes, admin with `admin::<id>`).
+#[tokio::test]
+async fn qa_valid_requestors_bind_to_peer_for_each_role() {
+    let h = Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let acme_255 = format!("acme::{}", "b".repeat(249));
+    assert_eq!(acme_255.len(), 255);
+    let cases = [
+        (
+            "est-server",
+            "IssueCertificate",
+            "est::tenant::client-9".to_string(),
+        ),
+        ("acme-server", "IssueCertificate", acme_255),
+        (
+            "ops-admin",
+            "RevokeCertificate",
+            "admin::ops-oncall".to_string(),
+        ),
+    ];
+    for (cn, rpc, requestor) in &cases {
+        let leaf = h.client_pki.client(cn);
+        let client = CaGrpcClient::new(h.client_config(&leaf))
+            .await
+            .expect("connect");
+        call_rpc(&client, rpc, requestor)
+            .await
+            .unwrap_or_else(|e| panic!("{cn} {rpc}: {e}"));
+        let calls = h.calls.lock().unwrap();
+        let seen = calls.last().expect("call reached the stub");
+        assert_eq!(
+            seen,
+            &SeenCall {
+                rpc,
+                peer: format!("CN={cn}"),
+                bound: Some((Some(format!("CN={cn}")), requestor.clone())),
+            }
+        );
+    }
+    assert_eq!(h.calls.lock().unwrap().len(), cases.len());
+}
+
+// ------------------------------------------------- fix round 1 (SEC-001 ...) ---
+
+fn issue_profile(requestor: &str, profile: &str) -> IssueCertificateRequest {
+    IssueCertificateRequest {
+        profile_name: profile.to_string(),
+        ..issue_request_as(requestor)
+    }
+}
+
+/// 34. SEC-001 (AC-6(10), CM-7): an issuer may only request its namespace's
+/// allowed end-entity profiles. ACME asking for `intermediate_ca` and EST
+/// asking for `acme-default` are refused with PERMISSION_DENIED (message
+/// names the profile check), never reach issuance, and are audited as
+/// `profile_not_permitted` with the requested profile, the namespace and
+/// the peer certificate issuer / serial (RFC-001). Allowed profiles work.
+#[tokio::test]
+async fn issuer_profile_allowlist_enforced_and_audited() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let cases = [
+        ("acme-server", "acme::acct-1", "intermediate_ca", false),
+        ("acme-server", "acme::acct-1", "tls_server", false),
+        ("acme-server", "acme::acct-1", "no-such-profile", false),
+        ("est-server", "est::client-1", "acme-default", false),
+        ("est-server", "est::client-1", "intermediate_ca", false),
+        ("acme-server", "acme::acct-1", "acme-default", true),
+        ("est-server", "est::client-1", "tls_server", true),
+        ("est-server", "est::client-1", "efs", true),
+    ];
+    for (cn, requestor, profile, allowed) in cases {
+        let leaf = h.client_pki.client(cn);
+        let client = CaGrpcClient::new(h.client_config(&leaf))
+            .await
+            .expect("connect");
+        let before = h.calls.lock().unwrap().len();
+        let result = CertificateAuthorityServiceClient::new(client.channel())
+            .issue_certificate(Request::new(issue_profile(requestor, profile)))
+            .await;
+        let after = h.calls.lock().unwrap().len();
+        if allowed {
+            result.unwrap_or_else(|e| panic!("{cn} {profile}: {e}"));
+            assert_eq!(after, before + 1, "{cn} {profile} reached");
+            continue;
+        }
+        let status = result.expect_err("profile denied");
+        assert_eq!(status.code(), Code::PermissionDenied, "{cn} {profile}");
+        assert_eq!(status.message(), PROFILE_DENIED_MESSAGE);
+        assert!(status.message().contains("profile"));
+        assert_eq!(after, before, "{cn} {profile} must not reach issuance");
+        let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+        assert_eq!(ev.reason.as_deref(), Some("profile_not_permitted"));
+        assert_eq!(ev.subject, format!("CN={cn}"));
+        assert_eq!(ev.resource.as_deref(), Some(ISSUE_PATH));
+        let d = ev.details.expect("details");
+        assert_eq!(d["requested_profile"], profile);
+        assert_eq!(d["namespace"], requestor.split("::").next().unwrap());
+        assert_eq!(d["role"], "issuer");
+        assert_eq!(d["peer_issuer"], "CN=E2E gRPC Client CA");
+        assert!(d["peer_serial"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+}
+
+/// 35. RFC-002 (IA-3 / IA-9, RFC 5280 §4.1.2.5): a client certificate that
+/// expires while its HTTP/2 connection stays open is refused per call
+/// (UNAUTHENTICATED, `certificate_not_valid_now`, audited), although the
+/// handshake accepted it.
+#[tokio::test]
+async fn certificate_expiring_on_live_connection_is_refused() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let leaf = h.client_pki.client_expiring_in("acme-server", 3);
+    let client = CaGrpcClient::new(h.client_config(&leaf))
+        .await
+        .expect("connect while valid");
+    let mut c = CertificateAuthorityServiceClient::new(client.channel());
+    c.get_ca_info(Request::new(GetCaInfoRequest::default()))
+        .await
+        .expect("valid certificate accepted");
+    tokio::time::sleep(Duration::from_millis(4500)).await;
+    let status = c
+        .get_ca_info(Request::new(GetCaInfoRequest::default()))
+        .await
+        .expect_err("expired certificate refused on the same connection");
+    assert_eq!(status.code(), Code::Unauthenticated);
+    assert_eq!(status.message(), "client certificate not accepted");
+    let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+    assert_eq!(ev.reason.as_deref(), Some("certificate_not_valid_now"));
+    assert_eq!(ev.subject, "CN=acme-server");
+    let d = ev.details.expect("details");
+    assert_eq!(d["peer_issuer"], "CN=E2E gRPC Client CA");
+}
+
+/// 36. RFC-001 (AU-3): the bound caller carries the peer certificate's
+/// issuer and serial, and SEC-002: a requestor id outside printable ASCII is
+/// refused over the wire (U+2028, U+061C, U+2060, U+00AD, U+E0001).
+#[tokio::test]
+async fn bound_caller_has_certificate_and_non_ascii_requestor_denied() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let leaf = h.client_pki.client("acme-server");
+    let client = CaGrpcClient::new(h.client_config(&leaf))
+        .await
+        .expect("connect");
+    for c in ['\u{2028}', '\u{061C}', '\u{2060}', '\u{00AD}', '\u{E0001}'] {
+        let requestor = format!("acme::acct{c}actor=CN=ops-admin");
+        let status = issue_via_as(&client, &requestor)
+            .await
+            .expect_err("non-ASCII requestor");
+        assert_eq!(status.code(), Code::PermissionDenied, "{c:?}");
+        let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+        assert_eq!(ev.reason.as_deref(), Some("requestor_invalid"), "{c:?}");
+    }
+    assert!(h.calls.lock().unwrap().is_empty());
+}
+
+/// 37. SEC-101 (AC-3, IA-3; FMT_SMR.2): an admin certificate issued by an
+/// intermediate under the client trust anchor is refused on every admin RPC
+/// (PERMISSION_DENIED, audited `admin_issuer_not_anchor` with the
+/// intermediate as `peer_issuer`); an issuer identity under the same
+/// intermediate still issues, and an admin directly under the anchor works.
+#[tokio::test]
+async fn admin_under_intermediate_is_refused() {
+    let mut h =
+        Harness::start_roles(MATRIX_ROLES, None, &rcgen::PKCS_ECDSA_P256_SHA256, None).await;
+    let sub = h.client_pki.sub_ca("E2E gRPC Client Sub CA");
+    let with_chain = |leaf: Leaf| Leaf {
+        cert_pem: format!("{}{}", leaf.cert_pem, sub.ca_pem()),
+        key_pem: leaf.key_pem,
+    };
+
+    let admin = with_chain(sub.client("ops-admin"));
+    let client = CaGrpcClient::new(h.client_config(&admin))
+        .await
+        .expect("chain validates to the anchor");
+    for rpc in ["RevokeCertificate", "GenerateCrl", "CheckRevocationStatus"] {
+        let status = call_rpc(&client, rpc, "")
+            .await
+            .expect_err("admin under intermediate");
+        assert_eq!(status.code(), Code::PermissionDenied, "{rpc}");
+        let ev = h.next_event(AuthAuditKind::AccessDenied).await;
+        assert_eq!(
+            ev.reason.as_deref(),
+            Some("admin_issuer_not_anchor"),
+            "{rpc}"
+        );
+        assert_eq!(ev.subject, "CN=ops-admin");
+        let d = ev.details.expect("details");
+        assert_eq!(d["role"], "admin");
+        assert_eq!(d["peer_issuer"], "CN=E2E gRPC Client Sub CA");
+    }
+    assert!(h.calls.lock().unwrap().is_empty());
+
+    let acme = with_chain(sub.client("acme-server"));
+    let client = CaGrpcClient::new(h.client_config(&acme))
+        .await
+        .expect("connect");
+    issue_via_as(&client, "acme::acct-1")
+        .await
+        .expect("issuer under intermediate");
+
+    let direct = h.client_pki.client("ops-admin");
+    let client = CaGrpcClient::new(h.client_config(&direct))
+        .await
+        .expect("connect");
+    call_rpc(&client, "GenerateCrl", "")
+        .await
+        .expect("admin directly under the anchor");
+    assert_eq!(h.calls.lock().unwrap().len(), 2);
 }

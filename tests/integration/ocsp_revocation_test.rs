@@ -24,7 +24,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use common::ca_grpc::{connect_ca, issue_test_certificate};
+use common::ca_grpc::{connect_ca, connect_ca_admin, issue_test_certificate};
 use common::fixtures::generate_test_rsa_spki;
 use ostrich_protocol::{RevocationReason, RevokeCertificateRequest};
 use std::io::Write;
@@ -108,12 +108,14 @@ async fn test_ocsp_good_then_revoked() {
     );
     println!("[step 2] OCSP reports good (pre-revocation): {}", status);
 
-    // 3. Revoke the certificate over gRPC (keyCompromise)
-    let revoke = client
+    // 3. Revoke the certificate over gRPC (keyCompromise) as the admin
+    //    identity: only the Admin role may revoke (AC-5 / AC-6).
+    let mut admin = connect_ca_admin(&cfg.ca_grpc_endpoint).await;
+    let revoke = admin
         .revoke_certificate(tonic::Request::new(RevokeCertificateRequest {
             certificate_id: issued.certificate_id.clone(),
             reason: RevocationReason::KeyCompromise as i32,
-            requestor: "ocsp-e2e-test".to_string(),
+            requestor: "admin::ocsp-e2e-test".to_string(),
             justification: "round-trip test".to_string(),
         }))
         .await

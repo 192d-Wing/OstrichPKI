@@ -58,8 +58,22 @@ pub struct IssuanceRequest {
     /// Public key (DER-encoded SubjectPublicKeyInfo)
     pub public_key: Vec<u8>,
 
-    /// Requestor (for audit)
+    /// Requestor: the principal the certificate is issued for (`acme::<id>`,
+    /// `est::<id>`, or the authenticated REST user). Stored on the
+    /// certificate; the audit `actor` unless `authenticated_caller` is set.
     pub requestor: String,
+
+    /// The authenticated service that made the call (the verified gRPC mTLS
+    /// peer), when it differs from `requestor`. When set its subject DN is
+    /// the audit actor and `requestor` is recorded as `on_behalf_of`
+    /// (AU-3, AU-10, FAU_GEN.2). `None` on REST paths, where the requestor
+    /// already is the authenticated user.
+    ///
+    /// Never deserialized (SEC-005): it is set by the gRPC service from the
+    /// verified peer only, so a serialized request (queue, approval payload)
+    /// cannot carry a forged caller.
+    #[serde(default, skip_deserializing)]
+    pub authenticated_caller: Option<AuthenticatedCaller>,
 
     /// Additional metadata
     pub metadata: Option<serde_json::Value>,
@@ -83,6 +97,93 @@ pub struct IssuanceRequest {
     /// absent, the CA generates one at issuance.
     #[serde(default)]
     pub request_id: Option<Uuid>,
+}
+
+/// The verified gRPC peer that made a call: the client certificate's subject
+/// DN (the audit actor) plus its issuer DN and serial number (RFC-001: roles
+/// bind the subject only, so the certificate that authenticated the caller is
+/// recorded too).
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AU-3 (who), AU-10, IA-3 / IA-9 (service identity)
+/// - NIAP PP-CA: FAU_GEN.2 (user identity association)
+/// - RFC 5280 §4.1.2.2 (serialNumber), §4.1.2.4 (issuer)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AuthenticatedCaller {
+    /// Canonical RFC 4514 subject DN of the client certificate.
+    pub subject_dn: String,
+    /// RFC 4514 issuer DN of the client certificate.
+    pub issuer_dn: String,
+    /// Client certificate serial number: lowercase hex of the DER INTEGER
+    /// content octets, sign byte included (RFC 5280 §4.1.2.2; RFC-102).
+    pub serial_hex: String,
+}
+
+/// Audit identity of a request: `(actor, on_behalf_of)`.
+///
+/// With an authenticated caller (gRPC: the verified mTLS peer), the caller is
+/// the actor and a non-empty `requestor` (already bound to the caller's
+/// namespace) is recorded as `on_behalf_of`. Without one (REST: the requestor
+/// is the authenticated user), the requestor is the actor.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AU-3 / AU-3(1) (who), AU-10 (the signed record attributes
+///   the authenticated service), IA-3
+/// - NIAP PP-CA: FAU_GEN.2 (user identity association)
+pub(crate) fn audit_identity(requestor: &str, caller: Option<&str>) -> (String, Option<String>) {
+    match caller {
+        Some(caller) => (
+            caller.to_string(),
+            (!requestor.is_empty()).then(|| requestor.to_string()),
+        ),
+        None => (requestor.to_string(), None),
+    }
+}
+
+/// Add `on_behalf_of` and `authenticated_caller` (subject DN) with
+/// `authenticated_caller_issuer` / `authenticated_caller_serial` to an audit
+/// details object.
+pub(crate) fn add_caller_details(
+    details: &mut serde_json::Value,
+    caller: Option<&AuthenticatedCaller>,
+    on_behalf_of: Option<&str>,
+) {
+    if let Some(map) = details.as_object_mut() {
+        if let Some(caller) = caller {
+            map.insert(
+                "authenticated_caller".to_string(),
+                caller.subject_dn.as_str().into(),
+            );
+            map.insert(
+                "authenticated_caller_issuer".to_string(),
+                caller.issuer_dn.as_str().into(),
+            );
+            map.insert(
+                "authenticated_caller_serial".to_string(),
+                caller.serial_hex.as_str().into(),
+            );
+        }
+        if let Some(principal) = on_behalf_of {
+            map.insert("on_behalf_of".to_string(), principal.into());
+        }
+    }
+}
+
+/// Call-time guard (SEC-102): an authenticated service caller (the gRPC
+/// issuer path) may never obtain a certificate from a CA profile
+/// (`basic_constraints_ca`), whatever the startup profile allowlist says.
+/// Returns the audit `failure` reason when refused. Pure, for testing.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-3, AC-6(10) (an RA cannot obtain a CA certificate);
+///   fail secure (defence in depth for the startup check)
+/// - NIAP PP-CA: FDP_ACF.1, FDP_IFC.1
+/// - RFC 5280 §4.2.1.9 (cA = TRUE)
+pub(crate) fn caller_profile_refusal(
+    caller: Option<&AuthenticatedCaller>,
+    profile: &CertificateProfile,
+) -> Option<&'static str> {
+    (caller.is_some() && profile.basic_constraints_ca).then_some("ca_profile_not_permitted")
 }
 
 /// Issued certificate response
@@ -256,7 +357,7 @@ impl CertificateIssuer {
     /// Required when `approval_config.require_approval` is true: issuance loads
     /// the referenced approval request from this repository and refuses to
     /// proceed unless it is Approved. Without it, issuance fails closed with
-    /// "Approval repository not configured".
+    /// an internal error ("approval workflow unavailable"; REST 500).
     ///
     /// COMPLIANCE MAPPING:
     /// - NIAP PP-CA: FDP_CER_EXT.2 (request linkage) / FDP_CER_EXT.3 (approval)
@@ -338,18 +439,26 @@ impl CertificateIssuer {
 
         // NIAP PP-CA: FAU_GEN.1.1 - Generate audit record
         // NIST 800-53: AU-2 - Audit certificate issuance
+        // NIST 800-53: AU-3 / AU-10 - actor = authenticated caller when set
+        // (gRPC peer), the requestor otherwise; every Failure record below
+        // reuses this event, so all outcomes carry the same identity.
+        let caller = request.authenticated_caller.as_ref();
+        let (actor, on_behalf_of) =
+            audit_identity(&request.requestor, caller.map(|c| c.subject_dn.as_str()));
+        let mut details = serde_json::json!({
+            "profile": request.profile_name,
+            "subject": request.subject.to_string_rfc4514(),
+            "request_id": request_id.to_string(),
+        });
+        add_caller_details(&mut details, caller, on_behalf_of.as_deref());
         let mut audit_event = AuditEventBuilder::new(
             EventType::CertificateIssuance,
-            &request.requestor,
+            actor,
             request.subject.to_string_rfc4514(),
             "issue",
             EventOutcome::Success,
         )
-        .with_details(serde_json::json!({
-            "profile": request.profile_name,
-            "subject": request.subject.to_string_rfc4514(),
-            "request_id": request_id.to_string(),
-        }))
+        .with_details(details)
         .build();
 
         // NIAP PP-CA: FDP_IFC.1.1 - Retrieve and validate certificate policy (profile)
@@ -357,6 +466,22 @@ impl CertificateIssuer {
             .profiles
             .get(&request.profile_name)
             .ok_or_else(|| Error::ProfileNotFound(request.profile_name.clone()))?;
+
+        // SEC-102: a gRPC (authenticated service) caller never gets a CA
+        // certificate, even if the profile allowlist were misconfigured or
+        // the registered profiles changed after startup. Failure audit; an
+        // audit-write failure is logged and the refusal returned.
+        // NIST 800-53: AC-6(10), AU-2, AU-12; NIAP PP-CA: FDP_ACF.1, FAU_GEN.1
+        if let Some(failure) = caller_profile_refusal(caller, profile) {
+            audit_event.outcome = EventOutcome::Failure;
+            if let Some(map) = audit_event.details.as_mut().and_then(|d| d.as_object_mut()) {
+                map.insert("failure".to_string(), failure.into());
+            }
+            if let Err(e) = self.audit_sink.record(&mut audit_event).await {
+                tracing::error!(error = %e, failure, "failed to record issuance refusal audit event");
+            }
+            return Err(Error::ProfileNotPermitted);
+        }
 
         // NIAP PP-CA: FDP_IFC.1.1 - Validate policy constraints (structural).
         profile.validate()?;
@@ -389,8 +514,13 @@ impl CertificateIssuer {
             })?;
 
             // Get approval repository and request
+            // SI-11 (SEC-105): a missing repository is a server
+            // misconfiguration, not a client error; detail stays in the log.
             let approval_repo = self.approval_repo.as_ref().ok_or_else(|| {
-                Error::InvalidRequest("Approval repository not configured".to_string())
+                tracing::error!(
+                    "approval workflow is enabled but no approval repository is configured"
+                );
+                Error::Internal("approval workflow unavailable".to_string())
             })?;
 
             let approval_record = approval_repo
@@ -476,15 +606,24 @@ impl CertificateIssuer {
         // of the private key corresponding to the public key in the request
         if let Some(csr_der) = &request.csr_der {
             // Parse CSR
-            let parsed_csr = ostrich_x509::parser::parse_csr(csr_der)
-                .map_err(|e| Error::InvalidRequest(format!("Failed to parse CSR: {}", e)))?;
+            // SI-11 (SEC-105): fixed client messages; the parser / verifier
+            // detail is logged server-side only.
+            let parsed_csr = ostrich_x509::parser::parse_csr(csr_der).map_err(|e| {
+                tracing::warn!(error = %e, request_id = %request_id, "CSR parse failed");
+                Error::InvalidRequest("CSR could not be parsed".to_string())
+            })?;
 
             // Verify CSR signature (proof of possession)
             let signature_valid =
                 ostrich_x509::parser::verify_csr_signature(&parsed_csr, &self.crypto_provider)
                     .await
                     .map_err(|e| {
-                        Error::InvalidRequest(format!("CSR signature verification failed: {}", e))
+                        tracing::warn!(
+                            error = %e,
+                            request_id = %request_id,
+                            "CSR signature verification failed"
+                        );
+                        Error::InvalidRequest("CSR signature verification failed".to_string())
                     })?;
 
             if !signature_valid {
@@ -823,7 +962,7 @@ impl CertificateIssuer {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -834,6 +973,7 @@ mod tests {
             subject_alt_names: vec![SubjectAltName::dns("example.com")],
             public_key: vec![1, 2, 3],
             requestor: "admin@example.com".to_string(),
+            authenticated_caller: None,
             metadata: None,
             csr_der: None,
             approval_request_id: None,
@@ -847,5 +987,114 @@ mod tests {
         assert_eq!(deserialized.requestor, "admin@example.com");
         assert!(deserialized.csr_der.is_none());
         assert!(deserialized.approval_request_id.is_none());
+        assert!(deserialized.authenticated_caller.is_none());
+        // Older serialized requests without the field still deserialize.
+        let mut legacy: serde_json::Value = serde_json::from_str(&json).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("authenticated_caller");
+        let old: IssuanceRequest = serde_json::from_value(legacy).unwrap();
+        assert!(old.authenticated_caller.is_none());
+    }
+
+    /// SEC-005: a serialized request cannot inject an authenticated caller.
+    #[test]
+    fn authenticated_caller_is_never_deserialized() {
+        let mut request = IssuanceRequest {
+            profile_name: "tls_server".to_string(),
+            subject: DistinguishedName::new_cn("example.com"),
+            subject_alt_names: vec![],
+            public_key: vec![1],
+            requestor: "acme::1".to_string(),
+            authenticated_caller: Some(test_caller("CN=acme-server")),
+            metadata: None,
+            csr_der: None,
+            approval_request_id: None,
+            request_id: None,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["authenticated_caller"]["subject_dn"], "CN=acme-server");
+        let back: IssuanceRequest = serde_json::from_value(json).unwrap();
+        assert!(back.authenticated_caller.is_none());
+        request.authenticated_caller = None;
+        let mut forged = serde_json::to_value(&request).unwrap();
+        forged["authenticated_caller"] = serde_json::json!({
+            "subject_dn": "CN=ops-admin", "issuer_dn": "CN=x", "serial_hex": "01"
+        });
+        let back: IssuanceRequest = serde_json::from_value(forged).unwrap();
+        assert!(back.authenticated_caller.is_none());
+    }
+
+    /// SEC-102: an authenticated (gRPC) caller is refused every CA profile
+    /// at call time; end-entity profiles and REST callers (no caller) are not
+    /// affected by this guard.
+    #[test]
+    fn caller_profile_refusal_blocks_ca_profiles_for_service_callers() {
+        let caller = test_caller("CN=acme-server");
+        let ca_profile = CertificateProfile::intermediate_ca(1825, 0);
+        let ee = CertificateProfile::tls_server(365);
+        assert_eq!(
+            caller_profile_refusal(Some(&caller), &ca_profile),
+            Some("ca_profile_not_permitted")
+        );
+        assert_eq!(caller_profile_refusal(Some(&caller), &ee), None);
+        assert_eq!(caller_profile_refusal(None, &ca_profile), None);
+        assert_eq!(
+            Error::ProfileNotPermitted.to_string(),
+            crate::grpc_authz::PROFILE_DENIED_MESSAGE
+        );
+    }
+
+    pub(crate) fn test_caller(subject: &str) -> AuthenticatedCaller {
+        AuthenticatedCaller {
+            subject_dn: subject.to_string(),
+            issuer_dn: "CN=Service Identity CA".to_string(),
+            serial_hex: "01ab".to_string(),
+        }
+    }
+
+    #[test]
+    fn audit_identity_with_caller_uses_peer_as_actor() {
+        assert_eq!(
+            audit_identity("acme::acct-1", Some("CN=acme-server")),
+            (
+                "CN=acme-server".to_string(),
+                Some("acme::acct-1".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn audit_identity_without_caller_uses_requestor() {
+        assert_eq!(
+            audit_identity("alice@example.com", None),
+            ("alice@example.com".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn audit_identity_admin_without_requestor_has_no_on_behalf_of() {
+        assert_eq!(
+            audit_identity("", Some("CN=ops-admin")),
+            ("CN=ops-admin".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn caller_details_are_added_only_when_present() {
+        let mut d = serde_json::json!({"profile": "p"});
+        add_caller_details(
+            &mut d,
+            Some(&test_caller("CN=acme-server")),
+            Some("acme::1"),
+        );
+        assert_eq!(d["authenticated_caller"], "CN=acme-server");
+        assert_eq!(d["authenticated_caller_issuer"], "CN=Service Identity CA");
+        assert_eq!(d["authenticated_caller_serial"], "01ab");
+        assert_eq!(d["on_behalf_of"], "acme::1");
+        let mut d = serde_json::json!({"profile": "p"});
+        add_caller_details(&mut d, None, None);
+        assert_eq!(d, serde_json::json!({"profile": "p"}));
     }
 }

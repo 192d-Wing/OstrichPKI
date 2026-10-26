@@ -21,9 +21,10 @@
 //! - SC-12: Key revocation management
 //! - AU-2: Audit revocation events
 
+use crate::issuance::{AuthenticatedCaller, add_caller_details, audit_identity};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
-use ostrich_audit::{AuditEventBuilder, AuditSink, EventOutcome, EventType};
+use ostrich_audit::{AuditEvent, AuditEventBuilder, AuditSink, EventOutcome, EventType};
 use ostrich_crypto::{CryptoProvider, KeyHandle};
 use ostrich_db::{
     DatabasePool, Uuid,
@@ -46,11 +47,171 @@ pub struct RevocationRequest {
     /// Revocation reason
     pub reason: RevocationReason,
 
-    /// Requestor (for audit)
+    /// Requestor: the principal the revocation is made for (REST: the
+    /// authenticated user; gRPC: the bound `admin::<id>` or empty). The audit
+    /// actor unless `authenticated_caller` is set.
     pub requestor: String,
+
+    /// The authenticated service that made the call (verified gRPC mTLS
+    /// peer). When set its subject DN is the audit actor and a non-empty
+    /// `requestor` is recorded as `on_behalf_of` (AU-3, FAU_GEN.2). Never
+    /// deserialized (SEC-005): set from the verified peer only.
+    #[serde(default, skip_deserializing)]
+    pub authenticated_caller: Option<AuthenticatedCaller>,
 
     /// Justification
     pub justification: Option<String>,
+}
+
+/// Who generated a CRL, for the `CrlGeneration` audit record.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AU-3 (who), AC-6(9) (privileged function use logged)
+/// - NIAP PP-CA: FAU_GEN.2 (user identity association)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrlActor<'a> {
+    /// The CA's own scheduler (actor `"system"`).
+    System,
+    /// An authenticated REST user (actor = username).
+    User(&'a str),
+    /// A verified gRPC admin peer (actor = subject DN; issuer and serial in
+    /// the details).
+    Peer(&'a AuthenticatedCaller),
+    /// The debug-only plaintext gRPC listener (actor `"unauthenticated"`).
+    Unauthenticated,
+}
+
+/// CRL audit action of a full CRL.
+pub(crate) const CRL_ACTION_GENERATE: &str = "generate";
+/// CRL audit action of a delta CRL (RFC 5280 §5.2.4).
+pub(crate) const CRL_ACTION_GENERATE_DELTA: &str = "generate_delta";
+
+/// The `CrlGeneration` audit event (outcome Success; the caller adds the CRL
+/// number and count) for `actor` and `action` ([`CRL_ACTION_GENERATE`] or
+/// [`CRL_ACTION_GENERATE_DELTA`]). Pure, for testing.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AU-3 (who / what / outcome), AU-12
+/// - NIAP PP-CA: FAU_GEN.1, FAU_GEN.2
+pub(crate) fn crl_audit_event(
+    ca_certificate_id: Uuid,
+    actor: CrlActor<'_>,
+    action: &'static str,
+) -> AuditEvent {
+    crl_event(
+        ca_certificate_id,
+        actor,
+        action,
+        EventOutcome::Success,
+        None,
+    )
+}
+
+/// A failed CRL generation (outcome Failure) for `actor` and `action`, with
+/// `failure` (a fixed stage name, never error text) in the details. Pure,
+/// for testing (NIST-103).
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AU-2 / AU-3 / AU-12 (failed CRL generation is auditable),
+///   AC-6(9)
+/// - NIAP PP-CA: FAU_GEN.1, FAU_GEN.2
+pub(crate) fn crl_failure_event(
+    ca_certificate_id: Uuid,
+    actor: CrlActor<'_>,
+    action: &'static str,
+    failure: &'static str,
+) -> AuditEvent {
+    crl_event(
+        ca_certificate_id,
+        actor,
+        action,
+        EventOutcome::Failure,
+        Some(failure),
+    )
+}
+
+fn crl_event(
+    ca_certificate_id: Uuid,
+    actor: CrlActor<'_>,
+    action: &'static str,
+    outcome: EventOutcome,
+    failure: Option<&'static str>,
+) -> AuditEvent {
+    let (name, caller) = match actor {
+        CrlActor::System => ("system", None),
+        CrlActor::User(user) => (user, None),
+        CrlActor::Peer(caller) => (caller.subject_dn.as_str(), Some(caller)),
+        CrlActor::Unauthenticated => ("unauthenticated", None),
+    };
+    let mut details = match failure {
+        Some(failure) => serde_json::json!({ "failure": failure }),
+        None => serde_json::json!({}),
+    };
+    add_caller_details(&mut details, caller, None);
+    AuditEventBuilder::new(
+        EventType::CrlGeneration,
+        name,
+        ca_certificate_id.to_string(),
+        action,
+        outcome,
+    )
+    .with_details(details)
+    .build()
+}
+
+/// Insert `entries` into the event's details object (keeping the caller
+/// details set by [`crl_audit_event`]).
+fn merge_details(event: &mut AuditEvent, entries: &[(&str, serde_json::Value)]) {
+    let details = event.details.get_or_insert_with(|| serde_json::json!({}));
+    if let Some(map) = details.as_object_mut() {
+        for (key, value) in entries {
+            map.insert((*key).to_string(), value.clone());
+        }
+    }
+}
+
+/// Maximum characters of a refused certificate id copied into an audit
+/// record (the value is untrusted client input).
+const MAX_AUDITED_TARGET_CHARS: usize = 64;
+
+/// A refused revocation request (outcome Failure): target (the certificate
+/// id as given, truncated and `escape_debug`'d), actor / `on_behalf_of` as
+/// for a successful revocation, the requested reason code and the failure
+/// (`invalid_certificate_id`, `invalid_reason`, `certificate_not_found`,
+/// `lookup_failed`, `database_error`). Pure, for testing.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AU-2 / AU-3 / AU-12 (failed revocations are auditable
+///   events), AC-6(9)
+/// - NIAP PP-CA: FAU_GEN.1, FAU_GEN.2
+pub(crate) fn revocation_failure_event(
+    target: &str,
+    reason_code: i32,
+    requestor: &str,
+    caller: Option<&AuthenticatedCaller>,
+    failure: &'static str,
+) -> AuditEvent {
+    let target: String = target
+        .chars()
+        .take(MAX_AUDITED_TARGET_CHARS)
+        .collect::<String>()
+        .escape_debug()
+        .to_string();
+    let (actor, on_behalf_of) = audit_identity(requestor, caller.map(|c| c.subject_dn.as_str()));
+    let mut details = serde_json::json!({
+        "reason": reason_code,
+        "failure": failure,
+    });
+    add_caller_details(&mut details, caller, on_behalf_of.as_deref());
+    AuditEventBuilder::new(
+        EventType::CertificateRevocation,
+        actor,
+        target,
+        "revoke",
+        EventOutcome::Failure,
+    )
+    .with_details(details)
+    .build()
 }
 
 /// Revocation manager
@@ -122,31 +283,49 @@ impl RevocationManager {
     /// NIST 800-53: AU-2 - Audit certificate revocation
     pub async fn revoke(&self, request: RevocationRequest) -> Result<()> {
         let cert_repo = CertificateRepository::new(self.db_pool.clone());
+        let caller = request.authenticated_caller.as_ref();
 
-        // Find certificate
-        let cert = cert_repo
-            .find_by_id(request.certificate_id)
-            .await?
-            .ok_or_else(|| Error::InvalidRequest("Certificate not found".to_string()))?;
+        // Find certificate. NIST-007 (AU-2): a failed lookup is audited too.
+        let cert = match cert_repo.find_by_id(request.certificate_id).await {
+            Ok(Some(cert)) => cert,
+            Ok(None) => {
+                self.record_revocation_failure(&request, "certificate_not_found")
+                    .await;
+                return Err(Error::InvalidRequest("Certificate not found".to_string()));
+            }
+            Err(e) => {
+                self.record_revocation_failure(&request, "lookup_failed")
+                    .await;
+                return Err(e.into());
+            }
+        };
 
         // NIAP PP-CA: FAU_GEN.1.1 - Create audit event for revocation
+        // NIST 800-53: AU-3 / AU-10 - actor = authenticated caller when set.
+        let (actor, on_behalf_of) =
+            audit_identity(&request.requestor, caller.map(|c| c.subject_dn.as_str()));
+        let mut details = serde_json::json!({
+            "serial_number": hex::encode(&cert.serial_number),
+            "reason": request.reason.as_i32(),
+            "subject": cert.subject_dn,
+        });
+        add_caller_details(&mut details, caller, on_behalf_of.as_deref());
         let mut audit_event = AuditEventBuilder::new(
             EventType::CertificateRevocation,
-            &request.requestor,
+            actor,
             request.certificate_id.to_string(),
             "revoke",
             EventOutcome::Success,
         )
-        .with_details(serde_json::json!({
-            "serial_number": hex::encode(&cert.serial_number),
-            "reason": request.reason.as_i32(),
-            "subject": cert.subject_dn,
-        }))
+        .with_details(details)
         .build();
 
         // Check if already revoked
         if cert.revoked {
             audit_event.outcome = EventOutcome::Failure;
+            if let Some(map) = audit_event.details.as_mut().and_then(|d| d.as_object_mut()) {
+                map.insert("failure".to_string(), "already_revoked".into());
+            }
             self.audit_sink
                 .record(&mut audit_event)
                 .await
@@ -155,10 +334,21 @@ impl RevocationManager {
             return Err(Error::Revocation("Certificate already revoked".to_string()));
         }
 
-        // Revoke the certificate
-        cert_repo
+        // Revoke the certificate (NIST-007: a database failure is audited
+        // with the same identity and certificate details).
+        if let Err(e) = cert_repo
             .revoke(&request.certificate_id, request.reason.as_i32())
-            .await?;
+            .await
+        {
+            audit_event.outcome = EventOutcome::Failure;
+            if let Some(map) = audit_event.details.as_mut().and_then(|d| d.as_object_mut()) {
+                map.insert("failure".to_string(), "database_error".into());
+            }
+            if let Err(audit) = self.audit_sink.record(&mut audit_event).await {
+                tracing::error!(error = %audit, "failed to record revocation failure audit event");
+            }
+            return Err(e.into());
+        }
 
         // NIAP PP-CA: FAU_GEN.1.1 - Record successful revocation audit event
         self.audit_sink
@@ -175,6 +365,41 @@ impl RevocationManager {
         Ok(())
     }
 
+    /// Record a refused revocation of `request` (see
+    /// [`revocation_failure_event`]). An audit write failure is logged; the
+    /// revocation is refused either way.
+    async fn record_revocation_failure(&self, request: &RevocationRequest, failure: &'static str) {
+        self.record_rejected_revocation(
+            &request.certificate_id.to_string(),
+            request.reason.as_i32(),
+            &request.requestor,
+            request.authenticated_caller.as_ref(),
+            failure,
+        )
+        .await;
+    }
+
+    /// Record a revocation request refused before it reached
+    /// [`Self::revoke`] (e.g. an unparsable certificate id or reason on the
+    /// gRPC path): outcome Failure with actor / `on_behalf_of`, the requested
+    /// reason code and `failure`. `target` is untrusted and is truncated and
+    /// escaped. An audit write failure is logged, never returned.
+    ///
+    /// NIST 800-53: AU-2, AU-3, AU-12; NIAP PP-CA: FAU_GEN.1, FAU_GEN.2
+    pub async fn record_rejected_revocation(
+        &self,
+        target: &str,
+        reason_code: i32,
+        requestor: &str,
+        caller: Option<&AuthenticatedCaller>,
+        failure: &'static str,
+    ) {
+        let mut event = revocation_failure_event(target, reason_code, requestor, caller, failure);
+        if let Err(e) = self.audit_sink.record(&mut event).await {
+            tracing::error!(error = %e, failure, "failed to record revocation failure audit event");
+        }
+    }
+
     /// Generate a new CRL
     ///
     /// NIAP PP-CA: FMT_SMF.1.1 - Generate CRL security management function
@@ -188,20 +413,93 @@ impl RevocationManager {
         &self,
         issuer_dn: ostrich_common::types::DistinguishedName,
     ) -> Result<GeneratedCrl> {
+        self.generate_crl_by(issuer_dn, CrlActor::System).await
+    }
+
+    /// [`Self::generate_crl`] on behalf of `actor`, the audit actor of the
+    /// `CrlGeneration` record: the verified gRPC admin peer (with its
+    /// certificate issuer and serial), the authenticated REST user, or
+    /// `"system"` for the scheduler ([`Self::generate_crl`]).
+    ///
+    /// NIST 800-53: AU-3 (who), AU-2, AC-6(9); NIAP PP-CA: FAU_GEN.1, FAU_GEN.2
+    pub async fn generate_crl_by(
+        &self,
+        issuer_dn: ostrich_common::types::DistinguishedName,
+        actor: CrlActor<'_>,
+    ) -> Result<GeneratedCrl> {
+        match self.build_full_crl(issuer_dn).await {
+            Ok(crl) => {
+                // NIAP PP-CA: FAU_GEN.1.1 - Record CRL generation audit event
+                // (merged into the caller details set by `crl_audit_event`).
+                let mut audit_event =
+                    crl_audit_event(self.ca_certificate_id, actor, CRL_ACTION_GENERATE);
+                merge_details(
+                    &mut audit_event,
+                    &[
+                        ("crl_number", crl.crl_number.into()),
+                        ("revoked_count", crl.revoked_count.into()),
+                    ],
+                );
+                self.audit_sink
+                    .record(&mut audit_event)
+                    .await
+                    .map_err(Error::Audit)?;
+
+                tracing::info!(
+                    "CRL generated: number {} with {} revoked certificates",
+                    crl.crl_number,
+                    crl.revoked_count
+                );
+                Ok(crl)
+            }
+            Err((failure, e)) => {
+                self.record_crl_failure(actor, CRL_ACTION_GENERATE, failure, &e)
+                    .await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Record a failed CRL generation ([`crl_failure_event`]). The error
+    /// detail goes to the log only; an audit write failure is logged and the
+    /// original error is returned by the caller (NIST-103, NIST-007 pattern).
+    async fn record_crl_failure(
+        &self,
+        actor: CrlActor<'_>,
+        action: &'static str,
+        failure: &'static str,
+        error: &Error,
+    ) {
+        tracing::error!(action, failure, error = %error, "CRL generation failed");
+        let mut event = crl_failure_event(self.ca_certificate_id, actor, action, failure);
+        if let Err(e) = self.audit_sink.record(&mut event).await {
+            tracing::error!(error = %e, action, failure, "failed to record CRL failure audit event");
+        }
+    }
+
+    /// The CRL signature algorithm for the CA key. An unsupported key type is
+    /// an internal error: the detail is logged, the message is fixed
+    /// (SI-11; NIST-105).
+    fn crl_signature_algorithm(&self) -> Result<ostrich_crypto::Algorithm> {
+        ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type).map_err(|e| {
+            tracing::error!(error = %e, "unsupported CA key type for CRL signing");
+            Error::CrlGeneration("CRL signing is not available for the CA key".to_string())
+        })
+    }
+
+    /// Build, sign and store a full CRL. `Err` carries the failed stage (the
+    /// audit `failure` reason) and the error.
+    async fn build_full_crl(
+        &self,
+        issuer_dn: ostrich_common::types::DistinguishedName,
+    ) -> std::result::Result<GeneratedCrl, (&'static str, Error)> {
         let cert_repo = CertificateRepository::new(self.db_pool.clone());
 
-        // NIAP PP-CA: FAU_GEN.1.1 - Create audit event for CRL generation
-        let mut audit_event = AuditEventBuilder::new(
-            EventType::CrlGeneration,
-            "system",
-            self.ca_certificate_id.to_string(),
-            "generate",
-            EventOutcome::Success,
-        )
-        .build();
-
         // Get all revoked certificates
-        let revoked_certs = cert_repo.find_revoked(&self.ca_certificate_id).await?;
+        let revoked_certs = cert_repo
+            .find_revoked(&self.ca_certificate_id)
+            .await
+            .map_err(|e| ("revoked_lookup_failed", e.into()))?;
 
         // Convert to RevokedCertificateInfo
         let revoked_info: Vec<RevokedCertificateInfo> = revoked_certs
@@ -226,21 +524,24 @@ impl RevocationManager {
         // survives process restarts; an in-memory counter would reset to 0 and
         // collide with the UNIQUE(ca_id, crl_number) constraint on the next run.
         let crl_repo = CrlRepository::new(self.db_pool.clone());
-        let crl_number_i64 = crl_repo.next_crl_number(self.ca_certificate_id).await?;
+        let crl_number_i64 = crl_repo
+            .next_crl_number(self.ca_certificate_id)
+            .await
+            .map_err(|e| ("crl_number_failed", e.into()))?;
         let current_crl_number = crl_number_i64 as u64;
 
         // RFC 5280 §5.1.1.2 - select the signature algorithm from the CA key
         // type so the TBS AlgorithmIdentifier, the outer signatureAlgorithm, and
         // the signing call all agree (RSA / ECDSA P-256/P-384 / Ed25519).
-        let sig_alg = ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type)
-            .map_err(|e| {
-                Error::Revocation(format!("unsupported CA key type for CRL signing: {}", e))
-            })?;
+        let sig_alg = self
+            .crl_signature_algorithm()
+            .map_err(|e| ("unsupported_ca_key_type", e))?;
 
         // Generate CRL
         let crl_generator = CrlGenerator::new(issuer_dn, self.crl_validity_hours);
         let mut crl_builder = crl_generator
-            .generate(current_crl_number, revoked_info)?
+            .generate(current_crl_number, revoked_info)
+            .map_err(|e| ("crl_build_failed", e.into()))?
             .signature_algorithm(sig_alg);
 
         // RFC 5280 §5.2.6 - point relying parties at the delta CRL when configured.
@@ -248,10 +549,14 @@ impl RevocationManager {
             crl_builder = crl_builder.freshest_crl(delta_url.clone());
         }
 
-        let tbs_crl = crl_builder.build_tbs()?;
+        let tbs_crl = crl_builder
+            .build_tbs()
+            .map_err(|e| ("crl_build_failed", e.into()))?;
 
         // Encode TBS CRL to DER for signing
-        let tbs_der = tbs_crl.to_der()?;
+        let tbs_der = tbs_crl
+            .to_der()
+            .map_err(|e| ("crl_build_failed", e.into()))?;
 
         // NIAP PP-CA: FCS_COP.1.1 - Sign TBS CRL with CA private key
         //
@@ -261,18 +566,28 @@ impl RevocationManager {
         let signature = self
             .crypto_provider
             .sign(&self.ca_key, sig_alg, &tbs_der)
-            .await?;
+            .await
+            .map_err(|e| ("signing_failed", e.into()))?;
 
         // ECDSA signatures are fixed r||s from the provider; CRLs require DER
         // Ecdsa-Sig-Value (RFC 5758 §3.2). RSA/Ed25519 pass through unchanged.
-        let signature = ostrich_x509::signing::encode_x509_signature(sig_alg, signature)
-            .map_err(|e| Error::CrlGeneration(format!("failed to encode signature: {}", e)))?;
+        let signature =
+            ostrich_x509::signing::encode_x509_signature(sig_alg, signature).map_err(|e| {
+                (
+                    "crl_encoding_failed",
+                    Error::CrlGeneration(format!("failed to encode signature: {}", e)),
+                )
+            })?;
 
         // Construct final signed CRL
-        let der_encoded = self.build_signed_crl(&tbs_der, &signature)?;
+        let der_encoded = self
+            .build_signed_crl(&tbs_der, &signature)
+            .map_err(|e| ("crl_encoding_failed", e))?;
 
         // Convert DER to PEM
-        let pem_encoded = self.crl_der_to_pem(&der_encoded)?;
+        let pem_encoded = self
+            .crl_der_to_pem(&der_encoded)
+            .map_err(|e| ("crl_encoding_failed", e))?;
 
         // RFC 5280 §5 - Persist the signed CRL so the latest one can be served
         // at the public distribution point and so the CRL number stays
@@ -290,24 +605,8 @@ impl RevocationManager {
                 false, // full CRL
                 None,
             )
-            .await?;
-
-        // NIAP PP-CA: FAU_GEN.1.1 - Record CRL generation audit event
-        audit_event.details = Some(serde_json::json!({
-            "crl_number": current_crl_number,
-            "revoked_count": revoked_count,
-        }));
-
-        self.audit_sink
-            .record(&mut audit_event)
             .await
-            .map_err(Error::Audit)?;
-
-        tracing::info!(
-            "CRL generated: number {} with {} revoked certificates",
-            current_crl_number,
-            revoked_count
-        );
+            .map_err(|e| ("crl_store_failed", e.into()))?;
 
         Ok(GeneratedCrl {
             crl_number: current_crl_number,
@@ -319,11 +618,8 @@ impl RevocationManager {
         })
     }
 
-    /// Generate a delta CRL (RFC 5280 §5.2.4).
-    ///
-    /// Lists only certificates revoked since the latest full (base) CRL's
-    /// thisUpdate, carrying a critical Delta CRL Indicator with the base CRL
-    /// number. Delta and full CRLs share the monotonic crl_number sequence.
+    /// Generate a delta CRL (RFC 5280 §5.2.4) as the scheduler (actor
+    /// `"system"`); see [`Self::generate_delta_crl_by`].
     ///
     /// COMPLIANCE MAPPING:
     /// - RFC 5280 §5.2.4 - Delta CRL Indicator
@@ -332,21 +628,88 @@ impl RevocationManager {
         &self,
         issuer_dn: ostrich_common::types::DistinguishedName,
     ) -> Result<GeneratedCrl> {
+        self.generate_delta_crl_by(issuer_dn, CrlActor::System)
+            .await
+    }
+
+    /// Generate a delta CRL (RFC 5280 §5.2.4) on behalf of `actor`.
+    ///
+    /// Lists only certificates revoked since the latest full (base) CRL's
+    /// thisUpdate, carrying a critical Delta CRL Indicator with the base CRL
+    /// number. Delta and full CRLs share the monotonic crl_number sequence.
+    /// Success and failure are audited (action `generate_delta`) with `actor`
+    /// as the audit actor (NIST-101, NIST-103).
+    ///
+    /// COMPLIANCE MAPPING:
+    /// - RFC 5280 §5.2.4 - Delta CRL Indicator
+    /// - NIST 800-53: AU-2, AU-3 (who), AU-12, AC-6(9)
+    /// - NIAP PP-CA: FMT_SMF.1 - CRL generation; FAU_GEN.1.1, FAU_GEN.2
+    pub async fn generate_delta_crl_by(
+        &self,
+        issuer_dn: ostrich_common::types::DistinguishedName,
+        actor: CrlActor<'_>,
+    ) -> Result<GeneratedCrl> {
+        match self.build_delta_crl(issuer_dn).await {
+            Ok((crl, base_crl_number)) => {
+                let mut audit_event =
+                    crl_audit_event(self.ca_certificate_id, actor, CRL_ACTION_GENERATE_DELTA);
+                merge_details(
+                    &mut audit_event,
+                    &[
+                        ("crl_number", crl.crl_number.into()),
+                        ("base_crl_number", base_crl_number.into()),
+                        ("revoked_count", crl.revoked_count.into()),
+                    ],
+                );
+                self.audit_sink
+                    .record(&mut audit_event)
+                    .await
+                    .map_err(Error::Audit)?;
+
+                tracing::info!(
+                    "Delta CRL generated: number {} (base {}) with {} entries",
+                    crl.crl_number,
+                    base_crl_number,
+                    crl.revoked_count
+                );
+                Ok(crl)
+            }
+            Err((failure, e)) => {
+                self.record_crl_failure(actor, CRL_ACTION_GENERATE_DELTA, failure, &e)
+                    .await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Build, sign and store a delta CRL. `Ok` carries the base CRL number;
+    /// `Err` the failed stage (the audit `failure` reason) and the error.
+    async fn build_delta_crl(
+        &self,
+        issuer_dn: ostrich_common::types::DistinguishedName,
+    ) -> std::result::Result<(GeneratedCrl, i64), (&'static str, Error)> {
         let crl_repo = CrlRepository::new(self.db_pool.clone());
 
         // A delta CRL is relative to a base full CRL; require one to exist.
         let base = crl_repo
             .find_latest_crl(self.ca_certificate_id)
-            .await?
+            .await
+            .map_err(|e| ("base_crl_lookup_failed", e.into()))?
             .ok_or_else(|| {
-                Error::CrlGeneration(
-                    "no base CRL exists; generate a full CRL before a delta".to_string(),
+                (
+                    "no_base_crl",
+                    Error::CrlGeneration(
+                        "no base CRL exists; generate a full CRL before a delta".to_string(),
+                    ),
                 )
             })?;
 
         // RFC 5280 §5.2.4 - a delta lists changes since the base CRL's thisUpdate.
         let cert_repo = CertificateRepository::new(self.db_pool.clone());
-        let revoked_certs = cert_repo.find_revoked(&self.ca_certificate_id).await?;
+        let revoked_certs = cert_repo
+            .find_revoked(&self.ca_certificate_id)
+            .await
+            .map_err(|e| ("revoked_lookup_failed", e.into()))?;
         let delta_info: Vec<RevokedCertificateInfo> = revoked_certs
             .iter()
             .filter_map(|cert| {
@@ -364,30 +727,47 @@ impl RevocationManager {
             .collect();
         let revoked_count = delta_info.len();
 
-        let crl_number_i64 = crl_repo.next_crl_number(self.ca_certificate_id).await?;
+        let crl_number_i64 = crl_repo
+            .next_crl_number(self.ca_certificate_id)
+            .await
+            .map_err(|e| ("crl_number_failed", e.into()))?;
         let current_crl_number = crl_number_i64 as u64;
 
-        let sig_alg = ostrich_x509::signing::recommended_signature_algorithm(self.ca_key.key_type)
-            .map_err(|e| {
-                Error::Revocation(format!("unsupported CA key type for CRL signing: {}", e))
-            })?;
+        let sig_alg = self
+            .crl_signature_algorithm()
+            .map_err(|e| ("unsupported_ca_key_type", e))?;
 
         let crl_generator = CrlGenerator::new(issuer_dn, self.crl_validity_hours);
         let crl_builder = crl_generator
-            .generate(current_crl_number, delta_info)?
+            .generate(current_crl_number, delta_info)
+            .map_err(|e| ("crl_build_failed", e.into()))?
             .signature_algorithm(sig_alg)
             .delta_crl_indicator(base.crl_number as u64);
 
-        let tbs_crl = crl_builder.build_tbs()?;
-        let tbs_der = tbs_crl.to_der()?;
+        let tbs_crl = crl_builder
+            .build_tbs()
+            .map_err(|e| ("crl_build_failed", e.into()))?;
+        let tbs_der = tbs_crl
+            .to_der()
+            .map_err(|e| ("crl_build_failed", e.into()))?;
         let signature = self
             .crypto_provider
             .sign(&self.ca_key, sig_alg, &tbs_der)
-            .await?;
-        let signature = ostrich_x509::signing::encode_x509_signature(sig_alg, signature)
-            .map_err(|e| Error::CrlGeneration(format!("failed to encode signature: {}", e)))?;
-        let der_encoded = self.build_signed_crl(&tbs_der, &signature)?;
-        let pem_encoded = self.crl_der_to_pem(&der_encoded)?;
+            .await
+            .map_err(|e| ("signing_failed", e.into()))?;
+        let signature =
+            ostrich_x509::signing::encode_x509_signature(sig_alg, signature).map_err(|e| {
+                (
+                    "crl_encoding_failed",
+                    Error::CrlGeneration(format!("failed to encode signature: {}", e)),
+                )
+            })?;
+        let der_encoded = self
+            .build_signed_crl(&tbs_der, &signature)
+            .map_err(|e| ("crl_encoding_failed", e))?;
+        let pem_encoded = self
+            .crl_der_to_pem(&der_encoded)
+            .map_err(|e| ("crl_encoding_failed", e))?;
 
         crl_repo
             .create_crl(
@@ -400,41 +780,20 @@ impl RevocationManager {
                 true, // delta CRL
                 Some(base.crl_number),
             )
-            .await?;
-
-        let mut audit_event = AuditEventBuilder::new(
-            EventType::CrlGeneration,
-            "system",
-            self.ca_certificate_id.to_string(),
-            "generate_delta",
-            EventOutcome::Success,
-        )
-        .with_details(serde_json::json!({
-            "crl_number": current_crl_number,
-            "base_crl_number": base.crl_number,
-            "revoked_count": revoked_count,
-        }))
-        .build();
-        self.audit_sink
-            .record(&mut audit_event)
             .await
-            .map_err(Error::Audit)?;
+            .map_err(|e| ("crl_store_failed", e.into()))?;
 
-        tracing::info!(
-            "Delta CRL generated: number {} (base {}) with {} entries",
-            current_crl_number,
+        Ok((
+            GeneratedCrl {
+                crl_number: current_crl_number,
+                this_update: tbs_crl.this_update,
+                next_update: tbs_crl.next_update,
+                revoked_count,
+                der_encoded,
+                pem_encoded,
+            },
             base.crl_number,
-            revoked_count
-        );
-
-        Ok(GeneratedCrl {
-            crl_number: current_crl_number,
-            this_update: tbs_crl.this_update,
-            next_update: tbs_crl.next_update,
-            revoked_count,
-            der_encoded,
-            pem_encoded,
-        })
+        ))
     }
 
     /// Build a signed CRL from TBS and signature
@@ -544,9 +903,126 @@ mod tests {
             certificate_id: Uuid::new_v4(),
             reason: RevocationReason::KeyCompromise,
             requestor: "admin@example.com".to_string(),
+            authenticated_caller: None,
             justification: Some("Private key leaked".to_string()),
         };
 
         assert_eq!(request.reason.as_i32(), 1);
+    }
+
+    /// NIST-006 / QA-002 (M13): the CRL record's actor is the admin peer,
+    /// with its certificate issuer and serial; the scheduler is "system" and
+    /// REST is the user.
+    #[test]
+    fn crl_audit_event_actor() {
+        let ca = Uuid::new_v4();
+        let peer = crate::issuance::tests::test_caller("CN=ops-admin");
+        let ev = crl_audit_event(ca, CrlActor::Peer(&peer), CRL_ACTION_GENERATE);
+        assert_eq!(ev.actor, "CN=ops-admin");
+        assert_eq!(ev.event_type, EventType::CrlGeneration);
+        assert_eq!(ev.target, ca.to_string());
+        assert_eq!(ev.action, "generate");
+        assert_eq!(ev.outcome, EventOutcome::Success);
+        let d = ev.details.expect("details");
+        assert_eq!(d["authenticated_caller"], "CN=ops-admin");
+        assert_eq!(d["authenticated_caller_issuer"], "CN=Service Identity CA");
+        assert_eq!(d["authenticated_caller_serial"], "01ab");
+        assert!(d.get("failure").is_none());
+        let full = |actor| crl_audit_event(ca, actor, CRL_ACTION_GENERATE);
+        assert_eq!(full(CrlActor::System).actor, "system");
+        assert_eq!(full(CrlActor::User("alice")).actor, "alice");
+        assert_eq!(full(CrlActor::Unauthenticated).actor, "unauthenticated");
+        assert!(
+            full(CrlActor::User("alice"))
+                .details
+                .is_some_and(|d| d.get("authenticated_caller").is_none())
+        );
+    }
+
+    /// NIST-101: the delta CRL record carries the REST user / peer as actor
+    /// and action `generate_delta`; the scheduler is "system".
+    #[test]
+    fn delta_crl_audit_event_actor() {
+        let ca = Uuid::new_v4();
+        let delta = |actor| crl_audit_event(ca, actor, CRL_ACTION_GENERATE_DELTA);
+        let ev = delta(CrlActor::User("alice"));
+        assert_eq!(ev.actor, "alice");
+        assert_eq!(ev.action, "generate_delta");
+        assert_eq!(ev.event_type, EventType::CrlGeneration);
+        assert_eq!(ev.outcome, EventOutcome::Success);
+        assert_eq!(delta(CrlActor::System).actor, "system");
+        let peer = crate::issuance::tests::test_caller("CN=ops-admin");
+        let ev = delta(CrlActor::Peer(&peer));
+        assert_eq!(ev.actor, "CN=ops-admin");
+        assert_eq!(
+            ev.details.expect("details")["authenticated_caller_serial"],
+            "01ab"
+        );
+    }
+
+    /// NIST-103: failed full / delta CRL generation is a Failure record with
+    /// the actor, the action and a fixed `failure` reason.
+    #[test]
+    fn crl_failure_event_contents() {
+        let ca = Uuid::new_v4();
+        let ev = crl_failure_event(
+            ca,
+            CrlActor::User("alice"),
+            CRL_ACTION_GENERATE_DELTA,
+            "no_base_crl",
+        );
+        assert_eq!(ev.actor, "alice");
+        assert_eq!(ev.action, "generate_delta");
+        assert_eq!(ev.outcome, EventOutcome::Failure);
+        assert_eq!(ev.event_type, EventType::CrlGeneration);
+        assert_eq!(ev.target, ca.to_string());
+        assert_eq!(ev.details.expect("details")["failure"], "no_base_crl");
+
+        let peer = crate::issuance::tests::test_caller("CN=ops-admin");
+        let ev = crl_failure_event(
+            ca,
+            CrlActor::Peer(&peer),
+            CRL_ACTION_GENERATE,
+            "signing_failed",
+        );
+        assert_eq!(ev.actor, "CN=ops-admin");
+        assert_eq!(ev.action, "generate");
+        let d = ev.details.expect("details");
+        assert_eq!(d["failure"], "signing_failed");
+        assert_eq!(d["authenticated_caller"], "CN=ops-admin");
+        assert_eq!(d["authenticated_caller_issuer"], "CN=Service Identity CA");
+    }
+
+    /// NIST-007: a refused revocation is a Failure record with the actor,
+    /// on_behalf_of, requested reason and failure; the untrusted target is
+    /// truncated and escaped.
+    #[test]
+    fn revocation_failure_event_contents() {
+        let peer = crate::issuance::tests::test_caller("CN=ops-admin");
+        let ev = revocation_failure_event(
+            "not-a-uuid\n",
+            1,
+            "admin::oncall",
+            Some(&peer),
+            "invalid_certificate_id",
+        );
+        assert_eq!(ev.outcome, EventOutcome::Failure);
+        assert_eq!(ev.event_type, EventType::CertificateRevocation);
+        assert_eq!(ev.actor, "CN=ops-admin");
+        assert_eq!(ev.action, "revoke");
+        let d = ev.details.expect("details");
+        assert_eq!(d["on_behalf_of"], "admin::oncall");
+        assert_eq!(d["authenticated_caller_serial"], "01ab");
+        assert_eq!(d["reason"], 1);
+        assert_eq!(d["failure"], "invalid_certificate_id");
+
+        let ev = revocation_failure_event(&"x\u{202E}".repeat(100), 99, "", None, "invalid_reason");
+        assert!(!ev.target.contains('\u{202E}'), "{}", ev.target);
+        assert!(ev.target.len() <= MAX_AUDITED_TARGET_CHARS * 10);
+        assert_eq!(ev.actor, "");
+        // REST (no caller): the requestor is the actor.
+        let ev = revocation_failure_event("id", 0, "alice", None, "certificate_not_found");
+        assert_eq!(ev.actor, "alice");
+        assert!(ev.details.is_some_and(|d| d.get("on_behalf_of").is_none()));
     }
 }

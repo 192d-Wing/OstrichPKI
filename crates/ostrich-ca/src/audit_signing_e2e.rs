@@ -231,7 +231,10 @@ async fn ca_emits_signed_audit_records_verifiable_with_ca_public_key() {
         .revoke(RevocationRequest {
             certificate_id: leaf_id,
             reason: RevocationReason::KeyCompromise,
-            requestor: "audit-e2e-admin".to_string(),
+            // gRPC shape: the verified admin peer is the caller, the bound
+            // requestor is recorded as on_behalf_of (AU-3, FAU_GEN.2).
+            requestor: "admin::audit-e2e".to_string(),
+            authenticated_caller: Some(crate::issuance::tests::test_caller("CN=ops-admin")),
             justification: Some("AU-10 live wiring proof".to_string()),
         })
         .await
@@ -245,6 +248,17 @@ async fn ca_emits_signed_audit_records_verifiable_with_ca_public_key() {
         .iter()
         .find(|e| e.event_type == "certificate_revocation")
         .expect("a certificate_revocation audit event");
+    // AU-3 / AU-10: the signed record attributes the authenticated caller.
+    assert_eq!(revocation_evt.actor, "CN=ops-admin");
+    let details = revocation_evt.details.as_ref().expect("revocation details");
+    assert_eq!(details["on_behalf_of"], "admin::audit-e2e");
+    assert_eq!(details["authenticated_caller"], "CN=ops-admin");
+    // RFC-001: the authenticating certificate's issuer and serial.
+    assert_eq!(
+        details["authenticated_caller_issuer"],
+        "CN=Service Identity CA"
+    );
+    assert_eq!(details["authenticated_caller_serial"], "01ab");
     assert!(
         revocation_evt.signature.is_some(),
         "production CA audit record must be signed (AU-10)"

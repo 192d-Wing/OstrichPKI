@@ -24,8 +24,10 @@ CA is **optional**, so bearer/admin clients (no cert) still work over `https://`
 
 This bridge configures the CA **REST** listener only. The CA gRPC listener
 (50051, used by EST and ACME) is separate: it always requires TLS 1.3 mutual
-TLS with its own certificates (`CA_GRPC_TLS_*`) and its own client-subject
-allowlist (`CA_GRPC_ALLOWED_CLIENT_SUBJECTS`). See `ca-grpc-mtls.md`. The
+TLS with its own certificates (`CA_GRPC_TLS_*`) and its own per-role client
+subject lists (`CA_GRPC_ACME_CLIENT_SUBJECTS`, `CA_GRPC_EST_CLIENT_SUBJECTS`,
+`CA_GRPC_ADMIN_CLIENT_SUBJECTS`) with a per-method rule table. See
+`ca-grpc-mtls.md`. The
 `TLS_*` / `CA_TRUSTED_PROXY_SUBJECTS` settings below do not affect it.
 
 ## What lives where

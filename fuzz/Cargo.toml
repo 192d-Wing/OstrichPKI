@@ -76,3 +76,9 @@ name = "fuzz_grpc_peer_subject"
 path = "fuzz_targets/fuzz_grpc_peer_subject.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_grpc_requestor"
+path = "fuzz_targets/fuzz_grpc_requestor.rs"
+test = false
+doc = false

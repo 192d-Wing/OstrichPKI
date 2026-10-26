@@ -55,6 +55,12 @@ pub enum Error {
     #[error("Approval request not found: {0}")]
     ApprovalRequestNotFound(uuid::Uuid),
 
+    /// The authenticated service caller may not use this profile (a CA
+    /// profile requested over gRPC, SEC-102). Fixed message; maps to gRPC
+    /// PERMISSION_DENIED / HTTP 403.
+    #[error("certificate profile is not permitted for this client")]
+    ProfileNotPermitted,
+
     /// Generic resource-not-found (maps to HTTP 404).
     #[error("Not found: {0}")]
     NotFound(String),

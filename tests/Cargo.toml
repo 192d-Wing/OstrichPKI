@@ -127,3 +127,7 @@ rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 zeroize = { workspace = true }
+# grpc_mtls_e2e: raw unary call to an unmapped method path.
+tonic-prost = { workspace = true }
+# grpc_mtls_e2e: client certificate that expires during a live connection.
+time = { workspace = true }

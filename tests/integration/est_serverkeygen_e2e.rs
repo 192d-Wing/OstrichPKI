@@ -234,12 +234,28 @@ async fn est_serverkeygen_full_stack_over_http() {
     });
     let mut profile = ostrich_x509::CertificateProfile::tls_client(365);
     profile.name = "tls_client".to_string();
-    ca.add_profile(profile);
+    ca.add_profile(profile.clone());
+    // SEC-001: the EST namespace may request tls_client.
+    let issuer_profiles = Arc::new(
+        ostrich_ca::grpc_authz::IssuerProfilePolicy::parse(
+            &[],
+            &["tls_client".to_string()],
+            None,
+            &[profile],
+        )
+        .expect("issuer profile policy"),
+    );
 
     // --- Serve the CA gRPC service ---
     let ca_port = free_port();
     let ca_addr: std::net::SocketAddr = format!("127.0.0.1:{ca_port}").parse().unwrap();
-    let grpc = ostrich_ca::CaGrpcService::new(Arc::new(ca));
+    // Plaintext, no authorization layer: the debug-only dev service (the
+    // mTLS service refuses calls without a verified peer, SC-24).
+    let grpc = ostrich_ca::CaGrpcService::for_mode(
+        &ostrich_common::GrpcServerMode::InsecureDevPlaintext,
+        Arc::new(ca),
+        issuer_profiles,
+    );
     tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(

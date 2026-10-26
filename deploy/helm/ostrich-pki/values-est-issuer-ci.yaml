@@ -23,8 +23,11 @@ ca:
   grpc:
     tls:
       existingSecret: ostrich-ci-ca-grpc-tls
-    allowedClientSubjects:
+    # EST-only profile: no ACME issuer client, no admin client.
+    acmeClientSubjects: []
+    estClientSubjects:
       - "CN=est-server"
+    adminClientSubjects: []
 
 est:
   allowBearerAuth: false

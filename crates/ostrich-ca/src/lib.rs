@@ -31,6 +31,7 @@ pub mod approval;
 pub mod ca;
 pub mod error;
 pub mod grpc;
+pub mod grpc_authz;
 pub mod issuance;
 pub mod rest;
 pub mod revocation;
@@ -48,6 +49,6 @@ pub use approval::{ApprovalEngine, ApprovalRequest, ApprovalStatus, RequestType}
 pub use ca::CertificateAuthority;
 pub use error::{Error, Result};
 pub use grpc::CaGrpcService;
-pub use issuance::{CertificateIssuer, IssuanceRequest};
+pub use issuance::{AuthenticatedCaller, CertificateIssuer, IssuanceRequest};
 pub use rest::create_router;
-pub use revocation::{RevocationManager, RevocationRequest};
+pub use revocation::{CrlActor, RevocationManager, RevocationRequest};

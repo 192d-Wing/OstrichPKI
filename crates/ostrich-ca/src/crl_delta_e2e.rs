@@ -108,6 +108,7 @@ async fn insert_and_revoke(
             certificate_id: id,
             reason: RevocationReason::KeyCompromise,
             requestor: "crl-delta-e2e".to_string(),
+            authenticated_caller: None,
             justification: None,
         })
         .await
