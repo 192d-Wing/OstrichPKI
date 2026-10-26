@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 3.5
+**Document Version:** 3.6
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -134,9 +134,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   missing, forged, stale, expired and inactivity-locked sessions are all
   rejected (fail-closed). It is a validity check, not a cookie-presence check.
   The validated `SessionData` is passed to the proxy (line 70).
-- Web UI BFF proxy target and credential (2026-10-26, branch
-  `claude/web-ui-proxy-raw-path`, uncommitted; closes POAM-2026-10-23-43
-  pending first green CI run). In
+- Web UI BFF proxy target and credential (2026-10-26, merged to `main` in
+  [PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191), merge commit 635c5c3; POAM-2026-10-23-43 closed on the
+  green CI [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224)). In
   [proxy.rs](../../services/web-ui/src/server/proxy.rs), `proxy_to_service`
   (line 250) builds the backend path from the raw, still-encoded request path
   and runs `validate_backend_path` (line 219) before contacting the backend, so
@@ -670,8 +670,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   (AU-3; POAM-2026-10-23-51). No automated test covers this record (QA-001).
   The new dns-01 startup refusals and the no-name-server warning are service
   log only
-- 🟡 **Web UI BFF proxy path rejection (2026-10-26, branch
-  `claude/web-ui-proxy-raw-path`, uncommitted).** Each request refused by
+- 🟡 **Web UI BFF proxy path rejection (2026-10-26, merged in PR #191,
+  merge commit 635c5c3).** Each request refused by
   `validate_backend_path` emits one `tracing::warn!` security event,
   `security_event="proxy_path_rejected"`, in
   [proxy.rs](../../services/web-ui/src/server/proxy.rs) (lines 262-292), with
@@ -740,8 +740,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   Residuals: handler glue (M13h) and the live `audit_signing_e2e` assertions
   NOT RUN (POAM-2026-10-23-36); `on_behalf_of` is a namespace-bound claim,
   not a verified account (POAM-2026-10-23-35)
-- 🟡 Web UI `proxy_path_rejected` event (2026-10-26, branch
-  `claude/web-ui-proxy-raw-path`, uncommitted): who = `actor`
+- 🟡 Web UI `proxy_path_rejected` event (2026-10-26, merged in PR #191,
+  merge commit 635c5c3): who = `actor`
   (`SessionData.user_subject`, or `anonymous`); what = `method`, `service`,
   `reason`; where = `client_ip`, `request_id`, `path`; outcome =
   `outcome="denied"`; when = the subscriber timestamp. `client_ip` comes from
@@ -2895,14 +2895,14 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
   literal goes through `safeInternalPath`, and every server-derived path
   segment is encoded. Server-side validation in the BFF and the backends
   remains the control. The BFF proxy's percent-decoded path
-  (POAM-2026-10-23-43) is fixed by the next item and is closed pending the
-  first green CI run. Evidence: run-record script `safe-path-check.mjs`
+  (POAM-2026-10-23-43) is fixed by the next item and is closed (PR #191,
+  CI [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224)). Evidence: run-record script `safe-path-check.mjs`
   181 checks / 0 failures and `router-smoke.mjs` 5 / 0 (manual; no web-ui
   test runner, POAM-2026-10-23-44); browser smoke against a mock BFF
   ([TEST_EVIDENCE.md §2.11](TEST_EVIDENCE.md#211-test-run-2026-10-26-web-ui-react-router-v7-migration))
-- ✅ Web UI BFF proxy path validation (2026-10-26, branch
-  `claude/web-ui-proxy-raw-path`, uncommitted; closes POAM-2026-10-23-43
-  pending first green CI run). The seven `/api/{svc}/{*path}` handlers in
+- ✅ Web UI BFF proxy path validation (2026-10-26, merged to `main` in
+  [PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191), fix commit e56a09e, merge commit 635c5c3; closes
+  POAM-2026-10-23-43, closed on the green CI [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224)). The seven `/api/{svc}/{*path}` handlers in
   [proxy.rs](../../services/web-ui/src/server/proxy.rs) no longer use axum's
   percent-decoded `Path<String>` capture. `proxy_to_service` (line 250) passes
   the raw `request.uri().path()` to `validate_backend_path` (line 219). The
@@ -2920,7 +2920,10 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
   tests (mixed-case and partial encodings, lowercase escapes, overlong UTF-8,
   trailing slash and prefix edge cases) and router-level tests against a local
   echo backend that assert zero backend hits for every rejected path. Results:
-  `cargo test -p ostrich-web-ui` 41 / 0, local
+  `cargo test -p ostrich-web-ui` 41 / 0, local, and in CI the `Build & test`
+  job (`cargo test --workspace --lib --bins --locked`, ubuntu-24.04) ran the
+  `ostrich_web_ui` unit tests 41 passed / 0 failed / 0 ignored in run
+  40360909224
   ([TEST_EVIDENCE.md §2.12](TEST_EVIDENCE.md#212-test-run-2026-10-26-web-ui-bff-proxy-raw-path)).
   Accepted residuals: the query is forwarded unvalidated (it cannot change the
   path); `%252F` is forwarded raw (the backend decodes it once, to the literal
@@ -3419,9 +3422,10 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 3.0 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization and verified audit actor (branch `claude/grpc-per-method-authz`, uncommitted; run record `target/agent-workflow/20261025-202226-grpc-per-method/`). AC-3: three role lists, default-deny method table, admin-issuer, requestor and profile checks. AC-5: disjoint issuer / admin identities, one admin certificate per named operator. AC-6: per-method least privilege (✅), AC-6(10) profile allowlists and CA-profile refusal (✅), AC-6(9) Revoke / GenerateCrl audited, CheckRevocationStatus unaudited read (🟡); stale POAM-26 gap removed. AU-2: new denial reasons and detail fields, `grpc_listener_started` `clients` / `method_rules` / `issuer_profiles`, `grpc_listener_refused` `grpc_authorization_layer`, revocation and CRL Failure records. AU-3: gRPC actor = verified peer DN with `authenticated_caller*` and `on_behalf_of` (POAM-25 closed pending commit). AU-10: signed records attribute the peer; `audit_signing_e2e` actor assertion NOT RUN. AU-12, CM-6 (role-list, profile and legacy-variable rows), CM-7 (method table, profiles, debug-only plaintext constructor), IA-3 (per-call leaf validity, admin direct-issuance, IA-9 related), SI-10 (requestor validation, const-oid fuzz finding fixed; related SI-11 note). Cross-reference: FMT_SMR.2 → IA-3 added. POA&M IDs 35-38 referenced. Test counts (coder-reported, final tree): `grpc_tls` 66, `grpc_mtls_e2e` 39, `ostrich-ca` 78, ca-server bins 21, `make test-unit` 782. **No control status changed; summary table unchanged (18 / 41 = 44%)** |
 | 3.1 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation (branch `claude/dependabot-remediation`, uncommitted; run record `target/agent-workflow/20261026-dependabot-remediation/`). RA-5: "fails on any new advisory" qualified as RustSec-only (GitHub-only advisories reach us only through Dependabot); npm gate described with its limits (`--prod --audit-level=high`); Dependabot ecosystems listed (npe-portal not covered); 2026-10-26 evidence (21 open alerts; full `pnpm audit` 28 → 2 moderate); new gaps for GHSA-only coverage, npm dev/medium not gated, npe-portal unscanned and untriaged alerts (POAM-39, -40, -42). SI-2: `pnpm audit` named in Implementation; new 2026-10-26 evidence table (19 GHSAs, scope, first-patched version, days open against proposed windows); residual react-router → POAM-39; timeliness gap. Local gates only. **No control status or percentage changed** (RA-5 and SI-2 stay 🟡 Partial; summary table not recalculated) |
 | 3.2 | 2026-10-26 | OstrichPKI Team | react-router v7 migration in web-ui (branch `claude/react-router-v7`, uncommitted; run record `target/agent-workflow/20261026-091035-react-router-v7/`). SI-2: GHSA-wrjc-x8rr-h8h6 and GHSA-337j-9hxr-rhxg marked remediated (react-router 7.18.4), overdue; residual line closed; new 2026-10-26 evidence record; both stay in the SI-2(c) missed count. RA-5: 2026-10-26 full `pnpm audit` = 0 recorded; POAM-39 migration marked done; triage gap reworded. SI-10: web-ui same-origin navigation guard and encoded path segments added as client-side defence in depth, with the standing rule; BFF proxy decode gap → POAM-43, no web-ui test runner → POAM-44. CA-5: POAM-39 closure recorded in NIAP_GAP_ANALYSIS.md §11 (no CA-5 section exists here; none added). Local evidence only. **No control status or percentage changed** (SI-2 and RA-5 stay 🟡 Partial; SI-10 stays 🟢 Good (85%); summary table not recalculated) |
-| 3.3 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path (branch `claude/web-ui-proxy-raw-path`, uncommitted, based on `main` @ 82cdcd4 (PR #188 merged); run record `target/agent-workflow/20261026-093447-proxy-raw-path/`). SI-10: new evidence item for `validate_backend_path` / `proxy_to_service` (raw path, strict decoder, fail-closed 400; residuals listed); the POAM-43 reference in the client-side guard item now says closed pending first green CI run; gaps POAM-45 (`/next` open redirect) and POAM-46 (npe-portal proxy) added. AC-3: web-ui session gate bullet rewritten with code references (`require_session` validates against `SessionManager`); the stale gap claiming the proxy checked only cookie presence removed (verified against `middleware/session.rs`, lines 36, 62, 70); new BFF proxy target / credential bullet (inbound `Authorization`, `Cookie`, `X-Npe-*` stripped); gaps POAM-46 and POAM-48 (cross-site GET); FDP_ACF.1 listed as supporting only. AU-2 / AU-3: `proxy_path_rejected` event and its fields, including `client_ip`, recorded as 🟡 (log line only). AU-12: web-ui `ostrich-audit` gap added (POAM-47). Local evidence only (`cargo test -p ostrich-web-ui` 41 / 0, re-run by the scribe). **No control status or percentage changed** (AC-3 stays 🟢 Implemented, SI-10 🟢 Good (85%), AU-2 / AU-12 🟢 Compliant, AU-3 ✅; summary table not recalculated) |
+| 3.3 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path (branch `claude/web-ui-proxy-raw-path`, later merged as PR #191, based on `main` @ 82cdcd4 (PR #188 merged); run record `target/agent-workflow/20261026-093447-proxy-raw-path/`). SI-10: new evidence item for `validate_backend_path` / `proxy_to_service` (raw path, strict decoder, fail-closed 400; residuals listed); the POAM-43 reference in the client-side guard item now says closed pending first green CI run; gaps POAM-45 (`/next` open redirect) and POAM-46 (npe-portal proxy) added. AC-3: web-ui session gate bullet rewritten with code references (`require_session` validates against `SessionManager`); the stale gap claiming the proxy checked only cookie presence removed (verified against `middleware/session.rs`, lines 36, 62, 70); new BFF proxy target / credential bullet (inbound `Authorization`, `Cookie`, `X-Npe-*` stripped); gaps POAM-46 and POAM-48 (cross-site GET); FDP_ACF.1 listed as supporting only. AU-2 / AU-3: `proxy_path_rejected` event and its fields, including `client_ip`, recorded as 🟡 (log line only). AU-12: web-ui `ostrich-audit` gap added (POAM-47). Local evidence only (`cargo test -p ostrich-web-ui` 41 / 0, re-run by the scribe). **No control status or percentage changed** (AC-3 stays 🟢 Implemented, SI-10 🟢 Good (85%), AU-2 / AU-12 🟢 Compliant, AU-3 ✅; summary table not recalculated) |
 | 3.4 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted; run record `target/agent-workflow/20261026-091032-dns01-resolver/`). CM-6: `ACME_DNS01_RESOLVERS` / `--dns01-resolvers` baseline (default system resolvers, at most 8 IP literals, startup refusals), Helm `acme.dns01Resolvers` and NetworkPolicy egress; helm render NOT RUN. SI-10: dns-01 identifier, DNS-answer and resolver-list validation, bounds-checked acmeIdentifier parsing; `new_order` explicitly not evidence (POAM-49); related SI-11 challenge-error item. SC-17: dns-01 domain-control evidence (🟡 item) and ACME gaps (POAM-41, -49, -52); related SC-21 (not in the TOE; environment assumption) and SC-5 (83 s per validation, concurrency unbounded, POAM-50); SC-20 not claimed. AU-2: no new events; record content gap (POAM-51). IA-5: challenge validation is not IA-5(1) evidence. Tests re-run by the scribe: `ostrich-acme` lib 72/72, acme-server bins 7/7, `make test-unit` 817 / 0 / 1. **No control status changed; summary table unchanged (18 / 41 = 44%)** |
 | 3.5 | 2026-10-26 | OstrichPKI Team | CI evidence gaps (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; run record `target/agent-workflow/20261026-082358-ci-evidence-gaps/`). AU-3, AU-10, AU-12: name the new DB-backed `tests/integration/ca_grpc_audit_e2e.rs` and the `integration-db.yml` job, CI path added, **NOT RUN**; M13h kill argued by construction, not executed. AC-6(9), AU-2, AU-9: POAM-36 / -31 cross-references updated. No new control sections; **no status or percentage changes** |
+| 3.6 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path CI evidence ([PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191), fix commit e56a09e, merge commit 635c5c3, merged 2026-10-26T16:45:42Z). GitHub Actions [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224) `Build & test` green (`ostrich_web_ui` 41 passed / 0 failed / 0 ignored). AC-3, AU-2, AU-3 and SI-10 web-ui proxy items: "branch, uncommitted" replaced by the merge reference; POAM-2026-10-23-43 closed pending first green CI run → Closed. AU-2 / AU-3 `proxy_path_rejected` stays 🟡 (log line only, POAM-47). POAM-45 to -48 unchanged. **No control status or percentage changed** |
 
 ---
 
