@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 3.5
+**Document Version:** 3.6
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -152,6 +152,28 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   `router_strips_cookie_and_npe_identity_headers_before_backend`
   (`cargo test -p ostrich-web-ui` 41 / 0, local;
   [TEST_EVIDENCE.md §2.12](TEST_EVIDENCE.md#212-test-run-2026-10-26-web-ui-bff-proxy-raw-path))
+- NPE portal BFF proxy target and forwarded identity (2026-10-26, branch
+  `claude/npe-portal-proxy-raw-path`, uncommitted; closes POAM-2026-10-23-46
+  pending first green CI run). In
+  [proxy.rs](../../services/npe-portal/src/server/proxy.rs), `proxy_ca`
+  (line 50) and `proxy_est` (line 68) call `checked_backend_path` (line 116).
+  It validates the raw request path with the shared
+  `ostrich_common::util::proxy_path::validate_backend_path` before
+  `proxy_to_service` (line 188) runs. The session's `X-Npe-*` identity
+  therefore goes over the trusted-proxy mTLS bridge only to the CA / EST
+  resource the URL names. A rejected path gets 400 `invalid_path`
+  (`invalid_path_response`, line 163). The backend is not contacted and no
+  identity header is sent (details under SI-10). Inbound `X-Npe-*`,
+  `Cookie` and `Authorization` headers are still stripped
+  (`is_stripped_inbound_header`, line 304). The CA / EST backends still make
+  the authorization decision, so this supports FDP_ACF.1 only (also AC-4).
+  Each denial is recorded as an `ostrich_audit` `EventType::Authorization` /
+  `EventOutcome::Failure` record (see AU-2). Tests:
+  `qa_unsafe_path_matrix_all_methods_both_services`,
+  `identity_attached_only_on_valid_path`,
+  `qa_through_require_session_layer_rejects_unsafe_and_forwards_safe`
+  (`cargo test -p ostrich-npe-portal` 42 / 0, local;
+  [TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-npe-portal-bff-proxy-raw-path))
 - Intentionally public endpoints are explicitly allowlisted with RFC / NIAP
   justifications at `crates/ostrich-ocsp/src/rest.rs::create_router` (RFC 6960,
   NIAP FDP_IFC.1) and `crates/ostrich-acme/src/rest.rs::create_router`
@@ -209,8 +231,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   connects an actual user store. No production deployment can bypass RBAC.
 - Web UI: a cross-site top-level link still makes the BFF send a backend GET
   with the user's backend token, because the session cookie is `SameSite=Lax`
-  (POAM-2026-10-23-48). The npe-portal proxy still forwards a percent-decoded
-  path (POAM-2026-10-23-46). The earlier gap saying the web-ui proxy checked
+  (POAM-2026-10-23-48). The earlier gap saying the web-ui proxy checked
   only that the cookie was present was out of date and has been removed:
   `require_session` validates the session against `SessionManager` (see
   above).
@@ -227,6 +248,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - `services/web-ui/src/server/proxy.rs:219` - `validate_backend_path`, raw-path validation of the proxied backend path
 - `services/web-ui/src/server/proxy.rs:250` - `proxy_to_service`, validation before backend contact, session-bound credential only
 - `services/web-ui/src/server/proxy.rs:432` - `is_stripped_inbound_header` (`Authorization`, `Cookie`, `X-Npe-*`, hop-by-hop)
+- `crates/ostrich-common/src/util/proxy_path.rs:111` - `validate_backend_path`, the canonical shared raw-path validator (web-ui still has an identical local copy until the follow-up switch)
+- `services/npe-portal/src/server/proxy.rs:116` - `checked_backend_path`, raw-path validation before `proxy_to_service` (line 188) attaches the `X-Npe-*` identity
+- `services/npe-portal/src/server/proxy.rs:304` - `is_stripped_inbound_header` (npe-portal)
 - Tests: `crates/ostrich-common/src/auth/rbac.rs` — `rbac_matrix_*` and
   `separation_of_duties_*` tests exercise the matrix end-to-end.
 
@@ -273,6 +297,16 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   are not admitted by either policy; they reach the port through
   `kubectl port-forward` or an operator-added policy (runbook, Admin access). It also keeps other in-cluster pods
   from holding the listener's pre-handshake connection slots (SC-5).
+- Application layer, BFF proxies. This bullet is supporting evidence only and
+  does not change the status or scope above. Both BFF proxies build the backend
+  path from the raw request path and refuse unsafe segments before any backend
+  contact. A request and its forwarded credential therefore flow only to the
+  backend resource the URL names: the web-ui backend bearer token (commit
+  e56a09e, POAM-2026-10-23-43) and the npe-portal `X-Npe-*` identity (branch
+  `claude/npe-portal-proxy-raw-path`, uncommitted, POAM-2026-10-23-46). The
+  shared validator is `ostrich_common::util::proxy_path` (details under SI-10
+  and AC-3). Both proxies also keep their fixed service allowlists: npe-portal
+  allows CA, EST and OCSP.
 
 **Evidence:**
 
@@ -681,6 +715,23 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   `qa_rejection_emits_au3_security_event_without_secrets`. This is a log line,
   not an `ostrich-audit` record; like the rest of the web-ui events it is not
   hash-chained or signed (POAM-2026-10-23-47)
+- 🟡 **NPE portal BFF proxy path rejection (2026-10-26, branch
+  `claude/npe-portal-proxy-raw-path`, uncommitted; POAM-2026-10-23-46).** Each
+  CA / EST request refused by `checked_backend_path` in
+  [proxy.rs](../../services/npe-portal/src/server/proxy.rs) produces two
+  records. The first is a `tracing::warn!` event with
+  `security_event="proxy_path_rejected"` (lines 134-145), using the same field
+  schema as web-ui. The second is an `ostrich_audit::AuditEvent` with
+  `EventType::Authorization` / `EventOutcome::Failure`, action
+  `proxy_path_rejected` and target `npe-portal/{svc}`, carrying its
+  `event_hash` and no session id. It is built by `proxy_path_rejected` in
+  [audit.rs](../../services/npe-portal/src/server/audit.rs) (line 131).
+  Test: `rejection_emits_au3_security_event_without_secrets` asserts both
+  records. The `ostrich_audit` record goes to the `ostrich_audit` tracing
+  target, not to the hash-chained, signed `DatabaseAuditSink`. This is the
+  same pre-existing `POAM:` note as the portal's login and consent records
+  (`audit.rs` module header). Successful proxied requests are logged at DEBUG
+  only and are audited by the CA / EST backends.
 
 **Code Annotation:** NIAP PP-CA v2.1: FAU_GEN.1 — Phase 1b SCMS coverage complete
 
@@ -764,6 +815,27 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   [integration-db.yml](../../.github/workflows/integration-db.yml), which has
   not run. M13h: kill argued by construction, not executed. The REST CRL
   handler glue still has no live test (POAM-2026-10-23-36)
+- 🟡 NPE portal `proxy_path_rejected` records (2026-10-26, branch
+  `claude/npe-portal-proxy-raw-path`, uncommitted). The fields are:
+  - who: `actor`, the session's certificate CN, Debug-escaped in the warn
+    event and JSON-escaped in the `ostrich_audit` record;
+  - what: `method`, `service`, `reason`, and the action `proxy_path_rejected`;
+  - where: `client_ip`, `path` (raw, Debug-escaped) and target
+    `npe-portal/{svc}`;
+  - outcome: `outcome="denied"` / `EventOutcome::Failure`;
+  - when: the record timestamp.
+
+  `request_id` is always `-` because the portal has no request-id middleware,
+  and an inbound `X-Request-Id` is not logged because the client controls it.
+  `client_ip` comes from `client_ip` in
+  [router.rs](../../services/npe-portal/src/server/router.rs) (line 49): the
+  left-most `X-Forwarded-For` entry, else `X-Real-IP`. It is logged only if it
+  parses as an IP address (otherwise `-` in the event and absent from the
+  audit record). The parse stops field injection but not spoofing, so the
+  value is only as trustworthy as the fronting load balancer, which is assumed
+  to overwrite `X-Forwarded-For` / `X-Real-IP` (operational assumption; npe
+  raw-path review SEC-002 / NIST-004). The session id and the session cookie
+  are not logged, which the log-capture test checks
 
 **Phase 12 Enhancements:**
 
@@ -1145,6 +1217,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   assembles to mirror `start_grpc_listener` (not `start_grpc_listener`
   itself); job [integration-db.yml](../../.github/workflows/integration-db.yml)
   (POAM-2026-10-23-36)
+- 🟡 NPE portal proxy denials (2026-10-26, branch
+  `claude/npe-portal-proxy-raw-path`, uncommitted): unlike web-ui, the portal
+  generates a canonical `ostrich_audit::AuditEvent` (Authorization / Failure)
+  for each rejected proxy path, as it already does for login, consent and
+  logout. The records go to the `ostrich_audit` tracing target and not to
+  `DatabaseAuditSink`, so AU-9 / AU-10 are not claimed for the portal
+  (`audit.rs` module `POAM:` note)
 
 **Evidence Required for ATO:**
 
@@ -2927,9 +3006,50 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
   `%2F`); decoded bytes >= 0x80, including overlong UTF-8 `%C0%AF`, are passed
   through (they cannot form a delimiter); a trailing slash is now 400;
   `..;` segments are passed through (axum backends do not strip path
-  parameters). Not yet fixed: the same defect in the npe-portal proxy
-  (POAM-2026-10-23-46) and the web-ui `/next/{*rest}` open redirect
-  (POAM-2026-10-23-45)
+  parameters). The same defect in the npe-portal proxy is fixed by the next
+  item (POAM-2026-10-23-46). Not yet fixed: the web-ui `/next/{*rest}` open
+  redirect (POAM-2026-10-23-45)
+- ✅ NPE portal BFF proxy path validation and shared validator (2026-10-26,
+  branch `claude/npe-portal-proxy-raw-path`, uncommitted; closes
+  POAM-2026-10-23-46 pending first green CI run). The validator now has a
+  canonical shared copy in
+  [proxy_path.rs](../../crates/ostrich-common/src/util/proxy_path.rs)
+  (`ostrich_common::util::proxy_path`): `validate_backend_path` (line 111),
+  `percent_decode_segment` (line 63) and `PathRejection` (line 25). It has the
+  same rules and reason tokens as the web-ui item above. In
+  [proxy.rs](../../services/npe-portal/src/server/proxy.rs), `proxy_ca`
+  (line 50) and `proxy_est` (line 68) no longer use axum's percent-decoded
+  `Path<String>` capture. `checked_backend_path` (line 116) validates the raw
+  `request.uri().path()`. A rejection is fail-closed: 400 `invalid_path` with
+  a fixed body (`invalid_path_response`, line 163; SI-11), no backend contact
+  and no `X-Npe-*` identity, plus the AU-2 / AU-3 records (see AU-2, AU-3).
+  Valid paths are forwarded still encoded, with the raw query unchanged;
+  `/api/ocsp` is unchanged. Tests:
+  - 17 `proxy_path` unit tests in ostrich-common, including the exhaustive
+    256-escape table `qa_every_single_byte_escape_is_classified_per_spec` and
+    `qa_accepted_remainder_is_an_unmodified_suffix_of_the_input`;
+  - 14 npe-portal `server::proxy::tests` router-level tests against a local
+    echo backend, for example `qa_unsafe_path_matrix_all_methods_both_services`
+    (25 unsafe tails x 7 methods x CA and EST: 400, fixed body, zero backend
+    hits).
+
+  Results (local, re-run by the scribe): `cargo test -p ostrich-common --lib`
+  278 / 0, `cargo test -p ostrich-npe-portal` 42 / 0.
+  SA-11 evidence: the new fuzz target
+  [fuzz_proxy_path.rs](../../fuzz/fuzz_targets/fuzz_proxy_path.rs) checks that
+  the validator never panics, returns only an unmodified suffix of its input,
+  and accepts only non-empty, decodable, non-dot segments without delimiter or
+  control bytes. QA ran it for 259,220 runs in 60 s with no crash, and a
+  mutation that disabled segment checking was caught (npe-portal 5 failed,
+  ostrich-common 10 failed). Details:
+  [TEST_EVIDENCE.md §2.15](TEST_EVIDENCE.md#215-test-run-2026-10-26-npe-portal-bff-proxy-raw-path).
+  Accepted residuals are the same as for web-ui (query verbatim, `%252F`
+  raw, bytes >= 0x80 passed through, `..;` passed through, trailing slash
+  400). In addition, `/api/ca/` and `/api/est/` with an empty remainder get an
+  axum 404 before the handler runs and are not logged. web-ui still uses its
+  own identical copy of the validator, with no equivalence test; switching
+  web-ui to the shared module is a follow-up (npe raw-path review QA-002 /
+  SEC-003)
 - 🟡 Related SI-11 (error handling), 2026-10-26: gRPC errors that are not
   client-correctable return `INTERNAL` "<op> failed: internal error" with the
   detail logged (`grpc_status`, test `grpc_status_hides_internal_errors`);
@@ -2977,8 +3097,10 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
 **Gaps:**
 
 - ⚠️ Web UI `/next/{*rest}` legacy redirect builds `Location` from a decoded
-  path: open redirect, CWE-601 (POAM-2026-10-23-45); the npe-portal proxy
-  forwards a percent-decoded path (POAM-2026-10-23-46)
+  path: open redirect, CWE-601 (POAM-2026-10-23-45)
+- ⚠️ Two copies of the BFF proxy path validator exist until web-ui is switched
+  to `ostrich_common::util::proxy_path` (follow-up; the shared module is
+  canonical)
 - ⚠️ No comprehensive malformed CSR rejection testing
 - ⚠️ Need dedicated unit tests for CSR signature verification with test vectors
 
@@ -3358,7 +3480,10 @@ adds a self-service enrollment portal authenticated by mTLS client certificate.
 - **SC-8 (Transmission Confidentiality):** TLS 1.3 / mTLS via `ostrich_common::tls`.
 - **AU-2 / AU-3 / AU-12 (Audit):** login success/failure, USG consent, and logout
   emit structured `EventType::Authentication` records with actor/outcome/IP/
-  session — `services/npe-portal/src/server/audit.rs`. POAM: records are emitted
+  session — `services/npe-portal/src/server/audit.rs`. Since 2026-10-26 (branch
+  `claude/npe-portal-proxy-raw-path`, uncommitted), each rejected CA/EST proxy
+  path also emits an `EventType::Authorization` / `EventOutcome::Failure`
+  record (`proxy_path_rejected`, no session id). POAM: records are emitted
   to the audit pipeline via the `ostrich_audit` tracing target; attach a
   `DatabaseAuditSink` (AU-9(3)/AU-10 hash chain + signing) once the portal is
   provisioned with the audit store.
@@ -3382,6 +3507,14 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
   (`AuthenticatedUser::from_trusted_proxy`), so own-scope checks (e.g. "my
   applications") resolve consistently across requests. The portal strips any
   inbound `X-Npe-*` headers so the identity cannot be spoofed.
+- **SI-10 / AC-3 (Target integrity, 2026-10-26, branch
+  `claude/npe-portal-proxy-raw-path`, uncommitted; POAM-2026-10-23-46):** the
+  portal builds the backend path from the raw request path and refuses dot
+  segments, encoded delimiters, control characters, empty segments and
+  malformed escapes before attaching the identity. The forwarded identity
+  therefore reaches only the CA / EST resource the URL names
+  (`checked_backend_path` in `services/npe-portal/src/server/proxy.rs`, shared
+  validator `ostrich_common::util::proxy_path`; see SI-10).
 - **CM-6 (Fail Secure):** `ca-server` refuses to start when
   `CA_TRUSTED_PROXY_SUBJECTS` is set without a client CA; `est-server` refuses to
   start when `EST_TRUSTED_PROXY_SUBJECTS` is set without a portal/enrollment
@@ -3422,6 +3555,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 3.3 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path (branch `claude/web-ui-proxy-raw-path`, uncommitted, based on `main` @ 82cdcd4 (PR #188 merged); run record `target/agent-workflow/20261026-093447-proxy-raw-path/`). SI-10: new evidence item for `validate_backend_path` / `proxy_to_service` (raw path, strict decoder, fail-closed 400; residuals listed); the POAM-43 reference in the client-side guard item now says closed pending first green CI run; gaps POAM-45 (`/next` open redirect) and POAM-46 (npe-portal proxy) added. AC-3: web-ui session gate bullet rewritten with code references (`require_session` validates against `SessionManager`); the stale gap claiming the proxy checked only cookie presence removed (verified against `middleware/session.rs`, lines 36, 62, 70); new BFF proxy target / credential bullet (inbound `Authorization`, `Cookie`, `X-Npe-*` stripped); gaps POAM-46 and POAM-48 (cross-site GET); FDP_ACF.1 listed as supporting only. AU-2 / AU-3: `proxy_path_rejected` event and its fields, including `client_ip`, recorded as 🟡 (log line only). AU-12: web-ui `ostrich-audit` gap added (POAM-47). Local evidence only (`cargo test -p ostrich-web-ui` 41 / 0, re-run by the scribe). **No control status or percentage changed** (AC-3 stays 🟢 Implemented, SI-10 🟢 Good (85%), AU-2 / AU-12 🟢 Compliant, AU-3 ✅; summary table not recalculated) |
 | 3.4 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted; run record `target/agent-workflow/20261026-091032-dns01-resolver/`). CM-6: `ACME_DNS01_RESOLVERS` / `--dns01-resolvers` baseline (default system resolvers, at most 8 IP literals, startup refusals), Helm `acme.dns01Resolvers` and NetworkPolicy egress; helm render NOT RUN. SI-10: dns-01 identifier, DNS-answer and resolver-list validation, bounds-checked acmeIdentifier parsing; `new_order` explicitly not evidence (POAM-49); related SI-11 challenge-error item. SC-17: dns-01 domain-control evidence (🟡 item) and ACME gaps (POAM-41, -49, -52); related SC-21 (not in the TOE; environment assumption) and SC-5 (83 s per validation, concurrency unbounded, POAM-50); SC-20 not claimed. AU-2: no new events; record content gap (POAM-51). IA-5: challenge validation is not IA-5(1) evidence. Tests re-run by the scribe: `ostrich-acme` lib 72/72, acme-server bins 7/7, `make test-unit` 817 / 0 / 1. **No control status changed; summary table unchanged (18 / 41 = 44%)** |
 | 3.5 | 2026-10-26 | OstrichPKI Team | CI evidence gaps (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; run record `target/agent-workflow/20261026-082358-ci-evidence-gaps/`). AU-3, AU-10, AU-12: name the new DB-backed `tests/integration/ca_grpc_audit_e2e.rs` and the `integration-db.yml` job, CI path added, **NOT RUN**; M13h kill argued by construction, not executed. AC-6(9), AU-2, AU-9: POAM-36 / -31 cross-references updated. No new control sections; **no status or percentage changes** |
+| 3.6 | 2026-10-26 | OstrichPKI Team | npe-portal BFF proxy raw path and shared validator (branch `claude/npe-portal-proxy-raw-path`, uncommitted, based on `main` @ 2eb959a; run record `target/agent-workflow/20261026-113138-npe-proxy-raw-path/`). SI-10: new evidence item for `ostrich_common::util::proxy_path` (canonical) and npe-portal `checked_backend_path` / `invalid_path_response`, with the fuzz target `fuzz_proxy_path` (259,220 runs, no crash) and a mutation check as SA-11 evidence; the POAM-46 gap was removed (POAM-45 remains) and a two-copies gap added (web-ui switch is a follow-up). AC-3: new npe-portal bullet (identity forwarded only on a validated path), the POAM-46 gap sentence removed, code references added. AC-4: application-layer supporting bullet for both BFF proxies (status and scope unchanged). AU-2 / AU-3: npe-portal `proxy_path_rejected` warn event and `ostrich_audit` Authorization / Failure record (no session id; `client_ip` relies on the load balancer overwriting XFF / X-Real-IP), recorded as 🟡 because the records are not in `DatabaseAuditSink`. AU-12: npe-portal denial-record bullet (🟡). NPE portal section: proxy denial record and identity-bridge target-integrity bullet. POAM-43 references were left unchanged; branch `claude/close-poam-43` updates them. Local evidence only (`ostrich-npe-portal` 42 / 0, `ostrich-common` lib 278 / 0, `ostrich-web-ui` 41 / 0, re-run by the scribe). **No control status or percentage changed** (AC-3 🟢 Implemented, AC-4 🟡 Partial, SI-10 🟢 Good (85%), AU-2 / AU-12 🟢 Compliant, AU-3 ✅) |
 
 ---
 
