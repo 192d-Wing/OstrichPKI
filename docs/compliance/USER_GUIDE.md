@@ -1,7 +1,7 @@
 # OstrichPKI User Guide
 
-**Document Version:** 1.0
-**Last Updated:** January 2026
+**Document Version:** 1.1
+**Last Updated:** 2026-10-26
 **NIAP Reference:** AGD_USR.1 - User Operational Guidance
 **Audience:** Certificate Subscribers, Application Developers, DevOps Engineers
 
@@ -101,7 +101,19 @@ ACME verifies domain ownership using challenges:
 | DNS-01 | Add DNS TXT record | None |
 | TLS-ALPN-01 | TLS extension | 443 |
 
-**Recommended:** Use DNS-01 for wildcard certificates or when port 80 is not available.
+Which challenges the server offers depends on the identifier:
+
+| Identifier | Example | Challenges offered |
+|------------|---------|--------------------|
+| DNS name | `www.example.com` | HTTP-01, DNS-01, TLS-ALPN-01 |
+| Wildcard | `*.example.com` | DNS-01 only (TXT at `_acme-challenge.example.com.`) |
+| IP address | `192.0.2.1`, `2001:db8::1` | HTTP-01 only |
+
+**Required:** use DNS-01 for wildcard certificates. **Recommended:** use DNS-01
+when port 80 is not available. Only one leftmost `*.` label is supported
+(`*.example.com`, not `*.*.example.com` or `a.*.example.com`), an order may
+contain at most 100 identifiers, and IP addresses must be written in their
+canonical form (for example `2001:db8::1`, not `2001:DB8::1`).
 
 ### 2.5 Requesting a Certificate
 
@@ -519,3 +531,4 @@ If rate limited, wait for the window to expire or contact your administrator for
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | January 2026 | OstrichPKI Team | Initial user guide |
+| 1.1 | 2026-10-26 | OstrichPKI Team | Section 2.4: challenges offered per identifier type (wildcard DNS-01 only, IP HTTP-01 only), identifier limits. Branch `claude/acme-wildcard-identifiers`, uncommitted |

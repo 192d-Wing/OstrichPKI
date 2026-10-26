@@ -1,6 +1,6 @@
 # FIPS Cryptographic Standards Compliance Matrix
 
-**Document Version:** 2.4
+**Document Version:** 2.5
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Enhanced (70-75%)
@@ -955,7 +955,7 @@ workspace `fips` feature.
 3. **Challenge Tokens**
    - ✅ DRBG provides unpredictable tokens
    - ✅ ACME HTTP-01 and TLS-ALPN-01 tokens in use
-   - 🟡 DNS-01: tokens in use; dns-01 validation is functional since 2026-10-26 (branch `claude/dns01-resolver-fix`, uncommitted; POAM-2026-10-23-41 narrowed to CAA and DNSSEC). Kept 🟡 because challenge tokens for all three types are UUID v4 values ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 734), not DRBG output (same migration as ACME nonces)
+   - 🟡 DNS-01: tokens in use; dns-01 validation is functional since 2026-10-26 (branch `claude/dns01-resolver-fix`, uncommitted; POAM-2026-10-23-41 narrowed to CAA and DNSSEC). Kept 🟡 because challenge tokens for all three types are UUID v4 values ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 767; reference refreshed 2026-10-26), not DRBG output (same migration as ACME nonces)
 
 4. **ECDSA k values**
    - ✅ DRBG ready for random k generation
@@ -1251,6 +1251,7 @@ allowed_pqc_algorithms = [
 | 2.2 | 2026-10-25 | OstrichPKI Team | CA gRPC mTLS final refresh after fix round 3. FIPS 205: SLH-DSA CA keys not supported by ca-server (CA key signs audit records; audit sink refuses SLH-DSA; POAM-2026-10-23-34; currently moot, no provider signs SLH-DSA). FIPS 197 TLS endpoints: `grpc_mtls_e2e` 21/21. PR 152 finding cited as PR152-PQC-010. No algorithm, module or status change |
 | 2.3 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation: no algorithm, parameter set, module or self-test changed (hickory DNS and web-ui build-chain lockfile updates only). Challenge-token item corrected: DNS-01 validation is non-functional (POAM-2026-10-23-41); no FIPS claim changed |
 | 2.4 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted): no algorithm, parameter set, module or self-test changed; the dns-01 digest code is unchanged. FIPS 180-4: recorded that the dns-01 and tls-alpn-01 key-authorization SHA-256 uses RustCrypto `sha2` (pre-existing, outside the AWS-LC module; not validated-module evidence). Challenge-token item: DNS-01 validation functional (POAM-41 narrowed); stays 🟡 because tokens are UUID v4, not DRBG output. No FIPS claim raised |
+| 2.5 | 2026-10-26 | OstrichPKI Team | ACME wildcard identifiers (branch `claude/acme-wildcard-identifiers`, uncommitted): no algorithm, parameter set, module or self-test changed (identifier validation, challenge offering, finalize binding and audit records only). Challenge-token line reference refreshed (rest.rs line 767); tokens are still UUID v4 |
 
 ---
 

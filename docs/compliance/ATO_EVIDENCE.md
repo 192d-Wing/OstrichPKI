@@ -1942,6 +1942,8 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | SA-11 / CA-2 / AU-3 / AU-10 / AU-12 / FAU_GEN.1 / FAU_GEN.2 / ATE_FUN.1 | `.github/workflows/integration-db.yml`, artifact `live-db-softhsm-results` (90 days) | CI path added 2026-10-26, **NOT RUN**. Evidence once run: run URL, commit SHA and artifact sha256 (§2.3 procedure). POAM-2026-10-23-31, -36 |
 | SA-11 / CM-6 / FMT_SMR.2 | `.github/workflows/helm.yml`, `scripts/helm-chart-check.sh`, artifact `helm-chart-results` (90 days) | CI path added 2026-10-26, **NOT RUN**; local 15 / 15 with Helm 3.19, not the pinned 3.22.1 (TEST_EVIDENCE.md §2.11) |
 | SA-11 / SI-10 | `.github/workflows/fuzz.yml`, artifacts `fuzz-log-<target>`, `fuzz-crash-<target>` (30 days) | CI path added 2026-10-26, **NOT RUN**; local 30 s smoke 128,734 / 80,018 runs, no crash (TEST_EVIDENCE.md §5.4) |
+| SI-10 / AC-3 / SC-17 / SC-5 / FDP_CER_EXT.1 | `crates/ostrich-acme/src/identifier.rs` (`validate_order_identifiers`, `parse_order_identifier`, `AuthzIdentifier::challenge_types`); `crates/ostrich-acme/src/rest.rs` (`new_order`, `check_challenge_permitted`, `check_order_finalizable`); `fuzz/fuzz_targets/fuzz_acme_order_identifier.rs` | Code implementation, unit tests and fuzz smoke runs (2026-10-26, uncommitted): newOrder identifier validation, wildcard dns-01 only, `ip` http-01 only, finalize binding; DB path NOT RUN; see "ACME wildcard and IP identifier evidence" |
+| AU-2 / AU-3 / AU-12 / FAU_GEN.1 | `crates/ostrich-acme/src/rest.rs` (`new_order_audit_event`, `finalize_refusal_audit_event`, `record_audit`) | Code implementation and unit tests with `MemoryAuditSink` (2026-10-26, uncommitted); handler call sites verified by inspection only; best effort on sink failure; no source IP or request id |
 
 ### CA gRPC mTLS evidence (2026-10-25)
 
@@ -2168,8 +2170,108 @@ acme-server startup log line `dns-01 resolver configuration` with
 `validate_challenge` Failure record for a dns-01 failure from Postgres.
 
 Not claimed: CAA checking, DNSSEC validation in the TOE (SC-21 is an
-environment assumption), multi-perspective validation, wildcard certificates,
+environment assumption), multi-perspective validation, wildcard certificates
+(added by the next change; see "ACME wildcard and IP identifier evidence"),
 and IA-5(1) credit for challenge validation.
+
+### ACME wildcard and IP identifier evidence (2026-10-26)
+
+Branch `claude/acme-wildcard-identifiers`, uncommitted; run record
+`target/agent-workflow/20261026-acme-wildcard/`. Narrows POAM-2026-10-23-49 to
+the name-probing residual, updates POAM-2026-10-23-50, -51 and -52, and adds
+POAM-2026-10-23-55 (NIAP_GAP_ANALYSIS.md §11). Operator guidance:
+[ADMIN_GUIDE.md](ADMIN_GUIDE.md) Section 3.7; subscriber guidance:
+[USER_GUIDE.md](USER_GUIDE.md) Section 2.4. Test details: TEST_EVIDENCE.md
+§2.16.
+
+**Behaviour baseline (CM-6 secure defaults; no new configuration setting).**
+
+| Identifier | Accepted form | Challenges offered and accepted | Refusal |
+|---|---|---|---|
+| `dns` | LDH name, at most 253 octets, no trailing dot | http-01, dns-01, tls-alpn-01; dns-01 omitted when `_acme-challenge.<name>.` exceeds 255 octets | `malformed` (syntax), `unsupportedIdentifier` (type not exactly `dns` / `ip`) |
+| `dns` wildcard | `*.<base>`, single leftmost label, base of at least two labels | dns-01 only, on an authorization for `<base>` with `wildcard: true` | `rejectedIdentifier` (other `*` forms, `*.com`); `malformed` (base too long for dns-01) |
+| `ip` | canonical IPv4 or RFC 5952 IPv6 text | http-01 only (tls-alpn-01 withheld, POAM-2026-10-23-52) | `malformed` (non-canonical); `rejectedIdentifier` (IPv4-mapped or IPv4-compatible IPv6) |
+| order | 1 to 100 identifiers, no duplicates | n/a | `malformed` |
+
+**Code evidence.** `new_order` ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 698;
+validation at line 709 before any write), `validate_order_identifiers`
+([identifier.rs](../../crates/ostrich-acme/src/identifier.rs) line 235), `check_challenge_permitted`
+(rest.rs line 1227, called at line 1262 before network I/O),
+`check_order_finalizable` (rest.rs line 1477, called at line 1616 before the
+CSR match and any state change), `map_db_authorization_to_service`
+(`wildcard` only when true, rest.rs line 1835), `http01_challenge_url` and
+`url_connect_host` ([validation.rs](../../crates/ostrich-acme/src/validation.rs) lines 1342 and 1358).
+
+**Gate results.** The scribe row was re-run by the compliance scribe on the
+final tree on 2026-10-26; the others are from `qa-report.md`,
+`qa-report-round-1.md`, `fixes-round-1.md`, `fixes-round-2.md` and the
+orchestrator gate log.
+
+| Gate | Command | Result |
+|---|---|---|
+| ACME crate (scribe) | `cargo test -p ostrich-acme --lib` | 125 passed, 0 failed, 0 ignored |
+| Workspace unit tests | `make test-unit` | 870 passed, 0 failed (orchestrator, after fix round 2); QA round 1: 866 / 0 / 1 |
+| Lint / format | `make clippy`, `cargo fmt --all --check` | pass (QA rounds 0-1; orchestrator after fix round 2) |
+| Supply chain | `make security` | pass (1378 advisories, 612 crates, no findings; deny ok) |
+| Fuzz | `cargo +nightly fuzz run fuzz_acme_order_identifier -- -max_total_time=60` (new) | 169,894 runs in 61 s (QA round 0); 180,251 runs in 61 s after the round-1 target change (coder); no crash |
+| Mutation checks | temporary mutations of `identifier.rs` / `rest.rs`, restored and verified by SHA-1 | round 0: 16 of 17 killed (1 equivalent); round 1: 15 of 18 killed; the 3 survivors delete handler call sites (QA-005) |
+| Integration | `make test-integration` | **NOT RUN** (no Postgres; QA-002, QA-005) |
+
+**Key tests by control:**
+
+- SI-10 (newOrder input): `malformed_dns_identifiers`,
+  `unsupported_wildcards_are_rejected_identifier`,
+  `unknown_type_is_unsupported_identifier`,
+  `ip_identifier_non_canonical_or_invalid_is_malformed`,
+  `ipv4_embedded_ipv6_is_rejected_identifier`, `list_empty_and_cap`,
+  `list_duplicates_are_malformed`, `errors_do_not_echo_value`,
+  `qa_no_echo_for_every_error_class` ([identifier.rs](../../crates/ostrich-acme/src/identifier.rs))
+- AC-3 / SC-17 / FDP_CER_EXT.1 (scope and binding):
+  `wildcard_becomes_base_domain_dns01_only`, `qa_challenge_offering_matrix`,
+  `check_challenge_permitted_policy`, `check_challenge_permitted_ip_http01_only`,
+  `qa_offered_challenges_are_permitted`,
+  `check_order_finalizable_identifier_binding`,
+  `check_order_finalizable_order_state`,
+  `check_order_finalizable_ip_requires_http01`,
+  `qa_finalizable_wildcard_flag_binding`,
+  `qa_finalizable_fails_closed_on_any_bad_row`,
+  `qa_dns01_mock_wildcard_authz_queries_base_domain` (loopback mock DNS)
+- AU-2 / AU-3 / AU-12 / FAU_GEN.1: `new_order_audit_events_are_recorded`,
+  `finalize_refusal_audit_event_is_recorded` (`MemoryAuditSink`,
+  `verify_integrity`), `qa_new_order_refusal_audit_never_records_values`,
+  `qa_new_order_audit_au3_fields_and_defensive_arm`,
+  `finalize_refusal_audit_event_records_problem_type_only`,
+  `qa_record_audit_survives_sink_failure`
+- RFC 8555 §7.1.4 serialization: `authorization_json_wildcard_only_when_true`,
+  `qa_authorization_json_wildcard_text`
+- RFC 8738 §5 / SI-10 (IPv6 http-01 and SSRF guard):
+  `http01_url_brackets_ipv6_hosts`,
+  `qa_http01_ipv6_identifier_reaches_ssrf_guard`,
+  `qa_url_connect_host_feeds_guard_for_redirect_targets`
+- SC-5 (request size): `qa_list_errors_problem_types_and_cap_first`
+
+**Audit records (AU-2 / AU-3).** New `AcmeProtocol` records with actor = ACME
+account id: `new_order` Success (target `acme:order:<id>`), `new_order`
+Failure on identifier refusal (target `acme:new-order`, with the RFC 8555
+problem type), and `finalize_order` Failure on an order-state, binding or CSR
+match refusal. Source IP and request id are not recorded. A sink failure is
+logged and the request continues, so AU-5 / FAU_STG.4 are not claimed for
+ACME.
+
+**Live evidence still to capture:** a Postgres-backed run showing that a
+wildcard newOrder writes an authorization for the base domain with
+`wildcard = true` and one dns-01 challenge row, that a refused newOrder
+writes no rows and one Failure audit record, and that finalize of an order
+bound to a pre-upgrade `*.x` / `wildcard = false` authorization returns
+`unauthorized` with the order status unchanged (QA-002, QA-005); a wildcard
+issuance end to end through a controllable DNS zone.
+
+Not claimed: an issuance-name policy (Public Suffix List, single-label,
+reserved and operator-denied names; POAM-2026-10-23-55), rate limiting of
+failed validations (POAM-2026-10-23-49, narrowed), tls-alpn-01 for IP
+identifiers (POAM-2026-10-23-52), RFC 8555 §6.7.1 subproblems, serialized
+concurrent finalize, and audit records for finalize ownership refusals, CSR
+parse failures or a newOrder database error after validation.
 
 ### SC-8 / SC-18 — Web console CSP deployment capture
 

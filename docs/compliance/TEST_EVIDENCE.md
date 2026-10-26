@@ -1,9 +1,9 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.8
+**Document Version:** 2.9
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
-**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 817 unit tests passed, 0 failed, 1 ignored, 2026-10-26 (§2.13, `make test-unit`)
+**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 870 unit tests passed, 0 failed, 2026-10-26 (§2.16, `make test-unit`, orchestrator gate after fix round 2)
 
 ---
 
@@ -872,6 +872,92 @@ Ok / Err split that drives it is tested at helper level). The event is a
 
 ---
 
+### 2.16 Test Run 2026-10-26 (ACME wildcard and IP identifiers)
+
+**Scope:** branch `claude/acme-wildcard-identifiers`, uncommitted (run record
+`target/agent-workflow/20261026-acme-wildcard/`): newOrder identifier
+validation (`crates/ostrich-acme/src/identifier.rs`, new), wildcard
+authorization for the base domain with dns-01 only, `wildcard` omitted unless
+true, `ip` identifiers http-01 only, IPv4-mapped / IPv4-compatible IPv6
+refused, 100-identifier cap, IPv6 http-01 URL bracketing, finalize binding
+checks (`check_order_finalizable`), and `ostrich-audit` records for newOrder
+and finalize refusals (POAM-2026-10-23-49 narrowed; POAM-2026-10-23-55 added).
+**Sources:** `qa-report.md` (round 0, PASS), `qa-report-round-1.md` (after
+fix round 1, PASS), `fixes-round-1.md`, `fixes-round-2.md`,
+`orchestrator-gates.log` (after fix round 2). QA did not run after fix
+round 2; the round-2 rows below are coder- or orchestrator-reported, and the
+**scribe** row was re-run by the compliance scribe on the final tree.
+
+| Gate | Command | Result | Counts |
+|------|---------|--------|--------|
+| Unit (crate) | `cargo test -p ostrich-acme --lib` | PASS (**scribe**) | **125 passed, 0 failed, 0 ignored** on the final tree. QA round 0: 99; QA round 1: 121; fix round 2 (coder): 125 |
+| Unit (workspace) | `make test-unit` | PASS | **870 passed, 0 failed** (orchestrator gate after fix round 2). QA round 0: 844 / 0 / 1; QA round 1: 866 / 0 / 1 (pre-existing ignore `pkcs12::tests::write_pfx_for_openssl`) |
+| Format / lint | `cargo fmt --all --check`, `make clippy`, `cargo clippy -p ostrich-acme --all-targets --all-features -- -D warnings` | PASS | rc=0 (QA rounds 0-1; orchestrator after fix round 2) |
+| Supply chain | `make security` | PASS | `cargo audit`: 1378 advisories, 612 crates, no findings; `cargo deny`: advisories, bans, licenses, sources ok (QA rounds 0-1; orchestrator after fix round 2) |
+| Annotations | `make compliance-annotations` | PASS | NIST 800-53 683, NIAP 575, RFC 78 (QA round 1; `origin/main` 667 / 567 / 77) |
+| Fuzz | `cargo +nightly fuzz run fuzz_acme_order_identifier -- -max_total_time=60` (new target) | PASS | 169,894 runs / 61 s (QA round 0); 180,251 runs / 61 s after the round-1 target change (coder); no crash. Smoke runs only; not re-run by the scribe |
+| Mutation | temporary mutations of `identifier.rs` / `rest.rs`, `cargo test -q -p ostrich-acme --lib`, restore verified by SHA-1 | PASS with survivors | Round 0: 16 of 17 killed (survivor M13 is behaviour-equivalent). Round 1: 15 of 18 killed; survivors S1, A1, A2 delete the handler call sites (`check_order_finalizable` in `finalize_order`; both `record_audit` calls in `new_order`), which need Postgres to test (QA-005) |
+| Integration | `make test-integration` | **NOT RUN** | no Postgres or live acme-server (QA-002, QA-005) |
+
+**New tests (final tree, names checked against the source):**
+
+- `identifier.rs`: `dns_identifier_accepted_with_all_challenges`,
+  `wildcard_becomes_base_domain_dns01_only`, `ip_identifier_canonical_http01_only`,
+  `ipv4_embedded_ipv6_is_rejected_identifier`, `long_dns_name_not_offered_dns01`,
+  `ip_identifier_non_canonical_or_invalid_is_malformed`,
+  `unknown_type_is_unsupported_identifier`,
+  `unsupported_wildcards_are_rejected_identifier`, `malformed_dns_identifiers`,
+  `errors_do_not_echo_value`, `list_empty_and_cap`, `list_duplicates_are_malformed`,
+  `list_base_and_wildcard_together`, `list_fails_on_any_bad_identifier`; QA:
+  `qa_dns_length_boundaries`, `qa_wildcard_base_length_boundaries`,
+  `qa_ip_canonical_forms`, `qa_list_errors_problem_types_and_cap_first`,
+  `qa_duplicate_key_edges`, `qa_challenge_offering_matrix`,
+  `qa_validate_dns_identifier_shared_rules`, `qa_no_echo_for_every_error_class`,
+  `qa_ipv4_embedded_boundaries`, `qa_ip_offering_is_http01_only_everywhere`,
+  `qa_dns01_offered_iff_query_name_fits`
+- `rest.rs` authorization JSON and challenge policy:
+  `authorization_json_wildcard_only_when_true`, `check_challenge_permitted_policy`,
+  `wildcard_order_identifier_matches_wildcard_csr`,
+  `check_challenge_permitted_ip_http01_only`; QA:
+  `qa_check_challenge_permitted_problem_types`, `qa_offered_challenges_are_permitted`,
+  `qa_authorization_json_wildcard_text`, `qa_check_challenge_permitted_ip_variants`
+- `rest.rs` finalize binding: `check_order_finalizable_happy_path`,
+  `check_order_finalizable_order_state`, `check_order_finalizable_authz_state`,
+  `check_order_finalizable_identifier_binding`; QA:
+  `qa_finalizable_wildcard_flag_binding`, `qa_finalizable_fails_closed_on_any_bad_row`;
+  fix round 2 (coder-reported, not in a QA report):
+  `check_order_finalizable_error_type_independent_of_row_order`,
+  `check_order_finalizable_ip_requires_http01`
+- `rest.rs` audit records: `new_order_audit_event_success`,
+  `new_order_audit_event_refusal_is_bounded`, `new_order_audit_events_are_recorded`
+  (`MemoryAuditSink`, `verify_integrity`); QA:
+  `qa_new_order_refusal_audit_never_records_values`,
+  `qa_new_order_audit_au3_fields_and_defensive_arm`,
+  `qa_record_audit_survives_sink_failure`; fix round 2 (coder-reported):
+  `finalize_refusal_audit_event_records_problem_type_only`,
+  `finalize_refusal_audit_event_is_recorded`
+- `validation.rs`: `http01_url_brackets_ipv6_hosts`; QA:
+  `qa_dns01_mock_wildcard_authz_queries_base_domain` (loopback mock DNS),
+  `qa_http01_ipv6_identifier_reaches_ssrf_guard`,
+  `qa_url_connect_host_feeds_guard_for_redirect_targets`
+- Fuzz: `fuzz/fuzz_targets/fuzz_acme_order_identifier.rs` (registered in
+  `fuzz/Cargo.toml`; added with `fuzz_dns01_query_name` to the
+  [fuzz.yml](../../.github/workflows/fuzz.yml) matrix, **NOT RUN** in CI)
+
+All of the above passed in the scribe's `cargo test -p ostrich-acme --lib`
+run (125 / 0 / 0).
+
+**Not covered:** the database rows written by `new_order` (authorization
+value and `wildcard` flag, challenge rows per identifier, no rows on refusal;
+QA-002); the handler call sites of `check_order_finalizable`,
+`check_challenge_permitted` and the newOrder / finalize `record_audit` calls
+(QA-005); an HTTP-level test of the 400 problem document for a refused
+newOrder; http-01 redirects to non-public IPv6 targets end to end (tested at
+the `url_connect_host` + `resolve_public` level only); fuzzing beyond 60 s
+smoke runs (`fuzz/Cargo.lock` is stale on this base, QA-004).
+
+---
+
 ## 3. Unit Test Results
 
 ### 3.1 ostrich-db (49 tests)
@@ -1271,6 +1357,8 @@ closed pending first green CI run).
 | gRPC requestor binding (`fuzz_grpc_requestor`, 2026-10-26 smoke, `nightly-2026-10-23`, cargo-fuzz 0.13.2, ASan, aarch64-apple-darwin) | 128,734 (31 s) | 0 | Pass (coder-reported, §2.14; local smoke, not the CI job) |
 | gRPC peer subject (`fuzz_grpc_peer_subject`, 2026-10-26 smoke, same toolchain) | 80,018 (31 s) | 0 | Pass (coder-reported, §2.14; local smoke, not the CI job) |
 | Both gRPC targets, scheduled / dispatch / PR job ([fuzz.yml](../../.github/workflows/fuzz.yml)) | n/a | n/a | **NOT RUN** (workflow added 2026-10-26, not pushed; scheduled and dispatch runs need the workflow on `main`) |
+| ACME newOrder identifiers (`fuzz_acme_order_identifier`, new 2026-10-26) | 169,894 (61 s, QA round 0); 180,251 (61 s) after the round-1 target change | 0 | Pass (QA- and coder-reported, §2.15) |
+| Both ACME targets (`fuzz_acme_order_identifier`, `fuzz_dns01_query_name`), scheduled / dispatch / PR job ([fuzz.yml](../../.github/workflows/fuzz.yml)) | n/a | n/a | **NOT RUN** (matrix entries added 2026-10-26 on branch `claude/acme-wildcard-identifiers`, uncommitted) |
 
 ### 5.5 Secrets Scanning
 
@@ -1468,3 +1556,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 2.6 | 2026-10-26 | OstrichPKI Team | §2.12: recorded the CI result for the web-ui BFF proxy raw-path change, merged as [PR #191](https://github.com/192d-Wing/OstrichPKI/pull/191) (fix commit e56a09e, merge commit 635c5c3): GitHub Actions [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224) `Build & test` (`cargo test --workspace --lib --bins --locked`, ubuntu-24.04, rustc 1.99.1) `ostrich_web_ui` 41 passed / 0 failed / 0 ignored (CI NOT RUN → PASS); the run's other jobs and the PR's `cargo audit`, `cargo deny` and `PKCS#11 suite (SoftHSM2)` checks green. POAM-2026-10-23-43 closed. Scope line updated from "uncommitted" to the merge reference; §2.11 cross-reference updated. No GitLab pipeline result recorded; doc tests and fuzz still NOT RUN |
 | 2.7 | 2026-10-26 | OstrichPKI Team | Added §2.15, the web-ui legacy `/next` open-redirect run (closes POAM-2026-10-23-45 pending first green CI run; SI-10, CWE-601): `cargo test -p ostrich-web-ui` 61 / 0 / 0 with 20 new `test_legacy_next_*` tests; `legacy_next` filter 20 / 0; fmt and clippy clean (re-run by the scribe); workspace, supply-chain, fuzz and CI NOT RUN |
 | 2.8 | 2026-10-26 | OstrichPKI Team | §2.15: recorded the CI result for the web-ui legacy `/next` open-redirect change, merged as [PR #193](https://github.com/192d-Wing/OstrichPKI/pull/193) (fix commit 3ece58c, merge commit 3804b4f): GitHub Actions [run 40377706363](https://github.com/192d-Wing/OstrichPKI/actions/runs/40377706363) `Build & test` (`cargo test --workspace --lib --bins --locked`, ubuntu-24.04, rustc 1.99.1) `ostrich_web_ui` 61 passed / 0 failed / 0 ignored, all 20 `test_legacy_next_*` `ok` (CI NOT RUN → PASS); the run's other jobs and the PR's `cargo audit`, `cargo deny`, `PKCS#11 suite (SoftHSM2)`, CodeQL, DB + SoftHSM and Helm checks green (14 / 14). POAM-2026-10-23-45 closed. Scope line updated from "uncommitted" to the merge reference. No GitLab pipeline result recorded; doc tests and fuzz still NOT RUN; the `legacy_redirect_rejected` event is still not captured by a test |
+| 2.9 | 2026-10-26 | OstrichPKI Team | Added §2.16, the ACME wildcard and IP identifier run (branch `claude/acme-wildcard-identifiers`, uncommitted): `ostrich-acme` lib 125 / 0 / 0 (re-run by the scribe); `make test-unit` 870 / 0 (orchestrator gate after fix round 2); QA rounds 0-1 PASS; fuzz `fuzz_acme_order_identifier` (new) and mutation results (3 handler call-site survivors, QA-005) recorded; integration NOT RUN. Fix-round-2 tests are coder-reported, not QA-verified. §5.4: new fuzz row. Header "latest recorded run" updated |

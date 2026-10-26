@@ -53,3 +53,7 @@ rustls = { workspace = true }
 # Utilities
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# MemoryAuditSink for new_order audit unit tests
+ostrich-audit = { workspace = true, features = ["testing"] }

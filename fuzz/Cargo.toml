@@ -89,3 +89,9 @@ name = "fuzz_dns01_query_name"
 path = "fuzz_targets/fuzz_dns01_query_name.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_acme_order_identifier"
+path = "fuzz_targets/fuzz_acme_order_identifier.rs"
+test = false
+doc = false

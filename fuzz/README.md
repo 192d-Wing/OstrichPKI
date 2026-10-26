@@ -28,6 +28,8 @@ rustup install nightly
 | `fuzz_ocsp_request` | OCSP request parsing | RFC 6960 |
 | `fuzz_ocsp_response` | OCSP response parsing | RFC 6960 |
 | `fuzz_crl_parsing` | CRL parsing | RFC 5280 §5 |
+| `fuzz_dns01_query_name` | ACME dns-01 query name construction | RFC 8555 §8.4, RFC 1035 |
+| `fuzz_acme_order_identifier` | ACME newOrder identifier parsing and list validation | RFC 8555 §7.1.3 / §7.1.4 / §6.7, RFC 8738 §3 |
 
 ## Running Fuzz Tests
 
@@ -58,12 +60,15 @@ make fuzz-all
 
 ### Continuous fuzzing (for CI/CD)
 
-`.github/workflows/fuzz.yml` runs `fuzz_grpc_requestor` and
-`fuzz_grpc_peer_subject` weekly (Monday 06:30 UTC), on manual dispatch
+`.github/workflows/fuzz.yml` runs `fuzz_grpc_requestor`,
+`fuzz_grpc_peer_subject`, `fuzz_acme_order_identifier` and
+`fuzz_dns01_query_name` weekly (Monday 06:30 UTC), on manual dispatch
 (`max_total_time`, 60-3600 s per target; default 600), and for a fixed 60 s
 on pull requests that touch `fuzz/`, the workflow,
 `crates/ostrich-common/src/{grpc_tls.rs,tls.rs,auth/**}`,
-`crates/ostrich-common/Cargo.toml`, the root `Cargo.toml` or
+`crates/ostrich-common/Cargo.toml`,
+`crates/ostrich-acme/src/{identifier.rs,validation.rs,order.rs,error.rs}`,
+`crates/ostrich-acme/Cargo.toml`, the root `Cargo.toml` or
 `rust-toolchain.toml`.
 It pins the toolchain to `nightly-2026-10-23` and cargo-fuzz to `0.13.2`
 (`cargo install --locked`, never restored from a cache), checks

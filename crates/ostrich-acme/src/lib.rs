@@ -95,6 +95,7 @@ pub mod authorization;
 pub mod ca_integration;
 pub mod challenge;
 pub mod error;
+pub mod identifier;
 pub mod jws;
 pub mod order;
 pub mod rest;
