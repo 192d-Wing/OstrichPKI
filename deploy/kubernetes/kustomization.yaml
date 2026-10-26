@@ -28,6 +28,7 @@ resources:
   - secrets.yaml
   - ca-deployment.yaml
   - ca-service.yaml
+  - ca-networkpolicy.yaml
   - acme-deployment.yaml
   - acme-service.yaml
   - est-deployment.yaml

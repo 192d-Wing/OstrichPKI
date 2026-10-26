@@ -75,7 +75,12 @@ hyper = { version = "1.5", features = ["full"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 
 # gRPC
-tonic = { version = "0.14", features = ["tls-ring", "channel"] }
+# No tonic TLS feature (`tls-ring` / `tls-aws-lc`): tonic would build private
+# rustls configs (TLS 1.2 enabled, `fips()` not assertable). gRPC TLS is done by
+# `ostrich_common::grpc_tls` with our own aws-lc-rs FIPS, TLS 1.3-only configs.
+# NIST 800-53: SC-8, SC-13 (gRPC part of POAM-2026-10-23-08; KRA wrap.rs and
+# the rustls `ring` feature via lettre/reqwest/async-nats remain open).
+tonic = { version = "0.14", features = ["channel"] }
 tonic-build = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
@@ -203,6 +208,8 @@ rand_core = "0.10"
 reqwest = { version = "0.13", features = ["json"] }
 
 # Messaging + email (notify-service: NATS JetStream queue + SMTP delivery).
+# POAM: POAM-2026-10-23-30 - async-nats 0.49 default features use `ring` for
+# SHA-256 (PQC-004); its `aws-lc-rs` / `fips` features are a pending follow-up.
 async-nats = "0.49"
 # rustls TLS (STARTTLS) via the same provider story as the rest of the project;
 # the notify-sender installs the aws-lc-rs default CryptoProvider at startup.

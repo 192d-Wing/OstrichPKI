@@ -122,6 +122,43 @@ struct Args {
     #[arg(long, env = "CA_TRUSTED_PROXY_SUBJECTS", value_delimiter = ',')]
     trusted_proxy_subjects: Vec<String>,
 
+    // --- gRPC issuance listener: mandatory mTLS (TLS 1.3, aws-lc-rs FIPS) ---
+    /// gRPC server certificate chain (PEM, leaf first). Its SAN must include
+    /// the name clients dial (e.g. ca-service). NIST 800-53: SC-8, AC-17.
+    #[arg(long = "grpc-tls-cert", env = "CA_GRPC_TLS_CERT_FILE")]
+    grpc_tls_cert: Option<String>,
+
+    /// gRPC server private key (PEM: PKCS#8, SEC1 or PKCS#1).
+    #[arg(long = "grpc-tls-key", env = "CA_GRPC_TLS_KEY_FILE")]
+    grpc_tls_key: Option<String>,
+
+    /// Trust anchors (PEM) for gRPC client certificates. Required: every gRPC
+    /// client must present a certificate chaining to one of these.
+    /// NIST 800-53: IA-3, IA-5(2).
+    #[arg(long = "grpc-tls-client-ca", env = "CA_GRPC_TLS_CLIENT_CA_FILE")]
+    grpc_tls_client_ca: Option<String>,
+
+    /// `;`-separated RFC 4514 subject DNs allowed to call the gRPC service
+    /// (commas separate RDNs), e.g. "CN=acme-server;CN=est-server". Empty
+    /// means no client is authorised and the CA refuses to start.
+    /// NIST 800-53: AC-3, AC-6.
+    #[arg(
+        long = "grpc-allowed-client-subjects",
+        env = "CA_GRPC_ALLOWED_CLIENT_SUBJECTS",
+        value_delimiter = ';'
+    )]
+    grpc_allowed_client_subjects: Vec<String>,
+
+    /// DEVELOPMENT ONLY: serve gRPC as plaintext HTTP/2 with no client
+    /// authentication. Honoured only in debug builds; setting it in a release
+    /// build is a startup error. NIST 800-53: CM-6.
+    #[arg(
+        long = "grpc-insecure-dev-plaintext",
+        env = "CA_GRPC_INSECURE_DEV_PLAINTEXT",
+        default_value = "false"
+    )]
+    grpc_insecure_dev_plaintext: bool,
+
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     log_level: String,
@@ -184,15 +221,33 @@ async fn main() -> Result<()> {
     // NIST 800-53: AU-2 - Audit Events
     init_logging(&args.log_level, args.log_json)?;
 
-    // Install the process-wide rustls CryptoProvider (aws-lc-rs / FIPS) so the
-    // NATS producer's optional TLS connection can build a client config. Idempotent
-    // and harmless if another component already installed one. NIST 800-53: SC-13.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    // Process-level FIPS gate, before any database, NATS, gRPC or HTTPS work:
+    // asserts AWS-LC FIPS mode and installs the aws-lc-rs FIPS provider as the
+    // process default (the NATS producer's optional TLS client builds its config
+    // from it). NIST 800-53: SC-13, SC-24.
+    // NIAP PP-CA: supports FPT_TST_EXT.1; FPT_FLS.1.
+    ostrich_common::tls::fips_gate()?;
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         "Starting OstrichPKI CA Server"
     );
+
+    // Resolve the gRPC listener mode now, before the database connects and
+    // whether or not a CA is registered, so a missing or partial gRPC mTLS
+    // configuration always stops the process (fail closed). The plaintext dev
+    // flag is refused in release builds.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: CM-6 (secure defaults), SC-24 (fail in known state), AC-17
+    // - NIAP PP-CA: FTP_ITC.1, FCS_TLSS_EXT.2, FPT_FLS.1
+    let grpc_addr: SocketAddr = args
+        .grpc_address
+        .parse()
+        .context("Invalid gRPC bind address")?;
+    let grpc_mode = grpc_server_options(&args)
+        .resolve(!cfg!(debug_assertions))
+        .context("CA gRPC listener configuration rejected")?;
 
     // Initialize database connection
     // NIST 800-53: SC-8 - Transmission Confidentiality
@@ -242,7 +297,16 @@ async fn main() -> Result<()> {
     // - NIAP PP-CA: FCS_STG_EXT.1 - CertificateAuthority::new validates the
     //   signing key is HSM-backed; software keys are rejected
     // - NIAP PP-CA: FMT_SMF.1 - CA initialization is a security management function
-    let ca = bootstrap_ca(&args, &db_pool).await?;
+    let (ca, ca_lineage) = match bootstrap_ca(&args, &db_pool).await? {
+        Some((ca, lineage)) => (Some(ca), Some(lineage)),
+        None => (None, None),
+    };
+    // The CA gRPC server task, awaited before exit so its final audit flush
+    // (suppressed-record summaries) is written (AU-2; SEC-012).
+    let mut grpc_server: Option<tokio::task::JoinHandle<()>> = None;
+    // Stops the gRPC server when the REST server exits for any reason
+    // (signal or error), so the bounded wait below is meaningful (SEC-015).
+    let (grpc_stop_tx, grpc_stop_rx) = tokio::sync::watch::channel(false);
 
     // Authentication: database-backed password provider (argon2id) with
     // failed-attempt lockout and bearer-token sessions. The users table is
@@ -320,8 +384,8 @@ async fn main() -> Result<()> {
         )))
     };
 
-    let app = match &ca {
-        Some(ca) => {
+    let app = match (&ca, ca_lineage) {
+        (Some(ca), Some(lineage)) => {
             let rbac_policy = Arc::new(ostrich_common::auth::RbacPolicy::new());
 
             // Approval workflow (NIAP PP-CA FDP_CER_EXT.3: issuance requires approval)
@@ -332,28 +396,48 @@ async fn main() -> Result<()> {
                 db_pool.pool().clone(),
             ));
 
-            // Start gRPC service for inter-service issuance (ACME/EST/SCMS).
-            // NIST 800-53: AC-17 - production deployments must front this with
-            // mTLS (tonic TLS config or service mesh).
-            let grpc_addr: SocketAddr = args
-                .grpc_address
-                .parse()
-                .context("Invalid gRPC bind address")?;
-            let grpc_service = ostrich_ca::CaGrpcService::new(ca.clone());
-            tracing::info!(%grpc_addr, "Starting CA gRPC service");
-            tokio::spawn(async move {
-                let result = tonic::transport::Server::builder()
-                    .add_service(
-                        ostrich_protocol::certificate_authority_service_server::CertificateAuthorityServiceServer::new(
-                            grpc_service,
-                        ),
-                    )
-                    .serve_with_shutdown(grpc_addr, shutdown_signal())
-                    .await;
-                if let Err(e) = result {
-                    tracing::error!(error = %e, "CA gRPC server failed");
-                }
-            });
+            // gRPC service for inter-service issuance (ACME/EST). The client
+            // CA must not be in this CA's own chain (issuing CA, its
+            // ancestors from the database, or CAs it issued): trust-anchor
+            // separation. A refusal is audited, then stops the process.
+            //
+            // COMPLIANCE MAPPING:
+            // - NIST 800-53: AC-3, IA-3, SC-24, AU-2 (refusal recorded)
+            // - NIAP PP-CA: FIA_X509_EXT.1, FDP_ACF.1, FPT_FLS.1, FAU_GEN.1
+            let grpc_audit: Arc<dyn ostrich_audit::AuditSink> =
+                Arc::new(ostrich_audit::DatabaseAuditSink::new(db_pool.clone()));
+            let ca_repo = ostrich_db::repository::CaRepository::new(db_pool.clone());
+            let ancestors = check_grpc_trust_anchors(
+                &grpc_mode,
+                ca.certificate_der(),
+                &lineage,
+                |id| {
+                    let repo = &ca_repo;
+                    async move {
+                        Ok(repo.find_ca_certificate(id).await?.map(|row| CaChainLink {
+                            parent_ca_id: row.parent_ca_id,
+                            der: row.der_encoded,
+                        }))
+                    }
+                },
+                grpc_audit.as_ref(),
+            )
+            .await
+            .context("CA gRPC listener configuration rejected")?;
+            // Runtime defence in depth: leaves issued by this CA or its
+            // ancestors are refused per call (`subscriber_issuing_ca`).
+            let mut subscriber_cas: Vec<&[u8]> = vec![ca.certificate_der()];
+            subscriber_cas.extend(ancestors.iter().map(Vec::as_slice));
+            let (_, task) = start_grpc_listener(
+                grpc_mode,
+                grpc_addr,
+                ostrich_ca::CaGrpcService::new(ca.clone()),
+                grpc_audit,
+                &subscriber_cas,
+                grpc_shutdown(grpc_stop_rx),
+            )
+            .await?;
+            grpc_server = Some(task);
 
             ostrich_ca::rest::create_router(
                 ca.clone(),
@@ -365,11 +449,15 @@ async fn main() -> Result<()> {
                 trusted_proxy.clone(),
             )
         }
-        None => {
+        _ => {
             tracing::warn!(
                 "No CA certificate registered in the database - running in health-check \
                  only mode. Register a CA (ca_keys + ca_certificates) and set \
                  CA_CERTIFICATE_ID to enable issuance."
+            );
+            tracing::info!(
+                mode = ?grpc_mode,
+                "gRPC listener configuration validated; listener not started (no CA)"
             );
             Router::new()
                 .route("/health", get(health_check))
@@ -400,10 +488,357 @@ async fn main() -> Result<()> {
     // the portal presents one and takes the trusted-proxy path, while bearer
     // clients (admin console) present none and still complete the handshake.
     .map(|s| s.with_optional_client_auth(trusted_proxy.is_some()));
-    ostrich_common::tls::serve(rest_addr, app, tls.as_ref(), shutdown_signal()).await?;
+    let rest_result =
+        ostrich_common::tls::serve(rest_addr, app, tls.as_ref(), shutdown_signal()).await;
+    if let Err(e) = &rest_result {
+        tracing::error!(error = %e, "REST server failed; stopping the CA gRPC server");
+    }
 
+    // SEC-012 / SEC-015: whether REST stopped on a signal or an error, stop
+    // the gRPC server and wait (bounded) for it to flush its suppressed-record
+    // summaries before returning (and before propagating a REST error).
+    let _ = grpc_stop_tx.send(true);
+    if let Some(task) = grpc_server {
+        match tokio::time::timeout(GRPC_SHUTDOWN_GRACE, task).await {
+            Ok(Ok(())) => tracing::info!("CA gRPC server stopped"),
+            Ok(Err(e)) => tracing::error!(error = %e, "CA gRPC server task failed"),
+            Err(_) => tracing::warn!(
+                grace_secs = GRPC_SHUTDOWN_GRACE.as_secs(),
+                "CA gRPC server did not stop within the shutdown grace period; \
+                 final audit summaries may be missing (AU-5)"
+            ),
+        }
+    }
+
+    rest_result?;
     tracing::info!("CA Server shutdown complete");
     Ok(())
+}
+
+/// Shutdown future for the CA gRPC server: a process signal, or `stop`
+/// turning true / its sender being dropped (the REST server exited).
+async fn grpc_shutdown(mut stop: tokio::sync::watch::Receiver<bool>) {
+    tokio::select! {
+        _ = shutdown_signal() => {}
+        _ = stop.wait_for(|stopped| *stopped) => {
+            tracing::info!("REST server exited; initiating gRPC shutdown");
+        }
+    }
+}
+
+/// Name of the CA gRPC listener in logs and audit records.
+const GRPC_LISTENER: &str = "ca-grpc";
+
+/// How long `main` waits for the gRPC server (and its final audit flush) after
+/// the REST server has stopped.
+const GRPC_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Maximum CA hierarchy depth walked from the issuing CA towards its root.
+const MAX_CA_ANCESTOR_DEPTH: usize = 16;
+
+/// Identity of the issuing CA row in `ca_certificates` (for the ancestor walk).
+#[derive(Debug, Clone, Copy)]
+struct CaLineage {
+    id: uuid::Uuid,
+    parent_ca_id: Option<uuid::Uuid>,
+}
+
+/// One `ca_certificates` row in the ancestor walk.
+struct CaChainLink {
+    parent_ca_id: Option<uuid::Uuid>,
+    der: Vec<u8>,
+}
+
+/// The issuing CA's ancestors (DER, parent first, up to the root) following
+/// `ca_certificates.parent_ca_id`. `lookup` loads one row. Fails closed on a
+/// missing parent row, a cycle, or a chain deeper than
+/// [`MAX_CA_ANCESTOR_DEPTH`]; a row that names itself as parent ends the walk
+/// (root).
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-3, IA-3 (trust-anchor separation input), SC-24
+/// - NIAP PP-CA: FIA_X509_EXT.1
+/// - RFC 5280 §6.1 (certification path / trust anchor)
+async fn walk_ca_ancestors<F, Fut>(lineage: &CaLineage, mut lookup: F) -> Result<Vec<Vec<u8>>>
+where
+    F: FnMut(uuid::Uuid) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<CaChainLink>>>,
+{
+    let mut seen = std::collections::HashSet::from([lineage.id]);
+    let mut current = lineage.id;
+    let mut next = lineage.parent_ca_id;
+    let mut ancestors = Vec::new();
+    while let Some(id) = next {
+        if id == current {
+            break;
+        }
+        if !seen.insert(id) {
+            anyhow::bail!("CA hierarchy in ca_certificates has a cycle at {id}");
+        }
+        if ancestors.len() >= MAX_CA_ANCESTOR_DEPTH {
+            anyhow::bail!(
+                "CA hierarchy in ca_certificates is deeper than {MAX_CA_ANCESTOR_DEPTH} levels"
+            );
+        }
+        let link = lookup(id)
+            .await?
+            .with_context(|| format!("parent CA certificate {id} not found in ca_certificates"))?;
+        ancestors.push(link.der);
+        next = link.parent_ca_id;
+        current = id;
+    }
+    Ok(ancestors)
+}
+
+/// Build the gRPC listener options from CLI/env. An empty value (e.g. an
+/// unset `${VAR:-}` in compose) counts as not configured, and blank subject
+/// entries (a trailing `;`) are dropped; all-blank means unset, which the
+/// resolver refuses (fail closed).
+fn grpc_server_options(args: &Args) -> ostrich_common::GrpcServerOptions {
+    let non_empty = |v: &Option<String>| v.clone().filter(|s| !s.trim().is_empty());
+    let subjects: Vec<String> = args
+        .grpc_allowed_client_subjects
+        .iter()
+        // ASCII padding only: an entry of Unicode whitespace (e.g. NBSP) is
+        // passed on and rejected by the allowlist parser (RFC-015).
+        .filter(|s| !s.trim_matches([' ', '\t', '\r', '\n']).is_empty())
+        .cloned()
+        .collect();
+    ostrich_common::GrpcServerOptions {
+        cert_path: non_empty(&args.grpc_tls_cert),
+        key_path: non_empty(&args.grpc_tls_key),
+        client_ca_path: non_empty(&args.grpc_tls_client_ca),
+        allowed_subjects: subjects,
+        insecure_dev_plaintext: args.grpc_insecure_dev_plaintext,
+    }
+}
+
+/// Load the issuing CA's ancestors (`lookup`, see [`walk_ca_ancestors`]) and
+/// run [`ensure_dedicated_grpc_client_ca`] against them. On any failure a
+/// `grpc_listener_refused` ConfigurationChange record (outcome Failure) is
+/// written to `audit` before the error is returned. Returns the ancestors.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-3, IA-3, SC-24, AU-2 / AU-3 (refusal recorded)
+/// - NIAP PP-CA: FIA_X509_EXT.1, FPT_FLS.1, FAU_GEN.1
+async fn check_grpc_trust_anchors<F, Fut>(
+    mode: &ostrich_common::GrpcServerMode,
+    issuing_ca_der: &[u8],
+    lineage: &CaLineage,
+    lookup: F,
+    audit: &dyn ostrich_audit::AuditSink,
+) -> Result<Vec<Vec<u8>>>
+where
+    F: FnMut(uuid::Uuid) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<CaChainLink>>>,
+{
+    let checked = async {
+        let ancestors = walk_ca_ancestors(lineage, lookup).await?;
+        let refs: Vec<&[u8]> = ancestors.iter().map(Vec::as_slice).collect();
+        ensure_dedicated_grpc_client_ca(mode, issuing_ca_der, &refs)?;
+        Ok::<_, anyhow::Error>(ancestors)
+    }
+    .await;
+    if let Err(e) = &checked {
+        // The reason names configuration items only (file, certificate
+        // index, CA row id); no key material.
+        audit_grpc_listener(
+            audit,
+            ostrich_audit::EventType::ConfigurationChange,
+            "grpc_listener_refused",
+            ostrich_audit::EventOutcome::Failure,
+            serde_json::json!({
+                "check": "client_ca_trust_anchor_separation",
+                "reason": format!("{e:#}"),
+            }),
+        )
+        .await;
+    }
+    checked
+}
+
+/// Refuse a gRPC client-CA bundle with an anchor in this CA's own chain: the
+/// issuing certificate, a CA it issued, or any of `ancestor_ders` (see
+/// [`ostrich_common::grpc_tls::ensure_dedicated_client_ca`]). No-op for the
+/// debug-only plaintext mode.
+fn ensure_dedicated_grpc_client_ca(
+    mode: &ostrich_common::GrpcServerMode,
+    issuing_ca_der: &[u8],
+    ancestor_ders: &[&[u8]],
+) -> Result<()> {
+    if let ostrich_common::GrpcServerMode::Mtls { client_anchors, .. } = mode {
+        ostrich_common::grpc_tls::ensure_dedicated_client_ca(
+            client_anchors,
+            issuing_ca_der,
+            ancestor_ders,
+        )?;
+    }
+    Ok(())
+}
+
+/// Write a system/configuration audit record for the gRPC listener. Failure to
+/// record is logged, never fatal (the listener state is also in the log).
+async fn audit_grpc_listener(
+    sink: &dyn ostrich_audit::AuditSink,
+    event_type: ostrich_audit::EventType,
+    action: &str,
+    outcome: ostrich_audit::EventOutcome,
+    details: serde_json::Value,
+) {
+    let mut record = ostrich_audit::AuditEventBuilder::new(
+        event_type,
+        "ca-server",
+        GRPC_LISTENER,
+        action,
+        outcome,
+    )
+    .with_details(details)
+    .build();
+    if let Err(e) = sink.record(&mut record).await {
+        tracing::warn!(error = %e, action, "failed to record gRPC listener audit event");
+    }
+}
+
+/// Start the CA gRPC issuance listener in the resolved mode.
+///
+/// mTLS mode binds the socket before returning (a bind failure is fatal), then
+/// serves `CertificateAuthorityService` behind the listener-wide
+/// [`ostrich_common::SubjectAllowlistLayer`]: only allow-listed client
+/// certificate subjects reach the service; others get PERMISSION_DENIED and an
+/// `access_denied` audit record, and failed TLS handshakes are audited as
+/// `tls_handshake_failed`.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-17 (mTLS inter-service), AC-3 / AC-6 (subject allowlist),
+///   SC-8 / SC-8(1) (TLS 1.3), SC-13 (aws-lc-rs FIPS, `fips()` asserted),
+///   IA-3 / IA-5(2) (client certificate authentication), AU-2 / AU-12
+/// - NIAP PP-CA: FTP_ITC.1, FCS_TLSS_EXT.1, FCS_TLSS_EXT.2, FDP_ACC.1,
+///   FDP_ACF.1, FAU_GEN.1
+/// - RFC 8446 (TLS 1.3), RFC 7301 (ALPN h2), RFC 5280 §6 (client cert path validation)
+// POAM: POAM-2026-10-23-27 - client-certificate revocation is not checked on
+// the gRPC listener (no CRL in the WebPkiClientVerifier); FIA_X509_EXT.1.1 /
+// RFC 5280 §6.3.
+///
+/// `audit` receives the listener lifecycle record and (through
+/// `AuthAuditAdapter`) every handshake-failure and access-denial record;
+/// client leaves issued by any of `subscriber_issuing_cas` (DER) are denied
+/// per call; `shutdown` stops the server. Returns the bound address and the
+/// server task, which finishes after the final audit flush.
+async fn start_grpc_listener<S, F>(
+    mode: ostrich_common::GrpcServerMode,
+    grpc_addr: SocketAddr,
+    service: S,
+    audit: Arc<dyn ostrich_audit::AuditSink>,
+    subscriber_issuing_cas: &[&[u8]],
+    shutdown: F,
+) -> Result<(SocketAddr, tokio::task::JoinHandle<()>)>
+where
+    S: ostrich_protocol::certificate_authority_service_server::CertificateAuthorityService,
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    use ostrich_protocol::certificate_authority_service_server::CertificateAuthorityServiceServer;
+
+    let service = CertificateAuthorityServiceServer::new(service);
+    match mode {
+        ostrich_common::GrpcServerMode::Mtls {
+            config, allowlist, ..
+        } => {
+            let hook: Arc<dyn ostrich_common::auth::AuthAuditHook> =
+                Arc::new(ostrich_audit::AuthAuditAdapter::new(audit.clone()));
+            let mut incoming = ostrich_common::grpc_tls::bind_mtls_incoming(
+                grpc_addr,
+                config,
+                Some(hook.clone()),
+                GRPC_LISTENER,
+            )
+            .await
+            .context("Failed to start the CA gRPC mTLS listener")?;
+            let aws_lc_version = ostrich_common::tls::aws_lc_module_version();
+            let bound = incoming.local_addr();
+            tracing::info!(
+                grpc_addr = %bound,
+                tls = "1.3",
+                fips = true,
+                mtls = true,
+                aws_lc_version,
+                allowed_subjects = ?allowlist.subjects(),
+                "gRPC mTLS listener (TLS 1.3, FIPS)"
+            );
+            audit_grpc_listener(
+                audit.as_ref(),
+                ostrich_audit::EventType::System,
+                "grpc_listener_started",
+                ostrich_audit::EventOutcome::Success,
+                serde_json::json!({
+                    "mode": "mtls",
+                    "tls": "1.3",
+                    "fips": true,
+                    "aws_lc_version": aws_lc_version,
+                    "allowed_subjects": allowlist.subjects(),
+                    "address": bound.to_string(),
+                }),
+            )
+            .await;
+            let layer =
+                ostrich_common::SubjectAllowlistLayer::new(allowlist, Some(hook), GRPC_LISTENER)
+                    .with_subscriber_issuing_cas(subscriber_issuing_cas)
+                    .context("CA gRPC listener configuration rejected")?;
+            let accept_task = incoming.take_accept_task();
+            let flush_layer = layer.clone();
+            let task = tokio::spawn(async move {
+                let result = tonic::transport::Server::builder()
+                    .layer(layer)
+                    .add_service(service)
+                    .serve_with_incoming_shutdown(incoming, shutdown)
+                    .await;
+                if let Err(e) = result {
+                    tracing::error!(error = %e, "CA gRPC server failed");
+                }
+                // SEC-012 / AU-2: flush the last suppressed-record summaries
+                // (access denials here; handshake failures when the accept
+                // loop sees the dropped stream) before the task completes.
+                flush_layer.flush_suppressed_audit().await;
+                if let Some(accept_task) = accept_task {
+                    let _ = accept_task.await;
+                }
+            });
+            Ok((bound, task))
+        }
+        ostrich_common::GrpcServerMode::InsecureDevPlaintext => {
+            // NIST 800-53: SC-8 / AC-3 / CM-6 - impossible to miss, every start.
+            tracing::warn!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+            tracing::warn!(
+                %grpc_addr,
+                "CA gRPC listener is PLAINTEXT and UNAUTHENTICATED \
+                 (CA_GRPC_INSECURE_DEV_PLAINTEXT=true, debug build)"
+            );
+            tracing::warn!(
+                "LOCAL DEVELOPMENT ONLY: any client can request issuance; never deploy \
+                 this build (NIST 800-53: SC-8, AC-3, AC-17)"
+            );
+            audit_grpc_listener(
+                audit.as_ref(),
+                ostrich_audit::EventType::ConfigurationChange,
+                "grpc_insecure_dev_plaintext_enabled",
+                ostrich_audit::EventOutcome::Success,
+                serde_json::json!({
+                    "build": "debug",
+                    "address": grpc_addr.to_string(),
+                }),
+            )
+            .await;
+            let task = tokio::spawn(async move {
+                let result = tonic::transport::Server::builder()
+                    .add_service(service)
+                    .serve_with_shutdown(grpc_addr, shutdown)
+                    .await;
+                if let Err(e) = result {
+                    tracing::error!(error = %e, "CA gRPC server failed");
+                }
+            });
+            Ok((grpc_addr, task))
+        }
+    }
 }
 
 /// Load the CA certificate + key reference from the database and construct
@@ -420,7 +855,7 @@ async fn main() -> Result<()> {
 async fn bootstrap_ca(
     args: &Args,
     db_pool: &ostrich_db::DatabasePool,
-) -> Result<Option<Arc<ostrich_ca::CertificateAuthority>>> {
+) -> Result<Option<(Arc<ostrich_ca::CertificateAuthority>, CaLineage)>> {
     let repo = ostrich_db::repository::CaRepository::new(db_pool.clone());
 
     // Resolve the CA certificate row
@@ -627,7 +1062,11 @@ async fn bootstrap_ca(
         "Certificate Authority initialized"
     );
 
-    Ok(Some(Arc::new(ca)))
+    let lineage = CaLineage {
+        id: ca_cert_row.id,
+        parent_ca_id: ca_cert_row.parent_ca_id,
+    };
+    Ok(Some((Arc::new(ca), lineage)))
 }
 
 /// Default certificate profiles registered at startup.
@@ -759,5 +1198,522 @@ async fn shutdown_signal() {
         _ = terminate => {
             tracing::info!("Received SIGTERM, initiating graceful shutdown");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(extra: &[&str]) -> Args {
+        let mut argv = vec!["ostrich-ca-server", "--database-url", "postgres://unused"];
+        argv.extend_from_slice(extra);
+        Args::try_parse_from(argv).expect("args")
+    }
+
+    /// CM-6: with no gRPC options the listener mode resolution refuses to start.
+    #[test]
+    fn grpc_defaults_refuse_to_start() {
+        let args = parse(&[]);
+        assert!(!args.grpc_insecure_dev_plaintext, "dev flag defaults off");
+        assert!(grpc_server_options(&args).resolve(true).is_err());
+        assert!(grpc_server_options(&args).resolve(false).is_err());
+    }
+
+    /// `;` separates subjects (commas belong to the DN); blank values count as
+    /// unset so `${VAR:-}` in compose does not create an empty entry.
+    #[test]
+    fn grpc_subjects_are_semicolon_delimited_and_blank_is_unset() {
+        let args = parse(&[
+            "--grpc-allowed-client-subjects",
+            "CN=acme-server,O=Ostrich;CN=est-server",
+        ]);
+        assert_eq!(
+            grpc_server_options(&args).allowed_subjects,
+            vec![
+                "CN=acme-server,O=Ostrich".to_string(),
+                "CN=est-server".to_string()
+            ]
+        );
+        let blank = parse(&["--grpc-allowed-client-subjects", " ", "--grpc-tls-cert", ""]);
+        let options = grpc_server_options(&blank);
+        assert!(options.allowed_subjects.is_empty());
+        assert!(options.cert_path.is_none());
+    }
+
+    /// The dev plaintext flag resolves only outside release builds.
+    #[test]
+    fn grpc_insecure_flag_is_debug_only() {
+        let args = parse(&["--grpc-insecure-dev-plaintext"]);
+        assert!(grpc_server_options(&args).resolve(true).is_err());
+        assert!(matches!(
+            grpc_server_options(&args).resolve(false),
+            Ok(ostrich_common::GrpcServerMode::InsecureDevPlaintext)
+        ));
+    }
+
+    /// NIST-013: an allowlist next to the dev plaintext flag is ambiguous.
+    #[test]
+    fn grpc_insecure_with_allowlist_is_ambiguous() {
+        let args = parse(&[
+            "--grpc-insecure-dev-plaintext",
+            "--grpc-allowed-client-subjects",
+            "CN=acme-server",
+        ]);
+        let err = grpc_server_options(&args)
+            .resolve(false)
+            .expect_err("ambiguous");
+        assert!(err.to_string().contains("ambiguous"), "{err}");
+    }
+
+    /// RFC-003 / SEC-007: a trailing `;` is dropped; `\;` cannot smuggle a
+    /// second subject (clap splits it into `CN=a\` + `CN=b`, and the dangling
+    /// escape is rejected).
+    #[test]
+    fn grpc_subject_delimiter_edge_cases() {
+        let args = parse(&["--grpc-allowed-client-subjects", "CN=a;CN=b;"]);
+        assert_eq!(
+            grpc_server_options(&args).allowed_subjects,
+            vec!["CN=a".to_string(), "CN=b".to_string()]
+        );
+        assert_eq!(
+            ostrich_common::ClientSubjectAllowlist::parse(
+                &grpc_server_options(&args).allowed_subjects
+            )
+            .expect("parse")
+            .subjects(),
+            &["CN=a".to_string(), "CN=b".to_string()]
+        );
+
+        let args = parse(&["--grpc-allowed-client-subjects", r"CN=a\;CN=b"]);
+        let entries = grpc_server_options(&args).allowed_subjects;
+        assert_eq!(entries, vec![r"CN=a\".to_string(), "CN=b".to_string()]);
+        assert!(ostrich_common::ClientSubjectAllowlist::parse(&entries).is_err());
+
+        let args = parse(&["--grpc-allowed-client-subjects", ";"]);
+        assert!(grpc_server_options(&args).allowed_subjects.is_empty());
+    }
+
+    // ---- start_grpc_listener with an injected audit sink (QA-002) ----
+
+    use ostrich_protocol::certificate_authority_service_server::CertificateAuthorityService;
+    use ostrich_protocol::{
+        CheckRevocationStatusRequest, CheckRevocationStatusResponse, GenerateCrlRequest,
+        GenerateCrlResponse, GetCaInfoRequest, GetCaInfoResponse, IssueCertificateRequest,
+        IssueCertificateResponse, ListProfilesRequest, ListProfilesResponse,
+        RevokeCertificateRequest, RevokeCertificateResponse,
+    };
+    use tonic::{Request, Response, Status};
+
+    /// Service stub: the listener tests never issue.
+    struct NoCa;
+
+    #[tonic::async_trait]
+    impl CertificateAuthorityService for NoCa {
+        async fn issue_certificate(
+            &self,
+            _r: Request<IssueCertificateRequest>,
+        ) -> std::result::Result<Response<IssueCertificateResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn revoke_certificate(
+            &self,
+            _r: Request<RevokeCertificateRequest>,
+        ) -> std::result::Result<Response<RevokeCertificateResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn generate_crl(
+            &self,
+            _r: Request<GenerateCrlRequest>,
+        ) -> std::result::Result<Response<GenerateCrlResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn check_revocation_status(
+            &self,
+            _r: Request<CheckRevocationStatusRequest>,
+        ) -> std::result::Result<Response<CheckRevocationStatusResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn get_ca_info(
+            &self,
+            _r: Request<GetCaInfoRequest>,
+        ) -> std::result::Result<Response<GetCaInfoResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+        async fn list_profiles(
+            &self,
+            _r: Request<ListProfilesRequest>,
+        ) -> std::result::Result<Response<ListProfilesResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+    }
+
+    fn ca(cn: &str) -> rcgen::CertifiedIssuer<'static, rcgen::KeyPair> {
+        let mut p = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+        p.distinguished_name = rcgen::DistinguishedName::new();
+        p.distinguished_name.push(rcgen::DnType::CommonName, cn);
+        p.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        p.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::CrlSign,
+        ];
+        rcgen::CertifiedIssuer::self_signed(p, rcgen::KeyPair::generate().expect("key"))
+            .expect("ca")
+    }
+
+    fn write_tmp(tag: &str, contents: &str) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "ostrich-ca-server-test-{}-{tag}-{}.pem",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, contents).expect("write");
+        path.display().to_string()
+    }
+
+    /// mTLS options whose client CA is `client_ca_pem`.
+    fn mtls_options(client_ca_pem: &str) -> ostrich_common::GrpcServerOptions {
+        let server_ca = ca("Test gRPC Server CA");
+        let mut p = rcgen::CertificateParams::new(vec!["localhost".to_string()]).expect("p");
+        p.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        let key = rcgen::KeyPair::generate().expect("key");
+        let cert = p.signed_by(&key, &server_ca).expect("leaf");
+        ostrich_common::GrpcServerOptions {
+            cert_path: Some(write_tmp("cert", &cert.pem())),
+            key_path: Some(write_tmp("key", &key.serialize_pem())),
+            client_ca_path: Some(write_tmp("client-ca", client_ca_pem)),
+            allowed_subjects: vec!["CN=acme-server".to_string()],
+            insecure_dev_plaintext: false,
+        }
+    }
+
+    async fn recorded(sink: &ostrich_audit::MemoryAuditSink) -> Vec<ostrich_audit::AuditEvent> {
+        use ostrich_audit::AuditSink;
+        sink.query_events(ostrich_audit::sink::QueryCriteria::default())
+            .await
+            .expect("query")
+    }
+
+    /// AU-2 / AU-3: the mTLS listener writes `grpc_listener_started` with its
+    /// mode, TLS/FIPS facts, allowlist and bound address.
+    #[tokio::test]
+    async fn start_grpc_listener_mtls_audits_start() {
+        let client_ca = ca("Test gRPC Client CA");
+        let mode = mtls_options(&client_ca.pem())
+            .resolve(true)
+            .expect("mtls mode");
+        let sink = Arc::new(ostrich_audit::MemoryAuditSink::new());
+        let (bound, _task) = start_grpc_listener(
+            mode,
+            "127.0.0.1:0".parse().unwrap(),
+            NoCa,
+            sink.clone(),
+            &[],
+            std::future::pending::<()>(),
+        )
+        .await
+        .expect("listener");
+        assert_ne!(bound.port(), 0);
+
+        let events = recorded(&sink).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        let ev = &events[0];
+        assert_eq!(ev.event_type, ostrich_audit::EventType::System);
+        assert_eq!(ev.action, "grpc_listener_started");
+        assert_eq!(ev.actor, "ca-server");
+        assert_eq!(ev.target, GRPC_LISTENER);
+        assert_eq!(ev.outcome, ostrich_audit::EventOutcome::Success);
+        let d = ev.details.as_ref().expect("details");
+        assert_eq!(d["mode"], "mtls");
+        assert_eq!(d["tls"], "1.3");
+        assert_eq!(d["fips"], true);
+        assert_eq!(d["allowed_subjects"], serde_json::json!(["CN=acme-server"]));
+        assert_eq!(d["address"], bound.to_string());
+        assert!(d["aws_lc_version"].is_string());
+    }
+
+    /// CM-6 / AU-2: the debug-only plaintext listener writes a
+    /// ConfigurationChange record on every start.
+    #[tokio::test]
+    async fn start_grpc_listener_insecure_audits_dev_mode() {
+        let mode = ostrich_common::GrpcServerOptions {
+            insecure_dev_plaintext: true,
+            ..Default::default()
+        }
+        .resolve(false)
+        .expect("debug insecure mode");
+        let sink = Arc::new(ostrich_audit::MemoryAuditSink::new());
+        start_grpc_listener(
+            mode,
+            "127.0.0.1:0".parse().unwrap(),
+            NoCa,
+            sink.clone(),
+            &[],
+            std::future::pending::<()>(),
+        )
+        .await
+        .expect("listener");
+        let events = recorded(&sink).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        let ev = &events[0];
+        assert_eq!(ev.event_type, ostrich_audit::EventType::ConfigurationChange);
+        assert_eq!(ev.action, "grpc_insecure_dev_plaintext_enabled");
+        assert_eq!(ev.target, GRPC_LISTENER);
+        let d = ev.details.as_ref().expect("details");
+        assert_eq!(d["build"], "debug");
+        assert_eq!(d["address"], "127.0.0.1:0");
+    }
+
+    /// SEC-001: ca-server refuses a gRPC client CA that is its own issuing
+    /// CA; a dedicated client CA is accepted.
+    #[test]
+    fn grpc_client_ca_must_not_be_the_issuing_ca() {
+        let issuing = ca("OstrichPKI Issuing CA");
+        let issuing_der = issuing.der().to_vec();
+
+        let mode = mtls_options(&issuing.pem()).resolve(true).expect("mode");
+        let err = ensure_dedicated_grpc_client_ca(&mode, &issuing_der, &[]).expect_err("same CA");
+        assert!(
+            err.to_string().contains("dedicated service-identity CA"),
+            "{err}"
+        );
+
+        let dedicated = ca("Service Identity CA");
+        let mode = mtls_options(&dedicated.pem()).resolve(true).expect("mode");
+        ensure_dedicated_grpc_client_ca(&mode, &issuing_der, &[]).expect("dedicated CA accepted");
+
+        // Plaintext dev mode has no client CA to check.
+        let insecure = ostrich_common::GrpcServerOptions {
+            insecure_dev_plaintext: true,
+            ..Default::default()
+        }
+        .resolve(false)
+        .expect("insecure");
+        ensure_dedicated_grpc_client_ca(&insecure, &issuing_der, &[]).expect("no-op");
+    }
+
+    // ---- R2-2: ancestor walk + audited refusal (SEC-009 / RFC-010 / NIST-017) ----
+
+    fn sub_ca(
+        cn: &str,
+        parent: &rcgen::CertifiedIssuer<'static, rcgen::KeyPair>,
+    ) -> rcgen::CertifiedIssuer<'static, rcgen::KeyPair> {
+        let mut p = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+        p.distinguished_name = rcgen::DistinguishedName::new();
+        p.distinguished_name.push(rcgen::DnType::CommonName, cn);
+        p.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        p.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::CrlSign,
+        ];
+        p.use_authority_key_identifier_extension = true;
+        rcgen::CertifiedIssuer::signed_by(p, rcgen::KeyPair::generate().expect("key"), parent)
+            .expect("sub ca")
+    }
+
+    /// In-memory `ca_certificates`: id -> (parent_ca_id, der).
+    type Rows = std::collections::HashMap<uuid::Uuid, (Option<uuid::Uuid>, Vec<u8>)>;
+
+    fn lookup(
+        rows: &Rows,
+    ) -> impl FnMut(uuid::Uuid) -> std::future::Ready<Result<Option<CaChainLink>>> + '_ {
+        move |id| {
+            std::future::ready(Ok(rows.get(&id).map(|(parent, der)| CaChainLink {
+                parent_ca_id: *parent,
+                der: der.clone(),
+            })))
+        }
+    }
+
+    #[tokio::test]
+    async fn walk_ca_ancestors_follows_parent_ca_id_and_fails_closed() {
+        let (issuing, inter, root) = (
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+        );
+        let mut rows = Rows::new();
+        rows.insert(inter, (Some(root), b"inter".to_vec()));
+        rows.insert(root, (None, b"root".to_vec()));
+        let lineage = CaLineage {
+            id: issuing,
+            parent_ca_id: Some(inter),
+        };
+        let chain = walk_ca_ancestors(&lineage, lookup(&rows))
+            .await
+            .expect("walk");
+        assert_eq!(chain, vec![b"inter".to_vec(), b"root".to_vec()]);
+
+        // Root issuing CA: nothing to walk; a self-referencing row ends it.
+        let root_lineage = CaLineage {
+            id: root,
+            parent_ca_id: None,
+        };
+        assert!(
+            walk_ca_ancestors(&root_lineage, lookup(&rows))
+                .await
+                .expect("root")
+                .is_empty()
+        );
+        let self_ref = CaLineage {
+            id: root,
+            parent_ca_id: Some(root),
+        };
+        assert!(
+            walk_ca_ancestors(&self_ref, lookup(&rows))
+                .await
+                .expect("self")
+                .is_empty()
+        );
+
+        // Missing parent row.
+        let missing = CaLineage {
+            id: issuing,
+            parent_ca_id: Some(uuid::Uuid::new_v4()),
+        };
+        let err = walk_ca_ancestors(&missing, lookup(&rows))
+            .await
+            .expect_err("missing");
+        assert!(err.to_string().contains("not found"), "{err}");
+
+        // Cycle back to the issuing CA.
+        let mut cyclic = rows.clone();
+        cyclic.insert(root, (Some(issuing), b"root".to_vec()));
+        let err = walk_ca_ancestors(&lineage, lookup(&cyclic))
+            .await
+            .expect_err("cycle");
+        assert!(err.to_string().contains("cycle"), "{err}");
+
+        // Depth bound.
+        let mut deep = Rows::new();
+        let mut parent = None;
+        let mut ids = Vec::new();
+        for _ in 0..=MAX_CA_ANCESTOR_DEPTH {
+            let id = uuid::Uuid::new_v4();
+            deep.insert(id, (parent, b"x".to_vec()));
+            parent = Some(id);
+            ids.push(id);
+        }
+        let deep_lineage = CaLineage {
+            id: uuid::Uuid::new_v4(),
+            parent_ca_id: parent,
+        };
+        let err = walk_ca_ancestors(&deep_lineage, lookup(&deep))
+            .await
+            .expect_err("deep");
+        assert!(err.to_string().contains("deeper"), "{err}");
+    }
+
+    /// An anchor two levels above the issuing CA (found only through the DB
+    /// walk) is refused, and the refusal is audited; a dedicated CA passes
+    /// without a refusal record.
+    #[tokio::test]
+    async fn grpc_trust_anchor_check_walks_db_chain_and_audits_refusal() {
+        let root = ca("Walk Root CA");
+        let inter = sub_ca("Walk Intermediate CA", &root);
+        let issuing = sub_ca("Walk Issuing CA", &inter);
+        let (inter_id, root_id) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let mut rows = Rows::new();
+        rows.insert(inter_id, (Some(root_id), inter.der().to_vec()));
+        rows.insert(root_id, (None, root.der().to_vec()));
+        let lineage = CaLineage {
+            id: uuid::Uuid::new_v4(),
+            parent_ca_id: Some(inter_id),
+        };
+
+        let sink = ostrich_audit::MemoryAuditSink::new();
+        let mode = mtls_options(&root.pem()).resolve(true).expect("mode");
+        let err = check_grpc_trust_anchors(&mode, issuing.der(), &lineage, lookup(&rows), &sink)
+            .await
+            .expect_err("root is an ancestor");
+        assert!(format!("{err:#}").contains("ancestor #2"), "{err:#}");
+        let events = recorded(&sink).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        let ev = &events[0];
+        assert_eq!(ev.action, "grpc_listener_refused");
+        assert_eq!(ev.event_type, ostrich_audit::EventType::ConfigurationChange);
+        assert_eq!(ev.outcome, ostrich_audit::EventOutcome::Failure);
+        assert_eq!(ev.target, GRPC_LISTENER);
+        let d = ev.details.as_ref().expect("details");
+        assert_eq!(d["check"], "client_ca_trust_anchor_separation");
+        assert!(
+            d["reason"]
+                .as_str()
+                .expect("reason")
+                .contains("ancestor #2")
+        );
+
+        // A walk failure is refused and audited the same way.
+        let sink = ostrich_audit::MemoryAuditSink::new();
+        let broken = CaLineage {
+            id: lineage.id,
+            parent_ca_id: Some(uuid::Uuid::new_v4()),
+        };
+        let dedicated = ca("Walk Service Identity CA");
+        let mode = mtls_options(&dedicated.pem()).resolve(true).expect("mode");
+        assert!(
+            check_grpc_trust_anchors(&mode, issuing.der(), &broken, lookup(&rows), &sink)
+                .await
+                .is_err()
+        );
+        assert_eq!(recorded(&sink).await.len(), 1);
+
+        // Dedicated CA with the full chain: accepted, ancestors returned.
+        let sink = ostrich_audit::MemoryAuditSink::new();
+        let ancestors =
+            check_grpc_trust_anchors(&mode, issuing.der(), &lineage, lookup(&rows), &sink)
+                .await
+                .expect("dedicated");
+        assert_eq!(ancestors.len(), 2);
+        assert!(recorded(&sink).await.is_empty());
+    }
+
+    /// SEC-015: the gRPC shutdown future completes when the REST server
+    /// exits (stop flag set, or its sender dropped), without a signal.
+    #[tokio::test]
+    async fn grpc_shutdown_follows_rest_exit() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let pending = tokio::spawn(grpc_shutdown(rx));
+        tokio::task::yield_now().await;
+        assert!(!pending.is_finished());
+        tx.send(true).expect("receiver alive");
+        tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+            .await
+            .expect("stopped on flag")
+            .expect("no panic");
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        drop(tx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), grpc_shutdown(rx))
+            .await
+            .expect("stopped when the sender is dropped");
+    }
+
+    /// SEC-012: the server task returned by `start_grpc_listener` completes
+    /// after shutdown (so `main` can await the final audit flush).
+    #[tokio::test]
+    async fn grpc_server_task_completes_after_shutdown() {
+        let client_ca = ca("Shutdown Client CA");
+        let mode = mtls_options(&client_ca.pem()).resolve(true).expect("mode");
+        let sink = Arc::new(ostrich_audit::MemoryAuditSink::new());
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let issuing = ca("Shutdown Issuing CA");
+        let (_, task) = start_grpc_listener(
+            mode,
+            "127.0.0.1:0".parse().unwrap(),
+            NoCa,
+            sink,
+            &[issuing.der().as_ref()],
+            async move {
+                let _ = rx.await;
+            },
+        )
+        .await
+        .expect("listener");
+        tx.send(()).expect("signal");
+        tokio::time::timeout(GRPC_SHUTDOWN_GRACE, task)
+            .await
+            .expect("server task finished within the grace period")
+            .expect("task did not panic");
     }
 }

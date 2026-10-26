@@ -6,6 +6,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod grpc_client;
+pub mod grpc_tls;
 pub mod health;
 pub mod oid;
 pub mod test_constants;
@@ -19,4 +20,8 @@ pub use auth::{
     SessionManager, SessionStore,
 };
 pub use error::{Error, Result};
-pub use grpc_client::{CaGrpcClient, CircuitBreaker, GrpcClientConfig};
+pub use grpc_client::{CaGrpcClient, CircuitBreaker, GrpcClientConfig, read_private_key_pem};
+pub use grpc_tls::{
+    AuthorizedGrpcPeer, ClientSubjectAllowlist, GrpcPeerInfo, GrpcServerMode, GrpcServerOptions,
+    SubjectAllowlistLayer,
+};

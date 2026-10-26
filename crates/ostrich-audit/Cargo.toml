@@ -40,5 +40,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+# Mock CryptoProvider in sink tests (import_key signature)
+zeroize = { workspace = true }
 # Live tamper-detection integration test (tests/signed_chain_tamper.rs)
 sqlx = { workspace = true }

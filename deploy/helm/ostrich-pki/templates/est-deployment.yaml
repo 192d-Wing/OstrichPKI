@@ -5,8 +5,12 @@ COMPLIANCE MAPPING:
 - RFC 7030: EST Protocol
 - NIST 800-53: SC-8 (Transmission Confidentiality - mTLS)
 - NIST 800-53: SC-17 (PKI Certificates)
+- NIST 800-53: SC-8, AC-17, IA-3 (CA gRPC client over TLS 1.3 mTLS; rendering
+  fails without the client certificate secret)
+- NIAP PP-CA: FCS_TLSC_EXT.2, FTP_ITC.1
 */}}
 {{- if .Values.est.enabled -}}
+{{- $caGrpcClientSecret := include "ostrich-pki.caGrpcClientSecret" (dict "component" "est" "cfg" .Values.est.caGrpc) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,10 +56,9 @@ spec:
             {{- include "ostrich-pki.commonEnv" . | nindent 12 }}
             - name: EST_BIND_ADDRESS
               value: "0.0.0.0:8443"
-            - name: CA_GRPC_URL
-              value: {{ include "ostrich-pki.caGrpcUrl" . | quote }}
-            - name: CA_GRPC_INSECURE
-              value: "true"
+            # CA gRPC over TLS 1.3 mTLS (client cert from est.caGrpc.clientTls).
+            # CA_GRPC_INSECURE is deliberately never set (fail closed).
+            {{- include "ostrich-pki.caGrpcClientEnv" (dict "cfg" .Values.est.caGrpc "root" .) | nindent 12 }}
             - name: EST_ALLOW_BEARER_AUTH
               value: {{ .Values.est.allowBearerAuth | quote }}
             - name: EST_ALLOW_BASIC_AUTH
@@ -110,6 +113,9 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: ca-grpc-client
+              mountPath: /app/ca-grpc-client
+              readOnly: true
             {{- if .Values.est.tls.existingSecret }}
             - name: est-certs
               mountPath: /app/certs
@@ -118,6 +124,10 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: ca-grpc-client
+          secret:
+            secretName: {{ $caGrpcClientSecret }}
+            defaultMode: 0440
         {{- if .Values.est.tls.existingSecret }}
         - name: est-certs
           secret:

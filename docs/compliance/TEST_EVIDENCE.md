@@ -1,7 +1,7 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 1.6
-**Last Updated:** 2026-10-24
+**Document Version:** 1.9
+**Last Updated:** 2026-10-25
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
 **Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 667 unit tests passed, 0 failed, 1 ignored, 2026-10-24 (§2.6)
 
@@ -303,7 +303,8 @@ skips the service binary tests. They were run separately here (58 passed).
 **Not covered:** a refusal through a real non-FIPS build (the tests build
 non-FIPS configs from the FIPS provider); a failed AWS-LC power-on self-test
 (the module aborts the process, outside the gate); plain-HTTP mode; rustls
-client configs; gRPC (POAM-2026-10-23-05, -08).
+client configs; gRPC (POAM-2026-10-23-05, -08). Update 2026-10-25: gRPC and
+the process-level gate are now covered, see §2.8.
 
 ### 2.7 Test Run 2026-10-24 (Dependency Cleanup)
 
@@ -343,6 +344,104 @@ NOT RUN.
 uncompressed point starting with 0x04, and a different key on each call.
 
 **Not covered:** the fixture inside a live CA issuance (NOT RUN above).
+
+### 2.8 Test Run 2026-10-25 (CA gRPC behind mTLS, aws-lc-rs FIPS)
+
+**Scope:** branch `claude/grpc-mtls` from `main` @ c67ed7a, uncommitted
+(implementation units U1-U8 plus round-1 fixes): new
+`crates/ostrich-common/src/grpc_tls.rs`; `tls.rs` (`fips_gate`,
+`ensure_fips_client`); `grpc_client.rs`; `ostrich-audit` `auth_hook.rs` and
+`sink.rs`; `ostrich-db` `repository/audit.rs` (`begin_append`); `ostrich-ca`
+`grpc.rs`; all ten service mains; new integration tests
+`tests/integration/grpc_mtls_e2e.rs` and `fips_gate_preinstalled.rs`; fuzz
+target `fuzz_grpc_peer_subject`; deploy and compose files.
+**Sources:** `impl-notes.md`, `fixes-round-1.md` and
+`fixes-round-1-deploy.md` in `target/agent-workflow/20261024-225627-grpc-mtls/`.
+No `qa-report.md` was available to the compliance scribe. Rows marked
+"re-run by the scribe" were executed by the compliance scribe on 2026-10-25 on
+the working tree; the other rows are as recorded by the implementer. A gate
+that did not execute is NOT RUN.
+
+| Gate | Command | Result | Counts |
+|------|---------|--------|--------|
+| Integration (offline) | `cargo test -p ostrich-integration-tests --test grpc_mtls_e2e` (re-run by the scribe) | PASS | **20 passed, 0 failed** |
+| Integration (offline) | `cargo test -p ostrich-integration-tests --test fips_gate_preinstalled` (re-run by the scribe) | PASS | **1 passed, 0 failed** (`fips_gate_refuses_preinstalled_non_fips_default`) |
+| Unit | `cargo test -p ostrich-common --all-features --lib` (re-run by the scribe) | PASS | **229 passed, 0 failed**; of these 34 `grpc_tls::tests` |
+| Unit | `cargo test -p ostrich-audit --all-features` lib (re-run by the scribe) | PASS | **13 passed, 0 failed** (incl. 4 new `auth_hook` tests and `test_memory_sink_concurrent_appends_keep_chain`) |
+| Unit | `cargo test -p ostrich-db --all-features --lib` (re-run by the scribe) | PASS | **54 passed, 0 failed** |
+| Unit | `cargo test -p ostrich-ca --all-features --lib` (re-run by the scribe) | PASS | **54 passed, 0 failed** |
+| Unit | `cargo test -p ostrich-est --all-features --lib` (re-run by the scribe) | PASS | **43 passed, 0 failed** |
+| Service binaries | `cargo test --all-features --bins -p ostrich-ca-server` / `-p ostrich-acme-server` / `-p ostrich-est-server` (re-run by the scribe) | PASS | **9 / 3 / 8 passed, 0 failed** |
+| Service binaries | web-ui, npe-portal `--bins` | PASS | 19 / 30 passed (implementer) |
+| Unit (workspace) | `make test-unit` | PASS | implementer reports all crates pass; no total recorded |
+| Postgres audit chain | `cargo test -p ostrich-audit --test chain_concurrency` with `DATABASE_URL` | **NOT RUN** | Without `DATABASE_URL` the test returns early and cargo reports "1 passed" (0.00 s). That result is **not** evidence. The test (and `signed_chain_tamper`) runs `TRUNCATE audit_events`: use a disposable database only |
+| Fuzz | `cargo +nightly fuzz run fuzz_grpc_peer_subject -- -max_total_time=60` | PASS after fix | First run found an OID-arc overflow panic in allowlist parsing; fixed (`validate_attribute_types`) with regression tests; then **237,187 runs in 61 s, no crash** (implementer; not re-run by the scribe). `fuzz/Cargo.toml` manifest repaired in the same change |
+| Mutation | five hand mutations M1-M5 of the new security checks | PASS | each mutation made at least one test fail (implementer; mutation details in the implementer's report only) |
+| Format / lint | `cargo fmt --all --check`, `make clippy` | PASS | implementer |
+| Supply chain | `cargo deny check`, `cargo audit --deny warnings` | PASS | implementer |
+| Dependency graph | `cargo tree -e features -i rustls` (re-run by the scribe) | PASS | no tonic TLS feature (`tls-ring` gone) |
+| Deploy | `helm template` / `helm lint` (Helm v3.19.0), kustomize build + strict NetworkPolicy decode, compose-go loader, `bash -n`, `openssl verify` of generated dev certs | PASS | implementer (`fixes-round-1-deploy.md`) |
+| Deploy | `docker compose up`, `kubectl` server-side dry run, shellcheck | **NOT RUN** | tools not available |
+| Live start-up | release-build container start with gRPC mTLS | **NOT RUN** | debug-binary smoke only: no gRPC env ⇒ exits "CA gRPC requires mTLS … refusing to start" before the database (implementer) |
+| CI | GitHub / GitLab pipelines | **NOT RUN** | change not committed. Wiring added in round 2: GitHub `ci.yml` job `Build & test` now runs `--test grpc_mtls_e2e --test fips_gate_preinstalled` (SA-11), and GitLab `test:integration` sets `OSTRICH_DB_TESTS=1` so the Postgres audit-chain tests are expected to execute there. No run yet |
+
+**`grpc_mtls_e2e` cases (20):** `allowed_subject_issue_ok`,
+`disallowed_subject_permission_denied_and_audited`,
+`leaf_without_eku_is_permission_denied`, `no_client_cert_handshake_fails`,
+`untrusted_ca_client_cert_handshake_fails`,
+`server_only_eku_client_cert_rejected`, `tls12_client_rejected`,
+`non_h2_alpn_client_rejected`, `x25519_only_client_rejected`,
+`client_rejects_server_name_mismatch`, `server_and_client_configs_report_fips`,
+`p384_chain_end_to_end_with_fips_hybrid_group`,
+`connector_and_listener_refuse_non_fips_or_non_h2_configs`,
+`refuses_to_start_without_config`, `access_denied_audit_is_rate_limited_and_summarised`,
+`handshake_failure_audit_is_rate_limited`,
+`stalled_handshake_times_out_and_is_audited`,
+`handshake_concurrency_cap_applies_backpressure`,
+`per_source_cap_closes_excess_idle_connections`,
+`dev_cert_script_material_works_with_rust_server_and_client`.
+
+**SFR / control mapping:** FCS_TLSS_EXT.2, FCS_TLSC_EXT.2, FTP_ITC.1,
+FIA_X509_EXT.1 (no revocation), FDP_ACC.1 / FDP_ACF.1, FAU_GEN.1, FPT_FLS.1;
+NIST AC-3, AC-17, IA-3, IA-5(2), SC-8, SC-13, SC-24, AU-2, AU-12, CM-6.
+
+**Not covered:** client-certificate revocation (not implemented,
+POAM-2026-10-23-27); Postgres audit-chain concurrency (NOT RUN,
+POAM-2026-10-23-31); a refusal through a real non-FIPS build; release-build
+container start; deployed NetworkPolicy enforcement.
+
+### 2.9 Test Run 2026-10-25 (CA gRPC mTLS, final code after fix rounds 2-3)
+
+**Scope:** the same branch after fix rounds 2 and 3 (trust-anchor ancestor
+walk and `subscriber_issuing_ca`, spawned denial audit, audit-chain timeouts
+and blocking-pool signing, checked `append`, `occurred_at`, allowlist
+ASCII-only trimming and UTF-8 hex escapes, SLH-DSA audit-key refusal,
+`OSTRICH_DB_TESTS` fail-on-unreachable). §2.8 records the earlier state; its
+counts (`grpc_mtls_e2e` 20, 34 `grpc_tls::tests`) are superseded here.
+**Sources:** `fixes-round-2.md`, `fixes-round-2-deploy.md` and
+`fixes-round-3.md` in the run record. No `qa-report.md` exists. Rows marked
+"re-run by the scribe" were executed by the compliance scribe on 2026-10-25 on
+the final working tree; the others are as reported by the coder.
+
+| Gate | Command | Result | Counts |
+|------|---------|--------|--------|
+| Integration (offline) | `cargo test -p ostrich-integration-tests --test grpc_mtls_e2e --test fips_gate_preinstalled` (re-run by the scribe, `OSTRICH_DB_TESTS` and `DATABASE_URL` unset) | PASS | **21 passed, 0 failed** (adds `no_alpn_refusal_sends_close_notify`); **1 passed, 0 failed** |
+| Unit | `cargo test -p ostrich-common --lib grpc_tls::` (re-run by the scribe) | PASS | **41 passed, 0 failed** (incl. `dedicated_client_ca_refuses_chain_relatives`, `issued_by_checks_cover_name_and_key_id_independently`, `authorize_peer_refuses_subscriber_issuing_ca_leaf`, `access_denied_audit_survives_cancelled_request`, `allowlist_keeps_escaped_trailing_space`, `allowlist_rejects_hex_escapes_that_are_not_utf8`, `allowlist_does_not_trim_unicode_whitespace`, `suppressed_summary_source_count_is_bounded`) |
+| Unit | `cargo test -p ostrich-audit --all-features --tests` lib (re-run by the scribe) | PASS | **20 passed, 0 failed** (incl. `sign_timeout_fires_for_blocking_signer`, `sign_timeout_fires_for_blocking_signer_current_thread`, `bounded_sign_succeeds_within_timeout`, `idle_in_transaction_timeout_exceeds_sign_timeout`, `apply_chain_timestamp_preserves_original_time`, `memory_sink_records_occurred_at_when_bumped`) |
+| Postgres audit chain | `chain_concurrency.rs`, `signed_chain_tamper.rs`, new `sign_timeout_db.rs` with `OSTRICH_DB_TESTS=1` and a disposable `DATABASE_URL` | **NOT RUN** | Without the opt-in each test prints a skip note and cargo reports "1 passed" (scribe re-run: 1 / 1 / 1 in 0.00 s). That is **not** evidence. With `OSTRICH_DB_TESTS=1` and no reachable database the tests now **fail** (coder-checked), so a green GitLab `test:integration` job would be evidence; none has run |
+| Service binaries | `cargo test -p <svc> --all-features --bins` | PASS | acme 3, ca 13 (incl. `walk_ca_ancestors_follows_parent_ca_id_and_fails_closed`, `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal`, `grpc_shutdown_follows_rest_exit`, `grpc_server_task_completes_after_shutdown`), est 8, npe-portal 30, web-ui 19 (coder) |
+| Unit | `cargo test -p ostrich-ca --all-features --lib` | PASS | 54 passed (coder) |
+| Unit (workspace) | `make test-unit` | PASS | **732 passed, 0 failed** (coder, round 3; 725 after round 2) |
+| Fuzz | `cargo +nightly fuzz run fuzz_grpc_peer_subject -- -max_total_time=60` | PASS | 215,504 runs / 61 s, no crash (coder, round 2; not re-run after round 3) |
+| Mutation | removing `close_notify`; inline (non-spawned) denial audit; removing the issuer-name or AKI = SKI branch | PASS | each mutation failed a test (coder) |
+| Format / lint / supply chain | `cargo fmt --all --check`, `make clippy`, `cargo deny check`, `cargo audit --deny warnings` (614 crates) | PASS | coder |
+| CI | GitHub `Build & test` (grpc_mtls_e2e, fips_gate_preinstalled), GitLab `test:integration` (`OSTRICH_DB_TESTS=1`) | **NOT RUN** | change not committed |
+
+**Not covered:** client-certificate revocation (POAM-2026-10-23-27);
+Postgres audit-chain tests including the hung-signer DB test (NOT RUN,
+POAM-2026-10-23-31); sibling and grandchild CA detection (not implemented,
+POAM-2026-10-23-28); a hung real HSM; release-build container start; deployed
+NetworkPolicy enforcement.
 
 ---
 
@@ -722,6 +821,7 @@ closed pending first green CI run).
 | CSR Parser | 1,000,000 | 0 | Pass |
 | JWS Parser | 1,000,000 | 0 | Pass |
 | OCSP Request | 1,000,000 | 0 | Pass |
+| gRPC peer subject / allowlist (`fuzz_grpc_peer_subject`, 2026-10-25) | 237,187 (61 s) after the fix | 1 before the fix (OID-arc overflow panic, fixed) | Pass after fix (implementer-reported, §2.8) |
 
 ### 5.5 Secrets Scanning
 
@@ -892,3 +992,5 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 1.5 | 2026-10-23 | OstrichPKI Team | §2.5: recorded the after-fix Linux CI result, GitHub Actions run 40063317654 (`HSM integration` / `PKCS#11 suite (SoftHSM2)`, SoftHSM 2.6.1, rustc 1.99.1, head 44d560d, artifact `commit:` merge ref c67c10e): 28 passed / 0 failed / 1 ignored, exit 0 (NOT RUN → PASS). GitHub dependency gate NOT RUN → PASS (PR 181, 12/12 checks green); GitLab still NOT RUN. QA-004 text updated (POAM-07 and POAM-17 closed; `CKA_ALLOWED_MECHANISMS` still not exercised). §2.4 cross-references updated. |
 | 1.6 | 2026-10-24 | OstrichPKI Team | Added §2.6, the PR 152 fail-closed FIPS TLS run: `tls::` 26 passed / 0 failed; `make test-unit` 667 / 0 / 1; service `--bins` 58 / 0; `mtls_peercert_e2e` 1 / 0; fmt, clippy, `cargo deny`, `cargo audit` pass; mutation check fails both refusal tests as intended. CI on the uncommitted round-1 fixes, Postgres integration and live start-up NOT RUN. QA-005 (`make test-unit` skips service bins) recorded. Header version 1.2 → 1.6 (1.3-1.5 had not updated it). |
 | 1.7 | 2026-10-24 | OstrichPKI Team | Added §2.7, the dependency-cleanup run: `make test-unit` 667 / 0 / 1; web-ui `--bins` 19 / 0; npe-portal `--bins` 30 / 0; two new offline fixture tests 2 / 0 (`ca_core_test` health/readiness fail without docker, pre-existing QA-001); fmt, clippy pass; `cargo audit --deny warnings` and `cargo deny check` pass without the RUSTSEC-2026-0097 and RUSTSEC-2026-0387 ignores (3 IDs left); live `test_ca_issue_certificate_ecdsa` and CI NOT RUN. §5.2: 2026-10-24 result added. §2.5: ignore-count note. |
+| 1.8 | 2026-10-25 | OstrichPKI Team | Added §2.8, the CA gRPC mTLS run: `grpc_mtls_e2e` 20 / 0 and `fips_gate_preinstalled` 1 / 0 (re-run by the scribe); unit `ostrich-common` 229, `ostrich-audit` 13, `ostrich-db` 54, `ostrich-ca` 54, `ostrich-est` 43 (re-run); ca/acme/est `--bins` 9 / 3 / 8 (re-run); fuzz `fuzz_grpc_peer_subject` 237,187 runs clean after the OID-overflow fix and mutations M1-M5 caught (implementer); Postgres `chain_concurrency` NOT RUN (the skip-pass without `DATABASE_URL` is not evidence); docker, kubectl, release start-up and CI NOT RUN. §2.6 "Not covered" cross-referenced. §5.4 fuzz row added. Header version 1.6 → 1.8 (1.7 had not updated it). |
+| 1.9 | 2026-10-25 | OstrichPKI Team | Added §2.9, the CA gRPC mTLS final-code run after fix rounds 2-3: `grpc_mtls_e2e` 21/21, `fips_gate_preinstalled` 1/1, 41 `grpc_tls::tests`, `ostrich-audit` lib 20/20 (re-run by the scribe); `make test-unit` 732/0 and service bins (coder). Postgres tests incl. new `sign_timeout_db.rs` NOT RUN |

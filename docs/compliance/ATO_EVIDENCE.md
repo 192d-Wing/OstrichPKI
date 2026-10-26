@@ -1,7 +1,7 @@
 # Authority to Operate (ATO) Evidence Collection Guide
 
-**Document Version:** 1.3
-**Generated:** 2026-01-04 (revised 2026-10-24)
+**Document Version:** 1.5
+**Generated:** 2026-01-04 (revised 2026-10-25)
 **OstrichPKI Version:** 0.15.0
 **Framework:** NIST Risk Management Framework (RMF)
 **Compliance Standards:** NIST 800-53 Rev 5, NIAP PP-CA v2.1, FIPS 140-2/140-3
@@ -1788,8 +1788,15 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | FMT_SMR.2 | `evidence/sar/test_results/rbac_tests.log` | Test results |
 | SC-8 | `crates/ostrich-common/src/tls.rs` | Code implementation (TLS 1.3 serving, all services) |
 | SC-8 | `services/*/src/main.rs` (TLS_CERT_FILE/TLS_KEY_FILE wiring) | Configuration |
-| SC-13 / SC-24 / FCS_TLSS_EXT.1 / FPT_FLS.1 | `crates/ostrich-common/src/tls.rs` (`ensure_fips`, called by `TlsSettings::load` and first in `serve_with_config`); `services/npe-portal/src/main.rs` (ACME mode calls `ensure_fips` before spawning the renewal task) | Code implementation (2026-10-24, PR 152): every HTTPS listener served via `ostrich_common::tls` refuses to start unless `ServerConfig::fips()` is true; startup log records `fips = true` and `aws_lc_version`. AWS-LC FIPS 4.2.0 module, FIPS mode / approved algorithms; CMVP certificate pending confirmation (POAM-2026-10-23-01). Scope: HTTPS listeners only. Plain-HTTP mode, client configs and gRPC are not covered (POAM-2026-10-23-05, -08) |
+| SC-13 / SC-24 / FCS_TLSS_EXT.1 / FPT_FLS.1 | `crates/ostrich-common/src/tls.rs` (`ensure_fips`, called by `TlsSettings::load` and first in `serve_with_config`); `services/npe-portal/src/main.rs` (ACME mode calls `ensure_fips` before spawning the renewal task) | Code implementation (2026-10-24, PR 152): every HTTPS listener served via `ostrich_common::tls` refuses to start unless `ServerConfig::fips()` is true; startup log records `fips = true` and `aws_lc_version`. AWS-LC FIPS 4.2.0 module, FIPS mode / approved algorithms; CMVP certificate pending confirmation (POAM-2026-10-23-01). Scope at the time: HTTPS listeners only. Update 2026-10-25: the process-level `fips_gate` and the CA gRPC configs are now covered (rows below); plain-HTTP REST mode and non-gRPC client configs are still not covered (POAM-2026-10-23-05) |
 | SC-13 / SC-24 | `tls::tests`: `ensure_fips_rejects_non_fips_server_configs`, `ensure_fips_accepts_loaded_config`, `serve_with_config_refuses_non_fips_config`, `load_builds_fips_config_with_alpn`, `fips_server_config_kx_groups_exclude_x25519_keep_mlkem_hybrid`; npe-portal `build_mtls_server_config_reports_fips_mode` | Test results: `cargo test -p ostrich-common --lib tls::` 26 passed / 0 failed; service `--bins` 58 passed / 0 failed; mutation check (gate forced to `Ok`) fails the refusal tests (TEST_EVIDENCE.md §2.6) |
+| SC-13 / SC-24 / FPT_FLS.1 (supports FPT_TST_EXT.1) | `crates/ostrich-common/src/tls.rs` `fips_gate`; first call after tracing setup in all ten `services/*/src/main.rs` | Code implementation (2026-10-25, branch `claude/grpc-mtls`, uncommitted): each service exits before database, NATS, listeners or clients unless AWS-LC and the process-default rustls provider report FIPS. Test: `fips_gate_preinstalled` 1 / 0 (re-run by the compliance scribe 2026-10-25 on the final code). Gate refusals are error logs only, no audit record (POAM-2026-10-23-05 (d)) |
+| AC-17 / SC-8 / SC-8(1) / SC-13 / IA-3 / IA-5(2) / FTP_ITC.1 / FCS_TLSS_EXT.2 / FCS_TLSC_EXT.2 | `crates/ostrich-common/src/grpc_tls.rs`, `crates/ostrich-common/src/grpc_client.rs`, `services/ca-server/src/main.rs` (`start_grpc_listener`), `crates/ostrich-acme/src/ca_integration.rs`, `crates/ostrich-est/src/ca_integration.rs` | Code implementation (2026-10-25, uncommitted): CA gRPC TLS 1.3 mTLS on the aws-lc-rs FIPS provider, `fips()` asserted on server and client, ALPN `h2`. Tests: `grpc_mtls_e2e` 21 / 0 (re-run by the scribe on the final code; TEST_EVIDENCE.md §2.8). Revocation not checked (POAM-2026-10-23-27) |
+| AC-3 / AC-6 / FDP_ACC.1 / FDP_ACF.1 | `SubjectAllowlistLayer`, `authorize_peer`, `ensure_dedicated_client_ca` in `grpc_tls.rs` | Code implementation: default-deny subject allowlist, clientAuth EKU extension required, dedicated client CA enforced at startup over the CA-database lineage (`walk_ca_ancestors` + `ensure_dedicated_client_ca`: issuing SPKI or subject, issued by the issuing CA, its issuer, database ancestors; refusal audited), per-call `subscriber_issuing_ca` denial. Tests: `disallowed_subject_permission_denied_and_audited`, `leaf_without_eku_is_permission_denied`; `grpc_tls` unit tests `dedicated_client_ca_refuses_chain_relatives`, `issued_by_checks_cover_name_and_key_id_independently`, `authorize_peer_refuses_subscriber_issuing_ca_leaf` (41 / 0); ca-server `grpc_client_ca_must_not_be_the_issuing_ca`, `walk_ca_ancestors_follows_parent_ca_id_and_fails_closed`, `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal`. Gaps: listener-wide (POAM-26), subject-only, siblings / grandchildren / roots outside the lineage not detected (POAM-28) |
+| AU-2 / AU-12 / FAU_GEN.1 | `crates/ostrich-audit/src/auth_hook.rs`; `grpc_tls.rs` `RateLimitedAudit`; ca-server `audit_grpc_listener` | Events `access_denied`, `access_denied_suppressed`, `tls_handshake_failed`, `tls_handshake_failures_suppressed`, `grpc_listener_started`, `grpc_insecure_dev_plaintext_enabled`, `grpc_listener_refused` (see "CA gRPC mTLS evidence" below). Tests in `grpc_mtls_e2e` (21 / 0), `ostrich-audit` lib (20 / 0, re-run by the scribe) and ca-server `--bins` (13 / 0, coder-reported after round 3) |
+| AU-9 / AU-9(3) / FAU_STG.4 | `crates/ostrich-db/src/repository/audit.rs` `begin_append` (`pg_advisory_xact_lock`); `crates/ostrich-audit/src/sink.rs` | Code implementation (Implemented, not Tested): serialised chain append, checked `append`, lock / statement / idle-in-transaction timeouts (5 s / 10 s / 7 s), begin / sign / commit bounds (10 s / 5 s / 10 s) with the sign on the blocking pool, fail-closed `alert="audit_write_failed"` (commit timeout: `outcome=unknown`), `details.occurred_at` on a moved timestamp, SLH-DSA audit key refused (POAM-2026-10-23-34). Offline unit tests in `ostrich-audit` lib (20 / 0, incl. `sign_timeout_fires_for_blocking_signer`). Postgres tests `chain_concurrency.rs`, `signed_chain_tamper.rs`, `sign_timeout_db.rs` **NOT RUN**; with `OSTRICH_DB_TESTS=1` they fail on an unreachable database, so a green GitLab `test:integration` log will be evidence (POAM-2026-10-23-31) |
+| CM-6 / CM-2 | `deploy/helm/ostrich-pki/values.yaml` (`ca.grpc.*`, `acme.caGrpc.*`, `est.caGrpc.*`), `deploy/kubernetes/{ca,acme,est}-deployment.yaml`, `docker-compose*.y*ml`, `.env.example`, `scripts/gen-dev-grpc-certs.sh` | Configuration baseline (see "CA gRPC mTLS evidence" below). `helm template` fails closed without the required secrets |
+| AC-4 (OE.NETWORK) | `deploy/helm/ostrich-pki/templates/networkpolicy.yaml`; `deploy/kubernetes/ca-networkpolicy.yaml` | Configuration: gRPC port reachable only from acme/est pods. Rendered and decoded offline; no live cluster test |
 | SC-8 / SC-18 / SI-10 | `services/web-ui/src/server/middleware/csp.rs` | Code implementation (per-request nonce CSP + hardening headers on the web console). `script-src` is nonce-strict + `'wasm-unsafe-eval'`; `default-src`/`connect-src`/`base-uri`/`form-action` are `'self'`; `frame-ancestors 'none'`; `upgrade-insecure-requests`. Unit tests (3) cover nonce generation and header contents. |
 | SC-8 / SC-18 | `services/web-ui/src/server/middleware/csp.rs` deployment header capture (`/next`, image `web-ui:sha-4f64ef4`, 2026-06-24) | Deployment evidence — see CSP capture below |
 | SC-12 / FCS_COP.1 | `crates/ostrich-kra/src/wrap.rs` | Code implementation (AES-256-GCM KEK wrapping) |
@@ -1805,6 +1812,57 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | CM-2 / SA-15 | `rust-toolchain.toml`; `.github/workflows/ci.yml` job `Toolchain pin consistency` | Configuration baseline (toolchain 1.99.1) and its CI check |
 | CM-6 | `.github/workflows/{ci,audit,hsm-integration}.yml` | CI secure defaults (§2.3 table) |
 | SA-11 / IA-7 / FCS_CKM.1 / FCS_COP.1 | `.github/workflows/hsm-integration.yml`, artifact `pkcs11-softhsm-results` | Test results: Linux run 40063317654 (SoftHSM 2.6.1, PR 181 head 44d560d), 28 passed / 0 failed / 1 ignored, exit 0 |
+
+### CA gRPC mTLS evidence (2026-10-25)
+
+Branch `claude/grpc-mtls`, uncommitted; run record
+`target/agent-workflow/20261024-225627-grpc-mtls/`. Operator procedure:
+[docs/runbooks/ca-grpc-mtls.md](../runbooks/ca-grpc-mtls.md).
+
+**Configuration baseline (CM-6).** All values are file paths or DNs, never
+secrets; every default is the secure one.
+
+| Service | Setting | Default | Refusal |
+|---|---|---|---|
+| ca-server | `CA_GRPC_TLS_CERT_FILE`, `CA_GRPC_TLS_KEY_FILE`, `CA_GRPC_TLS_CLIENT_CA_FILE` | none | none set ⇒ exit before the database; some set ⇒ exit ("partial CA gRPC TLS configuration") |
+| ca-server | `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` (`;`-delimited) | empty | empty or unparsable ⇒ exit before the database |
+| ca-server | client-CA anchor from the CA's own chain (issuing SPKI or subject, issued by the issuing CA, its issuer, or a CA-database ancestor); ancestor walk failure (missing row, cycle, depth > 16) | n/a | exit after the CA loads (after the database connects), with a `grpc_listener_refused` audit record |
+| ca-server | CA key algorithm SLH-DSA (audit records are signed with the CA key) | n/a | CA fails to start (POAM-2026-10-23-34) |
+| ca-server | `CA_GRPC_INSECURE_DEV_PLAINTEXT` | `false` | release build ⇒ exit; set together with TLS options or the allowlist ⇒ exit (ambiguous) |
+| acme-server | `CA_GRPC_INSECURE` / `--ca-insecure` | `false` | release build ⇒ exit |
+| est-server | `CA_GRPC_INSECURE` / `--ca-insecure` / `caInsecure`; loopback plaintext exception | `false` | release build ⇒ refused (both) |
+| acme-server, est-server | `CA_GRPC_CLIENT_CERT_FILE`, `CA_GRPC_CLIENT_KEY_FILE`, `CA_GRPC_CA_CERT_FILE` | none | partial ⇒ refused; none ⇒ plaintext refused unless the debug-only flag is set |
+| acme-server, est-server | `CA_GRPC_SERVER_NAME` | URL host | n/a |
+
+The trust-anchor refusal is audited (`grpc_listener_refused`, best effort).
+The FIPS gate and the pre-database configuration refusals are written to the
+service log only (no audit record; POAM-2026-10-23-05 (d)). Exact messages:
+see the runbook troubleshooting table.
+
+**Audit records (AU-2 / AU-3 / AU-12, FAU_GEN.1).** Expected in
+`audit_events`:
+
+| action | event_type / outcome | actor / target / details |
+|---|---|---|
+| `access_denied` | authorization / failure | peer DN or `unknown` / gRPC method path / `reason` (`subject_not_allowlisted`, `unparsable_certificate`, `no_client_certificate`, `missing_client_auth_eku`, `subscriber_issuing_ca`), `listener` |
+| `access_denied_suppressed` | authorization / failure | `system` / `ca-grpc` / `count`, `window_secs`, `window_start`, `window_end`, `distinct_sources`, `distinct_sources_capped` |
+| `tls_handshake_failed` | authentication / failure | `unauthenticated` (verified subject for `no_alpn_h2`) / `ca-grpc` / `reason` (e.g. `untrusted_client_certificate`, `client_certificate_wrong_eku`, `expired_client_certificate`, `peer_incompatible`, `no_application_protocol`, `handshake_timeout`, `per_source_handshake_limit`, `no_alpn_h2`) |
+| `tls_handshake_failures_suppressed` | authentication / failure | `system` / `ca-grpc` / same fields as `access_denied_suppressed` |
+| `grpc_listener_started` | system / success | `ca-server` / `ca-grpc` / `mode`, `tls`, `fips`, `aws_lc_version`, `allowed_subjects`, `address` |
+| `grpc_insecure_dev_plaintext_enabled` | configuration_change / success | `ca-server` / `ca-grpc` / `build: debug`, `address` (debug builds only) |
+| `grpc_listener_refused` | configuration_change / failure | `ca-server` / `ca-grpc` / `check: client_ca_trust_anchor_separation`, `reason` |
+
+Failure records: at most 60 per 60 s per listener, then one summary per
+window (timer-flushed, and flushed when the accept loop exits).
+
+**Live evidence still to capture:** a release-build start-up log showing the
+FIPS gate line and `grpc_listener_started`; grpcurl verification cases 1-6
+from the runbook against a deployed CA, with the resulting `audit_events`
+rows; a NetworkPolicy denial from a non-RA pod; a `grpc_listener_refused`
+row from a deliberate trust-anchor misconfiguration; the GitLab
+`test:integration` job log with `chain_concurrency`, `signed_chain_tamper` and
+`sign_timeout_db` run against Postgres (`OSTRICH_DB_TESTS=1`;
+POAM-2026-10-23-31).
 
 ### SC-8 / SC-18 — Web console CSP deployment capture
 

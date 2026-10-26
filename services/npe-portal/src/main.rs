@@ -82,19 +82,22 @@ async fn main() -> Result<()> {
             .init();
     }
 
+    // Process-level FIPS gate before any client or listener: asserts AWS-LC FIPS
+    // mode and installs the aws-lc-rs FIPS provider as the process-wide default
+    // rustls CryptoProvider. ostrich_common::tls and the portal's own server
+    // config select the provider explicitly, but the embedded ACME client
+    // (instant-acme) builds its HTTPS client from the *process default*, which
+    // rustls cannot auto-select when both aws-lc-rs and ring appear in the
+    // dependency graph. Idempotent; a non-FIPS default installed earlier makes
+    // the portal refuse to start. NIST 800-53: SC-13, SC-24. NIAP PP-CA:
+    // supports FPT_TST_EXT.1; FPT_FLS.1.
+    ostrich_common::tls::fips_gate()?;
+
     info!(
         service = "ostrich-npe-portal",
         version = env!("CARGO_PKG_VERSION"),
         "Starting OstrichPKI NPE Portal"
     );
-
-    // Install the process-wide default rustls CryptoProvider (aws-lc-rs / FIPS).
-    // ostrich_common::tls and the portal's own server config select the provider
-    // explicitly, but the embedded ACME client (instant-acme) builds its HTTPS
-    // client from the *process default*, which rustls cannot auto-select when
-    // both aws-lc-rs and ring appear in the dependency graph. Idempotent: returns
-    // Err if already installed, which we ignore. NIST 800-53: SC-13 (FIPS).
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let config = NpePortalConfig::load(&args.config).await?;
 
@@ -227,7 +230,7 @@ async fn serve_with_acme(
     let server_config =
         std::sync::Arc::new(build_mtls_server_config(client_ca_path, resolver.clone())?);
     // Fail closed before spawning the renewal task or logging `fips = true`;
-    // serve_with_config re-checks (NIST 800-53: SC-13, SC-24).
+    // serve_with_config re-checks (NIST 800-53: SC-13, SC-24; NIAP PP-CA: FPT_FLS.1).
     ostrich_common::tls::ensure_fips(&server_config)?;
     tokio::spawn(renewal_loop(acme, store, resolver, not_after));
 

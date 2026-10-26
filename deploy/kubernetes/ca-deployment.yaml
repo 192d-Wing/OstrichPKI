@@ -4,6 +4,16 @@
 # - NIST 800-53: SC-17 (PKI Certificates) — this is the CA core
 # - NIST 800-53: SC-12 (Key management) — CA key in HSM/SoftHSM
 # - NIST 800-53: CM-2 (Baseline Configuration)
+# - NIST 800-53: SC-8, AC-17, IA-3, AC-3 — gRPC (50051) is TLS 1.3 mTLS with a
+#   client-subject allowlist (aws-lc-rs FIPS). NIAP PP-CA: FTP_ITC.1
+#
+# Requires the out-of-band secret `ca-grpc-tls` (tls.crt = server chain with
+# SAN DNS:ca-service, tls.key, client-ca.crt = the DEDICATED service-identity
+# CA that issued the acme/est gRPC client certs and nothing else; ca-server
+# refuses to start if client-ca.crt contains its own subscriber-issuing CA).
+# Without it the pod stays in ContainerCreating and the CA never serves gRPC in
+# plaintext. ca-networkpolicy.yaml limits 50051 to acme/est pods. See
+# docs/runbooks/ca-grpc-mtls.md.
 #
 # Per-service image published by .github/workflows/docker-publish.yml
 # (ghcr.io/192d-wing/ca-service). Deployment/Service names match the running
@@ -50,6 +60,12 @@ spec:
                   key: DATABASE_URL
             - { name: CA_REST_ADDRESS, value: "0.0.0.0:8080" }
             - { name: CA_GRPC_ADDRESS, value: "0.0.0.0:50051" }
+            # gRPC mTLS (release images refuse any plaintext dev flag).
+            - { name: CA_GRPC_TLS_CERT_FILE, value: "/app/grpc-tls/tls.crt" }
+            - { name: CA_GRPC_TLS_KEY_FILE, value: "/app/grpc-tls/tls.key" }
+            - { name: CA_GRPC_TLS_CLIENT_CA_FILE, value: "/app/grpc-tls/client-ca.crt" }
+            # ";"-delimited RFC 4514 DNs; everything else gets PERMISSION_DENIED.
+            - { name: CA_GRPC_ALLOWED_CLIENT_SUBJECTS, value: "CN=acme-server;CN=est-server" }
             # Expiry-notify producer -> NATS over TLS with password auth. Only used
             # when NOTIFY_ENABLED=true (set per-environment). NATS_USER/PASSWORD come
             # from the nats-auth secret; the CA verifies the server against
@@ -62,6 +78,7 @@ spec:
               valueFrom: { secretKeyRef: { name: nats-auth, key: NATS_PASSWORD } }
           volumeMounts:
             - { name: nats-client-ca, mountPath: /etc/nats-ca, readOnly: true }
+            - { name: grpc-tls, mountPath: /app/grpc-tls, readOnly: true }
           livenessProbe:
             httpGet: { path: /health, port: http }
             initialDelaySeconds: 10
@@ -80,3 +97,7 @@ spec:
         - name: nats-client-ca
           secret:
             secretName: nats-client-ca
+        - name: grpc-tls
+          secret:
+            secretName: ca-grpc-tls
+            defaultMode: 0440

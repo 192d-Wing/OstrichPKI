@@ -91,11 +91,77 @@ Call with: (dict "service" "ca" "repository" .Values.ca.image.repository "tag" .
 {{- end }}
 
 {{/*
-In-cluster CA gRPC URL. The CA exposes REST (http) and gRPC on a single
-Service named "<fullname>-ca"; gRPC listens on .Values.ca.grpc.service.port.
+In-cluster CA gRPC URL. The CA exposes REST and gRPC on a single Service named
+"<fullname>-ca"; gRPC listens on .Values.ca.grpc.service.port and only speaks
+TLS 1.3 mutual TLS, so the scheme is always https. The CA gRPC server
+certificate SAN must contain the host "<fullname>-ca" (or set
+<component>.caGrpc.serverName to a name it does contain).
+
+COMPLIANCE MAPPING:
+- NIST 800-53: SC-8 (Transmission Confidentiality), AC-17 (mTLS inter-service)
 */}}
 {{- define "ostrich-pki.caGrpcUrl" -}}
-{{- printf "http://%s-ca:%d" (include "ostrich-pki.fullname" .) (.Values.ca.grpc.service.port | int) -}}
+{{- printf "https://%s-ca:%d" (include "ostrich-pki.fullname" .) (.Values.ca.grpc.service.port | int) -}}
+{{- end }}
+
+{{/*
+CA gRPC client allowlist, ";"-joined for CA_GRPC_ALLOWED_CLIENT_SUBJECTS
+(commas are RDN separators inside a DN, so ";" delimits entries). Fails
+rendering on an empty list or an entry containing ";" (fail closed: the CA
+would refuse to start anyway).
+
+COMPLIANCE MAPPING:
+- NIST 800-53: AC-3 (Access Enforcement), AC-6 (Least Privilege), CM-6
+- NIAP PP-CA: FDP_ACF.1, FMT_SMF.1
+*/}}
+{{- define "ostrich-pki.caGrpcAllowedSubjects" -}}
+{{- $subjects := .Values.ca.grpc.allowedClientSubjects | default list -}}
+{{- if not $subjects -}}
+{{- fail "ca.grpc.allowedClientSubjects must list at least one client certificate subject DN (e.g. CN=acme-server); the CA gRPC API refuses to start with an empty allowlist" -}}
+{{- end -}}
+{{- range $subjects -}}
+{{- if or (not .) (contains ";" .) -}}
+{{- fail (printf "ca.grpc.allowedClientSubjects entry %q is empty or contains ';' (the list delimiter)" (toString .)) -}}
+{{- end -}}
+{{- end -}}
+{{- join ";" $subjects -}}
+{{- end }}
+
+{{/*
+CA gRPC mTLS client helpers for a gRPC client component (acme/est).
+
+- caGrpcClientSecret: (dict "component" "acme" "cfg" .Values.acme.caGrpc)
+  returns the client Secret name, failing rendering if it is unset.
+- caGrpcClientEnv:    (dict "cfg" .Values.acme.caGrpc "root" .)
+  returns the CA_GRPC_* env entries. The Secret is mounted read-only at
+  /app/ca-grpc-client by the calling deployment template.
+
+Rendering fails when clientTls.existingSecret is unset: the CA accepts only
+mutually authenticated TLS 1.3, so a client without a certificate cannot work
+(fail closed at deploy time rather than at first issuance). CA_GRPC_INSECURE is
+never set by this chart.
+
+COMPLIANCE MAPPING:
+- NIST 800-53: SC-8, AC-17, IA-3, IA-5(2), SC-12 (key only via Secret file)
+- NIAP PP-CA: FCS_TLSC_EXT.2, FTP_ITC.1
+*/}}
+{{- define "ostrich-pki.caGrpcClientSecret" -}}
+{{- required (printf "%s.caGrpc.clientTls.existingSecret is required: the CA gRPC API only accepts mTLS client certificates (see docs/runbooks/ca-grpc-mtls.md)" .component) .cfg.clientTls.existingSecret -}}
+{{- end }}
+
+{{- define "ostrich-pki.caGrpcClientEnv" -}}
+- name: CA_GRPC_URL
+  value: {{ include "ostrich-pki.caGrpcUrl" .root | quote }}
+- name: CA_GRPC_CLIENT_CERT_FILE
+  value: {{ .cfg.clientTls.certFile | quote }}
+- name: CA_GRPC_CLIENT_KEY_FILE
+  value: {{ .cfg.clientTls.keyFile | quote }}
+- name: CA_GRPC_CA_CERT_FILE
+  value: {{ .cfg.clientTls.caFile | quote }}
+{{- if .cfg.serverName }}
+- name: CA_GRPC_SERVER_NAME
+  value: {{ .cfg.serverName | quote }}
+{{- end }}
 {{- end }}
 
 {{/*

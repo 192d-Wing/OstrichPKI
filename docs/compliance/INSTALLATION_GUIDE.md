@@ -1,7 +1,7 @@
 # OstrichPKI Installation Guide
 
-**Document Version:** 1.1
-**Last Updated:** January 2026
+**Document Version:** 1.2
+**Last Updated:** 2026-10-25
 **OstrichPKI Version:** 0.15.0
 **NIAP Reference:** AGD_PRE.1 - Preparative Procedures
 **Audience:** System Administrators, Security Engineers
@@ -206,6 +206,10 @@ cd ostrich-pki
 export POSTGRES_PASSWORD=strongpassword
 export RUST_LOG=info
 
+# CA gRPC mTLS material (required: ca-server refuses to start without it).
+# DEV ONLY throwaway PKI written to .dev-grpc-certs/ (outside ./certs).
+make dev-grpc-certs
+
 # Start all services
 docker-compose up -d
 
@@ -237,8 +241,19 @@ curl http://localhost:8082/health      # OCSP service
 ```
 External Network: ACME (:8081), EST (:8443), OCSP (:8082), CA REST (:8080)
         ↓
-Internal Network: CA gRPC (:50051), SCMS (:8083), KRA (:8084), PostgreSQL (:5432)
+Internal Network: CA gRPC (:50051, TLS 1.3 mTLS), SCMS (:8083), KRA (:8084), PostgreSQL (:5432)
 ```
+
+**CA gRPC (since 2026-10-25, uncommitted branch `claude/grpc-mtls`):** the CA
+issuance API on :50051 requires TLS 1.3 mutual authentication and a
+client-subject allowlist. ca-server exits at startup if
+`CA_GRPC_TLS_CERT_FILE`, `CA_GRPC_TLS_KEY_FILE`, `CA_GRPC_TLS_CLIENT_CA_FILE`
+or `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` is missing; acme-server and est-server
+need `CA_GRPC_CLIENT_CERT_FILE`, `CA_GRPC_CLIENT_KEY_FILE` and
+`CA_GRPC_CA_CERT_FILE`. Container images are release builds, so the plaintext
+dev flags are refused. Material from `make dev-grpc-certs` is for development
+only; never place gRPC keys under `./certs`, which the ca, est and ocsp
+containers mount wholesale.
 
 ### 4.3 Kubernetes Installation (Helm)
 
@@ -256,6 +271,16 @@ helm install ostrich-pki ostrich-pki/ostrich-pki \
 # Verify deployment
 kubectl get pods -n ostrich-pki
 ```
+
+**Before `helm install`:** create the CA gRPC secrets and set
+`ca.grpc.tls.existingSecret`, `acme.caGrpc.clientTls.existingSecret` and
+`est.caGrpc.clientTls.existingSecret`; the chart refuses to render without
+them. The certificates must come from a **dedicated service-identity CA**
+that exists before the first install (ca-server cannot issue its own gRPC
+certificates, and its issuing CA is refused as the gRPC client CA). See
+[ADMIN_GUIDE.md §3.6](ADMIN_GUIDE.md#36-ca-grpc-issuance-channel-mtls) and the
+runbook [docs/runbooks/ca-grpc-mtls.md](../runbooks/ca-grpc-mtls.md)
+(Procedure A).
 
 ---
 
@@ -885,3 +910,4 @@ sudo systemctl daemon-reload
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | January 2026 | OstrichPKI Team | Initial release |
+| 1.2 | 2026-10-25 | OstrichPKI Team | §4.2 / §4.3: CA gRPC mTLS prerequisites (dev certs via `make dev-grpc-certs` into `.dev-grpc-certs/`, required Helm secrets, dedicated service-identity CA before first install). Branch `claude/grpc-mtls`, uncommitted. Version 1.1 had no history row |

@@ -41,6 +41,13 @@ x509-cert = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
+# `Stream` for the gRPC mTLS incoming-connection stream (grpc_tls).
+futures = { workspace = true }
+# `TokioIo` adapter for the custom gRPC TLS client connector (grpc_tls).
+hyper-util = { workspace = true }
+
+# Secrets in memory (gRPC client private key PEM). NIST 800-53: SI-12.
+zeroize = { workspace = true }
 
 # gRPC (for gRPC client infrastructure)
 tonic = { workspace = true }
@@ -65,6 +72,10 @@ tower = { workspace = true }
 # TLS serving (HTTPS/mTLS for service binaries)
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
+# Named aws-lc-rs (FIPS) signature-verification algorithms, to narrow the gRPC
+# listener/client verifier list (`grpc_tls::grpc_crypto_provider`). Same version
+# and features rustls itself pulls in (`rustls/fips` -> `webpki/aws-lc-rs-fips`).
+rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs-fips", "std"] }
 axum-server = { workspace = true }
 # Surface the verified mTLS client certificate to handlers (custom Accept).
 tokio-rustls = { workspace = true }

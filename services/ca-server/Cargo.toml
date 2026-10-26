@@ -49,8 +49,6 @@ serde_json = { workspace = true }
 # Expiry-notification producer: scans expiring certs and publishes schedules to
 # the notify-service over NATS JetStream (optionally TLS + password auth).
 async-nats = { workspace = true }
-# NATS TLS needs a process-wide rustls CryptoProvider; install aws-lc-rs (FIPS).
-rustls = { workspace = true }
 # Zeroize the NATS password in memory after use (NIST 800-53 SI-12).
 zeroize = { workspace = true }
 sqlx = { workspace = true }
@@ -62,3 +60,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Error handling
 anyhow = { workspace = true }
+
+[dev-dependencies]
+# Bin tests: in-memory audit sink (`testing` feature) for the gRPC listener
+# lifecycle records, and rcgen test PKI for the gRPC mTLS options.
+ostrich-audit = { path = "../../crates/ostrich-audit", features = ["testing"] }
+rcgen = { workspace = true }

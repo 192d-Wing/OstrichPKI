@@ -280,12 +280,11 @@ impl TrustedProxyConfig {
 
 /// Parse the RFC 4514 subject DN from a DER end-entity certificate, matching the
 /// rendering used by [`super::mtls`] so configured `allowed_subjects` compare
-/// verbatim.
+/// verbatim. One implementation, shared with the gRPC subject allowlist
+/// ([`crate::grpc_tls::certificate_subject_dn`]); `None` for an unparsable
+/// certificate or an empty subject.
 fn peer_cert_subject(cert_der: &[u8]) -> Option<String> {
-    use x509_cert::der::Decode;
-    x509_cert::Certificate::from_der(cert_der)
-        .ok()
-        .map(|c| c.tbs_certificate.subject.to_string())
+    crate::grpc_tls::certificate_subject_dn(cert_der)
 }
 
 /// Maximum accepted length for a forwarded identity field (username / subject
@@ -365,6 +364,9 @@ fn build_trusted_proxy_user(headers: &header::HeaderMap) -> Option<Authenticated
 /// # COMPLIANCE MAPPING
 /// - NIST 800-53: IA-2 / AC-3 / AC-17 - mTLS-gated proxied identity, bearer fallback
 /// - NIAP PP-CA: FIA_UAU.1 / FTP_ITC.1
+// POAM: POAM-2026-10-23-33 - the trusted-proxy gate matches the portal
+// certificate subject only and there is no trust-anchor separation check on
+// the REST client CA (same pattern as the gRPC allowlist before its guard).
 pub struct TrustedProxyAuthLayer;
 
 impl TrustedProxyAuthLayer {

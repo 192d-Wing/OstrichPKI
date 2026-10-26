@@ -22,8 +22,11 @@ cert's policy OIDs to an NPE role, and proxies API calls to the CA with
 Otherwise the CA falls back to bearer auth and returns 401. Client auth on the
 CA is **optional**, so bearer/admin clients (no cert) still work over `https://`.
 
-TLS applies to the CA **REST** listener only — gRPC:50051 (EST, acme) stays
-plaintext and is unaffected.
+This bridge configures the CA **REST** listener only. The CA gRPC listener
+(50051, used by EST and ACME) is separate: it always requires TLS 1.3 mutual
+TLS with its own certificates (`CA_GRPC_TLS_*`) and its own client-subject
+allowlist (`CA_GRPC_ALLOWED_CLIENT_SUBJECTS`). See `ca-grpc-mtls.md`. The
+`TLS_*` / `CA_TRUSTED_PROXY_SUBJECTS` settings below do not affect it.
 
 ## What lives where
 

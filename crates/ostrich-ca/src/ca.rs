@@ -114,20 +114,28 @@ impl CertificateAuthority {
         // can run verify_signed_chain against the CA cert's SPKI. `signing_key_id`
         // records the key label on each row to support future key separation /
         // rotation. See migrations/00007_audit_signature.sql.
-        let issuer_sink = Box::new(ostrich_audit::sink::DatabaseAuditSink::with_signing_key(
-            db_pool.clone(),
-            crypto_provider_arc.clone(),
-            ca_key.clone(),
-            ca_key.algorithm,
-            ca_key.label.clone(),
-        ));
-        let revocation_sink = Box::new(ostrich_audit::sink::DatabaseAuditSink::with_signing_key(
-            db_pool.clone(),
-            crypto_provider_arc.clone(),
-            ca_key.clone(),
-            ca_key.algorithm,
-            ca_key.label.clone(),
-        ));
+        //
+        // AU-5 / PQC-012: the sink refuses an SLH-DSA key (signing runs under
+        // the audit chain lock); the CA then fails to start (fail closed)
+        // rather than run without signed audit records.
+        let signed_sink = || {
+            ostrich_audit::sink::DatabaseAuditSink::with_signing_key(
+                db_pool.clone(),
+                crypto_provider_arc.clone(),
+                ca_key.clone(),
+                ca_key.algorithm,
+                ca_key.label.clone(),
+            )
+            .map(Box::new)
+            .map_err(|e| {
+                ostrich_crypto::Error::UnsupportedAlgorithm(format!(
+                    "CA key cannot sign audit records: {}",
+                    e
+                ))
+            })
+        };
+        let issuer_sink = signed_sink()?;
+        let revocation_sink = signed_sink()?;
 
         let issuer = CertificateIssuer::new(
             ca_key.clone(),

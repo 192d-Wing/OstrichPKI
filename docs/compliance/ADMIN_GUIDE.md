@@ -1,7 +1,7 @@
 # OstrichPKI Administrative Guidance
 
-**Document Version:** 1.0
-**Last Updated:** January 2026
+**Document Version:** 1.3
+**Last Updated:** 2026-10-25
 **NIAP Reference:** AGD_OPE.1 - Operational User Guidance
 **Audience:** CA Administrators, Operations Staff, Security Officers
 
@@ -265,6 +265,99 @@ subject:
 | `tls.require_client_cert` | true | mTLS required for admin access |
 | `key_constraints.min_rsa_bits` | 2048 | NIST minimum |
 | `audit.retention_days` | >= 365 | Compliance requirement |
+| `CA_GRPC_INSECURE_DEV_PLAINTEXT` (ca-server) | unset / `false` | Release builds refuse it; never set it in a deployment |
+| `CA_GRPC_INSECURE` (acme-server, est-server) | unset / `false` | Release builds refuse plaintext gRPC to the CA |
+
+### 3.6 CA gRPC Issuance Channel (mTLS)
+
+*Added 2026-10-25 (branch `claude/grpc-mtls`, uncommitted). NIST 800-53:
+AC-3, AC-6, AC-17, IA-3, IA-5(2), SC-8, SC-12, SC-13, CM-6. NIAP PP-CA:
+FTP_ITC.1, FCS_TLSS_EXT.2, FCS_TLSC_EXT.2, FIA_X509_EXT.1, FDP_ACF.1.*
+
+The RA front ends (acme-server, est-server) call the CA issuance API over gRPC
+(port 50051). ca-server serves it only over TLS 1.3 with mandatory client
+certificates and refuses to start without that configuration. The full
+procedure, exact error messages and verification steps are in the runbook
+[docs/runbooks/ca-grpc-mtls.md](../runbooks/ca-grpc-mtls.md).
+
+**1. Dedicated service-identity CA (required).** Before the first install,
+create or choose a CA (normally an offline intermediate with `pathlen:0`) that
+issues **only** the gRPC service certificates: ca-server's gRPC server
+certificate and the acme-server and est-server client certificates. It must not
+be the CA that this ca-server operates, and it must not issue certificates to
+subscribers, devices or users. Record it and its owner in the system inventory
+(CM-8).
+
+- Why: the allowlist matches the client subject DN only. If the client trust
+  anchor also issues subscriber certificates, anyone who can enroll for
+  `CN=est-server` gets past both the handshake and the allowlist.
+- What ca-server checks: after it loads the CA, it walks the issuing CA's
+  ancestors in the CA database and refuses to start the listener if a
+  client-CA anchor has the issuing certificate's public key or subject, was
+  issued by the issuing CA, is its issuer, or matches a database ancestor. The
+  refusal is written as a `grpc_listener_refused` audit record. It warns if the
+  file holds more than one anchor. Per call, it denies client certificates
+  issued directly by the issuing CA or an ancestor
+  (`reason=subscriber_issuing_ca`). It cannot detect sibling subordinate CAs,
+  CAs issued by a subordinate of this CA, or roots outside its database
+  lineage; keeping those out is your responsibility (POAM-2026-10-23-28).
+- Audit signing: ca-server signs audit records with the CA key and does not
+  support an SLH-DSA CA key (it will not start; POAM-2026-10-23-34). Audit
+  writes fail closed on timeout; alert on the log field
+  `alert="audit_write_failed"` (see the runbook section "Operations: audit
+  write failures").
+- Signatures: sign with ECDSA P-256/SHA-256, ECDSA P-384/SHA-384 or RSA-PSS.
+  RSA PKCS#1 v1.5 (the OpenSSL default for RSA) and curve/hash mismatches are
+  refused at the handshake.
+
+**2. Bootstrap.** ca-server cannot issue its own gRPC certificates, so the
+service-identity CA must exist before the first install (POAM-2026-10-23-29).
+Issue the three certificates from it (client certificates with an
+extendedKeyUsage extension that includes `clientAuth`; the server certificate
+with `serverAuth` and a SAN for the host the clients dial).
+
+**3. Secrets.** Store keys and certificates as Kubernetes secrets (or files
+readable only by the service user), never as environment values; the
+`CA_GRPC_*` variables carry file paths only.
+
+| Secret (Helm value) | Keys | Mounted at |
+|---|---|---|
+| `ca.grpc.tls.existingSecret` | `tls.crt` (server chain), `tls.key`, `client-ca.crt` (service-identity CA only) | `/app/grpc-tls` |
+| `acme.caGrpc.clientTls.existingSecret` | `tls.crt`, `tls.key`, `ca.crt` | `/app/ca-grpc-client` |
+| `est.caGrpc.clientTls.existingSecret` | `tls.crt`, `tls.key`, `ca.crt` | `/app/ca-grpc-client` |
+
+The chart refuses to render without these secrets. Delete private keys from
+workstations after creating the secrets. For compose, use per-service
+directories outside `./certs` (`CA_GRPC_TLS_DIR`, `ACME_CA_GRPC_CLIENT_DIR`,
+`EST_CA_GRPC_CLIENT_DIR`); `make dev-grpc-certs` writes DEV ONLY material to
+`.dev-grpc-certs/` and must never be used for a persistent environment.
+
+**4. Allowlist.** `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` (Helm
+`ca.grpc.allowedClientSubjects`, a list) names the client subjects that may
+call the API, for example `CN=acme-server;CN=est-server`.
+
+- Matching is exact and case-sensitive on the RFC 4514 form, most specific RDN
+  first (as printed by `openssl x509 -noout -subject -nameopt RFC2253`).
+- `;` separates entries; an empty list stops ca-server.
+- Every allow-listed client can call every RPC on the listener, including
+  `RevokeCertificate` and `GenerateCrl` (POAM-2026-10-23-26). Allow-list only
+  the RA services.
+- Changes take effect at restart. Treat every allowlist change as a CM-3
+  change; the start-up audit record `grpc_listener_started` records the
+  effective list.
+
+**5. Revoking a service identity.** Revocation is not checked on this channel
+(POAM-2026-10-23-27). To lock out a compromised client at once, remove its
+subject from the allowlist and restart ca-server, then reissue under a **new**
+subject, or rotate the service-identity CA and remove the old anchor.
+
+**6. Upgrade.** Stop all audit writers before starting a version that changes
+audit-chain locking, then verify the chain (see runbook "Upgrade note").
+
+**7. Monitoring.** Review `access_denied`, `tls_handshake_failed` and their
+`*_suppressed` summary records (Section 6.2). A burst of
+`per_source_handshake_limit` or `handshake_timeout` reasons indicates scanning
+or a stuck client.
 
 ---
 
@@ -896,6 +989,10 @@ ostrich-admin backup create
 | `OSTRICH_DB_PASSWORD` | Database password |
 | `OSTRICH_CONFIG_PATH` | Configuration file path |
 | `OSTRICH_LOG_LEVEL` | Logging level (debug, info, warn, error) |
+| `CA_GRPC_TLS_CERT_FILE`, `CA_GRPC_TLS_KEY_FILE`, `CA_GRPC_TLS_CLIENT_CA_FILE` | ca-server gRPC server chain, key and client trust anchor (file paths; Section 3.6) |
+| `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` | ca-server: `;`-separated allow-listed client subject DNs |
+| `CA_GRPC_CLIENT_CERT_FILE`, `CA_GRPC_CLIENT_KEY_FILE`, `CA_GRPC_CA_CERT_FILE` | acme-server / est-server gRPC client certificate, key and CA trust anchor |
+| `CA_GRPC_SERVER_NAME` | acme-server / est-server: TLS server name override (default: the URL host) |
 
 ---
 
@@ -1173,6 +1270,8 @@ Complete this checklist before placing OstrichPKI into production:
 - [ ] Role separation verified
 - [ ] No conflicting role assignments
 - [ ] mTLS certificates deployed
+- [ ] CA gRPC client trust anchor is a dedicated service-identity CA (Section 3.6), not the CA's issuing CA or any subscriber-issuing CA
+- [ ] `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` lists only the RA services
 
 ### C.7 Documentation
 
@@ -1189,3 +1288,5 @@ Complete this checklist before placing OstrichPKI into production:
 |---------|------|--------|---------|
 | 1.0 | January 2026 | OstrichPKI Team | Initial release |
 | 1.1 | January 2026 | OstrichPKI Team | Added NIAP compliance appendix |
+| 1.2 | 2026-10-25 | OstrichPKI Team | Section 3.6 CA gRPC issuance channel (dedicated service-identity CA, bootstrap, secrets, allowlist, revocation compensating control, upgrade, monitoring); Section 3.5 dev plaintext flags; Appendix A `CA_GRPC_*` variables; Appendix C checklist items. Branch `claude/grpc-mtls`, uncommitted |
+| 1.3 | 2026-10-25 | OstrichPKI Team | Section 3.6 trust-anchor check updated to the final code (CA-database ancestor walk, subject alone, issued-by, audited refusal, per-call `subscriber_issuing_ca`; residual POAM-28); audit-signing note (SLH-DSA CA key unsupported, POAM-34; `audit_write_failed` alert) |

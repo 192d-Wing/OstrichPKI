@@ -1,7 +1,7 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 2.2
-**Date:** 2026-10-23
+**Document Version:** 2.4
+**Date:** 2026-10-25
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Excellent (85%)
 **Last Updated:** Phase 19 completion - HSM enforcement and 98% NIAP compliance
@@ -354,6 +354,53 @@ validate peer chains with **rustls-webpki 0.103.16**, not with the
   §6.1.3(a)(3) revocation status is not checked for TLS peers (pre-existing gap)
 - Tests (2026-10-23): `mtls_handshake_rejects_untrusted_client`,
   `mtls_handshake_rejects_client_cert_with_server_only_eku` (§4.2.1.12)
+- **CA gRPC listener and clients (2026-10-25, branch `claude/grpc-mtls`,
+  uncommitted):** [grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs)
+  uses the same webpki verifiers on `grpc_crypto_provider()`, with these
+  additions and limits:
+  - **Dedicated trust anchor (§6.1 input; updated after fix round 2):**
+    ca-server walks its issuing CA's ancestors in the CA database
+    (`ca_certificates.parent_ca_id`, fails closed on a missing row, a cycle or
+    depth > 16) and refuses to start the listener if an anchor in
+    `CA_GRPC_TLS_CLIENT_CA_FILE` has the issuing certificate's SPKI, has its
+    **subject (subject alone)**, was **issued by** it (anchor issuer = issuing
+    subject, or anchor authorityKeyIdentifier = issuing subjectKeyIdentifier,
+    §4.2.1.1 / §4.2.1.2), is its issuer (name match unless both key
+    identifiers are present and differ), or matches (SPKI or subject) a
+    database ancestor (`ensure_dedicated_client_ca`). A refusal is audited as
+    `grpc_listener_refused` before exit. It warns on more than one anchor
+  - **Per-call check:** a client leaf whose issuer DN equals the subject of
+    the issuing CA or of a database ancestor, or whose AKI equals one of their
+    SKIs, is denied (`subscriber_issuing_ca`). Only the leaf's direct issuer
+    is compared
+  - Not detected: sibling subordinate CAs, grandchildren (CAs issued by a
+    subordinate of this CA) and roots outside the database lineage
+    (POAM-2026-10-23-28; RFC-017)
+  - **EKU (§4.2.1.12):** webpki enforces `clientAuth` only when the EKU
+    extension is present; ca-server additionally requires the extension
+    (`missing_client_auth_eku`). This is stricter than §4.2.1.12, which
+    treats an absent EKU as unrestricted
+  - **Signature algorithms:** chain and CertificateVerify signatures are
+    limited to ECDSA P-256/SHA-256, ECDSA P-384/SHA-384, RSA-PSS
+    (rsaEncryption SPKI, 2048-8192 bit, SHA-256/384/512) and ML-DSA-44/65/87.
+    RSA PKCS#1 v1.5, curve/hash mismatches, P-521 and Ed25519 are refused.
+    Documented deviation: narrower than what RFC 5280 / RFC 5758 permit
+  - **Server identity:** the client checks the server certificate SAN against
+    the URL host (no SNI for IP literals) or `CA_GRPC_SERVER_NAME`
+  - Not done: revocation (§6.3; POAM-2026-10-23-27); directoryName name
+    constraints (webpki rejects such chains, `NameConstraintViolation`);
+    certificate-policy processing
+  - Tests: `grpc_mtls_e2e` 21/21 passed 2026-10-25 on the final code (incl.
+    `untrusted_ca_client_cert_handshake_fails`,
+    `server_only_eku_client_cert_rejected`,
+    `leaf_without_eku_is_permission_denied`,
+    `client_rejects_server_name_mismatch`); `grpc_tls` unit tests
+    `dedicated_client_ca_refuses_chain_relatives`,
+    `issued_by_checks_cover_name_and_key_id_independently` (issuer-name and
+    AKI = SKI branches tested separately) and
+    `authorize_peer_refuses_subscriber_issuing_ca_leaf`; ca-server bin tests
+    `walk_ca_ancestors_follows_parent_ca_id_and_fails_closed` and
+    `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal`
 
 ---
 
@@ -394,6 +441,44 @@ validate peer chains with **rustls-webpki 0.103.16**, not with the
 - Prevents DN spoofing attacks through proper ASN.1 parsing
 - Validates attribute structure before certificate issuance
 - Used by ACME (RFC 8555) and EST (RFC 7030) for CSR validation
+
+**CA gRPC client-subject allowlist (2026-10-25, branch `claude/grpc-mtls`,
+uncommitted):** [grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs)
+`certificate_subject_dn` renders the peer certificate subject with `x509-cert`'s
+RFC 4514 `Display` (§2: last RDN first, §2.4 escaping), and
+`ClientSubjectAllowlist::parse` canonicalises each configured entry the same
+way. The REST `peer_cert_subject` now delegates to the same function.
+
+- Claimable: strict §2.4 escape validation (dangling `\`, incomplete hex
+  escapes and invalid escapes are refused; an escaped backslash directly before
+  an escaped `,` or `+` is refused as ambiguous), attribute-type validation
+  including numeric OIDs, and a DER round-trip check (the canonical form must
+  re-parse to the same `Name`)
+- Claimable (rounds 2-3): hex escapes must decode to valid UTF-8 (§3 /
+  RFC 5280 §4.1.2.4 UTF8String; `CN=\FF`, `CN=\C3\28` refused, `CN=\C3\A9`
+  accepted)
+- Deviations:
+  - `;` is the list separator and is never part of a DN (an escaped `\;`
+    leaves a dangling `\` and is refused; `\3B` is accepted);
+  - a value with an escaped backslash directly followed by an escaped `,` or
+    `+` cannot be allow-listed, **also when hex-escaped** (fails closed);
+  - trimming is ASCII-only: leading and unescaped trailing ASCII space, tab, CR
+    and LF are removed, and an escaped trailing space is kept, written either
+    `\20` or as a backslash followed by a space (both accepted);
+  - non-ASCII whitespace (for example U+00A0, U+3000) at either end of an
+    entry, attribute type or value is **rejected**, not trimmed (RFC 4514 §3
+    insignificant spaces are ASCII SPACE only);
+  - matching is exact octet comparison of the canonical string, **not** X.500
+    caseIgnoreMatch
+- Tests: 41 `grpc_tls::tests` passed 2026-10-25 (re-run by the compliance
+  scribe on the final code; incl. allowlist escape and round-trip tests,
+  `allowlist_keeps_escaped_trailing_space`,
+  `allowlist_rejects_hex_escapes_that_are_not_utf8`,
+  `allowlist_does_not_trim_unicode_whitespace` and
+  `subject_parsing_never_panics_on_mutated_input`); fuzz target
+  `fuzz_grpc_peer_subject` found and drove the fix of an OID-arc overflow
+  panic, then ran clean (237,187 runs after round 1, 215,504 runs / 61 s after
+  round 2; coder-reported, `fixes-round-1.md`, `fixes-round-2.md`)
 
 **Robust PKCS#10 attribute handling (RFC 2986 §4 / RFC 2985 §5.4.1 / NIST 800-53 SI-10):**
 
@@ -832,7 +917,7 @@ of identifiers authorized in the order.
 - [rest.rs:791](../../crates/ostrich-acme/src/rest.rs#L791) - Order finalization with CSR; issues certificate through `AcmeCaClient` (fails closed when CA integration is not configured — no fake certificates)
 - [rest.rs:916](../../crates/ostrich-acme/src/rest.rs#L916) - Certificate download: order id → certificate_id → PEM chain from certificate store
 - [ca_integration.rs](../../crates/ostrich-acme/src/ca_integration.rs) - CA gRPC client (`AcmeCaClient::finalize_order`) updates order with certificate id and "valid" status
-- [services/acme-server/src/main.rs](../../services/acme-server/src/main.rs) - `CA_GRPC_URL` configuration; warns and fails finalization closed when absent
+- [services/acme-server/src/main.rs](../../services/acme-server/src/main.rs) - `CA_GRPC_URL` configuration; warns and fails finalization closed when absent. Since 2026-10-25 the CA channel is TLS 1.3 mTLS (`CA_GRPC_CLIENT_CERT_FILE`, `CA_GRPC_CLIENT_KEY_FILE`, `CA_GRPC_CA_CERT_FILE`, optional `CA_GRPC_SERVER_NAME`); `CA_GRPC_INSECURE` plaintext is refused in release builds
 
 **Code References (Phase 11):**
 
@@ -982,8 +1067,10 @@ this PKCS#7 form. (Chain depth is currently the single issuing CA; a full chain
 to the trust anchor is a POAM pending the CA holding its own issuer chain.)
 
 The enrollment handlers now call the CA gRPC service via `EstCaClient`
-(crates/ostrich-est/src/rest.rs, services/est-server/src/main.rs) instead of
-returning an empty 202 placeholder; they fail closed when CA integration is
+(crates/ostrich-est/src/rest.rs, services/est-server/src/main.rs; since
+2026-10-25 over TLS 1.3 mTLS, with plaintext, including the loopback
+exception, refused in release builds) instead of returning an empty 202
+placeholder; they fail closed when CA integration is
 unconfigured. CSR proof-of-possession uses the stateless `verify_with_spki`
 path (§4.2.1). Authorization bug fixed: chained `Router::route_layer` calls
 stacked /simplereenroll's RenewCertificate check onto /simpleenroll, 403-ing
@@ -1310,7 +1397,7 @@ success the resolved identity flows through the same RBAC permission checks
 
 ### RFC 8446: The Transport Layer Security (TLS) Protocol Version 1.3
 
-**Status:** 🟡 **Partial** (REST listeners and internal HTTPS clients conform; gRPC TLS not configured on ca-server)
+**Status:** 🟡 **Partial** (REST listeners, internal HTTPS clients and, since 2026-10-25, the CA gRPC channel use TLS 1.3; no deployed-endpoint scan; no peer revocation checking)
 
 **Requirement:** All administrative and inter-service communication uses TLS 1.3
 
@@ -1318,7 +1405,7 @@ success the resolved identity flows through the same RBAC permission checks
 
 - [crates/ostrich-common/src/tls.rs](../../crates/ostrich-common/src/tls.rs) - shared listener for all service binaries: **rustls 0.23.46** with the aws-lc-rs FIPS provider selected explicitly, **TLS 1.3 only** (`with_protocol_versions(&[&TLS13])`), and optional or mandatory mTLS via `WebPkiClientVerifier`
 - `services/web-ui/src/server/backend_client.rs`, `services/npe-portal/src/server/backend_client.rs` - internal HTTPS clients on the same provider
-- gRPC (`tonic`) is built with the `tls-ring` feature; gRPC TLS on ca-server is not configured (see NIST SC-8)
+- CA gRPC (2026-10-25, branch `claude/grpc-mtls`, uncommitted): tonic is built with `features = ["channel"]` only; [grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs) builds the server and client configs on the aws-lc-rs FIPS provider, TLS 1.3 only, client certificate mandatory (§4.3.2 CertificateRequest; §4.4.2 client Certificate), ALPN `h2` only (RFC 7301; gRPC over HTTP/2, RFC 9113), `fips()` asserted. A connection that completes the handshake without `h2` gets a best-effort `close_notify` (§6.1, 1 s bound) before it is dropped, on server and client. Corrected: before this change the gRPC server was plaintext and the clients used tonic `tls-ring` with TLS 1.2 allowed
 
 **Evidence:**
 
@@ -1327,6 +1414,8 @@ success the resolved identity flows through the same RBAC permission checks
 - ✅ rustls 0.23.46 (2026-10-23) fixes RUSTSEC-2026-0285 (handshake messages accepted across encryption-level boundaries), RUSTSEC-2026-0349 (unauthenticated ServerHello downgrade to classical key exchange) and RUSTSEC-2026-0348 (pre-authentication certificate-decompression allocation). These fixes tighten conformance with §5.1, §4.4.2, §4.1.3, §4.1.4 and §5.5
 - ℹ️ **Signature algorithms (§4.2.3):** since rustls 0.23.46 the aws-lc-rs provider also advertises and verifies ML-DSA-44/65/87 (draft-ietf-tls-mldsa code points 0x0904–0x0906) under `fips`. Accepted by the user 2026-10-23
 - ℹ️ Key exchange: the provider's `fips`-filtered default groups (`default_kx_groups()` keeps only groups whose `fips()` is true); the resulting group list was not re-verified in this review
+- ✅ CA gRPC (2026-10-25): `grpc_mtls_e2e` 21/21 passed (final code; incl. `no_alpn_refusal_sends_close_notify`): `tls12_client_rejected`, `no_client_cert_handshake_fails`, `non_h2_alpn_client_rejected`, `x25519_only_client_rejected`, `p384_chain_end_to_end_with_fips_hybrid_group` (negotiated group `SECP256R1MLKEM768` and `conn.fips()` asserted), `server_and_client_configs_report_fips`. gRPC groups (§4.2.7): SECP256R1MLKEM768, X25519MLKEM768, secp256r1, secp384r1
+- ⚠️ **Deviation (CA gRPC client):** `CA_GRPC_SERVER_NAME` overrides the name used for the server-certificate check, independent of the HTTP/2 `:authority` the client sends. The certificate check is then decoupled from `:authority`; this is a deliberate operator override for service names that are not in the URL
 
 **Cipher suites in effect (`fips` feature; NIST SP 800-52 Rev 2):**
 
@@ -1336,11 +1425,10 @@ success the resolved identity flows through the same RBAC permission checks
 
 **Gaps:**
 
-- gRPC listener TLS on ca-server not configured; gRPC client crypto provider is `ring`
 - No TLS scan of a deployed endpoint
 - No revocation checking of TLS peer certificates (see RFC 5280 §6)
 
-**Remediation:** configure tonic TLS on the aws-lc-rs provider; capture a deployment TLS scan
+**Remediation:** capture a deployment TLS scan; add revocation checking for TLS peers (POAM-2026-10-23-27). (gRPC TLS on the aws-lc-rs provider: done 2026-10-25 in the working tree)
 
 ---
 
@@ -1353,10 +1441,10 @@ success the resolved identity flows through the same RBAC permission checks
 - ✅ Use TLS 1.3: the shared listener is TLS 1.3 only (`crates/ostrich-common/src/tls.rs`)
 - ✅ TLS 1.2 and earlier refused by the shared listener (test `server_rejects_tls12_only_client`, 2026-10-23). Corrected 2026-10-23: this item previously said "not explicitly configured"
 - ✅ Strong AEAD suites only: AES-GCM under `fips` (see RFC 8446 above)
-- ✅ Certificate-based authentication for mTLS: implemented and tested (see RFC 8446 above)
-- 🔴 TLS peer certificate revocation not checked
+- ✅ Certificate-based authentication for mTLS: implemented and tested (see RFC 8446 above), including the CA gRPC channel since 2026-10-25 (TLS 1.3 only, AEAD only, `grpc_mtls_e2e` 21/21)
+- 🔴 TLS peer certificate revocation not checked (REST and gRPC; POAM-2026-10-23-27)
 
-**Remediation:** add revocation checking for TLS peers; configure gRPC TLS (see RFC 8446)
+**Remediation:** add revocation checking for TLS peers. Corrected 2026-10-25: "configure gRPC TLS" is done in the working tree
 
 ---
 
@@ -1468,7 +1556,8 @@ splicing it into an OpenSSL SPKI for bidirectional interop
 
 1. **RFC 8446 - TLS 1.3 Configuration** (🟡 Partial)
    - REST listeners and internal HTTPS clients: TLS 1.3 only with mTLS (done; tested 2026-10-23)
-   - Remaining: gRPC (tonic) TLS on the aws-lc-rs provider; revocation checking of TLS peers
+   - CA gRPC channel: TLS 1.3 mTLS on the aws-lc-rs provider (done 2026-10-25, uncommitted; `grpc_mtls_e2e` 21/21)
+   - Remaining: revocation checking of TLS peers (POAM-2026-10-23-27); deployment TLS scan
    - Corrected 2026-10-23: this item previously said "Weak TLS configuration possible", which no longer describes the REST listeners
 
 2. **RFC 8555 - ACME Challenge Validators** (🟡 Partial)
@@ -1610,6 +1699,8 @@ consumed by the TAMP messages above.
 | 2.0 | 2026-06-29 | OstrichPKI Team | RFC 7030 §4.4 + RFC 7292: EFS server-side key generation delivers the key + certificate as an encrypted PKCS#12 (PBES2 PBKDF2-HMAC-SHA256 / AES-256-CBC + HMAC-SHA256 MAC) under a one-time password — `crates/ostrich-x509/src/pkcs12.rs`. The EFS portal flow uses a CSR-free JSON `/serverkeygen` input (subject from the mTLS identity; no untrusted PKCS#10 parsed) alongside the standard §4.4.1 CSR path. RFC 5754 (SHA-2 AlgorithmIdentifiers omit NULL params) observed in the PKCS#12 structure. |
 | 2.1 | 2026-07-27 | OstrichPKI Team | Added Kubernetes integration profile for RFC 7030 §3.2.3 TLS-protected Basic bootstrap and §4.2 enrollment through an external cert-manager issuer. |
 | 2.2 | 2026-10-23 | OstrichPKI Team | Dependency advisory remediation (rustls 0.23.46, rustls-webpki 0.103.16, h2, quinn-proto, zip 9). RFC 8446 / RFC 9325: rewrote stale statements (TLS 1.3 minimum and mTLS are enforced in `tls.rs`; ChaCha20-Poly1305 is not offered under `fips`); status stays Partial (gRPC, revocation). RFC 5280 §6: added the TLS-peer path (webpki emSign SPKI distrust, no revocation). ML-DSA in X.509 is now RFC 9881: verification in TLS accepted by the user 2026-10-23, issuance disabled; status Designed → Partial (both 🟡, summary counts unchanged). Added RFC 9113/9000/1951 dependency fixes. |
+| 2.3 | 2026-10-25 | OstrichPKI Team | CA gRPC behind mTLS (branch `claude/grpc-mtls`, uncommitted). RFC 8446: stale "gRPC TLS not configured / tonic `tls-ring`" text replaced; CA gRPC TLS 1.3 mTLS, ALPN `h2`, `fips()`, close_notify on post-handshake ALPN refusal (§6.1) and gRPC groups recorded with `grpc_mtls_e2e` evidence; `CA_GRPC_SERVER_NAME` override recorded as a deviation; status stays 🟡 Partial. RFC 9325: gRPC covered, remediation corrected. RFC 5280 TLS peer path validation: gRPC trust-anchor separation (one level), required clientAuth EKU extension (stricter than §4.2.1.12), narrowed signature set (deviation), limits (no revocation, no directoryName name constraints, no policy processing). RFC 4514: gRPC allowlist canonicalisation, strict escape validation with DER round-trip, and deviations (`;` separator, `\3B`, backslash-comma values, trimming, exact match not caseIgnoreMatch). ACME / EST: CA channel now mTLS. Not claimed: revocation, issuer/SPKI-bound allowlist, ancestor detection beyond one level, name-constraint or policy processing, caseIgnoreMatch. No status raised |
+| 2.4 | 2026-10-25 | OstrichPKI Team | CA gRPC mTLS final refresh after fix round 3 (same branch). RFC 5280 §6.1 trust-anchor input: guard now refuses an anchor with the issuing CA's subject alone, one issued by the issuing CA (issuer name or AKI = SKI), its issuer, or any CA-database ancestor; refusal audited (`grpc_listener_refused`); per-call `subscriber_issuing_ca` (direct issuer only). Now claimed: ancestor detection within the CA-database lineage (revision 2.3 did not claim any ancestor detection). Still not claimed: siblings, grandchildren, roots outside the lineage (POAM-28), revocation, issuer binding, name-constraint and policy processing, caseIgnoreMatch, `:authority` coupling under `CA_GRPC_SERVER_NAME`. RFC 4514: UTF-8 hex-escape requirement claimed; deviations updated (ASCII-only trim, non-ASCII whitespace rejected, `\20` and backslash-space both accepted, backslash-comma not allow-listable even hex-escaped). Test counts: `grpc_mtls_e2e` 20/20 → 21/21 (incl. `no_alpn_refusal_sends_close_notify`), `grpc_tls::tests` 34 → 41. No status changed |
 | 2.3 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix: added "RFC 8017 / RFC 4055 — RSASSA-PSS" note. PKCS#11 RSA-PSS now follows RFC 8017 §8.1/§9.1 (mHash = Hash(M) computed on the host), verified against an independent software verifier locally; Linux CI pending. Recorded the pre-existing RFC 4055 deviation: the X.509 layer does not encode or parse RSASSA-PSS-params (POAM-2026-10-23-20). No RFC section status changed. |
 | 2.4 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): "RFC 8017 / RFC 4055 — RSASSA-PSS" status updated with GitHub Actions run 40063317654 (SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0); scoped to SoftHSM and the PKCS#11 provider. RFC 4055 deviation (POAM-20) unchanged. No RFC section status changed. |
 

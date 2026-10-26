@@ -66,8 +66,13 @@ spec:
                   key: DATABASE_URL
             - { name: EST_BIND_ADDRESS, value: "0.0.0.0:8443" }
             - { name: EST_MTLS_BIND_ADDRESS, value: "0.0.0.0:8444" }
-            - { name: CA_GRPC_URL, value: "http://ca-service:50051" }
-            - { name: CA_GRPC_INSECURE, value: "true" }
+            # CA gRPC over TLS 1.3 mTLS; client cert CN=est-server from the
+            # out-of-band secret `est-ca-grpc-client` (tls.crt, tls.key, ca.crt).
+            # See docs/runbooks/ca-grpc-mtls.md. NIST 800-53: SC-8, AC-17, IA-3.
+            - { name: CA_GRPC_URL, value: "https://ca-service:50051" }
+            - { name: CA_GRPC_CLIENT_CERT_FILE, value: "/app/ca-grpc-client/tls.crt" }
+            - { name: CA_GRPC_CLIENT_KEY_FILE, value: "/app/ca-grpc-client/tls.key" }
+            - { name: CA_GRPC_CA_CERT_FILE, value: "/app/ca-grpc-client/ca.crt" }
             # mTLS enrollment port (8444): server cert + re-enrollment client CA.
             - { name: TLS_CERT_FILE, value: "/etc/est/tls/tls.crt" }
             - { name: TLS_KEY_FILE, value: "/etc/est/tls/tls.key" }
@@ -78,6 +83,8 @@ spec:
             - { name: est-tls, mountPath: /etc/est/tls, readOnly: true }
             # CA that issued the device bootstrap certs; verifies re-enroll certs.
             - { name: est-client-ca, mountPath: /etc/est/client-ca, readOnly: true }
+            # CA gRPC mTLS client identity (CN=est-server).
+            - { name: ca-grpc-client, mountPath: /app/ca-grpc-client, readOnly: true }
           livenessProbe:
             # Probes use the in-cluster HTTP port (8443); /health is public.
             httpGet: { path: /health, port: http }
@@ -104,3 +111,7 @@ spec:
         - name: est-client-ca
           secret:
             secretName: est-client-ca
+        - name: ca-grpc-client
+          secret:
+            secretName: est-ca-grpc-client
+            defaultMode: 0440

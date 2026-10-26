@@ -8,11 +8,15 @@
 //!
 //! Successful logins are audited via the session-created event (see
 //! `SessionAuditHook`), so this hook covers the *unsuccessful* and
-//! lockout-management side that has no session.
+//! lockout-management side that has no session. It also carries
+//! transport-level authentication failures (TLS handshake) and authorization
+//! denials for listeners that have no session concept (the CA gRPC listener).
 //!
 //! COMPLIANCE MAPPING:
-//! - NIST 800-53: AU-2 (Auditable events), AC-7 (Unsuccessful Logon Attempts)
-//! - NIAP PP-CA: FAU_GEN.1 (Audit data generation), FIA_AFL.1 (auth failure handling)
+//! - NIST 800-53: AU-2 (Auditable events), AU-3 (Audit content), AC-7
+//!   (Unsuccessful Logon Attempts), AC-3 (Access enforcement - denials)
+//! - NIAP PP-CA: FAU_GEN.1 (Audit data generation), FIA_AFL.1 (auth failure
+//!   handling), FDP_ACF.1 (access-control denials)
 
 use async_trait::async_trait;
 
@@ -25,6 +29,18 @@ pub enum AuthAuditKind {
     AccountLocked,
     /// An account lock was cleared (administrative or automatic unlock).
     AccountUnlocked,
+    /// An authenticated peer was refused access to a resource (authorization
+    /// failure, e.g. a client-certificate subject not on an allowlist).
+    AccessDenied,
+    /// A TLS handshake failed (missing, untrusted or invalid client
+    /// certificate, unsupported protocol version or ALPN, timeout).
+    TlsHandshakeFailed,
+    /// Summary record: further `TlsHandshakeFailed` events were suppressed by
+    /// the audit rate limiter (count and window in `details`).
+    TlsHandshakeFailuresSuppressed,
+    /// Summary record: further `AccessDenied` events were suppressed by the
+    /// audit rate limiter (count and window in `details`).
+    AccessDeniedSuppressed,
 }
 
 /// A security-relevant authentication event for audit emission.
@@ -40,6 +56,12 @@ pub struct AuthAuditEvent {
     pub reason: Option<String>,
     /// The acting administrator, for an admin-initiated unlock.
     pub actor: Option<String>,
+    /// The object of the event (AU-3 "object"), e.g. the gRPC method path or
+    /// listener name. When `None`, the subject is recorded as the target.
+    pub resource: Option<String>,
+    /// Additional structured context merged into the audit record details
+    /// (e.g. `{"listener": "ca-grpc"}`). Must never contain secrets.
+    pub details: Option<serde_json::Value>,
 }
 
 /// Sink for authentication audit events.

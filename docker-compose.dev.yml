@@ -20,6 +20,11 @@
 # Access:
 #   Web UI:   http://localhost:3000
 #   Keycloak: http://localhost:8180 (admin/admin)
+#
+# PREREQUISITE: run `make dev-grpc-certs` first. The CA gRPC API only serves
+# TLS 1.3 mutual TLS with a client-subject allowlist; the CA exits at startup
+# without the certificate files (no plaintext fallback in release images).
+# NIST 800-53: SC-8, AC-17, IA-3, AC-3 (docs/runbooks/ca-grpc-mtls.md)
 
 services:
   # =============================================================================
@@ -156,11 +161,28 @@ services:
       DATABASE_URL: postgresql://ostrich:ostrich_dev_password@postgres:5432/ostrich_pki
       CA_REST_ADDRESS: 0.0.0.0:8080
       CA_GRPC_ADDRESS: 0.0.0.0:50051
+      # gRPC mTLS (DEV ONLY certs); integration-tests is allow-listed for the
+      # env-gated live tests.
+      CA_GRPC_TLS_CERT_FILE: /app/grpc-tls/ca-service.crt
+      CA_GRPC_TLS_KEY_FILE: /app/grpc-tls/ca-service.key
+      CA_GRPC_TLS_CLIENT_CA_FILE: /app/grpc-tls/ca.crt
+      CA_GRPC_ALLOWED_CLIENT_SUBJECTS: "CN=acme-server;CN=est-server;CN=integration-tests"
       RUST_LOG: info
       # The ca_core integration tests issue from a bare public key (no CSR), so
       # proof-of-possession enforcement is disabled in the dev stack. Production
       # defaults to CA_REQUIRE_POP=true.
       CA_REQUIRE_POP: "false"
+    volumes:
+      # DEV ONLY (shared directory: every gRPC container sees every dev key;
+      # docker-compose.yml mounts per-service subdirectories instead).
+      # gRPC mTLS material from `make dev-grpc-certs`. Long syntax so a
+      # missing directory is an error instead of an empty auto-created mount.
+      - type: bind
+        source: ./.dev-grpc-certs
+        target: /app/grpc-tls
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -186,7 +208,23 @@ services:
     environment:
       DATABASE_URL: postgresql://ostrich:ostrich_dev_password@postgres:5432/ostrich_pki
       ACME_BIND_ADDRESS: 0.0.0.0:8080
+      # CA gRPC client over TLS 1.3 mTLS (DEV ONLY cert, CN=acme-server)
+      CA_GRPC_URL: https://ca:50051
+      CA_GRPC_CLIENT_CERT_FILE: /app/grpc-tls/acme-server.crt
+      CA_GRPC_CLIENT_KEY_FILE: /app/grpc-tls/acme-server.key
+      CA_GRPC_CA_CERT_FILE: /app/grpc-tls/ca.crt
       RUST_LOG: info
+    volumes:
+      # DEV ONLY (shared directory: every gRPC container sees every dev key;
+      # docker-compose.yml mounts per-service subdirectories instead).
+      # gRPC mTLS material from `make dev-grpc-certs`. Long syntax so a
+      # missing directory is an error instead of an empty auto-created mount.
+      - type: bind
+        source: ./.dev-grpc-certs
+        target: /app/grpc-tls
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       postgres:
         condition: service_healthy

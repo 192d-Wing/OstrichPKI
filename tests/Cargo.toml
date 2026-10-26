@@ -61,6 +61,16 @@ path = "integration/fips_signature_openssl_interop.rs"
 name = "tamp_store_e2e"
 path = "integration/tamp_store_e2e.rs"
 
+# Offline: in-process CA gRPC mTLS listener + clients (rcgen PKI, no DB).
+[[test]]
+name = "grpc_mtls_e2e"
+path = "integration/grpc_mtls_e2e.rs"
+
+# Offline, own process: fips_gate refuses a pre-installed non-FIPS provider.
+[[test]]
+name = "fips_gate_preinstalled"
+path = "integration/fips_gate_preinstalled.rs"
+
 [dependencies]
 # OstrichPKI crates
 ostrich-common = { path = "../crates/ostrich-common" }
@@ -109,3 +119,11 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 hex = "0.4"
 x509-parser = { workspace = true }
 sqlx = { workspace = true }
+
+[dev-dependencies]
+# gRPC mTLS e2e (grpc_mtls_e2e): test PKI and raw TLS clients for negative cases.
+rcgen = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+zeroize = { workspace = true }

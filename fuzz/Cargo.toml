@@ -17,10 +17,13 @@ ostrich-crypto = { path = "../crates/ostrich-crypto" }
 ostrich-common = { path = "../crates/ostrich-common" }
 ostrich-protocol = { path = "../crates/ostrich-protocol" }
 
-# Dependencies for fuzzing targets
-x509-cert = { workspace = true }
-der = { workspace = true }
-pem-rfc7468 = { workspace = true }
+# Dependencies for fuzzing targets. Explicit versions (kept in step with the
+# root `[workspace.dependencies]`): this crate is its own workspace (below), so
+# `workspace = true` would not resolve and `cargo fuzz` would fail to parse the
+# manifest.
+x509-cert = { version = "0.2.5", features = ["builder", "pem"] }
+der = { version = "0.7", features = ["derive", "alloc", "oid"] }
+pem-rfc7468 = { version = "1", features = ["alloc"] }
 
 # Prevent this from interfering with workspaces
 [workspace]
@@ -65,5 +68,11 @@ doc = false
 [[bin]]
 name = "fuzz_crl_parsing"
 path = "fuzz_targets/fuzz_crl_parsing.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_grpc_peer_subject"
+path = "fuzz_targets/fuzz_grpc_peer_subject.rs"
 test = false
 doc = false

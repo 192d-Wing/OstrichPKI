@@ -33,7 +33,13 @@ pub struct AcmeCaClient {
 impl AcmeCaClient {
     /// Create a new ACME CA client
     ///
+    /// The channel is TLS 1.3 mutual TLS on the aws-lc-rs FIPS provider when
+    /// `config` carries client cert/key and CA PEMs; plaintext only when none
+    /// are set and `config.allow_plaintext` (dev). Validation is in
+    /// `CaGrpcClient::new` (fail closed).
+    ///
     /// NIST 800-53: SC-8(1) - Establish mTLS connection to CA
+    /// NIAP PP-CA: FCS_TLSC_EXT.2, FTP_ITC.1
     pub async fn new(config: GrpcClientConfig, db_pool: DatabasePool) -> Result<Self> {
         let grpc_client = CaGrpcClient::new(config)
             .await

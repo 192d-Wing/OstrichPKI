@@ -8,7 +8,8 @@
 //! ## NIAP PP-CA v2.1 SFRs
 //! - **FMT_SMF.1**: Security management functions - gRPC endpoints for CA operations
 //! - **FDP_ACC.1**: Access control - gRPC authentication and authorization
-//! - **FIA_AFL.1**: Authentication failure handling - Rate limiting, lockout
+//! - **FIA_AFL.1**: N/A - certificate-based (mTLS) authentication, no
+//!   password/lockout path; see FIA_X509_EXT.1 (`ostrich_common::grpc_tls`)
 //! - **FTP_ITC.1**: Inter-TSF trusted channel - mTLS for gRPC transport
 //!
 //! ## RFC Compliance
@@ -16,7 +17,6 @@
 //!
 //! ## NIST 800-53 Controls
 //! - SC-8: Transmission confidentiality (mTLS)
-//! - SC-12: Cryptographic key establishment and management
 //! - AC-3: Access enforcement
 //! - AC-17: Remote access (mTLS authentication)
 
@@ -36,6 +36,38 @@ use ostrich_x509::{
 };
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
+
+/// Authenticated gRPC caller for logs: the allow-listed client-certificate
+/// subject inserted by `ostrich_common::grpc_tls::SubjectAllowlistLayer`, or
+/// `"unauthenticated"` on the debug-only plaintext listener.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: supports AU-3 correlation (operational log only, not the
+///   audit record): the mTLS-authenticated (IA-3) service identity is logged
+///   next to the request id
+// POAM: POAM-2026-10-23-25 - the authenticated peer subject is only logged
+// (tracing) next to the request id; the issuance/revocation audit record's
+// `actor` is still the client-asserted `requestor` field. Making the verified
+// peer the authoritative AU-3 actor (or binding requestor to it) is pending.
+fn peer_subject<T>(request: &Request<T>) -> String {
+    request
+        .extensions()
+        .get::<ostrich_common::AuthorizedGrpcPeer>()
+        .map(|p| p.subject_dn.clone())
+        .unwrap_or_else(|| "unauthenticated".to_string())
+}
+
+/// Correlation id for a call without a request-id field: the caller's
+/// `x-request-id` metadata when it is a UUID, else a fresh one (SI-10: the
+/// header is untrusted, so it is only accepted in UUID form).
+fn correlation_id<T>(request: &Request<T>) -> uuid::Uuid {
+    request
+        .metadata()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| uuid::Uuid::parse_str(v).ok())
+        .unwrap_or_else(uuid::Uuid::new_v4)
+}
 
 /// gRPC service wrapper for Certificate Authority
 ///
@@ -133,12 +165,27 @@ impl CertificateAuthorityService for CaGrpcService {
     /// Issue a new certificate via gRPC
     ///
     /// NIAP PP-CA: FMT_SMF.1.1 - Certificate issuance security function
-    /// NIAP PP-CA: FDP_ACC.1.1 - Requires authenticated and authorized caller
+    /// NIAP PP-CA: FDP_ACC.1.1 - caller is an mTLS-authenticated, allow-listed
+    /// service identity (listener-wide `SubjectAllowlistLayer`)
     async fn issue_certificate(
         &self,
         request: Request<IssueCertificateRequest>,
     ) -> std::result::Result<Response<IssueCertificateResponse>, Status> {
+        let peer = peer_subject(&request);
         let req = request.into_inner();
+        // Caller-supplied request id (ACME order / EST enrollment) for
+        // traceability (FDP_CER_EXT.2); generated here when empty or
+        // unparseable (same rule as `issue()`), so the logged id matches the
+        // stored one.
+        let request_id =
+            uuid::Uuid::parse_str(&req.request_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+        tracing::info!(
+            request_id = %request_id,
+            peer_subject = %peer,
+            requestor = %req.requestor,
+            profile = %req.profile_name,
+            "gRPC IssueCertificate"
+        );
 
         // Convert proto types to internal types
         let subject =
@@ -178,14 +225,7 @@ impl CertificateAuthorityService for CaGrpcService {
                 Some(req.csr_der)
             },
             approval_request_id: None, // TODO: Accept from request
-            // Caller-supplied request id (ACME order / EST enrollment) for
-            // traceability (FDP_CER_EXT.2); the CA generates one when empty or
-            // unparseable.
-            request_id: if req.request_id.is_empty() {
-                None
-            } else {
-                uuid::Uuid::parse_str(&req.request_id).ok()
-            },
+            request_id: Some(request_id),
         };
 
         // Issue certificate
@@ -212,12 +252,22 @@ impl CertificateAuthorityService for CaGrpcService {
     /// Revoke a certificate via gRPC
     ///
     /// NIAP PP-CA: FMT_SMF.1.1 - Certificate revocation security function
-    /// NIAP PP-CA: FDP_ACC.1.1 - Requires authenticated and authorized caller
+    /// NIAP PP-CA: FDP_ACC.1.1 - caller is an mTLS-authenticated, allow-listed
+    /// service identity (listener-wide `SubjectAllowlistLayer`)
     async fn revoke_certificate(
         &self,
         request: Request<RevokeCertificateRequest>,
     ) -> std::result::Result<Response<RevokeCertificateResponse>, Status> {
+        let peer = peer_subject(&request);
+        let request_id = correlation_id(&request);
         let req = request.into_inner();
+        tracing::info!(
+            request_id = %request_id,
+            peer_subject = %peer,
+            requestor = %req.requestor,
+            certificate_id = %req.certificate_id,
+            "gRPC RevokeCertificate"
+        );
 
         // Convert certificate ID
         let certificate_id = uuid::Uuid::parse_str(&req.certificate_id)
@@ -260,11 +310,20 @@ impl CertificateAuthorityService for CaGrpcService {
     /// Generate a new CRL via gRPC
     ///
     /// NIAP PP-CA: FMT_SMF.1.1 - CRL generation security function
-    /// NIAP PP-CA: FDP_ACC.1.1 - Requires authenticated administrator
+    /// NIAP PP-CA: FDP_ACC.1.1 - the caller is an mTLS-authenticated,
+    /// allow-listed service identity (listener-wide `SubjectAllowlistLayer`);
+    /// a per-method (administrator-only) restriction is pending.
+    // POAM: POAM-2026-10-23-26 - single allowlist for every RPC; GenerateCrl
+    // is not yet restricted to an administrator identity.
     async fn generate_crl(
         &self,
-        _request: Request<GenerateCrlRequest>,
+        request: Request<GenerateCrlRequest>,
     ) -> std::result::Result<Response<GenerateCrlResponse>, Status> {
+        tracing::info!(
+            request_id = %correlation_id(&request),
+            peer_subject = %peer_subject(&request),
+            "gRPC GenerateCrl"
+        );
         // Generate CRL
         let crl = self
             .ca
