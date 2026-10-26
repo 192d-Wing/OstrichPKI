@@ -5,7 +5,7 @@
 # - NIST 800-53: SC-12 (Key management) — CA key in HSM/SoftHSM
 # - NIST 800-53: CM-2 (Baseline Configuration)
 # - NIST 800-53: SC-8, AC-17, IA-3, AC-3 — gRPC (50051) is TLS 1.3 mTLS with a
-#   client-subject allowlist (aws-lc-rs FIPS). NIAP PP-CA: FTP_ITC.1
+#   per-role client-subject lists + per-method authz (aws-lc-rs FIPS). NIAP PP-CA: FTP_ITC.1
 #
 # Requires the out-of-band secret `ca-grpc-tls` (tls.crt = server chain with
 # SAN DNS:ca-service, tls.key, client-ca.crt = the DEDICATED service-identity
@@ -64,8 +64,19 @@ spec:
             - { name: CA_GRPC_TLS_CERT_FILE, value: "/app/grpc-tls/tls.crt" }
             - { name: CA_GRPC_TLS_KEY_FILE, value: "/app/grpc-tls/tls.key" }
             - { name: CA_GRPC_TLS_CLIENT_CA_FILE, value: "/app/grpc-tls/client-ca.crt" }
-            # ";"-delimited RFC 4514 DNs; everything else gets PERMISSION_DENIED.
-            - { name: CA_GRPC_ALLOWED_CLIENT_SUBJECTS, value: "CN=acme-server;CN=est-server" }
+            # Per-role ";"-delimited RFC 4514 DN lists (one role per DN). ACME/EST:
+            # Issue + reads, requestor bound to acme::/est::. ADMIN: revoke, CRL,
+            # status + reads, never Issue; empty = no one may revoke over gRPC.
+            # Unlisted clients and unmapped RPCs get PERMISSION_DENIED.
+            - { name: CA_GRPC_ACME_CLIENT_SUBJECTS, value: "CN=acme-server" }
+            - { name: CA_GRPC_EST_CLIENT_SUBJECTS, value: "CN=est-server" }
+            - { name: CA_GRPC_ADMIN_CLIENT_SUBJECTS, value: "" }
+            # Per-namespace ";"-delimited end-entity profiles the ACME / EST
+            # Issuer clients may request (else PERMISSION_DENIED + audit). CA
+            # profiles (e.g. intermediate_ca) are never allowed; ca-server
+            # refuses to start on an unknown or CA profile or an empty list.
+            - { name: CA_GRPC_ACME_ALLOWED_PROFILES, value: "acme-default" }
+            - { name: CA_GRPC_EST_ALLOWED_PROFILES, value: "tls_client;tls_server;tls_server_client;efs" }
             # Expiry-notify producer -> NATS over TLS with password auth. Only used
             # when NOTIFY_ENABLED=true (set per-environment). NATS_USER/PASSWORD come
             # from the nats-auth secret; the CA verifies the server against

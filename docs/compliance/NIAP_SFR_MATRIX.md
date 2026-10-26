@@ -1,7 +1,7 @@
 # NIAP PP-CA v2.1 SFR Implementation Matrix
 
-**Document Version:** 1.3
-**Last Updated:** 2026-10-25
+**Document Version:** 1.4
+**Last Updated:** 2026-10-26
 **Protection Profile:** NIAP PP-CA v2.1 FINAL
 **TOE:** OstrichPKI v1.0
 **Overall Compliance:** 93%+
@@ -90,6 +90,7 @@ This document provides a comprehensive mapping of all Security Functional Requir
 | Element | Implementation | Evidence |
 |---------|---------------|----------|
 | FAU_GEN.2.1 | AuditEvent includes actor field | [crates/ostrich-db/src/models/audit.rs:20-35](../../crates/ostrich-db/src/models/audit.rs#L20-L35) |
+| FAU_GEN.2.1 (CA gRPC, 2026-10-26) | Actor of gRPC issuance, revocation and CRL records = verified mTLS peer subject DN, plus `authenticated_caller_issuer` / `_serial`; the client `requestor` is namespace-bound and recorded as `on_behalf_of` | [grpc.rs](../../crates/ostrich-ca/src/grpc.rs) `issuance_request` / `revocation_request` / `crl_actor`, [grpc_authz.rs](../../crates/ostrich-ca/src/grpc_authz.rs) `bind_caller`; unit and e2e tests passed, DB-backed handler test pending (POAM-2026-10-23-36) |
 
 **Actor Identification:**
 
@@ -555,6 +556,19 @@ REVOKE UPDATE, DELETE ON audit_events FROM ostrich_app;
 | RA Staff | Approve requests | Cannot directly issue |
 | AOR | Policy decisions | Cannot perform operations |
 
+**CA gRPC service-identity roles (2026-10-26, branch
+`claude/grpc-per-method-authz`, uncommitted):**
+
+| gRPC role | Config | RPCs | Restrictions |
+|-----------|--------|------|--------------|
+| Issuer (`acme` / `est`) | `CA_GRPC_ACME_CLIENT_SUBJECTS`, `CA_GRPC_EST_CLIENT_SUBJECTS` | IssueCertificate (listed end-entity profiles only), GetCaInfo, ListProfiles | Cannot revoke, generate CRLs or query revocation status |
+| Admin = CA Operations Staff (`admin`) | `CA_GRPC_ADMIN_CLIENT_SUBJECTS` (empty by default) | RevokeCertificate, GenerateCrl, CheckRevocationStatus, GetCaInfo, ListProfiles | Cannot issue; leaf issued directly by the single client trust anchor; one certificate per named operator |
+
+A subject may hold one gRPC role (overlap refuses startup). Code:
+[grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs) `GrpcClientRegistry`,
+[grpc_authz.rs](../../crates/ostrich-ca/src/grpc_authz.rs) `CA_GRPC_METHOD_RULES`.
+No status change.
+
 ---
 
 ### FMT_MOF.1 - Management of Security Functions
@@ -822,7 +836,7 @@ REVOKE UPDATE, DELETE ON audit_events FROM ostrich_app;
 
 - Protocol: gRPC over HTTP/2 (ALPN `h2` required)
 - TLS: Version 1.3 only
-- Authentication: mTLS with service certificates, plus a client-subject allowlist (clientAuth EKU extension required)
+- Authentication: mTLS with service certificates (clientAuth EKU extension required), plus per-role client-subject lists and a per-method rule table (since 2026-10-26; previously one listener-wide allowlist)
 - Cipher suites: TLS_AES_256_GCM_SHA384, TLS_AES_128_GCM_SHA256 (aws-lc-rs FIPS provider; AWS-LC FIPS 4.2.0, CMVP certificate pending confirmation)
 - Key exchange: SECP256R1MLKEM768 (preferred), X25519MLKEM768, P-256, P-384
 
@@ -833,9 +847,16 @@ ca-server): [grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs),
 this change the CA gRPC listener was plaintext and the clients used tonic
 `tls-ring` with TLS 1.2 allowed, so the ✅ above overstated the state. Scope
 limits: only the CA gRPC channel; client-certificate revocation is not checked
-(POAM-2026-10-23-27); allowlist entries are not issuer-bound
-(POAM-2026-10-23-28). [NIAP_GAP_ANALYSIS.md §3.4](NIAP_GAP_ANALYSIS.md) keeps
+(POAM-2026-10-23-27); Issuer-role entries are not issuer-bound
+(POAM-2026-10-23-28; Admin entries require direct issuance by the single
+anchor since 2026-10-26). [NIAP_GAP_ANALYSIS.md §3.4](NIAP_GAP_ANALYSIS.md) keeps
 FTP_ITC.1 at 🟡 Partial; the status here is not raised.
+
+**Update 2026-10-26 (branch `claude/grpc-per-method-authz`, uncommitted):**
+per-method authorization on the channel (Issuer vs Admin method table,
+default deny), per-call leaf validity, verified peer as audit actor.
+`grpc_mtls_e2e` 39/39 (coder-reported, final tree). POAM-2026-10-23-25 and
+-26 closed pending commit. No status change.
 
 ---
 
@@ -925,3 +946,4 @@ grep -r "NIAP PP-CA:" crates/ --include="*.rs"
 | 1.1 | January 2026 | OstrichPKI Team | Updated compliance to 93%+, added documentation references |
 | 1.2 | 2026-10-25 | OstrichPKI Team | FTP_ITC.1: inter-service bullets corrected (TLS 1.3 only, both AES-GCM suites, key-exchange groups, allowlist) and a 2026-10-25 note added: the CA gRPC channel is now TLS 1.3 mTLS on the aws-lc-rs FIPS provider; before this the ✅ overstated the state. Status and overall percentage unchanged |
 | 1.3 | 2026-10-25 | OstrichPKI Team | FTP_ITC.1 evidence count updated to `grpc_mtls_e2e` 21/21 (final code after fix round 3). No status change |
+| 1.4 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization (branch `claude/grpc-per-method-authz`, uncommitted). FAU_GEN.2: gRPC actor row (verified peer). FMT_SMR.2: gRPC Issuer / Admin role table (Admin = CA Operations Staff). FTP_ITC.1: per-role lists replace the allowlist bullet; 2026-10-26 note, `grpc_mtls_e2e` 39/39. No status change |

@@ -14,8 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **BREAKING (deployment).** Upgrade steps are in `docs/runbooks/ca-grpc-mtls.md`.
 >
 > - **ca-server will not start without gRPC mTLS configuration.** It needs `CA_GRPC_TLS_CERT_FILE`,
->   `CA_GRPC_TLS_KEY_FILE`, `CA_GRPC_TLS_CLIENT_CA_FILE` and `CA_GRPC_ALLOWED_CLIENT_SUBJECTS`. A partial
->   configuration is also a startup error. The plaintext gRPC listener is gone.
+>   `CA_GRPC_TLS_KEY_FILE`, `CA_GRPC_TLS_CLIENT_CA_FILE` and at least one issuer client subject
+>   list (`CA_GRPC_ACME_CLIENT_SUBJECTS` or `CA_GRPC_EST_CLIENT_SUBJECTS`). The single
+>   `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` allowlist that PR #183 added was replaced
+>   before release by per-role lists, and setting it is now a startup error (see "CA gRPC
+>   per-method authorization" below). A partial configuration is also a startup error. The
+>   plaintext gRPC listener is gone.
 > - **The client CA must be a dedicated service-identity CA.** ca-server refuses to start if
 >   `CA_GRPC_TLS_CLIENT_CA_FILE` contains an anchor that:
 >   - has the subscriber-issuing CA's SPKI, or its subject (subject alone is enough);
@@ -134,17 +138,20 @@ Closes the gRPC part of POAM-2026-10-23-08.
   - Debug builds only. Release builds (and so all container images) refuse it at startup.
   - When enabled, it logs a warning banner and writes a `grpc_insecure_dev_plaintext_enabled`
     ConfigurationChange audit event.
-  - Combining it with TLS options or an allowlist is a startup error.
-- New flags: `--grpc-tls-cert`, `--grpc-tls-key`, `--grpc-tls-client-ca`,
-  `--grpc-allowed-client-subjects` (`;`-delimited). A blank env value counts as unset.
+  - Combining it with TLS options or a client subject list is a startup error.
+- New flags: `--grpc-tls-cert`, `--grpc-tls-key`, `--grpc-tls-client-ca`. The client subject
+  flags are `--grpc-{acme,est,admin}-client-subjects` (`;`-delimited; see "CA gRPC per-method
+  authorization" below). A blank env value counts as unset. The interim
+  `--grpc-allowed-client-subjects` flag is hidden and refuses startup.
 - The direct `rustls` dependency was dropped.
 
 ##### ostrich-ca
 
 - Issue, Revoke and GenerateCrl log the authenticated peer subject alongside the request ID. The
   issuance request ID is resolved once, so the logged ID matches the stored one.
-  - **POA&M**: the audit `actor` is still the `requestor` that the client asserts.
-  - **POA&M**: one allowlist covers all RPCs. Per-method authorization is not implemented yet.
+- The two POA&M items this change first recorded are closed before release by "CA gRPC per-method
+  authorization" below: the audit `actor` is now the verified mTLS peer (POAM-2026-10-23-25), and
+  each RPC is authorized per role (POAM-2026-10-23-26).
 
 ##### ostrich-acme / ostrich-acme-server
 
@@ -166,7 +173,201 @@ Closes the gRPC part of POAM-2026-10-23-08.
 
 - Client certificate revocation is not checked: `WebPkiClientVerifier` has no CRLs. The runbook
   describes the compensating control.
-- The allowlist is not bound to an issuer or an SPKI.
+- Issuer-role client subjects (ACME, EST) are not bound to an issuer or an SPKI
+  (POAM-2026-10-23-28). Admin-role certificates must be issued directly by the single client trust
+  anchor (see below).
+
+#### CA gRPC per-method authorization and verified audit actor
+
+> **BREAKING (deployment and Rust API).** This replaces the single gRPC client allowlist above
+> before it was released. Upgrade steps are in `docs/runbooks/ca-grpc-mtls.md`.
+>
+> - **Three role lists replace the single allowlist.** `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` /
+>   `--grpc-allowed-client-subjects` is removed. ca-server refuses to start if it is set, and the
+>   error names the replacements. The Helm key `ca.grpc.allowedClientSubjects` fails rendering,
+>   also when it is `[]`. The replacements (`;`-delimited RFC 4514 DNs; Helm takes lists) are:
+>
+>   | Variable / flag | Helm key | Role, namespace | RPCs | Default |
+>   | --- | --- | --- | --- | --- |
+>   | `CA_GRPC_ACME_CLIENT_SUBJECTS` / `--grpc-acme-client-subjects` | `ca.grpc.acmeClientSubjects` | Issuer, `acme::` | IssueCertificate, GetCaInfo, ListProfiles | `CN=acme-server` |
+>   | `CA_GRPC_EST_CLIENT_SUBJECTS` / `--grpc-est-client-subjects` | `ca.grpc.estClientSubjects` | Issuer, `est::` | IssueCertificate, GetCaInfo, ListProfiles | `CN=est-server` |
+>   | `CA_GRPC_ADMIN_CLIENT_SUBJECTS` / `--grpc-admin-client-subjects` | `ca.grpc.adminClientSubjects` | Admin, `admin::` | RevokeCertificate, GenerateCrl, CheckRevocationStatus, GetCaInfo, ListProfiles (never IssueCertificate) | empty |
+>
+>   The defaults shown are those of the compose files, `.env.example`, Helm and the Kustomize base.
+>   ca-server itself has no built-in subject defaults. At least one ACME or EST subject is
+>   required. A DN may hold one role only: ca-server refuses an overlap across lists, including
+>   one that differs only in ASCII letter case. An RPC that is not mapped for the caller's role,
+>   including any future RPC, is denied with `PERMISSION_DENIED` and audited.
+> - **Admin role is empty by default.** Nobody can call RevokeCertificate, GenerateCrl or
+>   CheckRevocationStatus over gRPC until an operator names an admin identity. The live tests
+>   that revoke over gRPC need the new dev identity `CN=integration-admin`; re-run
+>   `make dev-grpc-certs`, which now also writes `CA_GRPC_ADMIN_CLIENT_{CERT,KEY}_FILE` to
+>   `integration-tests.env`. A non-empty admin list requires **exactly one distinct trust
+>   anchor** in `CA_GRPC_TLS_CLIENT_CA_FILE` (duplicates count once), or ca-server refuses to
+>   start. Admin certificates must be **issued directly by that anchor**; one issued by an
+>   intermediate under it is refused per call (`admin_issuer_not_anchor`). Issue one short-lived
+>   admin certificate per named operator; shared admin certificates are prohibited. The chart
+>   NetworkPolicy still admits only acme/est pods to the gRPC port, so admin tools connect through
+>   `kubectl port-forward` or a policy the operator adds.
+> - **Issuer clients may only request listed end-entity profiles.** New
+>   `CA_GRPC_ACME_ALLOWED_PROFILES` (default `acme-default`) and `CA_GRPC_EST_ALLOWED_PROFILES`
+>   (default `tls_client;tls_server;tls_server_client;efs`), flags
+>   `--grpc-{acme,est}-allowed-profiles`, Helm `ca.grpc.{acme,est}AllowedProfiles`. ca-server
+>   refuses to start on an unknown profile, a CA profile (`basic_constraints_ca`, for example
+>   `intermediate_ca`), or an empty list for a namespace that has client subjects. If EST issues
+>   any other profile (`EST_ENROLL_PROFILE`, a per-user profile), add it to the EST list.
+>   The dev and test compose files also allow `tls_client` for ACME, for the live tests.
+> - **The gRPC `requestor` must be in the caller's namespace.** acme-server may only send
+>   `acme::<id>` and est-server only `est::<id>`; admin sends `admin::<id>` or nothing. The id
+>   must be printable ASCII (`0x21`-`0x7E`) and the whole value at most 255 bytes. An issuer
+>   with an empty requestor, a wrong namespace or an invalid id gets `PERMISSION_DENIED` and an
+>   audit record (`requestor_missing`, `requestor_namespace_mismatch`, `requestor_invalid`).
+> - **EST usernames must be 1-250 printable ASCII characters** to enroll through the CA.
+>   simpleenroll, simplereenroll and serverkeygen refuse other client ids with HTTP 403
+>   (RFC 7030 §4.2.3) before any enrollment row or CA call, audited
+>   `client_identifier_not_issuable`. Usernames with spaces or non-ASCII characters no longer
+>   enroll.
+> - **Error responses changed** (SI-11):
+>   - Every gRPC denial, from the layer or the service, now reads
+>     "client is not authorised for this call". A profile refusal reads "certificate profile is
+>     not permitted for this client".
+>   - A client certificate that cannot be parsed now gets `UNAUTHENTICATED` "client certificate
+>     not accepted" (it was `PERMISSION_DENIED`). The same status is returned when a leaf leaves
+>     its validity period during a live connection (new per-call check).
+>   - gRPC errors that are not client-correctable now return `INTERNAL` "<op> failed: internal
+>     error" and the detail is only logged. ProfileNotFound / InvalidRequest stay
+>     `INVALID_ARGUMENT`, NotFound `NOT_FOUND`, approval and "already revoked"
+>     `FAILED_PRECONDITION`, InsufficientRole and ProfileNotPermitted `PERMISSION_DENIED`.
+>   - CSR errors use fixed messages ("CSR could not be parsed", "CSR signature verification
+>     failed"); the verifier detail is only logged.
+>   - A missing approval repository is now an internal error ("approval workflow unavailable",
+>     REST 500); it was a 400 `InvalidRequest`.
+>   - An unsupported CA key type for CRL signing is now `Error::CrlGeneration` ("CRL signing is
+>     not available for the CA key"): gRPC `INTERNAL` and REST **500**, where it was
+>     `FAILED_PRECONDITION` and REST 400 with the key-type detail.
+> - **Rust API breaks:**
+>   - `ostrich_ca::Error::ProfileNotPermitted` is a new variant (gRPC `PERMISSION_DENIED`,
+>     REST 403). Exhaustive matches must handle it.
+>   - `IssuanceRequest` and `RevocationRequest` have a new `authenticated_caller:
+>     Option<AuthenticatedCaller>` field (`#[serde(default, skip_deserializing)]`, so it can never
+>     be set from JSON). Struct literals must set it.
+>   - `CaGrpcService::new` takes `Arc<IssuerProfilePolicy>`. New `CaGrpcService::for_mode` is
+>     the constructor ca-server uses. `new_insecure_dev_plaintext` exists only in debug builds.
+>   - `RevocationManager::generate_crl_by` takes a `CrlActor` (System, User, Peer,
+>     Unauthenticated) instead of `&str`. New `generate_delta_crl_by` and
+>     `record_rejected_revocation`.
+>   - `ostrich_common::grpc_tls`: `GrpcServerOptions.allowed_subjects` is replaced by
+>     `acme_subjects`, `est_subjects`, `admin_subjects` and `legacy_allowed_subjects`;
+>     `GrpcServerMode::Mtls { allowlist }` is now `{ clients: Arc<GrpcClientRegistry> }`;
+>     `SubjectAllowlistLayer::new` takes the registry and a `&'static [GrpcMethodRule]` method
+>     table, and admits no admin call unless `with_client_trust_anchors` is set.
+>     `AuthorizedGrpcPeer` fields are private (accessors plus `bind_requestor` / `deny`).
+>   - New public items: `GrpcClientRole`, `GrpcClientIdentity`, `GrpcClientRegistry`,
+>     `GrpcMethodRule`, `RequestorRejection`, `validate_requestor`, `MAX_REQUESTOR_LEN`,
+>     `grpc_method_rules_summary`, `ostrich_ca::{AuthenticatedCaller, CrlActor}` and module
+>     `ostrich_ca::grpc_authz` (`CA_GRPC_METHOD_RULES`, `IssuerProfilePolicy`,
+>     `PROFILE_DENIED_MESSAGE`).
+> - The proto changed in comments only; field numbers and the wire format are unchanged.
+>   acme-server and est-server need no change beyond the EST username rule above. ca-server
+>   must still roll out with the mTLS change above.
+
+Closes POAM-2026-10-23-25 (audit actor was the client-asserted `requestor`) and
+POAM-2026-10-23-26 (one allowlist covered every RPC).
+
+##### ostrich-common
+
+- Per-role client registry (`GrpcClientRegistry`) and per-method authorization in
+  `SubjectAllowlistLayer`. The listener checks the method table for each call and denies by
+  default (`method_not_mapped`, `method_not_permitted`). Denial audit records now carry `role`,
+  `namespace`, `peer_issuer` and `peer_serial`.
+- **Leaf validity is re-checked on every call** (RFC 5280 §4.1.2.5). A long-lived HTTP/2
+  connection can no longer keep using a client certificate after its notAfter. The call gets
+  `UNAUTHENTICATED`, audited `certificate_not_valid_now`. Intermediates and the anchor are checked
+  at the handshake only.
+- Admin calls are refused unless the leaf was issued directly by the single client trust anchor
+  (issuer DN equals the anchor subject and the leaf AKI equals the anchor SKI; both are required).
+  With admin subjects configured, ca-server refuses to start if the anchor has no SKI.
+- `validate_requestor` binds the client-supplied `requestor` to the caller's namespace (rules in
+  BREAKING above). New fuzz target `fuzz_grpc_requestor`.
+- **NIST 800-53**: AC-3, AC-5, AC-6, AC-6(9), AC-6(10), CM-7, IA-3, IA-9, AU-8, SI-10.
+  **NIAP PP-CA**: FDP_ACF.1, FMT_SMR.2, FIA_X509_EXT.1, FPT_STM.1.
+
+##### ostrich-ca
+
+- **Audit actor is the verified mTLS peer subject.** Issuance, revocation and CRL records set
+  `actor` to the peer DN and add `authenticated_caller`, `authenticated_caller_issuer` and
+  `authenticated_caller_serial` (lowercase hex of the DER INTEGER content octets, sign byte
+  included). The validated requestor is recorded as `on_behalf_of`.
+- **SEC-001: an RA could obtain an intermediate CA certificate.** Before this change any allowed
+  gRPC client could request any profile, including `intermediate_ca`. Issue now checks the
+  namespace's profile allowlist before issuance (denial audited `profile_not_permitted`). As a
+  second guard, `issue()` refuses any `basic_constraints_ca` profile to a gRPC caller with a
+  Failure audit record (`ca_profile_not_permitted`). ca-server validates the profile lists
+  against the same profile set it registers on the CA.
+- **REST CRL and delta CRL actor.** CRL and delta CRL generation over REST (`POST`) now record the
+  authenticated user as the actor (action `generate` / `generate_delta`). Before, both were
+  recorded as `system`. `system` is now used only by the scheduler.
+- **Failed revocations and CRL generations are audited.** An invalid certificate id or reason,
+  certificate not found, lookup or database errors, and "already revoked" now write a Failure
+  record with the caller details. A failed full or delta CRL writes a Failure record with a fixed
+  stage in `failure` (`revoked_lookup_failed`, `crl_number_failed`, `unsupported_ca_key_type`,
+  `crl_build_failed`, `signing_failed`, `crl_encoding_failed`, `crl_store_failed`,
+  `base_crl_lookup_failed`, `no_base_crl`). If that audit write fails, it is logged and the
+  original error is returned.
+- CheckRevocationStatus is an admin-only read; only its denials are audited.
+- **NIST 800-53**: AU-2, AU-3, AU-10, AU-12, AC-3, AC-6(10), CM-7, SI-11.
+  **NIAP PP-CA**: FAU_GEN.1, FAU_GEN.2, FDP_ACF.1.
+
+##### ostrich-ca-server
+
+- New flags and variables for the three role lists and the two profile lists (see BREAKING above).
+  The start-up log and the `grpc_listener_started` audit record include the per-role clients, the
+  method table and the issuer profiles.
+- The dev plaintext warning now says any client can issue, revoke and generate CRLs with no
+  verified audit actor. In plaintext mode an issue request must name a profile from either list.
+
+##### ostrich-est / ostrich-est-server
+
+- New `ca_integration::ca_requestor()` applies the CA's requestor rule to `est::<client_id>`, so
+  an id the CA would refuse gets a clear 403 from EST (see BREAKING above).
+
+##### workspace (deploy, scripts)
+
+- Helm, `docker-compose.yml`, `docker-compose.yaml`, `docker-compose.dev.yml`,
+  `tests/integration/docker-compose.yml`, the Kustomize `ca-deployment.yaml` and `.env.example`
+  set the three role lists and the two profile lists. The admin list is always rendered, as `""`
+  by default.
+- `docker-compose.yml` and `docker-compose.yaml` forward a leftover
+  `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` from `.env`, blank by default, so a stale value refuses
+  startup instead of being ignored.
+- Helm rendering fails on the removed key, on no issuer subjects, on the same DN in two lists, on
+  an empty or `;`-containing entry, on `intermediate_ca` in a profile list, and on an empty profile
+  list for a namespace with subjects. `NOTES.txt` prints the per-role lists and the issuable
+  profiles.
+- `scripts/gen-dev-grpc-certs.sh` adds the `CN=integration-admin` client certificate (EKU
+  clientAuth) and regenerates older certificate sets that lack it.
+
+##### ostrich-integration-tests
+
+- `grpc_mtls_e2e` grows from 21 to 39 tests: the role × RPC matrix, unmapped methods, requestor
+  namespace and validity, profile allowlists, a certificate expiring on a live connection, and an
+  admin certificate under an intermediate. `ca_core_test` and `ocsp_revocation_test` revoke and
+  query status through the new admin client (`connect_ca_admin`).
+- New dev dependencies `tonic-prost` and `time` (both already in the workspace; no new packages
+  in `Cargo.lock`).
+
+##### Known limitations (POA&M)
+
+- A compromised acme-server or est-server can still claim any id in its own namespace and request
+  any profile on its namespace's list (RA confused deputy; POAM-2026-10-23-35).
+- Issuer roles (acme/est) are still bound by subject only, not issuer or SPKI (POAM-2026-10-23-28,
+  now open for issuer roles only).
+- REST 500 response bodies can still include internal error text (POAM-2026-10-23-37).
+- Certificate profiles are still code defaults, not loaded from the `certificate_profiles` table
+  (POAM-2026-10-23-38).
+- The live database and SoftHSM paths (GenerateCrl handler glue, CRL failure audits,
+  `ca_profile_not_permitted` through `issue()`, `audit_signing_e2e`, `crl_delta_e2e`) are covered
+  by pure-builder tests only; they did not run in this change (POAM-2026-10-23-36).
 
 #### Audit hash chain: atomic append (race could fork the chain)
 
@@ -399,8 +600,10 @@ Closes the gRPC part of POAM-2026-10-23-08.
 ##### workspace (deploy)
 
 - **Helm** (`deploy/helm/ostrich-pki`):
-  - New values `ca.grpc.tls.*`, `ca.grpc.allowedClientSubjects` (default `CN=acme-server`,
-    `CN=est-server`), and `acme.caGrpc.*` / `est.caGrpc.*`.
+  - New values `ca.grpc.tls.*`, `ca.grpc.{acme,est,admin}ClientSubjects` (defaults
+    `CN=acme-server`, `CN=est-server` and empty), `ca.grpc.{acme,est}AllowedProfiles`, and
+    `acme.caGrpc.*` / `est.caGrpc.*`. The interim `ca.grpc.allowedClientSubjects` key fails
+    rendering (see "CA gRPC per-method authorization").
   - A required secret that is missing fails rendering.
   - The gRPC NetworkPolicy now allows only acme and est.
   - The unused `CA_GRPC_URL` and `CA_GRPC_INSECURE` were removed from the ocsp deployment.
@@ -509,6 +712,26 @@ Closes the gRPC part of POAM-2026-10-23-08.
 - **NIST 800-53**: CM-7 (Least Functionality), SR-3, CM-3 (baseline change)
 
 ### Fixed
+
+#### ca-server panic on an undecodable numeric OID in a client subject list
+
+##### ostrich-common
+
+- A client subject entry with a numeric attribute type that const-oid 0.9.6 can encode but not
+  decode (for example `2.2.106.2.2.2122195112=x`) made ca-server panic at startup ("OID
+  malformed: ArcTooBig" from `Display`, inside `canonicalize_dn`). Such an entry is now refused
+  with a configuration error. `fuzz_grpc_peer_subject` found it. The certificate (DER) path was
+  not affected. After the fix: 135,145 runs in 60 s with no crash, and both crash inputs replay
+  clean.
+- **NIST 800-53**: SI-10
+
+#### est_serverkeygen_e2e served the CA over plaintext with no authorization layer
+
+##### ostrich-integration-tests
+
+- The DB-gated test built `CaGrpcService::new` over plaintext, which now refuses every call
+  without a verified peer. It now uses `CaGrpcService::for_mode` in dev plaintext mode with an EST
+  profile policy. Test-only; it was not run here (no Postgres).
 
 #### Fuzz manifest did not parse
 

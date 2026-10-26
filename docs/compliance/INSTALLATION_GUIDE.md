@@ -244,13 +244,26 @@ External Network: ACME (:8081), EST (:8443), OCSP (:8082), CA REST (:8080)
 Internal Network: CA gRPC (:50051, TLS 1.3 mTLS), SCMS (:8083), KRA (:8084), PostgreSQL (:5432)
 ```
 
-**CA gRPC (since 2026-10-25, uncommitted branch `claude/grpc-mtls`):** the CA
-issuance API on :50051 requires TLS 1.3 mutual authentication and a
-client-subject allowlist. ca-server exits at startup if
-`CA_GRPC_TLS_CERT_FILE`, `CA_GRPC_TLS_KEY_FILE`, `CA_GRPC_TLS_CLIENT_CA_FILE`
-or `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` is missing; acme-server and est-server
+**CA gRPC (since 2026-10-25, branch `claude/grpc-mtls`; per-method
+authorization since 2026-10-26, uncommitted branch
+`claude/grpc-per-method-authz`):** the CA API on :50051 requires TLS 1.3
+mutual authentication, and each client certificate subject holds one role
+from `CA_GRPC_ACME_CLIENT_SUBJECTS` / `CA_GRPC_EST_CLIENT_SUBJECTS` (Issuer;
+compose defaults `CN=acme-server` / `CN=est-server`) or
+`CA_GRPC_ADMIN_CLIENT_SUBJECTS` (Admin; empty by default, so nobody can revoke
+or generate CRLs over gRPC). ca-server exits at startup if
+`CA_GRPC_TLS_CERT_FILE`, `CA_GRPC_TLS_KEY_FILE` or
+`CA_GRPC_TLS_CLIENT_CA_FILE` is missing; if both issuer lists are empty; if a
+subject is in two lists; if an entry or a profile list
+(`CA_GRPC_ACME_ALLOWED_PROFILES`, `CA_GRPC_EST_ALLOWED_PROFILES`) is invalid;
+if the removed `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` is set; or, with admin
+subjects, if `CA_GRPC_TLS_CLIENT_CA_FILE` holds more than one distinct anchor
+or an anchor without subjectKeyIdentifier. Admin certificates must be issued
+directly by that anchor. With `docker run --env-file`, write
+`CA_GRPC_EST_ALLOWED_PROFILES` without the quotes used in `.env.example`
+(Compose strips them, `--env-file` does not). acme-server and est-server
 need `CA_GRPC_CLIENT_CERT_FILE`, `CA_GRPC_CLIENT_KEY_FILE` and
-`CA_GRPC_CA_CERT_FILE`. Container images are release builds, so the plaintext
+`CA_GRPC_CA_CERT_FILE`. See `docs/runbooks/ca-grpc-mtls.md`. Container images are release builds, so the plaintext
 dev flags are refused. Material from `make dev-grpc-certs` is for development
 only; never place gRPC keys under `./certs`, which the ca, est and ocsp
 containers mount wholesale.
@@ -911,3 +924,4 @@ sudo systemctl daemon-reload
 |---------|------|--------|---------|
 | 1.0 | January 2026 | OstrichPKI Team | Initial release |
 | 1.2 | 2026-10-25 | OstrichPKI Team | §4.2 / §4.3: CA gRPC mTLS prerequisites (dev certs via `make dev-grpc-certs` into `.dev-grpc-certs/`, required Helm secrets, dedicated service-identity CA before first install). Branch `claude/grpc-mtls`, uncommitted. Version 1.1 had no history row |
+| 1.3 | 2026-10-26 | OstrichPKI Team | §4.2 CA gRPC note: per-role subject lists, profile allowlists, removed `CA_GRPC_ALLOWED_CLIENT_SUBJECTS`, admin single-anchor and direct-issuance conditions, `docker run --env-file` quoting (branch `claude/grpc-per-method-authz`, uncommitted) |

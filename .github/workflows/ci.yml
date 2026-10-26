@@ -47,7 +47,8 @@ jobs:
         run: cargo test --workspace --lib --bins --locked
 
       # CA gRPC mTLS end-to-end (in-process TLS 1.3 mTLS server/client, the
-      # dev cert script, the subject allowlist) and the process FIPS gate.
+      # dev cert script, per-role / per-method authorization, requestor
+      # binding, issuer profile allowlists) and the process FIPS gate.
       # Self-contained: no Postgres, no network services; needs bash + openssl
       # (preinstalled on ubuntu-24.04). OSTRICH_DB_TESTS is deliberately unset,
       # so DB-backed suites stay skipped here.

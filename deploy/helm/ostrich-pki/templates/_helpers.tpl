@@ -105,26 +105,114 @@ COMPLIANCE MAPPING:
 {{- end }}
 
 {{/*
-CA gRPC client allowlist, ";"-joined for CA_GRPC_ALLOWED_CLIENT_SUBJECTS
-(commas are RDN separators inside a DN, so ";" delimits entries). Fails
-rendering on an empty list or an entry containing ";" (fail closed: the CA
-would refuse to start anyway).
+CA gRPC per-role client subject lists (per-method authorization).
+
+- caGrpcClientSubjects: (dict "key" "acmeClientSubjects" "subjects" .Values.ca.grpc.acmeClientSubjects)
+  returns one list ";"-joined for the matching CA_GRPC_*_CLIENT_SUBJECTS
+  variable (commas are RDN separators inside a DN, so ";" delimits entries).
+  An empty list renders "". Fails rendering when the value is not a list or an
+  entry is empty or contains ";".
+- caGrpcClientPolicy: (root context) validates the lists together and renders
+  nothing. Fails rendering when the removed ca.grpc.allowedClientSubjects is
+  set, when acmeClientSubjects and estClientSubjects are both empty (the CA
+  needs at least one issuer client), or when the same DN string appears in more
+  than one list (a client identity holds exactly one role). This is an exact-
+  string early warning; ca-server repeats the check on the canonical RFC 4514
+  form and refuses to start on any overlap (fail closed either way).
+
+Roles (fixed in ca-server): acme/est = Issuer (IssueCertificate, GetCaInfo,
+ListProfiles; requestor bound to "acme::"/"est::"); admin = Admin
+(RevokeCertificate, GenerateCrl, CheckRevocationStatus, GetCaInfo,
+ListProfiles; never IssueCertificate). Any unmapped RPC is denied.
 
 COMPLIANCE MAPPING:
-- NIST 800-53: AC-3 (Access Enforcement), AC-6 (Least Privilege), CM-6
-- NIAP PP-CA: FDP_ACF.1, FMT_SMF.1
+- NIST 800-53: AC-3 (Access Enforcement), AC-5 (Separation of Duties),
+  AC-6 (Least Privilege), CM-6 (Configuration Settings)
+- NIAP PP-CA: FDP_ACF.1, FMT_SMR.2, FMT_MTD.1
 */}}
-{{- define "ostrich-pki.caGrpcAllowedSubjects" -}}
-{{- $subjects := .Values.ca.grpc.allowedClientSubjects | default list -}}
-{{- if not $subjects -}}
-{{- fail "ca.grpc.allowedClientSubjects must list at least one client certificate subject DN (e.g. CN=acme-server); the CA gRPC API refuses to start with an empty allowlist" -}}
+{{- define "ostrich-pki.caGrpcClientSubjects" -}}
+{{- $key := .key -}}
+{{- $subjects := .subjects | default list -}}
+{{- if not (kindIs "slice" $subjects) -}}
+{{- fail (printf "ca.grpc.%s must be a list of subject DNs (one DN per item), not %s" $key (kindOf $subjects)) -}}
 {{- end -}}
 {{- range $subjects -}}
-{{- if or (not .) (contains ";" .) -}}
-{{- fail (printf "ca.grpc.allowedClientSubjects entry %q is empty or contains ';' (the list delimiter)" (toString .)) -}}
+{{- if or (not .) (contains ";" (toString .)) -}}
+{{- fail (printf "ca.grpc.%s entry %q is empty or contains ';' (the list delimiter)" $key (toString .)) -}}
 {{- end -}}
 {{- end -}}
 {{- join ";" $subjects -}}
+{{- end }}
+
+{{/*
+CA gRPC per-namespace issuance profile allowlists.
+
+- caGrpcAllowedProfiles: (dict "key" "acmeAllowedProfiles" "profiles" .Values.ca.grpc.acmeAllowedProfiles)
+  returns the list ";"-joined for CA_GRPC_{ACME,EST}_ALLOWED_PROFILES. Fails
+  rendering when the value is not a list, an entry is empty or contains ";",
+  or an entry names the intermediate_ca profile: CA profiles are never
+  issuable by an Issuer client. ca-server additionally refuses to start on any
+  unknown profile or any profile with basic_constraints_ca.
+- caGrpcClientPolicy (below) fails rendering when a namespace with client
+  subjects has an empty profile list (no silent "nothing allowed").
+
+COMPLIANCE MAPPING:
+- NIST 800-53: AC-3 (Access Enforcement), AC-6 (Least Privilege),
+  CM-6 (Configuration Settings), CM-7 (Least Functionality)
+- NIAP PP-CA: FDP_ACF.1, FMT_MTD.1
+*/}}
+{{- define "ostrich-pki.caGrpcAllowedProfiles" -}}
+{{- $key := .key -}}
+{{- $profiles := .profiles | default list -}}
+{{- if not (kindIs "slice" $profiles) -}}
+{{- fail (printf "ca.grpc.%s must be a list of profile names (one per item), not %s" $key (kindOf $profiles)) -}}
+{{- end -}}
+{{- range $profiles -}}
+{{- $p := toString . -}}
+{{- if or (not (trim $p)) (contains ";" $p) -}}
+{{- fail (printf "ca.grpc.%s entry %q is empty or contains ';' (the list delimiter)" $key $p) -}}
+{{- end -}}
+{{- if eq (lower (trim $p)) "intermediate_ca" -}}
+{{- fail (printf "ca.grpc.%s must not list %q: CA profiles are never allowed for gRPC Issuer clients" $key $p) -}}
+{{- end -}}
+{{- end -}}
+{{- join ";" $profiles -}}
+{{- end }}
+
+{{- define "ostrich-pki.caGrpcClientPolicy" -}}
+{{- $grpc := .Values.ca.grpc -}}
+{{- if hasKey $grpc "allowedClientSubjects" -}}
+{{- fail "ca.grpc.allowedClientSubjects was removed: split it into ca.grpc.acmeClientSubjects, ca.grpc.estClientSubjects and ca.grpc.adminClientSubjects (one role per DN; ca-server also refuses CA_GRPC_ALLOWED_CLIENT_SUBJECTS). See docs/runbooks/ca-grpc-mtls.md" -}}
+{{- end -}}
+{{- $lists := dict
+      "acmeClientSubjects" ($grpc.acmeClientSubjects | default list)
+      "estClientSubjects" ($grpc.estClientSubjects | default list)
+      "adminClientSubjects" ($grpc.adminClientSubjects | default list) -}}
+{{- range $key, $subjects := $lists -}}
+{{- $_ := include "ostrich-pki.caGrpcClientSubjects" (dict "key" $key "subjects" $subjects) -}}
+{{- end -}}
+{{- if and (not $lists.acmeClientSubjects) (not $lists.estClientSubjects) -}}
+{{- fail "ca.grpc.acmeClientSubjects and ca.grpc.estClientSubjects are both empty: list at least one issuer client subject DN (e.g. CN=acme-server); the CA gRPC API refuses to start with no issuer client" -}}
+{{- end -}}
+{{- range $ns := list "acme" "est" -}}
+{{- $profKey := printf "%sAllowedProfiles" $ns -}}
+{{- $profiles := get $grpc $profKey | default list -}}
+{{- $_ := include "ostrich-pki.caGrpcAllowedProfiles" (dict "key" $profKey "profiles" $profiles) -}}
+{{- if and (get $lists (printf "%sClientSubjects" $ns)) (not $profiles) -}}
+{{- fail (printf "ca.grpc.%sClientSubjects is set but ca.grpc.%s is empty: list the end-entity profiles that namespace may request (ca-server refuses to start otherwise)" $ns $profKey) -}}
+{{- end -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range $key := list "acmeClientSubjects" "estClientSubjects" "adminClientSubjects" -}}
+{{- range (get $lists $key) -}}
+{{- $dn := toString . -}}
+{{- $prev := get $seen $dn -}}
+{{- if and $prev (ne $prev $key) -}}
+{{- fail (printf "gRPC client subject %q is listed in both ca.grpc.%s and ca.grpc.%s; a client identity may hold one role" $dn $prev $key) -}}
+{{- end -}}
+{{- $_ := set $seen $dn $key -}}
+{{- end -}}
+{{- end -}}
 {{- end }}
 
 {{/*

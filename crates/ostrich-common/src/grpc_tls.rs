@@ -14,9 +14,14 @@
 //!   a timeout and a concurrency cap, and yields [`GrpcTlsStream`]s to
 //!   `tonic::transport::Server::serve_with_incoming_shutdown`.
 //! - **Authorization**: [`SubjectAllowlistLayer`] is a listener-wide tower
-//!   layer that admits only allow-listed client-certificate subjects; anything
-//!   else is answered `PERMISSION_DENIED` (or `UNAUTHENTICATED`) after an audit
-//!   record is written. Default deny, including for RPCs added later.
+//!   layer that maps each verified client-certificate subject to one
+//!   [`GrpcClientIdentity`] (role + requestor namespace, from
+//!   [`GrpcClientRegistry`]) and admits a call only when the method table
+//!   ([`GrpcMethodRule`]) grants that role the exact gRPC path. Anything else
+//!   is answered `PERMISSION_DENIED` (or `UNAUTHENTICATED`) after an audit
+//!   record is written. Default deny, including for RPCs added later. The
+//!   service binds the client-asserted `requestor` to the caller's namespace
+//!   with [`AuthorizedGrpcPeer::bind_requestor`] / [`AuthorizedGrpcPeer::deny`].
 //! - **Client**: [`grpc_client_config`] builds the matching TLS 1.3-only client
 //!   config with the client certificate and server trust anchors, asserted by
 //!   [`ensure_fips_client`]; [`GrpcTlsConnector`] dials through it and requires
@@ -24,10 +29,20 @@
 //!
 //! # COMPLIANCE MAPPING
 //! - NIST 800-53: AC-17 (Remote Access) - mTLS for inter-service gRPC
-//! - NIST 800-53: AC-3 / AC-6 (Access Enforcement / Least Privilege) - subject
-//!   allowlist, default deny
-//! - NIST 800-53: IA-3 / IA-5(2) (Device Identification / PKI-based
-//!   Authentication) - client certificate path validation to configured anchors
+//! - NIST 800-53: AC-3 / AC-6 (Access Enforcement / Least Privilege) - per-role
+//!   subject lists and a per-method rule table, default deny; AC-5
+//!   (Separation of Duties) - issuer and admin identities are disjoint
+//! - NIST 800-53: AU-3 / AU-10 - the verified peer is the authoritative actor;
+//!   the client-asserted requestor is bound to the caller's namespace
+//! - NIST 800-53: IA-3 / IA-9 / IA-5(2) (Device and Service Identification /
+//!   PKI-based Authentication) - client certificate path validation to
+//!   configured anchors; leaf validity re-checked per call (RFC 5280
+//!   §4.1.2.5); intermediates and anchor at handshake only
+//! - NIST 800-53: CM-7 (Least Functionality) - only the RPCs in the method
+//!   table are reachable (default deny); AC-6(9) (Log Use of Privileged
+//!   Functions) - the RevokeCertificate and GenerateCrl admin RPCs are
+//!   audited with the verified peer as actor; CheckRevocationStatus is an
+//!   unaudited read (only its denials are audited)
 //! - NIST 800-53: SC-8 / SC-8(1) (Transmission Confidentiality and Integrity) -
 //!   TLS 1.3 only
 //! - NIST 800-53: SC-13 (Cryptographic Protection) - aws-lc-rs FIPS provider,
@@ -37,22 +52,40 @@
 //! - NIST 800-53: AU-2 / AU-3 / AU-12 - handshake failures and denials audited
 //! - NIST 800-53: SI-10 (Input Validation) - DN and configuration parsing
 //! - NIAP PP-CA: FTP_ITC.1, FCS_TLSS_EXT.1, FCS_TLSS_EXT.2, FCS_TLSC_EXT.2,
-//!   FIA_X509_EXT.1, FDP_ACC.1, FDP_ACF.1, FAU_GEN.1
+//!   FIA_X509_EXT.1, FDP_ACC.1, FDP_ACF.1, FAU_GEN.1, FAU_GEN.2, FMT_SMR.2
 //! - RFC 8446 (TLS 1.3), RFC 9325, RFC 7301 (ALPN `h2`), RFC 4514 (DN strings),
 //!   RFC 5280 §6 / §4.2.1.12 (path validation, EKU via webpki)
 // POAM: POAM-2026-10-23-27 - client-certificate revocation is not checked on the
 // gRPC listener: the `WebPkiClientVerifier` is built without CRLs, so a revoked
-// acme/est client certificate is accepted until it expires (FIA_X509_EXT.1.1
-// revocation, RFC 5280 §6.3). Same gap as the REST mTLS listeners.
-// POAM: POAM-2026-10-23-28 - allowlist entries bind the client-certificate
-// subject DN only, not the issuing CA or the client key (SPKI): any anchor in
-// CA_GRPC_TLS_CLIENT_CA_FILE that issues a certificate with an allow-listed
-// subject authorises its holder. Mitigated by requiring a dedicated
+// acme/est/admin client certificate is accepted until it expires
+// (FIA_X509_EXT.1.1 revocation, RFC 5280 §6.3). Admin-role impact: a
+// compromised operator certificate keeps RevokeCertificate / GenerateCrl /
+// CheckRevocationStatus until notAfter (the per-call validity check in
+// `authorize_peer` ends it no later than that). Compensating guidance: issue
+// admin certificates with short validity (one per named operator), and on
+// compromise remove the subject from CA_GRPC_ADMIN_CLIENT_SUBJECTS and restart
+// the CA (the role lists are read at startup only). Same gap as the REST mTLS
+// listeners.
+// POAM: POAM-2026-10-23-28 - client-list entries (acme / est / admin) bind the
+// client-certificate subject DN only, not the issuing CA or the client key
+// (SPKI): any anchor in CA_GRPC_TLS_CLIENT_CA_FILE (or any CA under it) that
+// issues a certificate with an allow-listed subject authorises its holder.
+// Admin-role impact: another anchor or a subordinate CA could mint an admin
+// subject and revoke certificates; the CA therefore refuses to start with a
+// non-empty admin list and more than one distinct client trust anchor, admits
+// an admin call only for a leaf issued directly by that anchor (issuer DN =
+// anchor subject and leaf AKI present and equal to the anchor SKI, no DN-only
+// fallback; otherwise `admin_issuer_not_anchor`, SEC-101 / SEC-201; an anchor
+// without an SKI is refused at startup), and records the peer certificate issuer
+// DN and serial in every gRPC audit record so a forged identity is
+// distinguishable. Issuer roles may still chain through intermediates. Further mitigated by requiring a dedicated
 // service-identity client CA (ca-server refuses anchors in its own chain -
 // issuing CA, CAs it issued, its issuer and every ancestor in the CA database,
 // see [`ensure_dedicated_client_ca`]) and by refusing, per call, leaves issued
-// by the issuing CA or its ancestors (`subscriber_issuing_ca`); issuer- or
-// SPKI-bound allowlist entries (defence in depth) are pending (AC-3, IA-3).
+// by the issuing CA or its ancestors (`subscriber_issuing_ca`). Compensating
+// guidance: one short-lived admin certificate per operator from the dedicated
+// CA; on compromise remove the subject and restart. Issuer- or SPKI-bound
+// allowlist entries (defence in depth) are pending (AC-3, IA-3, IA-9).
 
 use crate::auth::{AuthAuditEvent, AuthAuditHook, AuthAuditKind};
 use crate::tls::{TlsSettings, ensure_fips, ensure_fips_client};
@@ -107,7 +140,16 @@ pub const ENV_GRPC_TLS_CERT_FILE: &str = "CA_GRPC_TLS_CERT_FILE";
 pub const ENV_GRPC_TLS_KEY_FILE: &str = "CA_GRPC_TLS_KEY_FILE";
 /// See [`ENV_GRPC_TLS_CERT_FILE`].
 pub const ENV_GRPC_TLS_CLIENT_CA_FILE: &str = "CA_GRPC_TLS_CLIENT_CA_FILE";
-/// See [`ENV_GRPC_TLS_CERT_FILE`].
+/// Client subjects with the `Issuer` role in the `acme` requestor namespace
+/// (`;`-delimited RFC 4514 DNs). See [`ENV_GRPC_TLS_CERT_FILE`].
+pub const ENV_GRPC_ACME_CLIENT_SUBJECTS: &str = "CA_GRPC_ACME_CLIENT_SUBJECTS";
+/// Client subjects with the `Issuer` role in the `est` requestor namespace.
+pub const ENV_GRPC_EST_CLIENT_SUBJECTS: &str = "CA_GRPC_EST_CLIENT_SUBJECTS";
+/// Client subjects with the `Admin` role (`admin` namespace). Empty by default:
+/// nobody may revoke, generate CRLs or query revocation status over gRPC.
+pub const ENV_GRPC_ADMIN_CLIENT_SUBJECTS: &str = "CA_GRPC_ADMIN_CLIENT_SUBJECTS";
+/// Removed single allowlist. Kept only so a deployment that still sets it is
+/// refused at startup with a migration message (CM-6, SC-24).
 pub const ENV_GRPC_ALLOWED_CLIENT_SUBJECTS: &str = "CA_GRPC_ALLOWED_CLIENT_SUBJECTS";
 /// See [`ENV_GRPC_TLS_CERT_FILE`].
 pub const ENV_GRPC_INSECURE_DEV_PLAINTEXT: &str = "CA_GRPC_INSECURE_DEV_PLAINTEXT";
@@ -133,9 +175,14 @@ const CLOSE_NOTIFY_TIMEOUT: Duration = Duration::from_secs(1);
 /// digits), as accepted by the `x509-cert` DN parser.
 const DN_ESCAPABLE: &[u8] = b" \\\"#=+,;<>";
 
-/// gRPC status message for a refused subject. Generic on purpose: it does not
-/// echo the allowlist or the presented subject.
-const DENIED_MESSAGE: &str = "client certificate subject is not authorised for this service";
+/// gRPC status message for a refused call. Generic on purpose: it does not
+/// echo the client lists, the method table, the presented subject or which
+/// check failed (no role or method enumeration).
+const DENIED_MESSAGE: &str = "client is not authorised for this call";
+
+/// Maximum length of a bound requestor (bytes): `certificates.requestor` is
+/// `VARCHAR(255)`.
+pub const MAX_REQUESTOR_LEN: usize = 255;
 
 /// Parse the RFC 4514 subject DN from a DER certificate.
 ///
@@ -233,7 +280,7 @@ impl ClientSubjectAllowlist {
     /// attribute values are significant (exact, case-sensitive match).
     ///
     /// Blank entries (e.g. from a trailing `;` in
-    /// `CA_GRPC_ALLOWED_CLIENT_SUBJECTS`) are dropped. Rejects a list with no
+    /// `CA_GRPC_ACME_CLIENT_SUBJECTS`) are dropped. Rejects a list with no
     /// non-blank entry and any unparsable or over-long (>
     /// [`MAX_ALLOWED_SUBJECT_LEN`]) entry, including entries with a dangling
     /// `\` or an invalid / ambiguous escape sequence (for example `CN=a\`,
@@ -243,23 +290,26 @@ impl ClientSubjectAllowlist {
     /// misconfigured allowlist stops the service rather than authorising
     /// nobody, or the wrong party (CM-6, SC-24 / FPT_FLS.1, SI-10).
     pub fn parse(entries: &[String]) -> Result<Self> {
+        Self::parse_labelled(entries, "gRPC allowed client subject")
+    }
+
+    /// [`Self::parse`] with `label` naming the list in error messages (e.g.
+    /// the environment variable the entries came from).
+    fn parse_labelled(entries: &[String], label: &str) -> Result<Self> {
         let entries: Vec<(usize, &String)> = entries
             .iter()
             .enumerate()
             .filter(|(_, raw)| !raw.trim_matches(is_dn_padding).is_empty())
             .collect();
         if entries.is_empty() {
-            return Err(Error::Config(
-                "gRPC client-subject allowlist is empty; no client would be authorised".to_string(),
-            ));
+            return Err(Error::Config(format!(
+                "{label} list is empty; no client would be authorised"
+            )));
         }
         let mut subjects = Vec::with_capacity(entries.len());
         for (index, raw) in entries {
             let canonical = canonicalize_dn(raw).map_err(|why| {
-                Error::Config(format!(
-                    "gRPC allowed client subject #{} is invalid: {why}",
-                    index + 1
-                ))
+                Error::Config(format!("{label} #{} is invalid: {why}", index + 1))
             })?;
             if !subjects.contains(&canonical) {
                 subjects.push(canonical);
@@ -279,6 +329,313 @@ impl ClientSubjectAllowlist {
     pub fn subjects(&self) -> &[String] {
         &self.subjects
     }
+}
+
+/// Whether an allowlist entry list has no non-blank entry (blank entries are
+/// ASCII padding only, see [`is_dn_padding`]).
+fn all_blank(entries: &[String]) -> bool {
+    entries
+        .iter()
+        .all(|raw| raw.trim_matches(is_dn_padding).is_empty())
+}
+
+/// Role of an authorised CA gRPC client identity.
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-5 (Separation of Duties), AC-6 (Least Privilege)
+/// - NIAP PP-CA: FMT_SMR.2 (Security Roles)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GrpcClientRole {
+    /// Registration authority (acme-server, est-server): issuance and the
+    /// read-only CA information RPCs.
+    Issuer,
+    /// Operator identity: revocation, CRL generation, revocation status.
+    Admin,
+}
+
+impl GrpcClientRole {
+    /// Stable lowercase name for logs and audit details.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Issuer => "issuer",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+impl fmt::Display for GrpcClientRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What a verified client-certificate subject is: a role plus the fixed
+/// requestor namespace (`<namespace>::<id>`) it may claim. The namespace is
+/// tied to the configuration list the subject is in, never derived from the
+/// certificate (no spoofing through the CN).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GrpcClientIdentity {
+    /// Authorised role.
+    pub role: GrpcClientRole,
+    /// Requestor namespace the caller may claim (`acme`, `est`, `admin`).
+    pub namespace: &'static str,
+}
+
+impl GrpcClientIdentity {
+    /// acme-server: `Issuer`, `acme::<account_id>`.
+    pub const ACME: Self = Self {
+        role: GrpcClientRole::Issuer,
+        namespace: "acme",
+    };
+    /// est-server: `Issuer`, `est::<client_id>`.
+    pub const EST: Self = Self {
+        role: GrpcClientRole::Issuer,
+        namespace: "est",
+    };
+    /// Operator identity: `Admin`, `admin::<id>` or no requestor.
+    pub const ADMIN: Self = Self {
+        role: GrpcClientRole::Admin,
+        namespace: "admin",
+    };
+}
+
+/// The CA gRPC client identities: three disjoint lists of canonical subject
+/// DNs (`CA_GRPC_ACME_CLIENT_SUBJECTS`, `CA_GRPC_EST_CLIENT_SUBJECTS`,
+/// `CA_GRPC_ADMIN_CLIENT_SUBJECTS`), each mapped to one
+/// [`GrpcClientIdentity`].
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3, AC-5, AC-6, IA-3 / IA-9 (service identity drives
+///   authorization), CM-6 (fail-closed parsing, empty admin default)
+/// - NIST 800-53: SI-10 - entries are parsed by [`ClientSubjectAllowlist`]
+/// - NIAP PP-CA: FMT_SMR.2, FMT_MTD.1 (role lists are management data, set
+///   at startup only), FDP_ACF.1
+#[derive(Debug, Clone)]
+pub struct GrpcClientRegistry {
+    acme: Vec<String>,
+    est: Vec<String>,
+    admin: Vec<String>,
+}
+
+impl GrpcClientRegistry {
+    /// Parse the three role lists, failing closed.
+    ///
+    /// Each list that has a non-blank entry goes through
+    /// [`ClientSubjectAllowlist::parse`] (same RFC 4514 canonicalisation,
+    /// escape checks and length limit); an all-blank list means "none".
+    /// Refuses: any malformed entry; no ACME and no EST subject at all ("no
+    /// issuer client configured"); a canonical subject in more than one list,
+    /// also when the two entries differ only in ASCII letter case (a client
+    /// identity holds exactly one role, so its namespace is never ambiguous
+    /// and issuance and revocation stay separated, AC-5; RFC-006).
+    /// Duplicates within one list are dropped.
+    pub fn parse(acme: &[String], est: &[String], admin: &[String]) -> Result<Self> {
+        let parse_list = |entries: &[String], env: &str| -> Result<Vec<String>> {
+            if all_blank(entries) {
+                return Ok(Vec::new());
+            }
+            let label = format!("{env} entry");
+            Ok(ClientSubjectAllowlist::parse_labelled(entries, &label)?.subjects)
+        };
+        let registry = Self {
+            acme: parse_list(acme, ENV_GRPC_ACME_CLIENT_SUBJECTS)?,
+            est: parse_list(est, ENV_GRPC_EST_CLIENT_SUBJECTS)?,
+            admin: parse_list(admin, ENV_GRPC_ADMIN_CLIENT_SUBJECTS)?,
+        };
+        if registry.acme.is_empty() && registry.est.is_empty() {
+            return Err(Error::Config(format!(
+                "no issuer client configured: set {ENV_GRPC_ACME_CLIENT_SUBJECTS} and/or \
+                 {ENV_GRPC_EST_CLIENT_SUBJECTS}; refusing to start"
+            )));
+        }
+        let lists = [
+            (ENV_GRPC_ACME_CLIENT_SUBJECTS, &registry.acme),
+            (ENV_GRPC_EST_CLIENT_SUBJECTS, &registry.est),
+            (ENV_GRPC_ADMIN_CLIENT_SUBJECTS, &registry.admin),
+        ];
+        // Deterministic order: the first overlapping pair (acme/est,
+        // acme/admin, est/admin) and the first shared subject are reported.
+        // RFC-006: subjects that differ only in ASCII letter case are refused
+        // too (attribute values are matched exactly at runtime, but a
+        // case-variant pair across roles is almost certainly a mistake, and
+        // some CAs normalise case when issuing). Within one list they are
+        // two distinct, exact-match entries.
+        for (i, (env_a, list_a)) in lists.iter().enumerate() {
+            for (env_b, list_b) in lists.iter().skip(i + 1) {
+                for dn in list_a.iter() {
+                    let Some(other) = list_b.iter().find(|b| b.eq_ignore_ascii_case(dn)) else {
+                        continue;
+                    };
+                    return Err(Error::Config(if other == dn {
+                        format!(
+                            "gRPC client subject {dn} is listed in both {env_a} and {env_b}; \
+                             a client identity may hold one role"
+                        )
+                    } else {
+                        format!(
+                            "gRPC client subjects {dn} ({env_a}) and {other} ({env_b}) differ \
+                             only in letter case; a client identity may hold one role, \
+                             refusing to start"
+                        )
+                    }));
+                }
+            }
+        }
+        Ok(registry)
+    }
+
+    /// The identity of a certificate subject DN (as rendered by
+    /// [`certificate_subject_dn`]): exact match on the canonical form; an
+    /// empty subject never matches.
+    pub fn identity(&self, subject_dn: &str) -> Option<GrpcClientIdentity> {
+        if subject_dn.is_empty() {
+            return None;
+        }
+        let has = |list: &[String]| list.iter().any(|s| s == subject_dn);
+        if has(&self.acme) {
+            Some(GrpcClientIdentity::ACME)
+        } else if has(&self.est) {
+            Some(GrpcClientIdentity::EST)
+        } else if has(&self.admin) {
+            Some(GrpcClientIdentity::ADMIN)
+        } else {
+            None
+        }
+    }
+
+    /// The canonical subjects configured for `identity`'s list (empty when
+    /// none), e.g. to require an issuance profile list for each configured
+    /// issuer namespace.
+    pub fn subjects_for(&self, identity: GrpcClientIdentity) -> &[String] {
+        match identity.namespace {
+            "acme" => &self.acme,
+            "est" => &self.est,
+            "admin" => &self.admin,
+            _ => &[],
+        }
+    }
+
+    /// `{acme: [..], est: [..], admin: [..]}` with the canonical subjects,
+    /// for the startup log and the `grpc_listener_started` audit record
+    /// (CM-3 evidence of the effective policy).
+    pub fn summary(&self) -> serde_json::Value {
+        serde_json::json!({
+            "acme": self.acme,
+            "est": self.est,
+            "admin": self.admin,
+        })
+    }
+}
+
+/// One entry of a listener's method table: the full gRPC path
+/// (`/<package>.<Service>/<Rpc>`) and the roles allowed to call it. A path
+/// without an entry is denied (`method_not_mapped`).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3, AC-6 (per-method least privilege)
+/// - NIAP PP-CA: FDP_ACC.1, FDP_ACF.1
+#[derive(Debug, Clone, Copy)]
+pub struct GrpcMethodRule {
+    /// Full gRPC request path, matched exactly (case-sensitive).
+    pub path: &'static str,
+    /// Roles allowed to call the method.
+    pub roles: &'static [GrpcClientRole],
+}
+
+/// `[{path, roles: [..]}]` for the startup log and audit record (CM-3).
+pub fn grpc_method_rules_summary(rules: &[GrpcMethodRule]) -> serde_json::Value {
+    serde_json::Value::Array(
+        rules
+            .iter()
+            .map(|rule| {
+                serde_json::json!({
+                    "path": rule.path,
+                    "roles": rule.roles.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Why a client-asserted `requestor` was refused by [`validate_requestor`].
+/// Every rejection is answered `PERMISSION_DENIED` and audited: the requestor
+/// is the caller's authorization claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestorRejection {
+    /// Empty requestor from an issuer identity.
+    Missing,
+    /// No `::`, or a prefix other than the caller's namespace.
+    NamespaceMismatch,
+    /// Empty id, longer than [`MAX_REQUESTOR_LEN`] bytes, or an id with a
+    /// byte outside printable ASCII `0x21..=0x7E`.
+    Invalid,
+}
+
+impl RequestorRejection {
+    /// Audit reason.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Missing => "requestor_missing",
+            Self::NamespaceMismatch => "requestor_namespace_mismatch",
+            Self::Invalid => "requestor_invalid",
+        }
+    }
+}
+
+impl fmt::Display for RequestorRejection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.reason())
+    }
+}
+
+/// Bytes allowed in the id part of a requestor (after `<namespace>::`):
+/// printable ASCII `0x21..=0x7E` only. An allowlist, not a denylist, so no
+/// control, separator (U+2028 / U+2029), bidi (U+061C, U+202E, ...), invisible
+/// format (U+00AD, U+2060, tags) or space character can reach logs, audit
+/// records or `certificates.requestor` (log / audit injection, CWE-117).
+fn is_allowed_requestor_byte(b: u8) -> bool {
+    (0x21..=0x7E).contains(&b)
+}
+
+/// Bind a client-asserted `requestor` to the caller's identity.
+///
+/// - Issuer (`acme` / `est`): must be `<namespace>::<id>` with the caller's
+///   namespace (exact, case-sensitive), a non-empty id of printable ASCII
+///   (`0x21..=0x7E`) only, at most [`MAX_REQUESTOR_LEN`] bytes in total;
+///   later `::` in the id are allowed. Empty is [`RequestorRejection::Missing`].
+/// - Admin: empty means "no on-behalf-of principal" (`Ok(None)`); otherwise
+///   the same rules with namespace `admin`.
+///
+/// Returns the requestor to record (`Some`) or `None`. Pure; fuzzed by
+/// `fuzz_grpc_requestor`.
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: SI-10 (Input Validation), AU-3 (on_behalf_of is bound to
+///   the authenticated caller), AC-3
+/// - NIAP PP-CA: FAU_GEN.2 (user identity association), FDP_ACF.1
+pub fn validate_requestor(
+    identity: GrpcClientIdentity,
+    requestor: &str,
+) -> std::result::Result<Option<String>, RequestorRejection> {
+    if requestor.is_empty() {
+        return match identity.role {
+            GrpcClientRole::Admin => Ok(None),
+            GrpcClientRole::Issuer => Err(RequestorRejection::Missing),
+        };
+    }
+    let Some((prefix, id)) = requestor.split_once("::") else {
+        return Err(RequestorRejection::NamespaceMismatch);
+    };
+    if prefix != identity.namespace {
+        return Err(RequestorRejection::NamespaceMismatch);
+    }
+    if id.is_empty()
+        || requestor.len() > MAX_REQUESTOR_LEN
+        || !id.bytes().all(is_allowed_requestor_byte)
+    {
+        return Err(RequestorRejection::Invalid);
+    }
+    Ok(Some(requestor.to_string()))
 }
 
 /// Canonicalise one configured DN. The error is a static reason so the caller
@@ -465,6 +822,18 @@ fn check_attribute_type(component: &str) -> std::result::Result<(), &'static str
     if arcs < 2 {
         return Err("invalid numeric attribute type (OID)");
     }
+    // SI-10: const-oid 0.9 can encode some large arcs that its own decoder
+    // refuses, and its Display then panics ("OID malformed"). Accept only an
+    // OID that decodes again from its own encoding (found by
+    // fuzz_grpc_peer_subject; operator configuration must fail closed, not
+    // panic).
+    use x509_cert::der::oid::ObjectIdentifier;
+    let decodable = ObjectIdentifier::new(key)
+        .ok()
+        .is_some_and(|oid| ObjectIdentifier::from_bytes(oid.as_bytes()).is_ok());
+    if !decodable {
+        return Err("invalid numeric attribute type (OID)");
+    }
     Ok(())
 }
 
@@ -591,21 +960,31 @@ pub struct GrpcServerOptions {
     pub key_path: Option<String>,
     /// Trust anchors for client certificates (PEM). `CA_GRPC_TLS_CLIENT_CA_FILE`.
     pub client_ca_path: Option<String>,
-    /// RFC 4514 subject DNs allowed to call the listener.
-    /// `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` (`;`-delimited).
-    pub allowed_subjects: Vec<String>,
+    /// Subject DNs of acme-server identities (`Issuer`, namespace `acme`).
+    /// `CA_GRPC_ACME_CLIENT_SUBJECTS` (`;`-delimited).
+    pub acme_subjects: Vec<String>,
+    /// Subject DNs of est-server identities (`Issuer`, namespace `est`).
+    /// `CA_GRPC_EST_CLIENT_SUBJECTS` (`;`-delimited).
+    pub est_subjects: Vec<String>,
+    /// Subject DNs of operator identities (`Admin`, namespace `admin`).
+    /// `CA_GRPC_ADMIN_CLIENT_SUBJECTS` (`;`-delimited); empty by default.
+    pub admin_subjects: Vec<String>,
+    /// The removed `CA_GRPC_ALLOWED_CLIENT_SUBJECTS`; any non-blank entry
+    /// refuses startup with a migration message.
+    pub legacy_allowed_subjects: Vec<String>,
     /// Debug-build-only plaintext escape hatch. `CA_GRPC_INSECURE_DEV_PLAINTEXT`.
     pub insecure_dev_plaintext: bool,
 }
 
 /// The resolved CA gRPC listener mode.
 pub enum GrpcServerMode {
-    /// TLS 1.3 mutual TLS with a subject allowlist (the only production mode).
+    /// TLS 1.3 mutual TLS with per-role client subjects (the only production
+    /// mode).
     Mtls {
         /// FIPS-asserted server config (ALPN `h2`, mandatory client auth).
         config: Arc<ServerConfig>,
-        /// Canonical allow-listed client subjects.
-        allowlist: Arc<ClientSubjectAllowlist>,
+        /// Canonical client subjects per role / namespace.
+        clients: Arc<GrpcClientRegistry>,
         /// The client-certificate trust anchors read from
         /// `CA_GRPC_TLS_CLIENT_CA_FILE`, for [`ensure_dedicated_client_ca`].
         client_anchors: Arc<[CertificateDer<'static>]>,
@@ -618,12 +997,12 @@ impl fmt::Debug for GrpcServerMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Mtls {
-                allowlist,
+                clients,
                 client_anchors,
                 ..
             } => f
                 .debug_struct("Mtls")
-                .field("allowed_subjects", &allowlist.subjects())
+                .field("clients", &clients.summary())
                 .field("client_anchors", &client_anchors.len())
                 .finish_non_exhaustive(),
             Self::InsecureDevPlaintext => f.write_str("InsecureDevPlaintext"),
@@ -636,11 +1015,14 @@ impl GrpcServerOptions {
     ///
     /// | Configuration | Result |
     /// |---|---|
-    /// | cert + key + client CA + ≥1 subject, insecure off | `Mtls` |
+    /// | `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` set (any mode) | error (removed; migration message) |
+    /// | cert + key + client CA + ≥1 ACME or EST subject, insecure off | `Mtls` |
     /// | any partial cert / key / client CA | error |
-    /// | full TLS but empty allowlist | error |
+    /// | full TLS but no ACME and no EST subject | error (no issuer client) |
+    /// | a subject in more than one role list (also ASCII-case variants), or a malformed entry | error |
+    /// | admin subjects with more than one anchor in the client CA file | error |
     /// | nothing configured, insecure off | error (refuse to start) |
-    /// | insecure on with any TLS option or allow-listed subject set | error (ambiguous) |
+    /// | insecure on with any TLS option or role list set | error (ambiguous) |
     /// | insecure on, `release_build` | error (not available in release builds) |
     /// | insecure on, debug build, nothing else | `InsecureDevPlaintext` |
     ///
@@ -649,32 +1031,45 @@ impl GrpcServerOptions {
     ///
     /// # COMPLIANCE MAPPING
     /// - NIST 800-53: CM-6 (secure defaults; the dev flag is refused in release
-    ///   builds), SC-24 (fail in a known state), AC-17, SC-8
-    /// - NIAP PP-CA: FTP_ITC.1, FCS_TLSS_EXT.2, FPT_FLS.1
+    ///   builds; empty admin list by default), SC-24 (fail in a known state),
+    ///   AC-17, SC-8, AC-5 (one role per identity)
+    /// - NIAP PP-CA: FTP_ITC.1, FCS_TLSS_EXT.2, FPT_FLS.1, FMT_SMR.2
     pub fn resolve(self, release_build: bool) -> Result<GrpcServerMode> {
+        // CM-6: the single allowlist no longer exists; ignoring it would
+        // silently change who may call which RPC.
+        if !all_blank(&self.legacy_allowed_subjects) {
+            return Err(Error::Config(format!(
+                "{ENV_GRPC_ALLOWED_CLIENT_SUBJECTS} is no longer supported: the CA gRPC \
+                 listener authorizes per method and role. List acme-server identities in \
+                 {ENV_GRPC_ACME_CLIENT_SUBJECTS}, est-server identities in \
+                 {ENV_GRPC_EST_CLIENT_SUBJECTS} and operator (revocation / CRL) identities \
+                 in {ENV_GRPC_ADMIN_CLIENT_SUBJECTS}, then unset \
+                 {ENV_GRPC_ALLOWED_CLIENT_SUBJECTS}; refusing to start"
+            )));
+        }
         let any_tls =
             self.cert_path.is_some() || self.key_path.is_some() || self.client_ca_path.is_some();
-        let any_subject = self
-            .allowed_subjects
-            .iter()
-            .any(|s| !s.trim_matches(is_dn_padding).is_empty());
+        let any_subject = !all_blank(&self.acme_subjects)
+            || !all_blank(&self.est_subjects)
+            || !all_blank(&self.admin_subjects);
 
         if self.insecure_dev_plaintext {
-            // NIST 800-53: CM-6 - an allowlist would be silently ignored by the
-            // unauthenticated listener, so it is as ambiguous as TLS options.
+            // NIST 800-53: CM-6 - role lists would be silently ignored by the
+            // unauthenticated listener, so they are as ambiguous as TLS options.
             if any_tls || any_subject {
                 return Err(Error::Config(format!(
                     "{ENV_GRPC_INSECURE_DEV_PLAINTEXT} is set together with gRPC TLS options \
-                     or {ENV_GRPC_ALLOWED_CLIENT_SUBJECTS}; the configuration is ambiguous, \
-                     refusing to start"
+                     or a client subject list ({ENV_GRPC_ACME_CLIENT_SUBJECTS}, \
+                     {ENV_GRPC_EST_CLIENT_SUBJECTS}, {ENV_GRPC_ADMIN_CLIENT_SUBJECTS}); the \
+                     configuration is ambiguous, refusing to start"
                 )));
             }
             if release_build {
                 return Err(Error::Config(format!(
                     "{ENV_GRPC_INSECURE_DEV_PLAINTEXT} is not available in release builds; \
                      configure gRPC mTLS ({ENV_GRPC_TLS_CERT_FILE}, {ENV_GRPC_TLS_KEY_FILE}, \
-                     {ENV_GRPC_TLS_CLIENT_CA_FILE}, {ENV_GRPC_ALLOWED_CLIENT_SUBJECTS}); \
-                     refusing to start"
+                     {ENV_GRPC_TLS_CLIENT_CA_FILE}, {ENV_GRPC_ACME_CLIENT_SUBJECTS} / \
+                     {ENV_GRPC_EST_CLIENT_SUBJECTS}); refusing to start"
                 )));
             }
             return Ok(GrpcServerMode::InsecureDevPlaintext);
@@ -685,8 +1080,8 @@ impl GrpcServerOptions {
             (None, None, None) => {
                 return Err(Error::Config(format!(
                     "CA gRPC requires mTLS: set {ENV_GRPC_TLS_CERT_FILE}, {ENV_GRPC_TLS_KEY_FILE}, \
-                     {ENV_GRPC_TLS_CLIENT_CA_FILE} and {ENV_GRPC_ALLOWED_CLIENT_SUBJECTS}; \
-                     refusing to start"
+                     {ENV_GRPC_TLS_CLIENT_CA_FILE} and {ENV_GRPC_ACME_CLIENT_SUBJECTS} and/or \
+                     {ENV_GRPC_EST_CLIENT_SUBJECTS}; refusing to start"
                 )));
             }
             _ => {
@@ -698,7 +1093,11 @@ impl GrpcServerOptions {
             }
         };
 
-        let allowlist = Arc::new(ClientSubjectAllowlist::parse(&self.allowed_subjects)?);
+        let clients = Arc::new(GrpcClientRegistry::parse(
+            &self.acme_subjects,
+            &self.est_subjects,
+            &self.admin_subjects,
+        )?);
 
         let settings = TlsSettings {
             cert_path: PathBuf::from(cert),
@@ -709,13 +1108,45 @@ impl GrpcServerOptions {
         let config = grpc_server_config(&settings)?;
         // Read again for the trust-anchor checks: `TlsSettings::load` keeps
         // its own copy inside the verifier. Both reads happen here, at startup.
-        let client_anchors = read_pem_certificates(&client_ca)?.into();
+        // RFC-103: a certificate repeated in the bundle is one trust anchor;
+        // count (and keep) each distinct DER once.
+        let client_anchors: Arc<[CertificateDer<'static>]> =
+            dedup_certificates(read_pem_certificates(&client_ca)?).into();
+        // RFC-001 / POAM-2026-10-23-28: roles bind the subject DN only, so with
+        // several anchors any of them could mint an admin subject. An admin
+        // role is only configurable with exactly one (dedicated) anchor, and
+        // the layer admits admin leaves issued directly by it only (SEC-101,
+        // `SubjectAllowlistLayer::with_client_trust_anchors`).
+        //
+        // COMPLIANCE MAPPING:
+        // - NIST 800-53: AC-3, AC-6, IA-3, IA-9, CM-6, SC-24
+        // - NIAP PP-CA: FIA_X509_EXT.1, FMT_SMR.2, FPT_FLS.1
+        if !clients.admin.is_empty() && client_anchors.len() > 1 {
+            return Err(Error::Config(format!(
+                "{ENV_GRPC_ADMIN_CLIENT_SUBJECTS} is set but {ENV_GRPC_TLS_CLIENT_CA_FILE} \
+                 holds {} distinct trust anchors (duplicates counted once): with an admin \
+                 role the gRPC client CA file must contain exactly one dedicated \
+                 service-identity CA (any anchor could issue an admin subject); refusing \
+                 to start",
+                client_anchors.len()
+            )));
+        }
         Ok(GrpcServerMode::Mtls {
             config,
-            allowlist,
+            clients,
             client_anchors,
         })
     }
+}
+
+/// `certs` with byte-identical DER duplicates removed (first occurrence kept,
+/// order preserved).
+fn dedup_certificates(certs: Vec<CertificateDer<'static>>) -> Vec<CertificateDer<'static>> {
+    let mut seen = HashSet::new();
+    certs
+        .into_iter()
+        .filter(|cert| seen.insert(cert.as_ref().to_vec()))
+        .collect()
 }
 
 /// Read every certificate from a PEM file (errors name the path only).
@@ -872,6 +1303,60 @@ impl SubscriberIssuer {
     fn issued(&self, leaf: &x509_cert::Certificate) -> bool {
         leaf.tbs_certificate.issuer == self.subject
             || (self.subject_key_id.is_some() && authority_key_id(leaf) == self.subject_key_id)
+    }
+}
+
+/// The single client trust anchor (SEC-101): an admin-role leaf must be
+/// issued directly by it, not by a subordinate CA under it (the subject-only
+/// allowlist would otherwise let any intermediate under the anchor mint an
+/// admin subject).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AC-3, AC-6, IA-3, IA-9
+/// - NIAP PP-CA: FIA_X509_EXT.1, FMT_SMR.2
+/// - RFC 5280 §4.1.2.4 (issuer), §4.2.1.1 / §4.2.1.2 (AKI / SKI)
+#[derive(Clone, Debug)]
+struct AdminTrustAnchor {
+    subject: x509_cert::name::Name,
+    subject_key_id: Option<Vec<u8>>,
+}
+
+impl AdminTrustAnchor {
+    /// Parse the anchor certificate (DER).
+    fn from_der(der: &[u8]) -> Result<Self> {
+        let cert = x509_cert::Certificate::from_der(der).map_err(|_| {
+            Error::Config(format!(
+                "the {ENV_GRPC_TLS_CLIENT_CA_FILE} trust anchor cannot be parsed"
+            ))
+        })?;
+        Ok(Self {
+            subject_key_id: subject_key_id(&cert),
+            subject: cert.tbs_certificate.subject,
+        })
+    }
+
+    /// True if `leaf` was issued directly by this anchor: its issuer DN
+    /// equals the anchor subject AND its authorityKeyIdentifier keyIdentifier
+    /// is present and equals the anchor's subjectKeyIdentifier. There is no
+    /// DN-only fallback (SEC-201 / NIST-202): a leaf without an AKI, or an
+    /// anchor without an SKI, is not "issued directly". With admin subjects
+    /// configured an anchor without an SKI is refused at startup
+    /// ([`SubjectAllowlistLayer::with_client_trust_anchors`]).
+    ///
+    /// # COMPLIANCE MAPPING
+    /// - NIST 800-53: AC-3, IA-3, IA-9 (fail closed on missing key identifiers)
+    /// - NIAP PP-CA: FIA_X509_EXT.1
+    /// - RFC 5280 §4.2.1.1 - AKI keyIdentifier MUST be present in
+    ///   non-self-signed certificates; §4.2.1.2 - SKI MUST be present in CA
+    ///   certificates
+    fn issued_directly(&self, leaf: &x509_cert::Certificate) -> bool {
+        if leaf.tbs_certificate.issuer != self.subject {
+            return false;
+        }
+        match (authority_key_id(leaf), self.subject_key_id.as_ref()) {
+            (Some(aki), Some(ski)) => aki == *ski,
+            _ => false,
+        }
     }
 }
 
@@ -1771,70 +2256,286 @@ impl Drop for RateLimitedAudit {
 }
 
 /// Request extension inserted by [`SubjectAllowlistLayer`] for an authorised
-/// call: the verified, allow-listed client-certificate subject. Service
-/// handlers read it to log the authenticated caller (AU-3).
-#[derive(Clone, Debug)]
+/// call: the verified client-certificate subject and its
+/// [`GrpcClientIdentity`]. Service handlers bind the client-asserted
+/// requestor with [`Self::bind_requestor`] and refuse with [`Self::deny`],
+/// which audits through the listener's rate limiter.
+///
+/// It can only be built by the layer (private fields), so its presence in
+/// the request extensions means the call passed authentication and the
+/// method table.
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: AU-3 (who = verified peer, with the certificate issuer and
+///   serial that authenticated it), IA-3, IA-9, AC-3
+/// - NIAP PP-CA: FAU_GEN.2 (user identity association)
+/// - RFC 5280 §4.1.2.2 / §4.1.2.4 (serialNumber, issuer)
+#[derive(Clone)]
 pub struct AuthorizedGrpcPeer {
     /// Canonical RFC 4514 subject DN of the client certificate.
     pub subject_dn: String,
+    /// Role and requestor namespace of the subject.
+    pub identity: GrpcClientIdentity,
+    /// RFC 4514 issuer DN of the client certificate (RFC-001: the role binds
+    /// the subject only, so the issuer is recorded to tell certificates from
+    /// different anchors apart).
+    pub issuer_dn: String,
+    /// Client certificate serial number: lowercase hex of the DER INTEGER
+    /// content octets, sign byte included (RFC 5280 §4.1.2.2; e.g. serial
+    /// 0x80 is `"0080"`; a non-conforming negative serial is rendered as its
+    /// two's-complement octets, no `-`). RFC-102.
+    pub serial_hex: String,
+    method: String,
+    remote_ip: Option<IpAddr>,
+    rate: Arc<RateLimitedAudit>,
+    listener: &'static str,
 }
 
-/// Listener-wide tower layer enforcing the client-subject allowlist on every
-/// gRPC call (default deny, including RPCs added later).
+impl fmt::Debug for AuthorizedGrpcPeer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthorizedGrpcPeer")
+            .field("subject_dn", &self.subject_dn)
+            .field("identity", &self.identity)
+            .field("issuer_dn", &self.issuer_dn)
+            .field("serial_hex", &self.serial_hex)
+            .field("method", &self.method)
+            .field("remote_ip", &self.remote_ip)
+            .field("listener", &self.listener)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AuthorizedGrpcPeer {
+    /// The gRPC method path of the call.
+    pub fn method(&self) -> &str {
+        &self.method
+    }
+
+    /// Bind a client-asserted requestor to this caller
+    /// ([`validate_requestor`] with this peer's identity).
+    pub fn bind_requestor(
+        &self,
+        requestor: &str,
+    ) -> std::result::Result<Option<String>, RequestorRejection> {
+        validate_requestor(self.identity, requestor)
+    }
+
+    /// Refuse the call after the listener layer admitted it (e.g. a requestor
+    /// outside the caller's namespace): logs, writes a rate-limited
+    /// `access_denied` record (subject = peer DN, resource = method path,
+    /// remote IP, `reason`; details = `{listener, role, namespace}` merged
+    /// with `details`) and resolves to `PERMISSION_DENIED`.
+    ///
+    /// The record is written by a task spawned when this is called, before
+    /// the returned future is polled, so a client that cancels the call
+    /// cannot cancel the record; awaiting the future keeps the
+    /// record-before-response order. Shares the layer's limiter, so service
+    /// denials and layer denials count against one window. `details` must not
+    /// contain secrets.
+    ///
+    /// # COMPLIANCE MAPPING
+    /// - NIST 800-53: AC-3 (fail closed), AU-2 / AU-3 / AU-12, supports AU-4
+    /// - NIAP PP-CA: FAU_GEN.1, FDP_ACF.1, FPT_FLS.1
+    pub fn deny(
+        &self,
+        reason: &'static str,
+        details: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = tonic::Status> + Send>> {
+        self.deny_with_message(reason, details, DENIED_MESSAGE)
+    }
+
+    /// [`Self::deny`] with a caller-chosen, static `PERMISSION_DENIED`
+    /// message, for refusals the client can act on (e.g. a certificate
+    /// profile the caller's namespace may not use). The message must not
+    /// echo client input, configuration or secrets.
+    pub fn deny_with_message(
+        &self,
+        reason: &'static str,
+        details: serde_json::Value,
+        message: &'static str,
+    ) -> Pin<Box<dyn Future<Output = tonic::Status> + Send>> {
+        let decision = self.rate.admit(self.remote_ip);
+        if decision.record {
+            tracing::warn!(
+                listener = self.listener,
+                path = %self.method,
+                peer_subject = %self.subject_dn,
+                role = self.identity.role.as_str(),
+                remote_ip = ?self.remote_ip,
+                reason,
+                "gRPC call denied by the service (requestor binding)"
+            );
+        } else {
+            tracing::debug!(
+                listener = self.listener,
+                path = %self.method,
+                reason,
+                "gRPC call denied by the service (audit suppressed by rate limit)"
+            );
+        }
+        let mut merged = denial_details(
+            self.listener,
+            Some(self.identity),
+            Some((&self.issuer_dn, &self.serial_hex)),
+        );
+        if let (Some(target), serde_json::Value::Object(extra)) = (merged.as_object_mut(), details)
+        {
+            target.extend(extra);
+        }
+        let event = decision.record.then(|| AuthAuditEvent {
+            kind: AuthAuditKind::AccessDenied,
+            subject: self.subject_dn.clone(),
+            ip_address: self.remote_ip.map(|ip| ip.to_string()),
+            reason: Some(reason.to_string()),
+            actor: None,
+            resource: Some(self.method.clone()),
+            details: Some(merged),
+        });
+        let written = deny_detached(self.rate.clone(), event, decision.flushed_suppressed);
+        Box::pin(async move {
+            written.await;
+            tonic::Status::permission_denied(message)
+        })
+    }
+}
+
+/// `details` of an `access_denied` record: the listener; when the subject is
+/// a known client, its role and namespace; when the leaf parsed, its issuer
+/// DN and serial (`peer_issuer`, `peer_serial`; RFC-001).
+fn denial_details(
+    listener: &'static str,
+    identity: Option<GrpcClientIdentity>,
+    certificate: Option<(&str, &str)>,
+) -> serde_json::Value {
+    let mut details = serde_json::json!({ "listener": listener });
+    if let Some(map) = details.as_object_mut() {
+        if let Some(identity) = identity {
+            map.insert("role".to_string(), identity.role.as_str().into());
+            map.insert("namespace".to_string(), identity.namespace.into());
+        }
+        if let Some((issuer, serial)) = certificate {
+            map.insert("peer_issuer".to_string(), issuer.into());
+            map.insert("peer_serial".to_string(), serial.into());
+        }
+    }
+    details
+}
+
+/// Write a denial record (and a pending suppression summary) in a task
+/// spawned NOW, and return a future that waits for it.
 ///
-/// Requests are authorised from the connection's [`GrpcPeerInfo`]:
-/// - no peer info or no client certificate: `UNAUTHENTICATED` (defence in
-///   depth; unreachable with mandatory mTLS);
-/// - unparsable or empty certificate subject: `PERMISSION_DENIED`;
+/// SEC-010 (AU-2, AU-12): the write is spawned before the caller's response
+/// future exists, so dropping that future (client RST_STREAM / disconnect)
+/// cannot cancel it. Dropping the returned future detaches the task; awaiting
+/// it keeps the record-before-response order for calls that are not
+/// cancelled. Audit failures never change the denial.
+fn deny_detached(
+    rate: Arc<RateLimitedAudit>,
+    event: Option<AuthAuditEvent>,
+    summary: Option<SuppressedSummary>,
+) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+    if event.is_none() && summary.is_none() {
+        return Box::pin(std::future::ready(()));
+    }
+    let write = async move {
+        if let Some(summary) = summary {
+            rate.write_summary(summary).await;
+        }
+        if let Some(event) = event {
+            rate.record(event).await;
+        }
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            let task = handle.spawn(write);
+            Box::pin(async move {
+                if let Err(e) = task.await {
+                    tracing::error!(error = %e, "gRPC access-denied audit task failed");
+                }
+            })
+        }
+        // Not reachable under tonic (always a Tokio runtime).
+        Err(_) => Box::pin(write),
+    }
+}
+
+/// Listener-wide tower layer enforcing per-method, per-role authorization on
+/// every gRPC call (default deny, including RPCs added later).
+///
+/// Requests are authorised from the connection's [`GrpcPeerInfo`] and the
+/// request path, in this order:
+/// - no peer info or no client certificate: `UNAUTHENTICATED`,
+///   `no_client_certificate` (defence in depth; unreachable with mandatory
+///   mTLS);
+/// - unparsable or empty certificate subject: `UNAUTHENTICATED`,
+///   `unparsable_certificate`;
+/// - leaf outside its notBefore / notAfter at call time (long-lived
+///   connection, RFC-002): `UNAUTHENTICATED`, `certificate_not_valid_now`;
 /// - no extendedKeyUsage extension listing clientAuth (webpki accepts a leaf
 ///   without the extension): `PERMISSION_DENIED`, `missing_client_auth_eku`;
 /// - leaf issued by a configured subscriber-issuing CA
 ///   ([`Self::with_subscriber_issuing_cas`]): `PERMISSION_DENIED`,
 ///   `subscriber_issuing_ca`;
-/// - subject not allow-listed: `PERMISSION_DENIED`.
+/// - subject in none of the [`GrpcClientRegistry`] lists:
+///   `PERMISSION_DENIED`, `subject_not_allowlisted`;
+/// - path not in the method table (exact, case-sensitive match):
+///   `PERMISSION_DENIED`, `method_not_mapped` (not `UNIMPLEMENTED`, so the
+///   method set cannot be enumerated);
+/// - the subject's role not granted by the path's rule: `PERMISSION_DENIED`,
+///   `method_not_permitted`.
 ///
 /// Each denial is logged and audited (`access_denied`, target = gRPC method
-/// path). The audit write runs in a detached task started before the response
-/// future is returned, so a client that cancels the call (HTTP/2 RST_STREAM)
-/// cannot cancel the record; the status is sent once the write has finished.
-/// Audit failures never turn a denial into an allow. Denial records are rate
-/// limited per listener like handshake failures (the overflow is summarised as
-/// `access_denied_suppressed`). Allowed calls carry an [`AuthorizedGrpcPeer`]
-/// extension.
+/// path, details `{listener, role?, namespace?, peer_issuer?, peer_serial?}`). The audit write runs in a
+/// detached task started before the response future is returned, so a client
+/// that cancels the call (HTTP/2 RST_STREAM) cannot cancel the record; the
+/// status is sent once the write has finished. Audit failures never turn a
+/// denial into an allow. Denial records are rate limited per listener like
+/// handshake failures (the overflow is summarised as
+/// `access_denied_suppressed`); [`AuthorizedGrpcPeer::deny`] shares the same
+/// limiter. Allowed calls carry an [`AuthorizedGrpcPeer`] extension.
 ///
 /// # COMPLIANCE MAPPING
-/// - NIST 800-53: AC-3 (Access Enforcement), AC-6 (Least Privilege), AU-2,
-///   AU-3, supports AU-4 (rate-limited denial records), AU-12, SC-24 (fail closed)
+/// - NIST 800-53: AC-3 (Access Enforcement), AC-5 / AC-6 (Separation of
+///   Duties / Least Privilege: per-method role rules), CM-7 (default deny),
+///   IA-3 / IA-9, AU-2, AU-3, AC-6(9) (privileged-function denials logged),
+///   supports AU-4 (rate-limited denial records), AU-12, SC-24 (fail closed)
 /// - RFC 5280 §4.2.1.12 (clientAuth EKU required on the leaf)
-/// - NIAP PP-CA: FDP_ACC.1, FDP_ACF.1, FAU_GEN.1, FPT_FLS.1
-// POAM: POAM-2026-10-23-26 - a single allowlist covers every RPC on the
-// listener, so an allow-listed RA (acme-server / est-server) can also call
-// RevokeCertificate / GenerateCrl. Per-method allowlists (issuance-only for
-// ACME/EST) are pending (AC-6).
+/// - NIAP PP-CA: FDP_ACC.1, FDP_ACF.1, FMT_SMR.2, FAU_GEN.1, FPT_FLS.1
 #[derive(Clone)]
 pub struct SubjectAllowlistLayer {
-    allowlist: Arc<ClientSubjectAllowlist>,
+    clients: Arc<GrpcClientRegistry>,
+    methods: &'static [GrpcMethodRule],
     subscriber_issuers: Arc<[SubscriberIssuer]>,
+    admin_anchor: Option<Arc<AdminTrustAnchor>>,
     rate: Arc<RateLimitedAudit>,
     listener: &'static str,
 }
 
 impl SubjectAllowlistLayer {
     /// Create the layer with the default audit limits
-    /// ([`GrpcListenerLimits::default`]). `listener` names the listener in
-    /// logs and audit details (e.g. `"ca-grpc"`).
+    /// ([`GrpcListenerLimits::default`]). `methods` is the listener's method
+    /// table; `listener` names the listener in logs and audit details (e.g.
+    /// `"ca-grpc"`).
     pub fn new(
-        allowlist: Arc<ClientSubjectAllowlist>,
+        clients: Arc<GrpcClientRegistry>,
+        methods: &'static [GrpcMethodRule],
         audit: Option<Arc<dyn AuthAuditHook>>,
         listener: &'static str,
     ) -> Self {
-        Self::with_limits(allowlist, audit, listener, &GrpcListenerLimits::default())
+        Self::with_limits(
+            clients,
+            methods,
+            audit,
+            listener,
+            &GrpcListenerLimits::default(),
+        )
     }
 
     /// Create the layer with explicit audit limits (`audit_max_per_window`,
     /// `audit_window`).
     pub fn with_limits(
-        allowlist: Arc<ClientSubjectAllowlist>,
+        clients: Arc<GrpcClientRegistry>,
+        methods: &'static [GrpcMethodRule],
         audit: Option<Arc<dyn AuthAuditHook>>,
         listener: &'static str,
         limits: &GrpcListenerLimits,
@@ -1851,8 +2552,10 @@ impl SubjectAllowlistLayer {
             },
         );
         Self {
-            allowlist,
+            clients,
+            methods,
             subscriber_issuers: Arc::from(Vec::new()),
+            admin_anchor: None,
             rate,
             listener,
         }
@@ -1892,6 +2595,59 @@ impl SubjectAllowlistLayer {
         Ok(self)
     }
 
+    /// Set the client trust anchors (`CA_GRPC_TLS_CLIENT_CA_FILE`, as
+    /// resolved into [`GrpcServerMode::Mtls`]). With exactly one distinct
+    /// anchor, admin-role calls are admitted only for leaves issued directly
+    /// by it (issuer DN = anchor subject and leaf AKI keyIdentifier present
+    /// and equal to the anchor SKI); otherwise they are denied
+    /// `admin_issuer_not_anchor` (PERMISSION_DENIED, audited). Without this
+    /// call no admin call is admitted (fail closed). Errors if the registry
+    /// has admin subjects and `anchors` does not hold exactly one distinct
+    /// certificate, if that certificate cannot be parsed, or if it has no
+    /// subjectKeyIdentifier.
+    ///
+    /// # COMPLIANCE MAPPING
+    /// - NIST 800-53: AC-3, AC-6, IA-3, IA-9, SC-24 (fail closed)
+    /// - NIAP PP-CA: FIA_X509_EXT.1, FMT_SMR.2, FPT_FLS.1
+    /// - RFC 5280 §4.1.2.4, §4.2.1.1 / §4.2.1.2
+    pub fn with_client_trust_anchors(mut self, anchors: &[CertificateDer<'_>]) -> Result<Self> {
+        let distinct: HashSet<&[u8]> = anchors.iter().map(|a| a.as_ref()).collect();
+        match distinct.len() {
+            1 => {
+                let der = anchors.first().map(|a| a.as_ref()).unwrap_or_default();
+                let anchor = AdminTrustAnchor::from_der(der)?;
+                // SEC-201 / NIST-202: the admin check matches the leaf AKI to
+                // the anchor SKI (no DN-only fallback), so an anchor without
+                // an SKI could never admit an admin; refuse it at startup
+                // instead of failing every admin call.
+                //
+                // COMPLIANCE MAPPING:
+                // - NIST 800-53: CM-6, IA-3, IA-9 (fail closed at startup)
+                // - NIAP PP-CA: FIA_X509_EXT.1, FPT_FLS.1
+                // - RFC 5280 §4.2.1.2 - CA certificates MUST include an SKI
+                if !self.clients.admin.is_empty() && anchor.subject_key_id.is_none() {
+                    return Err(Error::Config(format!(
+                        "{ENV_GRPC_ADMIN_CLIENT_SUBJECTS} is set but the \
+                         {ENV_GRPC_TLS_CLIENT_CA_FILE} trust anchor has no \
+                         subjectKeyIdentifier: admin certificates are matched to the \
+                         anchor by authorityKeyIdentifier (RFC 5280 §4.2.1.1/§4.2.1.2); \
+                         refusing to start"
+                    )));
+                }
+                self.admin_anchor = Some(Arc::new(anchor));
+            }
+            n if !self.clients.admin.is_empty() => {
+                return Err(Error::Config(format!(
+                    "{ENV_GRPC_ADMIN_CLIENT_SUBJECTS} is set but {ENV_GRPC_TLS_CLIENT_CA_FILE} \
+                     holds {n} distinct trust anchors: admin certificates must be issued \
+                     directly by a single client trust anchor; refusing to start"
+                )));
+            }
+            _ => self.admin_anchor = None,
+        }
+        Ok(self)
+    }
+
     /// Write the summary of access-denial records suppressed so far. Call
     /// after the server has stopped, so the last window's count is recorded
     /// before the process exits (AU-2, SEC-012).
@@ -1906,8 +2662,10 @@ impl<S> tower::Layer<S> for SubjectAllowlistLayer {
     fn layer(&self, inner: S) -> Self::Service {
         SubjectAllowlistService {
             inner,
-            allowlist: self.allowlist.clone(),
+            clients: self.clients.clone(),
+            methods: self.methods,
             subscriber_issuers: self.subscriber_issuers.clone(),
+            admin_anchor: self.admin_anchor.clone(),
             rate: self.rate.clone(),
             listener: self.listener,
         }
@@ -1918,8 +2676,10 @@ impl<S> tower::Layer<S> for SubjectAllowlistLayer {
 #[derive(Clone)]
 pub struct SubjectAllowlistService<S> {
     inner: S,
-    allowlist: Arc<ClientSubjectAllowlist>,
+    clients: Arc<GrpcClientRegistry>,
+    methods: &'static [GrpcMethodRule],
     subscriber_issuers: Arc<[SubscriberIssuer]>,
+    admin_anchor: Option<Arc<AdminTrustAnchor>>,
     rate: Arc<RateLimitedAudit>,
     listener: &'static str,
 }
@@ -1930,59 +2690,202 @@ struct Denial {
     code: tonic::Code,
     reason: &'static str,
     subject: Option<String>,
+    /// Set when the subject is a known client (method denials).
+    identity: Option<GrpcClientIdentity>,
+    /// `(issuer DN, serial hex)` of the leaf, when it parsed.
+    certificate: Option<(String, String)>,
 }
 
-/// Authorise a connection's peer against the allowlist, refusing leaves issued
-/// by a subscriber-issuing CA (`subscriber_issuers`). Pure, for testing.
+impl Denial {
+    fn permission(reason: &'static str, subject: Option<String>) -> Self {
+        Self {
+            code: tonic::Code::PermissionDenied,
+            reason,
+            subject,
+            identity: None,
+            certificate: None,
+        }
+    }
+}
+
+/// An authorised call's verified leaf: subject, identity, issuer, serial.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuthorizedLeaf {
+    subject: String,
+    identity: GrpcClientIdentity,
+    issuer_dn: String,
+    serial_hex: String,
+}
+
+/// RFC 4514 rendering of a name (empty when it cannot be rendered).
+fn name_string(name: &x509_cert::name::Name) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    if write!(out, "{name}").is_err() {
+        out.clear();
+    }
+    out
+}
+
+/// [`authorize_peer_at`] at the current time.
 fn authorize_peer(
     peer: Option<&GrpcPeerInfo>,
-    allowlist: &ClientSubjectAllowlist,
+    clients: &GrpcClientRegistry,
+    methods: &[GrpcMethodRule],
+    path: &str,
     subscriber_issuers: &[SubscriberIssuer],
-) -> std::result::Result<String, Denial> {
+    admin_anchor: Option<&AdminTrustAnchor>,
+) -> std::result::Result<AuthorizedLeaf, Denial> {
+    authorize_peer_at(
+        peer,
+        clients,
+        methods,
+        path,
+        subscriber_issuers,
+        std::time::SystemTime::now(),
+        admin_anchor,
+    )
+}
+
+/// Authorise a call at time `now`: authenticate the connection's peer
+/// (a parsable leaf that is valid at `now`; refusing leaves issued by a
+/// subscriber-issuing CA), map its subject to an identity in `clients`, then
+/// check `path` against the method table. Pure, for testing.
+///
+/// RFC-002: the leaf's validity is re-checked on every call, because the TLS
+/// handshake only checked it once and an HTTP/2 connection can outlive the
+/// certificate (`certificate_not_valid_now`, `UNAUTHENTICATED`: the
+/// credential itself is no longer acceptable, so this is an authentication
+/// failure, not an authorization one). Only the leaf is re-checked: the
+/// validity of intermediates and the anchor is checked at the handshake only
+/// (RFC-101 / SEC-104; the admin role has no intermediates, see SEC-101).
+///
+/// SEC-101: a call the method table grants to the admin role is admitted
+/// only when the leaf was issued directly by `admin_anchor` (the single
+/// client trust anchor); otherwise, or when no anchor is set, it is denied
+/// `admin_issuer_not_anchor` (PERMISSION_DENIED).
+///
+/// `now` is the system clock in production ([`authorize_peer`]).
+///
+/// # COMPLIANCE MAPPING
+/// - NIST 800-53: IA-3 / IA-9 / IA-5(2) (credential validity per call),
+///   AC-3, AC-6, CM-7 (default deny), AU-8 (system clock as time source)
+/// - NIAP PP-CA: FIA_X509_EXT.1, FDP_ACF.1, FMT_SMR.2, FPT_STM.1 (reliable
+///   time stamps for the validity check)
+/// - RFC 5280 §4.1.2.5 (leaf validity: notBefore <= now <= notAfter)
+fn authorize_peer_at(
+    peer: Option<&GrpcPeerInfo>,
+    clients: &GrpcClientRegistry,
+    methods: &[GrpcMethodRule],
+    path: &str,
+    subscriber_issuers: &[SubscriberIssuer],
+    now: std::time::SystemTime,
+    admin_anchor: Option<&AdminTrustAnchor>,
+) -> std::result::Result<AuthorizedLeaf, Denial> {
     let Some(leaf) = peer.and_then(|p| p.peer_leaf.as_ref()) else {
         return Err(Denial {
             code: tonic::Code::Unauthenticated,
             reason: "no_client_certificate",
             subject: None,
+            identity: None,
+            certificate: None,
         });
     };
+    // RFC-005: a leaf that cannot be parsed is an authentication failure.
     let Some((cert, subject)) = x509_cert::Certificate::from_der(leaf.as_ref())
         .ok()
         .and_then(|cert| subject_dn_of(&cert).map(|subject| (cert, subject)))
     else {
         return Err(Denial {
-            code: tonic::Code::PermissionDenied,
-            reason: "unparsable_certificate",
-            subject: None,
+            code: tonic::Code::Unauthenticated,
+            ..Denial::permission("unparsable_certificate", None)
         });
     };
+    let issuer_dn = name_string(&cert.tbs_certificate.issuer);
+    // RFC-102 / RFC 5280 §4.1.2.2: hex of the DER INTEGER content octets,
+    // sign byte included (see `AuthorizedGrpcPeer::serial_hex`).
+    let serial_hex = hex::encode(cert.tbs_certificate.serial_number.as_bytes());
+    let certificate = Some((issuer_dn.clone(), serial_hex.clone()));
+    let deny = |code: tonic::Code, reason: &'static str, identity| Denial {
+        code,
+        reason,
+        subject: Some(subject.clone()),
+        identity,
+        certificate: certificate.clone(),
+    };
+    let validity = &cert.tbs_certificate.validity;
+    if now < validity.not_before.to_system_time() || now > validity.not_after.to_system_time() {
+        return Err(deny(
+            tonic::Code::Unauthenticated,
+            "certificate_not_valid_now",
+            None,
+        ));
+    }
     // RFC 5280 §4.2.1.12: webpki only checks the EKU when the extension is
     // present; service identities must assert clientAuth explicitly.
     if !has_client_auth_eku(&cert) {
-        return Err(Denial {
-            code: tonic::Code::PermissionDenied,
-            reason: "missing_client_auth_eku",
-            subject: Some(subject),
-        });
+        return Err(deny(
+            tonic::Code::PermissionDenied,
+            "missing_client_auth_eku",
+            None,
+        ));
     }
     // Defence in depth for the startup trust-anchor check: a subscriber
     // certificate of this CA is never a service identity (AC-3, IA-3).
     if subscriber_issuers.iter().any(|ca| ca.issued(&cert)) {
-        return Err(Denial {
-            code: tonic::Code::PermissionDenied,
-            reason: "subscriber_issuing_ca",
-            subject: Some(subject),
-        });
+        return Err(deny(
+            tonic::Code::PermissionDenied,
+            "subscriber_issuing_ca",
+            None,
+        ));
     }
-    if allowlist.is_allowed(&subject) {
-        Ok(subject)
-    } else {
-        Err(Denial {
-            code: tonic::Code::PermissionDenied,
-            reason: "subject_not_allowlisted",
-            subject: Some(subject),
-        })
+    let Some(identity) = clients.identity(&subject) else {
+        return Err(deny(
+            tonic::Code::PermissionDenied,
+            "subject_not_allowlisted",
+            None,
+        ));
+    };
+    // AC-3 / AC-6 / CM-7: exact path match; anything not in the table is denied.
+    let Some(rule) = methods.iter().find(|rule| rule.path == path) else {
+        return Err(deny(
+            tonic::Code::PermissionDenied,
+            "method_not_mapped",
+            Some(identity),
+        ));
+    };
+    if !rule.roles.contains(&identity.role) {
+        return Err(deny(
+            tonic::Code::PermissionDenied,
+            "method_not_permitted",
+            Some(identity),
+        ));
     }
+    // SEC-101 / POAM-2026-10-23-28: the admin role binds the subject only, so
+    // the leaf must come straight from the single client trust anchor; a
+    // subordinate CA under it cannot mint an admin identity. Fail closed when
+    // no anchor is configured.
+    //
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: AC-3, AC-6, IA-3, IA-9, SC-24
+    // - NIAP PP-CA: FIA_X509_EXT.1, FMT_SMR.2, FDP_ACF.1
+    // - RFC 5280 §4.1.2.4 (issuer), §4.2.1.1 (AKI)
+    if identity.role == GrpcClientRole::Admin
+        && !admin_anchor.is_some_and(|anchor| anchor.issued_directly(&cert))
+    {
+        return Err(deny(
+            tonic::Code::PermissionDenied,
+            "admin_issuer_not_anchor",
+            Some(identity),
+        ));
+    }
+    Ok(AuthorizedLeaf {
+        subject,
+        identity,
+        issuer_dn,
+        serial_hex,
+    })
 }
 
 impl<S, B, ResBody> tower::Service<http::Request<B>> for SubjectAllowlistService<S>
@@ -2006,24 +2909,42 @@ where
 
     fn call(&mut self, mut req: http::Request<B>) -> Self::Future {
         let peer = req.extensions().get::<GrpcPeerInfo>().cloned();
-        match authorize_peer(peer.as_ref(), &self.allowlist, &self.subscriber_issuers) {
-            Ok(subject_dn) => {
+        let path = req.uri().path().to_string();
+        let remote = peer.as_ref().and_then(|p| p.remote_addr).map(|a| a.ip());
+        match authorize_peer(
+            peer.as_ref(),
+            &self.clients,
+            self.methods,
+            &path,
+            &self.subscriber_issuers,
+            self.admin_anchor.as_deref(),
+        ) {
+            Ok(leaf) => {
                 tracing::debug!(
                     listener = self.listener,
-                    path = req.uri().path(),
-                    peer_subject = %subject_dn,
-                    "gRPC call authorised by client-subject allowlist"
+                    path = %path,
+                    peer_subject = %leaf.subject,
+                    peer_issuer = %leaf.issuer_dn,
+                    peer_serial = %leaf.serial_hex,
+                    role = leaf.identity.role.as_str(),
+                    "gRPC call authorised by the method table"
                 );
-                req.extensions_mut()
-                    .insert(AuthorizedGrpcPeer { subject_dn });
+                req.extensions_mut().insert(AuthorizedGrpcPeer {
+                    subject_dn: leaf.subject,
+                    identity: leaf.identity,
+                    issuer_dn: leaf.issuer_dn,
+                    serial_hex: leaf.serial_hex,
+                    method: path,
+                    remote_ip: remote,
+                    rate: self.rate.clone(),
+                    listener: self.listener,
+                });
                 // Call the instance that was driven to readiness.
                 let clone = self.inner.clone();
                 let mut inner = std::mem::replace(&mut self.inner, clone);
                 Box::pin(async move { inner.call(req).await })
             }
             Err(denial) => {
-                let path = req.uri().path().to_string();
-                let remote = peer.as_ref().and_then(|p| p.remote_addr).map(|a| a.ip());
                 let remote_ip = remote.map(|ip| ip.to_string());
                 let decision = self.rate.admit(remote);
                 if decision.record {
@@ -2033,7 +2954,7 @@ where
                         peer_subject = denial.subject.as_deref().unwrap_or("unknown"),
                         remote_ip = remote_ip.as_deref().unwrap_or("unknown"),
                         reason = denial.reason,
-                        "gRPC call denied by client-subject allowlist"
+                        "gRPC call denied by the listener authorization layer"
                     );
                 } else {
                     tracing::debug!(
@@ -2043,11 +2964,12 @@ where
                         "gRPC call denied (audit suppressed by rate limit)"
                     );
                 }
-                let rate = self.rate.clone();
-                let listener = self.listener;
-                let status = match denial.code {
-                    tonic::Code::Unauthenticated => {
+                let status = match (denial.code, denial.reason) {
+                    (tonic::Code::Unauthenticated, "no_client_certificate") => {
                         tonic::Status::unauthenticated("client certificate required")
+                    }
+                    (tonic::Code::Unauthenticated, _) => {
+                        tonic::Status::unauthenticated("client certificate not accepted")
                     }
                     _ => tonic::Status::permission_denied(DENIED_MESSAGE),
                 };
@@ -2058,38 +2980,16 @@ where
                     reason: Some(denial.reason.to_string()),
                     actor: None,
                     resource: Some(path),
-                    details: Some(serde_json::json!({ "listener": listener })),
+                    details: Some(denial_details(
+                        self.listener,
+                        denial.identity,
+                        denial
+                            .certificate
+                            .as_ref()
+                            .map(|(issuer, serial)| (issuer.as_str(), serial.as_str())),
+                    )),
                 });
-                let summary = decision.flushed_suppressed;
-                if event.is_none() && summary.is_none() {
-                    return Box::pin(async move { Ok(status.into_http()) });
-                }
-                let write = async move {
-                    if let Some(summary) = summary {
-                        rate.write_summary(summary).await;
-                    }
-                    if let Some(event) = event {
-                        rate.record(event).await;
-                    }
-                };
-                // SEC-010 (AU-2, AU-12): the write is spawned now, before the
-                // response future exists, so dropping that future (client
-                // RST_STREAM / disconnect) cannot cancel it. Dropping the
-                // JoinHandle detaches the task; awaiting it keeps the
-                // record-before-response order for calls that are not cancelled.
-                let written: Pin<Box<dyn Future<Output = ()> + Send>> =
-                    match tokio::runtime::Handle::try_current() {
-                        Ok(handle) => {
-                            let task = handle.spawn(write);
-                            Box::pin(async move {
-                                if let Err(e) = task.await {
-                                    tracing::error!(error = %e, "gRPC access-denied audit task failed");
-                                }
-                            })
-                        }
-                        // Not reachable under tonic (always a Tokio runtime).
-                        Err(_) => Box::pin(write),
-                    };
+                let written = deny_detached(self.rate.clone(), event, decision.flushed_suppressed);
                 Box::pin(async move {
                     written.await;
                     Ok(status.into_http())
@@ -2247,6 +3147,9 @@ mod tests {
             p.distinguished_name = DistinguishedName::new();
             p.distinguished_name.push(DnType::CommonName, cn);
             p.extended_key_usages = ekus;
+            // RFC 5280 §4.2.1.1: AKI in non-self-signed certificates (the
+            // admin anchor check requires it, SEC-201).
+            p.use_authority_key_identifier_extension = true;
             let key = KeyPair::generate_for(alg).expect("leaf key");
             let cert = p.signed_by(&key, &self.ca).expect("leaf cert");
             (cert.pem(), cert.der().to_vec(), key.serialize_pem())
@@ -2266,6 +3169,9 @@ mod tests {
                 p.distinguished_name.push(t.clone(), *v);
             }
             p.extended_key_usages = vec![eku];
+            // RFC 5280 §4.2.1.1: AKI in non-self-signed certificates (the
+            // admin anchor check requires it, SEC-201).
+            p.use_authority_key_identifier_extension = true;
             let key = KeyPair::generate().expect("leaf key");
             let cert = p.signed_by(&key, &self.ca).expect("leaf cert");
             (cert.pem(), cert.der().to_vec(), key.serialize_pem())
@@ -2303,6 +3209,31 @@ mod tests {
         let dn = certificate_subject_dn(&der).expect("dn");
         assert_eq!(dn, "CN=acme-server,O=Ostrich");
         assert!(list.is_allowed(&dn));
+    }
+
+    /// SI-10 (fuzz `fuzz_grpc_peer_subject`, round 2): a numeric attribute
+    /// type that const-oid 0.9 encodes but cannot decode again (its Display
+    /// would panic) is refused as a configuration error, never a panic.
+    #[test]
+    fn allowlist_refuses_undecodable_numeric_oid() {
+        for entry in [
+            "2.2.106.2.2.2122195112=x",
+            "2.2.106.2.2.2122195112=.9.06.2.2.212219519=#9",
+            "1.2.4294967295=x",
+            "2.4294967295=x",
+        ] {
+            let got = std::panic::catch_unwind(|| ClientSubjectAllowlist::parse(&[s(entry)]));
+            let Ok(result) = got else {
+                panic!("{entry:?} panicked");
+            };
+            if let Ok(list) = result {
+                // Accepted entries must render without panicking.
+                assert!(!list.subjects().is_empty(), "{entry:?}");
+            }
+        }
+        // Ordinary numeric types still work.
+        let list = ClientSubjectAllowlist::parse(&[s("2.5.4.3=acme-server")]).expect("cn oid");
+        assert_eq!(list.subjects(), &[s("CN=acme-server")]);
     }
 
     #[test]
@@ -2489,8 +3420,9 @@ mod tests {
                     .display()
                     .to_string(),
             ),
-            allowed_subjects: vec![s("CN=acme-server"), s("CN=est-server")],
-            insecure_dev_plaintext: false,
+            acme_subjects: vec![s("CN=acme-server")],
+            est_subjects: vec![s("CN=est-server")],
+            ..Default::default()
         }
     }
 
@@ -2500,12 +3432,19 @@ mod tests {
         match mode {
             GrpcServerMode::Mtls {
                 config,
-                allowlist,
+                clients,
                 client_anchors,
             } => {
                 assert!(config.fips());
                 assert_eq!(config.alpn_protocols, vec![b"h2".to_vec()]);
-                assert_eq!(allowlist.subjects().len(), 2);
+                assert_eq!(
+                    clients.identity("CN=acme-server"),
+                    Some(GrpcClientIdentity::ACME)
+                );
+                assert_eq!(
+                    clients.identity("CN=est-server"),
+                    Some(GrpcClientIdentity::EST)
+                );
                 assert_eq!(client_anchors.len(), 1);
             }
             _ => panic!("expected Mtls mode"),
@@ -2528,9 +3467,14 @@ mod tests {
     #[test]
     fn resolve_rejects_empty_allowlist() {
         let mut o = full_options("noallow");
-        o.allowed_subjects.clear();
-        let err = o.resolve(true).expect_err("empty allowlist");
-        assert!(err.to_string().contains("no client would be authorised"));
+        o.acme_subjects.clear();
+        o.est_subjects = vec![s(" ")];
+        o.admin_subjects = vec![s("CN=ops-admin")];
+        let err = o.resolve(true).expect_err("no issuer");
+        assert!(
+            err.to_string().contains("no issuer client configured"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2553,17 +3497,19 @@ mod tests {
         // Ambiguous: insecure + an allow-listed subject (NIST-013).
         let err = GrpcServerOptions {
             insecure_dev_plaintext: true,
-            allowed_subjects: vec![s("CN=acme-server")],
+            admin_subjects: vec![s("CN=ops-admin")],
             ..Default::default()
         }
         .resolve(false)
-        .expect_err("insecure + allowlist");
+        .expect_err("insecure + role list");
         assert!(err.to_string().contains("ambiguous"), "{err}");
         // A blank allowlist value does not count.
         assert!(matches!(
             GrpcServerOptions {
                 insecure_dev_plaintext: true,
-                allowed_subjects: vec![s(" ")],
+                acme_subjects: vec![s(" ")],
+                est_subjects: vec![s("")],
+                admin_subjects: vec![s("\t")],
                 ..Default::default()
             }
             .resolve(false),
@@ -2741,10 +3687,61 @@ mod tests {
 
     // ---- authorization decision ----
 
+    const P_ISSUE: &str = "/ostrich.ca.v1.CertificateAuthorityService/IssueCertificate";
+    const P_REVOKE: &str = "/ostrich.ca.v1.CertificateAuthorityService/RevokeCertificate";
+    const P_CRL: &str = "/ostrich.ca.v1.CertificateAuthorityService/GenerateCrl";
+    const P_STATUS: &str = "/ostrich.ca.v1.CertificateAuthorityService/CheckRevocationStatus";
+    const P_INFO: &str = "/ostrich.ca.v1.CertificateAuthorityService/GetCaInfo";
+    const P_PROFILES: &str = "/ostrich.ca.v1.CertificateAuthorityService/ListProfiles";
+
+    /// The CA policy table (mirrors `ostrich_ca::grpc_authz`).
+    const RULES: &[GrpcMethodRule] = &[
+        GrpcMethodRule {
+            path: P_ISSUE,
+            roles: &[GrpcClientRole::Issuer],
+        },
+        GrpcMethodRule {
+            path: P_REVOKE,
+            roles: &[GrpcClientRole::Admin],
+        },
+        GrpcMethodRule {
+            path: P_CRL,
+            roles: &[GrpcClientRole::Admin],
+        },
+        GrpcMethodRule {
+            path: P_STATUS,
+            roles: &[GrpcClientRole::Admin],
+        },
+        GrpcMethodRule {
+            path: P_INFO,
+            roles: &[GrpcClientRole::Issuer, GrpcClientRole::Admin],
+        },
+        GrpcMethodRule {
+            path: P_PROFILES,
+            roles: &[GrpcClientRole::Issuer, GrpcClientRole::Admin],
+        },
+    ];
+
+    /// `(subject, identity)` of an authorisation decision.
+    fn si(
+        r: std::result::Result<AuthorizedLeaf, Denial>,
+    ) -> std::result::Result<(String, GrpcClientIdentity), Denial> {
+        r.map(|leaf| (leaf.subject, leaf.identity))
+    }
+
+    fn registry(acme: &[&str], est: &[&str], admin: &[&str]) -> Result<GrpcClientRegistry> {
+        let v = |l: &[&str]| l.iter().map(|x| s(x)).collect::<Vec<_>>();
+        GrpcClientRegistry::parse(&v(acme), &v(est), &v(admin))
+    }
+
+    fn acme_only(subject: &str) -> GrpcClientRegistry {
+        registry(&[subject], &[], &[]).expect("registry")
+    }
+
     #[test]
     fn authorize_peer_decisions() {
         let pki = Pki::new("Authz CA");
-        let allow = ClientSubjectAllowlist::parse(&[s("CN=acme-server")]).expect("parse");
+        let allow = acme_only("CN=acme-server");
         let cert = |cn: &str| {
             let (_, der, _) = pki.leaf(
                 &[(DnType::CommonName, cn)],
@@ -2758,22 +3755,30 @@ mod tests {
         };
 
         assert_eq!(
-            authorize_peer(Some(&cert("acme-server")), &allow, &[]),
-            Ok(s("CN=acme-server"))
+            si(authorize_peer(
+                Some(&cert("acme-server")),
+                &allow,
+                RULES,
+                P_ISSUE,
+                &[],
+                None
+            )),
+            Ok((s("CN=acme-server"), GrpcClientIdentity::ACME))
         );
-        let denied = authorize_peer(Some(&cert("intruder")), &allow, &[]).expect_err("deny");
+        let denied = authorize_peer(Some(&cert("intruder")), &allow, RULES, P_ISSUE, &[], None)
+            .expect_err("deny");
         assert_eq!(denied.code, tonic::Code::PermissionDenied);
         assert_eq!(denied.reason, "subject_not_allowlisted");
         assert_eq!(denied.subject.as_deref(), Some("CN=intruder"));
 
-        let none = authorize_peer(None, &allow, &[]).expect_err("no peer");
+        let none = authorize_peer(None, &allow, RULES, P_ISSUE, &[], None).expect_err("no peer");
         assert_eq!(none.code, tonic::Code::Unauthenticated);
         let no_leaf = GrpcPeerInfo {
             remote_addr: None,
             peer_leaf: None,
         };
         assert_eq!(
-            authorize_peer(Some(&no_leaf), &allow, &[])
+            authorize_peer(Some(&no_leaf), &allow, RULES, P_ISSUE, &[], None)
                 .expect_err("no leaf")
                 .code,
             tonic::Code::Unauthenticated
@@ -2782,8 +3787,10 @@ mod tests {
             remote_addr: None,
             peer_leaf: Some(CertificateDer::from(b"junk".to_vec())),
         };
-        let bad = authorize_peer(Some(&garbage), &allow, &[]).expect_err("garbage");
-        assert_eq!(bad.code, tonic::Code::PermissionDenied);
+        let bad =
+            authorize_peer(Some(&garbage), &allow, RULES, P_ISSUE, &[], None).expect_err("garbage");
+        // RFC-005: an unparsable leaf is an authentication failure.
+        assert_eq!(bad.code, tonic::Code::Unauthenticated);
         assert_eq!(bad.reason, "unparsable_certificate");
     }
 
@@ -3085,7 +4092,7 @@ mod tests {
     #[test]
     fn authorize_peer_requires_client_auth_eku_extension() {
         let pki = Pki::new("EKU CA");
-        let allow = ClientSubjectAllowlist::parse(&[s("CN=acme-server")]).expect("parse");
+        let allow = acme_only("CN=acme-server");
         let peer = |ekus: Vec<ExtendedKeyUsagePurpose>| {
             let (_, der, _) = pki.leaf_with(
                 "acme-server",
@@ -3098,7 +4105,8 @@ mod tests {
                 peer_leaf: Some(CertificateDer::from(der)),
             }
         };
-        let denied = authorize_peer(Some(&peer(vec![])), &allow, &[]).expect_err("no EKU");
+        let denied = authorize_peer(Some(&peer(vec![])), &allow, RULES, P_ISSUE, &[], None)
+            .expect_err("no EKU");
         assert_eq!(denied.code, tonic::Code::PermissionDenied);
         assert_eq!(denied.reason, "missing_client_auth_eku");
         assert_eq!(denied.subject.as_deref(), Some("CN=acme-server"));
@@ -3106,21 +4114,27 @@ mod tests {
         let server_only = authorize_peer(
             Some(&peer(vec![ExtendedKeyUsagePurpose::ServerAuth])),
             &allow,
+            RULES,
+            P_ISSUE,
             &[],
+            None,
         )
         .expect_err("serverAuth only");
         assert_eq!(server_only.reason, "missing_client_auth_eku");
 
         assert_eq!(
-            authorize_peer(
+            si(authorize_peer(
                 Some(&peer(vec![
                     ExtendedKeyUsagePurpose::ServerAuth,
                     ExtendedKeyUsagePurpose::ClientAuth
                 ])),
                 &allow,
-                &[]
-            ),
-            Ok(s("CN=acme-server"))
+                RULES,
+                P_ISSUE,
+                &[],
+                None
+            )),
+            Ok((s("CN=acme-server"), GrpcClientIdentity::ACME))
         );
     }
 
@@ -3712,7 +4726,7 @@ mod tests {
     fn authorize_peer_refuses_subscriber_issuing_ca_leaf() {
         let issuing = Pki::new("Subscriber Issuing CA");
         let dedicated = Pki::new("Service Identity CA");
-        let allow = ClientSubjectAllowlist::parse(&[s("CN=est-server")]).expect("parse");
+        let allow = registry(&[], &["CN=est-server"], &[]).expect("registry");
         let issuers = [SubscriberIssuer {
             subject: x509_cert::Certificate::from_der(issuing.ca.der())
                 .expect("der")
@@ -3733,22 +4747,36 @@ mod tests {
                 peer_leaf: Some(CertificateDer::from(der)),
             }
         };
-        let denied =
-            authorize_peer(Some(&peer(&issuing)), &allow, &issuers).expect_err("subscriber");
+        let denied = authorize_peer(
+            Some(&peer(&issuing)),
+            &allow,
+            RULES,
+            P_ISSUE,
+            &issuers,
+            None,
+        )
+        .expect_err("subscriber");
         assert_eq!(denied.code, tonic::Code::PermissionDenied);
         assert_eq!(denied.reason, "subscriber_issuing_ca");
         assert_eq!(
-            authorize_peer(Some(&peer(&dedicated)), &allow, &issuers),
-            Ok(s("CN=est-server"))
+            si(authorize_peer(
+                Some(&peer(&dedicated)),
+                &allow,
+                RULES,
+                P_ISSUE,
+                &issuers,
+                None
+            )),
+            Ok((s("CN=est-server"), GrpcClientIdentity::EST))
         );
 
         // Builder: parses the CA certificates, fails closed on garbage.
-        let layer = SubjectAllowlistLayer::new(Arc::new(allow.clone()), None, "test-grpc")
+        let layer = SubjectAllowlistLayer::new(Arc::new(allow.clone()), RULES, None, "test-grpc")
             .with_subscriber_issuing_cas(&[issuing.ca.der().as_ref()])
             .expect("layer");
         assert_eq!(layer.subscriber_issuers.len(), 1);
         assert!(
-            SubjectAllowlistLayer::new(Arc::new(allow), None, "test-grpc")
+            SubjectAllowlistLayer::new(Arc::new(allow), RULES, None, "test-grpc")
                 .with_subscriber_issuing_cas(&[b"junk".as_slice()])
                 .is_err()
         );
@@ -3781,10 +4809,14 @@ mod tests {
     async fn access_denied_audit_survives_cancelled_request() {
         use tower::{Layer as _, Service as _};
         let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let allow = ClientSubjectAllowlist::parse(&[s("CN=acme-server")]).expect("parse");
-        let mut svc =
-            SubjectAllowlistLayer::new(Arc::new(allow), Some(Arc::new(Collect(tx))), "test-grpc")
-                .layer(Unreachable);
+        let allow = acme_only("CN=acme-server");
+        let mut svc = SubjectAllowlistLayer::new(
+            Arc::new(allow),
+            RULES,
+            Some(Arc::new(Collect(tx))),
+            "test-grpc",
+        )
+        .layer(Unreachable);
 
         // No peer info: UNAUTHENTICATED. Drop the response future unpolled,
         // as hyper does on RST_STREAM.
@@ -3816,5 +4848,1173 @@ mod tests {
             events.try_recv().is_ok(),
             "record written before the response"
         );
+    }
+
+    // ---- per-method authorization: registry, method table, requestor ----
+
+    #[test]
+    fn registry_parses_three_lists_and_maps_namespaces() {
+        let r = registry(
+            &["CN=acme-server, O=Ostrich"],
+            &["CN=est-server"],
+            &["CN=ops-admin"],
+        )
+        .expect("registry");
+        assert_eq!(
+            r.identity("CN=acme-server,O=Ostrich"),
+            Some(GrpcClientIdentity::ACME)
+        );
+        assert_eq!(r.identity("CN=est-server"), Some(GrpcClientIdentity::EST));
+        assert_eq!(r.identity("CN=ops-admin"), Some(GrpcClientIdentity::ADMIN));
+        assert_eq!(r.identity("CN=stranger"), None);
+        assert_eq!(r.identity(""), None);
+        assert_eq!(GrpcClientIdentity::ACME.role, GrpcClientRole::Issuer);
+        assert_eq!(GrpcClientIdentity::EST.namespace, "est");
+        assert_eq!(GrpcClientIdentity::ADMIN.role, GrpcClientRole::Admin);
+        assert_eq!(
+            r.summary(),
+            serde_json::json!({
+                "acme": ["CN=acme-server,O=Ostrich"],
+                "est": ["CN=est-server"],
+                "admin": ["CN=ops-admin"],
+            })
+        );
+        // Duplicates within one list are dropped.
+        let dup = registry(&["CN=a", "CN=a "], &[], &[]).expect("dup");
+        assert_eq!(dup.summary()["acme"], serde_json::json!(["CN=a"]));
+    }
+
+    #[test]
+    fn registry_rejects_overlap_canonical() {
+        let err = registry(&["CN=a, O=b"], &["CN=e"], &["CN=a,O=b"]).expect_err("overlap");
+        let msg = err.to_string();
+        assert!(msg.contains(ENV_GRPC_ACME_CLIENT_SUBJECTS), "{msg}");
+        assert!(msg.contains(ENV_GRPC_ADMIN_CLIENT_SUBJECTS), "{msg}");
+        assert!(msg.contains("CN=a,O=b"), "{msg}");
+        assert!(msg.contains("may hold one role"), "{msg}");
+
+        let err = registry(&["CN=x"], &[" CN = x "], &[]).expect_err("acme/est overlap");
+        let msg = err.to_string();
+        assert!(msg.contains(ENV_GRPC_ACME_CLIENT_SUBJECTS), "{msg}");
+        assert!(msg.contains(ENV_GRPC_EST_CLIENT_SUBJECTS), "{msg}");
+
+        let err = registry(&["CN=a"], &["CN=x"], &["CN=x"]).expect_err("est/admin overlap");
+        assert!(err.to_string().contains(ENV_GRPC_EST_CLIENT_SUBJECTS));
+    }
+
+    #[test]
+    fn registry_requires_an_issuer() {
+        let err = registry(&[], &[], &["CN=ops-admin"]).expect_err("admin only");
+        assert!(
+            err.to_string().contains("no issuer client configured"),
+            "{err}"
+        );
+        assert!(registry(&[" "], &["", ";"], &[]).is_err(), "all blank");
+        assert!(registry(&[], &[], &[]).is_err(), "nothing");
+        // Either issuer list alone is enough.
+        assert!(registry(&[], &["CN=est-server"], &[]).is_ok());
+        assert!(registry(&["CN=acme-server"], &[], &[]).is_ok());
+    }
+
+    #[test]
+    fn registry_admin_blank_is_none() {
+        let r = registry(&["CN=acme-server"], &[" "], &[" ", "", "\t"]).expect("blank admin");
+        assert_eq!(r.summary()["admin"], serde_json::json!([]));
+        assert_eq!(r.summary()["est"], serde_json::json!([]));
+        // A blank entry next to a real one is dropped.
+        let r = registry(&["CN=acme-server", " "], &[], &["", "CN=ops"]).expect("mixed");
+        assert_eq!(r.identity("CN=ops"), Some(GrpcClientIdentity::ADMIN));
+    }
+
+    #[test]
+    fn registry_rejects_malformed_entry_in_each_list() {
+        let bad = r"CN=a\";
+        for (i, env) in [
+            ENV_GRPC_ACME_CLIENT_SUBJECTS,
+            ENV_GRPC_EST_CLIENT_SUBJECTS,
+            ENV_GRPC_ADMIN_CLIENT_SUBJECTS,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut lists = [vec!["CN=acme-server"], vec!["CN=est-server"], vec![]];
+            lists[i].push(bad);
+            let err = registry(&lists[0], &lists[1], &lists[2]).expect_err("malformed");
+            assert!(err.to_string().contains(env), "{env}: {err}");
+        }
+    }
+
+    #[test]
+    fn resolve_rejects_legacy_allowed_subjects() {
+        let mut o = full_options("legacy");
+        o.legacy_allowed_subjects = vec![s("CN=acme-server")];
+        let err = o.resolve(true).expect_err("legacy in mTLS mode");
+        let msg = err.to_string();
+        assert!(msg.contains(ENV_GRPC_ALLOWED_CLIENT_SUBJECTS), "{msg}");
+        assert!(msg.contains(ENV_GRPC_ACME_CLIENT_SUBJECTS), "{msg}");
+        assert!(msg.contains(ENV_GRPC_ADMIN_CLIENT_SUBJECTS), "{msg}");
+        assert!(msg.contains("refusing to start"), "{msg}");
+
+        let err = GrpcServerOptions {
+            insecure_dev_plaintext: true,
+            legacy_allowed_subjects: vec![s("CN=acme-server")],
+            ..Default::default()
+        }
+        .resolve(false)
+        .expect_err("legacy in insecure mode");
+        assert!(err.to_string().contains("no longer supported"), "{err}");
+
+        // A blank legacy value (an unset `${VAR:-}`) is ignored.
+        let mut o = full_options("legacy-blank");
+        o.legacy_allowed_subjects = vec![s(" ")];
+        assert!(o.resolve(true).is_ok());
+    }
+
+    #[test]
+    fn resolve_insecure_with_role_list_is_ambiguous() {
+        for i in 0..3 {
+            let mut o = GrpcServerOptions {
+                insecure_dev_plaintext: true,
+                ..Default::default()
+            };
+            let list = vec![s("CN=x")];
+            match i {
+                0 => o.acme_subjects = list,
+                1 => o.est_subjects = list,
+                _ => o.admin_subjects = list,
+            }
+            let err = o.resolve(false).expect_err("ambiguous");
+            assert!(err.to_string().contains("ambiguous"), "#{i}: {err}");
+        }
+    }
+
+    #[test]
+    fn resolve_rejects_overlap_and_malformed_admin() {
+        let mut o = full_options("overlap");
+        o.admin_subjects = vec![s("CN=est-server")];
+        assert!(o.resolve(true).is_err());
+        let mut o = full_options("bad-admin");
+        o.admin_subjects = vec![s(r"CN=a\")];
+        let err = o.resolve(true).expect_err("malformed admin");
+        assert!(err.to_string().contains(ENV_GRPC_ADMIN_CLIENT_SUBJECTS));
+    }
+
+    #[test]
+    fn authorize_peer_method_matrix() {
+        let pki = Pki::new("Matrix CA");
+        let anchor = anchor_of(&pki);
+        let clients =
+            registry(&["CN=acme-server"], &["CN=est-server"], &["CN=ops-admin"]).expect("registry");
+        let peer = |cn: &str| {
+            let (_, der, _) = pki.leaf(
+                &[(DnType::CommonName, cn)],
+                "x.example",
+                ExtendedKeyUsagePurpose::ClientAuth,
+            );
+            GrpcPeerInfo {
+                remote_addr: None,
+                peer_leaf: Some(CertificateDer::from(der)),
+            }
+        };
+        let issuer_allowed = [P_ISSUE, P_INFO, P_PROFILES];
+        let admin_allowed = [P_REVOKE, P_CRL, P_STATUS, P_INFO, P_PROFILES];
+        let all = [P_ISSUE, P_REVOKE, P_CRL, P_STATUS, P_INFO, P_PROFILES];
+        for (cn, identity, allowed) in [
+            ("acme-server", GrpcClientIdentity::ACME, &issuer_allowed[..]),
+            ("est-server", GrpcClientIdentity::EST, &issuer_allowed[..]),
+            ("ops-admin", GrpcClientIdentity::ADMIN, &admin_allowed[..]),
+        ] {
+            let p = peer(cn);
+            for path in all {
+                let got = si(authorize_peer(
+                    Some(&p),
+                    &clients,
+                    RULES,
+                    path,
+                    &[],
+                    Some(&anchor),
+                ));
+                if allowed.contains(&path) {
+                    assert_eq!(got, Ok((format!("CN={cn}"), identity)), "{cn} {path}");
+                } else {
+                    let d = got.expect_err("denied");
+                    assert_eq!(d.code, tonic::Code::PermissionDenied, "{cn} {path}");
+                    assert_eq!(d.reason, "method_not_permitted", "{cn} {path}");
+                    assert_eq!(d.identity, Some(identity));
+                    assert_eq!(d.subject, Some(format!("CN={cn}")));
+                }
+            }
+            for path in [
+                "/ostrich.ca.v1.CertificateAuthorityService/Foo",
+                "/grpc.health.v1.Health/Check",
+                "",
+                "/",
+                "/ostrich.ca.v1.CertificateAuthorityService/IssueCertificate/",
+                "/ostrich.ca.v1.certificateauthorityservice/IssueCertificate",
+                "/ostrich.ca.v1.CertificateAuthorityService/issuecertificate",
+            ] {
+                let d = authorize_peer(Some(&p), &clients, RULES, path, &[], Some(&anchor))
+                    .expect_err("unmapped");
+                assert_eq!(d.reason, "method_not_mapped", "{cn} {path:?}");
+                assert_eq!(d.code, tonic::Code::PermissionDenied);
+                assert_eq!(d.identity, Some(identity));
+            }
+        }
+        // A stranger is refused before the method table, on every path.
+        let stranger = peer("stranger");
+        for path in all {
+            let d = authorize_peer(Some(&stranger), &clients, RULES, path, &[], Some(&anchor))
+                .expect_err("stranger");
+            assert_eq!(d.reason, "subject_not_allowlisted");
+            assert_eq!(d.identity, None);
+        }
+        // An empty method table denies everything (default deny).
+        let d = authorize_peer(
+            Some(&peer("acme-server")),
+            &clients,
+            &[],
+            P_ISSUE,
+            &[],
+            Some(&anchor),
+        )
+        .expect_err("empty table");
+        assert_eq!(d.reason, "method_not_mapped");
+        // Denial details carry the role and namespace of a known subject.
+        assert_eq!(
+            denial_details("l", Some(GrpcClientIdentity::EST), None),
+            serde_json::json!({"listener": "l", "role": "issuer", "namespace": "est"})
+        );
+        assert_eq!(
+            denial_details("l", None, Some(("CN=Client CA", "0a"))),
+            serde_json::json!({"listener": "l", "peer_issuer": "CN=Client CA", "peer_serial": "0a"})
+        );
+    }
+
+    #[test]
+    fn validate_requestor_cases() {
+        use RequestorRejection as R;
+        let acme = GrpcClientIdentity::ACME;
+        let est = GrpcClientIdentity::EST;
+        let admin = GrpcClientIdentity::ADMIN;
+        let ok =
+            |id, r: &str| assert_eq!(validate_requestor(id, r), Ok(Some(r.to_string())), "{r:?}");
+        let err = |id, r: &str, e| assert_eq!(validate_requestor(id, r), Err(e), "{r:?}");
+
+        ok(acme, "acme::1");
+        ok(est, "est::client-7");
+        err(acme, "est::1", R::NamespaceMismatch);
+        err(est, "acme::1", R::NamespaceMismatch);
+        err(acme, "ACME::1", R::NamespaceMismatch);
+        err(acme, "acme1", R::NamespaceMismatch);
+        err(acme, "acme:1", R::NamespaceMismatch);
+        err(acme, " acme::1", R::NamespaceMismatch);
+        err(acme, "acme::", R::Invalid);
+        err(acme, "", R::Missing);
+        err(est, "", R::Missing);
+        assert_eq!(validate_requestor(admin, ""), Ok(None));
+        ok(admin, "admin::x");
+        err(admin, "acme::x", R::NamespaceMismatch);
+        err(admin, "admin", R::NamespaceMismatch);
+
+        let max = format!("acme::{}", "a".repeat(MAX_REQUESTOR_LEN - 6));
+        assert_eq!(max.len(), 255);
+        ok(acme, &max);
+        err(acme, &format!("{max}a"), R::Invalid);
+
+        err(acme, "acme::a\nb", R::Invalid);
+        err(acme, "acme::a\u{0}b", R::Invalid);
+        err(acme, "acme::a\u{7f}", R::Invalid);
+        err(acme, "acme::\u{202E}gpj", R::Invalid);
+        err(acme, "acme::a\u{200B}", R::Invalid);
+        err(acme, "acme::a\u{2066}", R::Invalid);
+        err(acme, "acme::\u{FEFF}a", R::Invalid);
+        ok(acme, "acme::est::x");
+        ok(acme, "acme::!~@.+_-=");
+        // SEC-002: the id is printable ASCII only (allowlist 0x21..=0x7E).
+        err(acme, "acme::компания-ü", R::Invalid);
+        err(acme, "acme::a b", R::Invalid);
+        for c in [
+            '\u{2028}',
+            '\u{2029}',
+            '\u{061C}',
+            '\u{2060}',
+            '\u{2064}',
+            '\u{00AD}',
+            '\u{180E}',
+            '\u{FFF9}',
+            '\u{FFFB}',
+            '\u{E0001}',
+            '\u{E007F}',
+            '\u{FE0F}',
+        ] {
+            err(acme, &format!("acme::a{c}b"), R::Invalid);
+            err(est, &format!("est::{c}"), R::Invalid);
+        }
+
+        assert_eq!(R::Missing.reason(), "requestor_missing");
+        assert_eq!(
+            R::NamespaceMismatch.reason(),
+            "requestor_namespace_mismatch"
+        );
+        assert_eq!(R::Invalid.reason(), "requestor_invalid");
+    }
+
+    #[test]
+    fn method_rules_summary_lists_paths_and_roles() {
+        let summary = grpc_method_rules_summary(RULES);
+        assert_eq!(summary.as_array().map(Vec::len), Some(6));
+        assert_eq!(summary[0]["path"], P_ISSUE);
+        assert_eq!(summary[0]["roles"], serde_json::json!(["issuer"]));
+        assert_eq!(summary[4]["roles"], serde_json::json!(["issuer", "admin"]));
+    }
+
+    /// Inner service that captures the `AuthorizedGrpcPeer` extension.
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Option<AuthorizedGrpcPeer>>>);
+
+    impl tower::Service<http::Request<()>> for Capture {
+        type Response = http::Response<tonic::body::Body>;
+        type Error = std::convert::Infallible;
+        type Future = std::future::Ready<std::result::Result<Self::Response, Self::Error>>;
+
+        fn poll_ready(
+            &mut self,
+            _: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, req: http::Request<()>) -> Self::Future {
+            *lock_ignoring_poison(&self.0) = req.extensions().get::<AuthorizedGrpcPeer>().cloned();
+            std::future::ready(Ok(http::Response::new(tonic::body::Body::default())))
+        }
+    }
+
+    fn request_with_peer(path: &str, peer: GrpcPeerInfo) -> http::Request<()> {
+        let mut req = http::Request::new(());
+        *req.uri_mut() = path.parse().expect("uri");
+        req.extensions_mut().insert(peer);
+        req
+    }
+
+    #[tokio::test]
+    async fn peer_deny_is_rate_limited_and_shares_limiter() {
+        use tower::{Layer as _, Service as _};
+        let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let pki = Pki::new("Deny CA");
+        let (_, der, _) = pki.leaf(
+            &[(DnType::CommonName, "acme-server")],
+            "acme-server",
+            ExtendedKeyUsagePurpose::ClientAuth,
+        );
+        let peer_info = GrpcPeerInfo {
+            remote_addr: Some("10.1.2.3:4444".parse().expect("addr")),
+            peer_leaf: Some(CertificateDer::from(der)),
+        };
+        let capture = Capture::default();
+        let mut svc = SubjectAllowlistLayer::with_limits(
+            Arc::new(acme_only("CN=acme-server")),
+            RULES,
+            Some(Arc::new(Collect(tx))),
+            "test-grpc",
+            &GrpcListenerLimits {
+                audit_max_per_window: 2,
+                audit_window: Duration::from_secs(3600),
+                ..Default::default()
+            },
+        )
+        .layer(capture.clone());
+
+        // Layer denial #1: acme may not revoke.
+        let resp = svc
+            .call(request_with_peer(P_REVOKE, peer_info.clone()))
+            .await
+            .expect("infallible");
+        assert_eq!(
+            resp.headers().get("grpc-status").map(|v| v.as_bytes()),
+            Some(b"7".as_slice())
+        );
+        let ev = events.try_recv().expect("layer denial recorded");
+        assert_eq!(ev.reason.as_deref(), Some("method_not_permitted"));
+        assert_eq!(ev.subject, "CN=acme-server");
+        assert_eq!(ev.resource.as_deref(), Some(P_REVOKE));
+        let d = ev.details.expect("details");
+        assert_eq!(d["role"], "issuer");
+        assert_eq!(d["namespace"], "acme");
+
+        // An allowed call carries the peer extension.
+        svc.call(request_with_peer(P_ISSUE, peer_info))
+            .await
+            .expect("infallible");
+        let peer = lock_ignoring_poison(&capture.0)
+            .clone()
+            .expect("AuthorizedGrpcPeer inserted");
+        assert_eq!(peer.subject_dn, "CN=acme-server");
+        assert_eq!(peer.identity, GrpcClientIdentity::ACME);
+        assert_eq!(peer.method(), P_ISSUE);
+        assert_eq!(peer.issuer_dn, "CN=Deny CA");
+        assert!(!peer.serial_hex.is_empty());
+        assert!(
+            !format!("{peer:?}").contains("rate"),
+            "Debug omits the limiter"
+        );
+        assert_eq!(peer.bind_requestor("acme::1"), Ok(Some(s("acme::1"))));
+
+        // Service denial #2 is recorded with the merged details ...
+        let status = peer
+            .deny(
+                "requestor_namespace_mismatch",
+                serde_json::json!({"claimed_namespace": "est", "expected_namespace": "acme"}),
+            )
+            .await;
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(status.message(), DENIED_MESSAGE);
+        let ev = events
+            .try_recv()
+            .expect("service denial recorded before the status");
+        assert_eq!(ev.kind, AuthAuditKind::AccessDenied);
+        assert_eq!(ev.reason.as_deref(), Some("requestor_namespace_mismatch"));
+        assert_eq!(ev.subject, "CN=acme-server");
+        assert_eq!(ev.resource.as_deref(), Some(P_ISSUE));
+        assert_eq!(ev.ip_address.as_deref(), Some("10.1.2.3"));
+        let d = ev.details.expect("details");
+        assert_eq!(d["listener"], "test-grpc");
+        assert_eq!(d["role"], "issuer");
+        assert_eq!(d["claimed_namespace"], "est");
+        assert_eq!(d["expected_namespace"], "acme");
+        assert_eq!(d["peer_issuer"], "CN=Deny CA");
+        assert_eq!(d["peer_serial"], peer.serial_hex.as_str());
+
+        // ... and #3 exceeds the shared window of 2: suppressed, still denied.
+        let status = peer.deny("requestor_invalid", serde_json::json!({})).await;
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        tokio::task::yield_now().await;
+        assert!(events.try_recv().is_err(), "third denial is suppressed");
+        drop(svc);
+        drop(peer);
+        drop(capture);
+    }
+
+    #[tokio::test]
+    async fn peer_deny_record_survives_dropped_future() {
+        use tower::{Layer as _, Service as _};
+        let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let pki = Pki::new("Cancel CA");
+        let (_, der, _) = pki.leaf(
+            &[(DnType::CommonName, "est-server")],
+            "est-server",
+            ExtendedKeyUsagePurpose::ClientAuth,
+        );
+        let capture = Capture::default();
+        let mut svc = SubjectAllowlistLayer::new(
+            Arc::new(registry(&[], &["CN=est-server"], &[]).expect("registry")),
+            RULES,
+            Some(Arc::new(Collect(tx))),
+            "test-grpc",
+        )
+        .layer(capture.clone());
+        svc.call(request_with_peer(
+            P_ISSUE,
+            GrpcPeerInfo {
+                remote_addr: None,
+                peer_leaf: Some(CertificateDer::from(der)),
+            },
+        ))
+        .await
+        .expect("infallible");
+        let peer = lock_ignoring_poison(&capture.0).clone().expect("peer");
+        // Never polled: the write was spawned by `deny` itself.
+        drop(peer.deny("requestor_missing", serde_json::json!({})));
+        let ev = tokio::time::timeout(Duration::from_secs(3), events.recv())
+            .await
+            .expect("record written although the future was dropped")
+            .expect("event");
+        assert_eq!(ev.reason.as_deref(), Some("requestor_missing"));
+        assert_eq!(ev.subject, "CN=est-server");
+    }
+
+    // ---- QA additions (SA-11 / CA-2 evidence) ----
+
+    /// Non-canonical spellings of a mapped path that a router or proxy might
+    /// treat as equivalent. The listener matches the raw `:path` exactly, so
+    /// every one is `method_not_mapped` for every known role (AC-3, SI-10).
+    const QA_UNMAPPED_PATH_VARIANTS: &[&str] = &[
+        // percent-encoding of a letter and of the separator
+        "/ostrich.ca.v1.CertificateAuthorityService/Issue%43ertificate",
+        "/ostrich.ca.v1.CertificateAuthorityService%2FIssueCertificate",
+        "%2Fostrich.ca.v1.CertificateAuthorityService/IssueCertificate",
+        // extra and empty segments
+        "/ostrich.ca.v1.CertificateAuthorityService/IssueCertificate/extra",
+        "/ostrich.ca.v1.CertificateAuthorityService//IssueCertificate",
+        "//ostrich.ca.v1.CertificateAuthorityService/IssueCertificate",
+        "/x/ostrich.ca.v1.CertificateAuthorityService/RevokeCertificate",
+        "/ostrich.ca.v1.CertificateAuthorityService/./GenerateCrl",
+        "/ostrich.ca.v1.CertificateAuthorityService/../ostrich.ca.v1.CertificateAuthorityService/GenerateCrl",
+        // other service names carrying a mapped RPC name
+        "/ostrich.ca.v2.CertificateAuthorityService/IssueCertificate",
+        "/ostrich.ca.v1.CertificateAuthorityServiceX/GetCaInfo",
+        "/CertificateAuthorityService/GetCaInfo",
+        "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo",
+        "/grpc.health.v1.Health/Watch",
+        // case variants of the admin RPCs
+        "/ostrich.ca.v1.CertificateAuthorityService/revokeCertificate",
+        "/OSTRICH.CA.V1.CERTIFICATEAUTHORITYSERVICE/GENERATECRL",
+        // no leading slash, trailing whitespace / NUL
+        "ostrich.ca.v1.CertificateAuthorityService/GetCaInfo",
+        "/ostrich.ca.v1.CertificateAuthorityService/GetCaInfo ",
+        "/ostrich.ca.v1.CertificateAuthorityService/GetCaInfo\0",
+    ];
+
+    /// QA: AC-3 default deny over non-canonical path spellings, for every
+    /// role; an unknown subject is refused first (`subject_not_allowlisted`).
+    #[test]
+    fn qa_authorize_peer_non_canonical_paths_are_not_mapped() {
+        let pki = Pki::new("QA Path CA");
+        let clients =
+            registry(&["CN=acme-server"], &["CN=est-server"], &["CN=ops-admin"]).expect("registry");
+        let peer = |cn: &str| {
+            let (_, der, _) = pki.leaf(
+                &[(DnType::CommonName, cn)],
+                "x.example",
+                ExtendedKeyUsagePurpose::ClientAuth,
+            );
+            GrpcPeerInfo {
+                remote_addr: None,
+                peer_leaf: Some(CertificateDer::from(der)),
+            }
+        };
+        for (cn, identity) in [
+            ("acme-server", GrpcClientIdentity::ACME),
+            ("est-server", GrpcClientIdentity::EST),
+            ("ops-admin", GrpcClientIdentity::ADMIN),
+        ] {
+            let p = peer(cn);
+            for path in QA_UNMAPPED_PATH_VARIANTS {
+                let d = authorize_peer(Some(&p), &clients, RULES, path, &[], None)
+                    .expect_err("non-canonical path must be denied");
+                assert_eq!(d.code, tonic::Code::PermissionDenied, "{cn} {path:?}");
+                assert_eq!(d.reason, "method_not_mapped", "{cn} {path:?}");
+                assert_eq!(d.identity, Some(identity), "{cn} {path:?}");
+            }
+        }
+        let stranger = peer("stranger");
+        for path in QA_UNMAPPED_PATH_VARIANTS {
+            let d = authorize_peer(Some(&stranger), &clients, RULES, path, &[], None)
+                .expect_err("stranger");
+            assert_eq!(d.reason, "subject_not_allowlisted", "{path:?}");
+        }
+    }
+
+    /// QA: through the real tower layer, unmapped paths never reach the inner
+    /// service, answer PERMISSION_DENIED (grpc-status 7, not 12
+    /// UNIMPLEMENTED) and are audited with the raw path as resource and the
+    /// caller's role / namespace (AU-2, AU-3).
+    #[tokio::test]
+    async fn qa_layer_denies_and_audits_unmapped_paths() {
+        use tower::{Layer as _, Service as _};
+        let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let pki = Pki::new("QA Layer CA");
+        let (_, der, _) = pki.leaf(
+            &[(DnType::CommonName, "ops-admin")],
+            "ops-admin",
+            ExtendedKeyUsagePurpose::ClientAuth,
+        );
+        let peer_info = GrpcPeerInfo {
+            remote_addr: Some("10.9.8.7:1".parse().expect("addr")),
+            peer_leaf: Some(CertificateDer::from(der)),
+        };
+        let capture = Capture::default();
+        let mut svc = SubjectAllowlistLayer::new(
+            Arc::new(registry(&["CN=acme-server"], &[], &["CN=ops-admin"]).expect("registry")),
+            RULES,
+            Some(Arc::new(Collect(tx))),
+            "qa-grpc",
+        )
+        .with_client_trust_anchors(&[CertificateDer::from(pki.ca.der().to_vec())])
+        .expect("anchor")
+        .layer(capture.clone());
+        let paths = [
+            "/ostrich.ca.v1.CertificateAuthorityService/Issue%43ertificate",
+            "/ostrich.ca.v1.CertificateAuthorityService/RevokeCertificate/extra",
+            "/ostrich.ca.v2.CertificateAuthorityService/GenerateCrl",
+            "/ostrich.ca.v1.certificateauthorityservice/GenerateCrl",
+            "/ostrich.ca.v1.CertificateAuthorityService/GenerateCrl/",
+        ];
+        for path in paths {
+            let resp = svc
+                .call(request_with_peer(path, peer_info.clone()))
+                .await
+                .expect("infallible");
+            assert_eq!(
+                resp.headers().get("grpc-status").map(|v| v.as_bytes()),
+                Some(b"7".as_slice()),
+                "{path}"
+            );
+            let ev = events.try_recv().expect("denial recorded before status");
+            assert_eq!(ev.kind, AuthAuditKind::AccessDenied);
+            assert_eq!(ev.reason.as_deref(), Some("method_not_mapped"), "{path}");
+            assert_eq!(ev.resource.as_deref(), Some(path));
+            assert_eq!(ev.subject, "CN=ops-admin");
+            assert_eq!(ev.ip_address.as_deref(), Some("10.9.8.7"));
+            let d = ev.details.expect("details");
+            assert_eq!(d["role"], "admin");
+            assert_eq!(d["namespace"], "admin");
+            assert_eq!(d["listener"], "qa-grpc");
+        }
+        assert!(
+            lock_ignoring_poison(&capture.0).is_none(),
+            "inner service never reached"
+        );
+        // Admin may not issue either, at the exact path.
+        let resp = svc
+            .call(request_with_peer(P_ISSUE, peer_info.clone()))
+            .await
+            .expect("infallible");
+        assert_eq!(
+            resp.headers().get("grpc-status").map(|v| v.as_bytes()),
+            Some(b"7".as_slice())
+        );
+        let ev = events.try_recv().expect("recorded");
+        assert_eq!(ev.reason.as_deref(), Some("method_not_permitted"));
+        assert!(lock_ignoring_poison(&capture.0).is_none());
+        // The canonical admin path is admitted (sanity check of the harness).
+        svc.call(request_with_peer(P_CRL, peer_info))
+            .await
+            .expect("infallible");
+        assert!(lock_ignoring_poison(&capture.0).is_some());
+    }
+
+    /// QA: SI-10 boundaries of `validate_requestor` not covered by
+    /// `validate_requestor_cases`: bare namespaces for every role, the byte
+    /// (not char) length limit with multibyte UTF-8, every forbidden format
+    /// character range end point, C1 controls, and rule precedence.
+    #[test]
+    fn qa_validate_requestor_boundaries() {
+        use RequestorRejection as R;
+        let acme = GrpcClientIdentity::ACME;
+        let est = GrpcClientIdentity::EST;
+        let admin = GrpcClientIdentity::ADMIN;
+
+        // `<ns>::` alone is invalid for every role; `::x` / `::` mismatch.
+        for (id, ns) in [(acme, "acme"), (est, "est"), (admin, "admin")] {
+            assert_eq!(validate_requestor(id, &format!("{ns}::")), Err(R::Invalid));
+            assert_eq!(validate_requestor(id, "::x"), Err(R::NamespaceMismatch));
+            assert_eq!(validate_requestor(id, "::"), Err(R::NamespaceMismatch));
+            assert_eq!(validate_requestor(id, ns), Err(R::NamespaceMismatch));
+            assert_eq!(
+                validate_requestor(id, &format!("{}::x", ns.to_uppercase())),
+                Err(R::NamespaceMismatch)
+            );
+        }
+        // Only admin may send an empty requestor.
+        assert_eq!(validate_requestor(acme, ""), Err(R::Missing));
+        assert_eq!(validate_requestor(est, ""), Err(R::Missing));
+        assert_eq!(validate_requestor(admin, ""), Ok(None));
+        // Whitespace is not "empty".
+        assert_eq!(validate_requestor(admin, " "), Err(R::NamespaceMismatch));
+        assert_eq!(validate_requestor(acme, "\t"), Err(R::NamespaceMismatch));
+
+        // Byte limit: 255 bytes accepted, 256 refused; multibyte UTF-8 is
+        // refused whatever its length (printable ASCII allowlist, SEC-002).
+        let id_255 = format!("est::{}", "e".repeat(250)); // 5 + 250 = 255 bytes
+        assert_eq!(id_255.len(), MAX_REQUESTOR_LEN);
+        assert_eq!(validate_requestor(est, &id_255), Ok(Some(id_255.clone())));
+        let id_256 = format!("est::{}x", "e".repeat(250));
+        assert_eq!(id_256.len(), MAX_REQUESTOR_LEN + 1);
+        assert_eq!(validate_requestor(est, &id_256), Err(R::Invalid));
+        let multibyte = format!("est::{}", "é".repeat(10));
+        assert_eq!(validate_requestor(est, &multibyte), Err(R::Invalid));
+        let admin_256 = format!("admin::{}", "a".repeat(MAX_REQUESTOR_LEN - 6));
+        assert_eq!(admin_256.len(), MAX_REQUESTOR_LEN + 1);
+        assert_eq!(validate_requestor(admin, &admin_256), Err(R::Invalid));
+        // A 4-byte char straddling the limit.
+        let straddle = format!("acme::{}\u{1F600}", "a".repeat(MAX_REQUESTOR_LEN - 6 - 3));
+        assert_eq!(straddle.len(), MAX_REQUESTOR_LEN + 1);
+        assert_eq!(validate_requestor(acme, &straddle), Err(R::Invalid));
+        // Huge input is rejected without panicking.
+        let huge = format!("acme::{}", "z".repeat(1 << 20));
+        assert_eq!(validate_requestor(acme, &huge), Err(R::Invalid));
+
+        // Every forbidden format char range end point, in the id.
+        for c in [
+            '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}',
+            '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+            '\u{FEFF}',
+        ] {
+            for id in [acme, admin] {
+                let r = format!("{}::a{c}b", id.namespace);
+                assert_eq!(validate_requestor(id, &r), Err(R::Invalid), "{c:?}");
+            }
+        }
+        // C0 and C1 controls, incl. NEL (U+0085) and CSI (U+009B).
+        for c in [
+            '\u{1}', '\u{1f}', '\r', '\t', '\u{80}', '\u{85}', '\u{9b}', '\u{9f}',
+        ] {
+            assert_eq!(
+                validate_requestor(acme, &format!("acme::a{c}")),
+                Err(R::Invalid),
+                "{c:?}"
+            );
+        }
+        // Allowlist boundaries: 0x21 and 0x7E accepted; 0x20, 0x7F and any
+        // non-ASCII character refused.
+        for c in ['!', '~'] {
+            let r = format!("acme::a{c}");
+            assert_eq!(validate_requestor(acme, &r), Ok(Some(r.clone())), "{c:?}");
+        }
+        for c in [' ', '\u{7f}', '\u{a0}', '\u{2010}', '\u{FF00}'] {
+            let r = format!("acme::a{c}");
+            assert_eq!(validate_requestor(acme, &r), Err(R::Invalid), "{c:?}");
+        }
+
+        // Precedence: the namespace is checked before content and length, so
+        // a wrong-namespace oversized / control value is a mismatch.
+        assert_eq!(
+            validate_requestor(acme, &format!("est::{}", "a".repeat(400))),
+            Err(R::NamespaceMismatch)
+        );
+        assert_eq!(
+            validate_requestor(acme, "est::\n"),
+            Err(R::NamespaceMismatch)
+        );
+        // Spaces in the id are refused, never trimmed.
+        assert_eq!(validate_requestor(acme, "acme:: x "), Err(R::Invalid));
+        // Accepted value is returned verbatim (no normalisation).
+        assert_eq!(
+            validate_requestor(acme, "acme::X:y"),
+            Ok(Some("acme::X:y".to_string()))
+        );
+    }
+
+    /// QA: config fail-closed details not covered above: a malformed entry in
+    /// a list otherwise blank, a cross-list duplicate that only matches after
+    /// canonicalisation of escapes, an over-long entry, and an overlap
+    /// combined with an issuer-less configuration (the issuer check runs
+    /// first; either way startup is refused).
+    #[test]
+    fn qa_registry_fail_closed_edges() {
+        // Malformed admin entry next to blanks.
+        let err = registry(&["CN=acme-server"], &[], &[" ", r"CN=a\", ""]).expect_err("bad");
+        assert!(
+            err.to_string().contains(ENV_GRPC_ADMIN_CLIENT_SUBJECTS),
+            "{err}"
+        );
+        // Escaped-value overlap: `CN=a\,b` and `CN = a\2Cb` are the same name.
+        let err = registry(&[r"CN=a\,b"], &[], &[r"CN = a\2Cb"]).expect_err("escaped overlap");
+        assert!(err.to_string().contains("listed in both"), "{err}");
+        // Over-long entry.
+        let long = format!("CN={}", "a".repeat(MAX_ALLOWED_SUBJECT_LEN));
+        assert!(registry(&[&long], &[], &[]).is_err());
+        // Blank issuer lists + a (deduplicated) admin list: no issuer, refused.
+        assert!(registry(&[" "], &[], &["CN=x", "CN=x"]).is_err());
+        // An entry that is only Unicode whitespace is not "blank": refused.
+        assert!(registry(&["CN=acme-server"], &[], &["\u{a0}"]).is_err());
+        // Identity lookup never matches a non-canonical spelling.
+        let r = registry(&["CN=acme-server,O=Ostrich"], &[], &[]).expect("registry");
+        assert_eq!(r.identity("CN=acme-server, O=Ostrich"), None);
+        assert_eq!(r.identity("cn=acme-server,O=Ostrich"), None);
+        assert_eq!(
+            r.identity("CN=acme-server,O=Ostrich"),
+            Some(GrpcClientIdentity::ACME)
+        );
+    }
+
+    /// QA: the debug output of an authorised peer and of the resolved mode
+    /// carries no key material (only subjects / counts).
+    #[test]
+    fn qa_grpc_server_mode_debug_has_no_key_material() {
+        let o = full_options("qa-debug");
+        let key_path = o.key_path.clone().expect("key path");
+        let key_pem = std::fs::read_to_string(&key_path).expect("key");
+        let mode = o.resolve(true).expect("mtls");
+        let dbg = format!("{mode:?}");
+        // Assertion messages never echo `dbg` (it is derived from the loaded
+        // certificates; CodeQL rust/cleartext-logging).
+        assert!(
+            !dbg.contains("PRIVATE KEY"),
+            "mode Debug contains a PEM key"
+        );
+        let body: String = key_pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect();
+        assert!(
+            !dbg.contains(&body[..body.len().min(32)]),
+            "mode Debug contains key material"
+        );
+        assert!(
+            dbg.contains("clients"),
+            "mode Debug lacks the client registry"
+        );
+    }
+
+    // ---- fix round 1: RFC-001 / RFC-002 / RFC-005 / RFC-006 ----
+
+    /// Leaf for `cn` (clientAuth) with an explicit validity window.
+    fn leaf_valid(
+        pki: &Pki,
+        cn: &str,
+        not_before: (i32, u8, u8),
+        not_after: (i32, u8, u8),
+    ) -> GrpcPeerInfo {
+        let mut p = CertificateParams::new(vec![s("x.example")]).expect("params");
+        p.distinguished_name = DistinguishedName::new();
+        p.distinguished_name.push(DnType::CommonName, cn);
+        p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        p.not_before = rcgen::date_time_ymd(not_before.0, not_before.1, not_before.2);
+        p.not_after = rcgen::date_time_ymd(not_after.0, not_after.1, not_after.2);
+        let key = KeyPair::generate().expect("key");
+        let cert = p.signed_by(&key, &pki.ca).expect("cert");
+        GrpcPeerInfo {
+            remote_addr: None,
+            peer_leaf: Some(CertificateDer::from(cert.der().to_vec())),
+        }
+    }
+
+    /// RFC-002 (IA-3 / IA-9, RFC 5280 §4.1.2.5): the leaf's validity is
+    /// checked on every call; outside notBefore..=notAfter the call is
+    /// `UNAUTHENTICATED`, `certificate_not_valid_now`, with the subject and
+    /// certificate recorded.
+    #[test]
+    fn authorize_peer_refuses_leaf_outside_validity() {
+        let pki = Pki::new("Validity CA");
+        let allow = acme_only("CN=acme-server");
+        let expired = leaf_valid(&pki, "acme-server", (2020, 1, 1), (2021, 1, 1));
+        let d =
+            authorize_peer(Some(&expired), &allow, RULES, P_ISSUE, &[], None).expect_err("expired");
+        assert_eq!(d.code, tonic::Code::Unauthenticated);
+        assert_eq!(d.reason, "certificate_not_valid_now");
+        assert_eq!(d.subject.as_deref(), Some("CN=acme-server"));
+        assert!(d.certificate.is_some());
+
+        let future = leaf_valid(&pki, "acme-server", (2999, 1, 1), (3000, 1, 1));
+        let d =
+            authorize_peer(Some(&future), &allow, RULES, P_ISSUE, &[], None).expect_err("future");
+        assert_eq!(d.reason, "certificate_not_valid_now");
+
+        // Boundaries with an explicit clock: valid on notBefore and notAfter.
+        let window = leaf_valid(&pki, "acme-server", (2030, 1, 1), (2030, 1, 2));
+        let at = |secs: u64| std::time::UNIX_EPOCH + Duration::from_secs(secs);
+        let nb = 1_893_456_000; // 2030-01-01T00:00:00Z
+        let na = nb + 86_400;
+        for (t, ok) in [(nb - 1, false), (nb, true), (na, true), (na + 1, false)] {
+            let got = authorize_peer_at(Some(&window), &allow, RULES, P_ISSUE, &[], at(t), None);
+            assert_eq!(got.is_ok(), ok, "t={t}");
+        }
+        // The time check runs before the allowlist: an expired stranger is
+        // an authentication failure too.
+        let stranger = leaf_valid(&pki, "intruder", (2020, 1, 1), (2021, 1, 1));
+        let d = authorize_peer(Some(&stranger), &allow, RULES, P_ISSUE, &[], None).expect_err("x");
+        assert_eq!(d.reason, "certificate_not_valid_now");
+    }
+
+    /// RFC-001 (AU-3): an authorised call carries the leaf issuer DN and the
+    /// serial as hex; denials of a parsed leaf record both.
+    #[test]
+    fn authorize_peer_records_issuer_and_serial() {
+        let pki = Pki::new("Serial CA");
+        let allow = acme_only("CN=acme-server");
+        let mut p = CertificateParams::new(vec![s("x.example")]).expect("params");
+        p.distinguished_name = DistinguishedName::new();
+        p.distinguished_name.push(DnType::CommonName, "acme-server");
+        p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        p.serial_number = Some(rcgen::SerialNumber::from_slice(&[0x01, 0xAB, 0xCD]));
+        let key = KeyPair::generate().expect("key");
+        let cert = p.signed_by(&key, &pki.ca).expect("cert");
+        let peer = GrpcPeerInfo {
+            remote_addr: None,
+            peer_leaf: Some(CertificateDer::from(cert.der().to_vec())),
+        };
+        let leaf = authorize_peer(Some(&peer), &allow, RULES, P_ISSUE, &[], None).expect("allowed");
+        assert_eq!(leaf.issuer_dn, "CN=Serial CA");
+        assert_eq!(leaf.serial_hex, "01abcd");
+        let d =
+            authorize_peer(Some(&peer), &allow, RULES, P_REVOKE, &[], None).expect_err("revoke");
+        assert_eq!(d.reason, "method_not_permitted");
+        assert_eq!(d.certificate, Some((s("CN=Serial CA"), s("01abcd"))));
+
+        // RFC-102: the DER sign byte of a serial with the high bit set is
+        // part of the rendering.
+        let mut p = CertificateParams::new(vec![s("x.example")]).expect("params");
+        p.distinguished_name = DistinguishedName::new();
+        p.distinguished_name.push(DnType::CommonName, "acme-server");
+        p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        p.serial_number = Some(rcgen::SerialNumber::from_slice(&[0x80, 0x01]));
+        let key = KeyPair::generate().expect("key");
+        let cert = p.signed_by(&key, &pki.ca).expect("cert");
+        let peer = GrpcPeerInfo {
+            remote_addr: None,
+            peer_leaf: Some(CertificateDer::from(cert.der().to_vec())),
+        };
+        let leaf = authorize_peer(Some(&peer), &allow, RULES, P_ISSUE, &[], None).expect("ok");
+        assert_eq!(leaf.serial_hex, "008001");
+    }
+
+    /// RFC-006: subjects that differ only in ASCII case across role lists
+    /// refuse startup; within one list they stay distinct exact entries,
+    /// and runtime matching stays exact.
+    #[test]
+    fn registry_refuses_case_variant_overlap() {
+        let err = registry(&["CN=Acme-Server"], &[], &["CN=acme-server"]).expect_err("case");
+        let msg = err.to_string();
+        assert!(msg.contains("letter case"), "{msg}");
+        assert!(msg.contains(ENV_GRPC_ACME_CLIENT_SUBJECTS), "{msg}");
+        assert!(msg.contains(ENV_GRPC_ADMIN_CLIENT_SUBJECTS), "{msg}");
+        assert!(registry(&["CN=a"], &["cn=A"], &[]).is_err());
+        let ok = registry(&["CN=a", "CN=A"], &["CN=b"], &[]).expect("same list");
+        assert_eq!(ok.identity("CN=A"), Some(GrpcClientIdentity::ACME));
+        assert_eq!(ok.identity("cn=a"), None);
+        assert_eq!(ok.subjects_for(GrpcClientIdentity::ACME).len(), 2);
+        assert!(ok.subjects_for(GrpcClientIdentity::ADMIN).is_empty());
+    }
+
+    /// RFC-001: with admin subjects the client CA file must hold exactly
+    /// one trust anchor; without admin subjects several are still accepted.
+    #[test]
+    fn resolve_refuses_admin_with_several_client_anchors() {
+        let other = Pki::new("Second Client CA");
+        let mut o = full_options("two-anchors");
+        let path = o.client_ca_path.clone().expect("ca path");
+        let mut bundle = std::fs::read_to_string(&path).expect("read");
+        bundle.push_str(&other.ca.pem());
+        std::fs::write(&path, bundle).expect("write");
+
+        let mut with_admin = o.clone();
+        with_admin.admin_subjects = vec![s("CN=ops-admin")];
+        let err = with_admin.resolve(true).expect_err("admin + 2 anchors");
+        let msg = err.to_string();
+        assert!(msg.contains(ENV_GRPC_ADMIN_CLIENT_SUBJECTS), "{msg}");
+        assert!(msg.contains("2 distinct trust anchors"), "{msg}");
+
+        o.admin_subjects = vec![s(" ")];
+        let GrpcServerMode::Mtls { client_anchors, .. } = o.resolve(true).expect("no admin") else {
+            panic!("expected Mtls");
+        };
+        assert_eq!(client_anchors.len(), 2);
+
+        let mut single = full_options("one-anchor");
+        single.admin_subjects = vec![s("CN=ops-admin")];
+        assert!(single.resolve(true).is_ok());
+
+        // RFC-103: the same anchor repeated in the bundle counts once.
+        let mut dup = full_options("dup-anchor");
+        let path = dup.client_ca_path.clone().expect("ca path");
+        let pem = std::fs::read_to_string(&path).expect("read");
+        std::fs::write(&path, format!("{pem}{pem}")).expect("write");
+        dup.admin_subjects = vec![s("CN=ops-admin")];
+        let GrpcServerMode::Mtls { client_anchors, .. } = dup.resolve(true).expect("dup") else {
+            panic!("expected Mtls");
+        };
+        assert_eq!(client_anchors.len(), 1);
+    }
+
+    fn anchor_of(pki: &Pki) -> AdminTrustAnchor {
+        AdminTrustAnchor::from_der(pki.ca.der()).expect("anchor")
+    }
+
+    /// SEC-101: an admin leaf must be issued directly by the single client
+    /// trust anchor. A leaf under an intermediate of the anchor (or with no
+    /// anchor configured) is denied `admin_issuer_not_anchor`; issuer roles
+    /// under the same intermediate are still admitted.
+    #[test]
+    fn admin_requires_leaf_issued_directly_by_anchor() {
+        let root = Pki::new("Admin Anchor CA");
+        let anchor = anchor_of(&root);
+        let inter_key = KeyPair::generate().expect("key");
+        let inter =
+            CertifiedIssuer::signed_by(ca_params("Admin Anchor Sub CA"), inter_key, &root.ca)
+                .expect("intermediate");
+        let clients = registry(&["CN=acme-server"], &[], &["CN=ops-admin"]).expect("registry");
+        let leaf = |cn: &str, issuer: &CertifiedIssuer<'static, KeyPair>, aki: bool| {
+            let mut p = CertificateParams::new(vec![s("x.example")]).expect("params");
+            p.distinguished_name = DistinguishedName::new();
+            p.distinguished_name.push(DnType::CommonName, cn);
+            p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+            p.use_authority_key_identifier_extension = aki;
+            let key = KeyPair::generate().expect("key");
+            let cert = p.signed_by(&key, issuer).expect("cert");
+            GrpcPeerInfo {
+                remote_addr: None,
+                peer_leaf: Some(CertificateDer::from(cert.der().to_vec())),
+            }
+        };
+        let check = |p: &GrpcPeerInfo, path: &str, a: Option<&AdminTrustAnchor>| {
+            authorize_peer(Some(p), &clients, RULES, path, &[], a)
+        };
+
+        // Directly under the anchor with a matching AKI: admitted.
+        let direct = leaf("ops-admin", &root.ca, true);
+        let ok = check(&direct, P_REVOKE, Some(&anchor)).expect("direct admin");
+        assert_eq!(ok.identity, GrpcClientIdentity::ADMIN);
+        // No anchor configured: fail closed.
+        let d = check(&direct, P_REVOKE, None).expect_err("no anchor");
+        assert_eq!(d.reason, "admin_issuer_not_anchor");
+        assert_eq!(d.code, tonic::Code::PermissionDenied);
+
+        // SEC-201: directly under the anchor (issuer DN matches) but with no
+        // AKI: denied, there is no DN-only fallback.
+        let no_aki = leaf("ops-admin", &root.ca, false);
+        let d = check(&no_aki, P_REVOKE, Some(&anchor)).expect_err("no AKI");
+        assert_eq!(d.reason, "admin_issuer_not_anchor");
+        assert_eq!(d.code, tonic::Code::PermissionDenied);
+        // An anchor without an SKI never admits an admin (the builder also
+        // refuses it at startup, see layer_admin_anchor_builder_and_denial).
+        let ski_less = AdminTrustAnchor {
+            subject_key_id: None,
+            ..anchor.clone()
+        };
+        for p in [&direct, &no_aki] {
+            assert_eq!(
+                check(p, P_REVOKE, Some(&ski_less))
+                    .expect_err("anchor without SKI")
+                    .reason,
+                "admin_issuer_not_anchor"
+            );
+        }
+
+        // Under an intermediate of the anchor: denied for admin on every
+        // admin RPC, with identity and certificate recorded.
+        let sub_admin = leaf("ops-admin", &inter, true);
+        for path in [P_REVOKE, P_CRL, P_STATUS, P_INFO, P_PROFILES] {
+            let d = check(&sub_admin, path, Some(&anchor)).expect_err("sub admin");
+            assert_eq!(d.code, tonic::Code::PermissionDenied, "{path}");
+            assert_eq!(d.reason, "admin_issuer_not_anchor", "{path}");
+            assert_eq!(d.identity, Some(GrpcClientIdentity::ADMIN));
+            assert_eq!(d.subject.as_deref(), Some("CN=ops-admin"));
+            assert_eq!(
+                d.certificate.as_ref().map(|(issuer, _)| issuer.as_str()),
+                Some("CN=Admin Anchor Sub CA")
+            );
+        }
+        // ... the method table still decides first (Issue is not an admin RPC).
+        assert_eq!(
+            check(&sub_admin, P_ISSUE, Some(&anchor))
+                .expect_err("issue")
+                .reason,
+            "method_not_permitted"
+        );
+
+        // Issuer roles under the same intermediate are still admitted.
+        let sub_acme = leaf("acme-server", &inter, true);
+        assert_eq!(
+            check(&sub_acme, P_ISSUE, Some(&anchor))
+                .expect("issuer under intermediate")
+                .identity,
+            GrpcClientIdentity::ACME
+        );
+        assert!(check(&sub_acme, P_ISSUE, None).is_ok());
+
+        // Same issuer DN but AKI naming another key (a re-keyed look-alike
+        // anchor signed the leaf): denied.
+        let lookalike = Pki::new("Admin Anchor CA");
+        let forged = leaf("ops-admin", &lookalike.ca, true);
+        assert_eq!(
+            check(&forged, P_REVOKE, Some(&anchor))
+                .expect_err("forged")
+                .reason,
+            "admin_issuer_not_anchor"
+        );
+    }
+
+    /// SEC-101: the layer builder takes the single client anchor; with admin
+    /// subjects it refuses anything but exactly one distinct anchor, and
+    /// denies (and audits) an admin leaf from an intermediate.
+    #[tokio::test]
+    async fn layer_admin_anchor_builder_and_denial() {
+        use tower::{Layer as _, Service as _};
+        let root = Pki::new("Layer Anchor CA");
+        let other = Pki::new("Layer Other CA");
+        let root_der = CertificateDer::from(root.ca.der().to_vec());
+        let other_der = CertificateDer::from(other.ca.der().to_vec());
+        let with_admin =
+            || Arc::new(registry(&["CN=acme-server"], &[], &["CN=ops-admin"]).expect("registry"));
+        let layer = |clients| SubjectAllowlistLayer::new(clients, RULES, None, "t");
+
+        assert!(
+            layer(with_admin())
+                .with_client_trust_anchors(&[root_der.clone(), other_der.clone()])
+                .is_err()
+        );
+        assert!(layer(with_admin()).with_client_trust_anchors(&[]).is_err());
+        assert!(
+            layer(with_admin())
+                .with_client_trust_anchors(&[root_der.clone(), root_der.clone()])
+                .is_ok()
+        );
+        let garbage = CertificateDer::from(b"junk".to_vec());
+        assert!(
+            layer(with_admin())
+                .with_client_trust_anchors(&[garbage])
+                .is_err()
+        );
+        // SEC-201: with admin subjects, a single anchor without a
+        // subjectKeyIdentifier is refused (admin leaves are matched by AKI).
+        let mut ski_less = CertificateParams::new(Vec::<String>::new()).expect("params");
+        ski_less.distinguished_name = DistinguishedName::new();
+        ski_less
+            .distinguished_name
+            .push(DnType::CommonName, "SKI-less Anchor");
+        let ski_less = ski_less
+            .self_signed(&KeyPair::generate().expect("key"))
+            .expect("ski-less anchor");
+        let ski_less_der = CertificateDer::from(ski_less.der().to_vec());
+        assert!(
+            subject_key_id(&x509_cert::Certificate::from_der(&ski_less_der).expect("parse"))
+                .is_none()
+        );
+        let err = layer(with_admin())
+            .with_client_trust_anchors(std::slice::from_ref(&ski_less_der))
+            .err()
+            .expect("ski-less anchor refused");
+        assert!(err.to_string().contains("no subjectKeyIdentifier"), "{err}");
+        // Without admin subjects several anchors, or an SKI-less one, are fine.
+        let no_admin = Arc::new(acme_only("CN=acme-server"));
+        assert!(
+            layer(no_admin.clone())
+                .with_client_trust_anchors(&[root_der.clone(), other_der])
+                .is_ok()
+        );
+        assert!(
+            layer(no_admin)
+                .with_client_trust_anchors(&[ski_less_der])
+                .is_ok()
+        );
+
+        let inter_key = KeyPair::generate().expect("key");
+        let inter = CertifiedIssuer::signed_by(ca_params("Layer Sub CA"), inter_key, &root.ca)
+            .expect("intermediate");
+        let mut p = CertificateParams::new(vec![s("x.example")]).expect("params");
+        p.distinguished_name = DistinguishedName::new();
+        p.distinguished_name.push(DnType::CommonName, "ops-admin");
+        p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        let key = KeyPair::generate().expect("key");
+        let cert = p.signed_by(&key, &inter).expect("cert");
+        let peer_info = GrpcPeerInfo {
+            remote_addr: Some("10.1.2.3:4".parse().expect("addr")),
+            peer_leaf: Some(CertificateDer::from(cert.der().to_vec())),
+        };
+        let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let capture = Capture::default();
+        let mut svc =
+            SubjectAllowlistLayer::new(with_admin(), RULES, Some(Arc::new(Collect(tx))), "t")
+                .with_client_trust_anchors(&[root_der])
+                .expect("anchor")
+                .layer(capture.clone());
+        let resp = svc
+            .call(request_with_peer(P_REVOKE, peer_info))
+            .await
+            .expect("infallible");
+        assert_eq!(
+            resp.headers().get("grpc-status").map(|v| v.as_bytes()),
+            Some(b"7".as_slice())
+        );
+        let ev = events.try_recv().expect("denial audited");
+        assert_eq!(ev.kind, AuthAuditKind::AccessDenied);
+        assert_eq!(ev.reason.as_deref(), Some("admin_issuer_not_anchor"));
+        assert_eq!(ev.subject, "CN=ops-admin");
+        let d = ev.details.expect("details");
+        assert_eq!(d["role"], "admin");
+        assert_eq!(d["peer_issuer"], "CN=Layer Sub CA");
+        assert!(lock_ignoring_poison(&capture.0).is_none());
     }
 }

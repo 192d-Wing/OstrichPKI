@@ -117,7 +117,7 @@ ca:
     tls:
       # Secret with keys tls.crt (server chain; SAN must include
       # "<fullname>-ca", the host in the in-cluster gRPC URL), tls.key, and
-      # client-ca.crt (trust anchor for acme/est client certificates). The
+      # client-ca.crt (trust anchor for acme/est/admin client certs). The
       # client CA MUST be a dedicated service-identity CA/intermediate that
       # issues nothing else; ca-server refuses to start if client-ca.crt holds
       # its own subscriber-issuing CA certificate. Client certificates must
@@ -127,14 +127,52 @@ ca:
       certFile: /app/grpc-tls/tls.crt
       keyFile: /app/grpc-tls/tls.key
       clientCaFile: /app/grpc-tls/client-ca.crt
-    # Client-certificate subject DNs (RFC 4514) allowed to call the CA gRPC
-    # API. Anything else gets PERMISSION_DENIED and an audit event. Must not be
-    # empty. Exact, case-sensitive match on the RFC 4514 form; one DN per item,
-    # no ";" inside a DN. Passed to ca-server as CA_GRPC_ALLOWED_CLIENT_SUBJECTS
-    # (";"-joined).
-    allowedClientSubjects:
+    # Per-role client-certificate subject DNs (RFC 4514) for the CA gRPC API.
+    # Exact, case-sensitive match on the canonical RFC 4514 form; one DN per
+    # item, no ";" inside a DN. Each list is passed ";"-joined as
+    # CA_GRPC_{ACME,EST,ADMIN}_CLIENT_SUBJECTS. A DN may appear in only one
+    # list (rendering fails; ca-server also refuses on a canonical overlap).
+    # Unlisted clients, and listed clients calling an RPC their role does not
+    # grant (or any unmapped RPC), get PERMISSION_DENIED and an audit event.
+    # At least one ACME or EST subject is required. The old
+    # allowedClientSubjects key is removed; setting it fails rendering.
+    #
+    # Issuer role, requestor namespace "acme::" (IssueCertificate, GetCaInfo,
+    # ListProfiles). The audit actor is the verified peer DN; the requestor is
+    # recorded as on_behalf_of and must start with "acme::".
+    acmeClientSubjects:
       - "CN=acme-server"
+    # Issuer role, requestor namespace "est::" (same RPCs as ACME).
+    estClientSubjects:
       - "CN=est-server"
+    # Admin role, requestor namespace "admin::" or empty: RevokeCertificate,
+    # GenerateCrl, CheckRevocationStatus, GetCaInfo, ListProfiles. Never
+    # IssueCertificate. Empty by default: no client may revoke, generate CRLs
+    # or query revocation status over gRPC until an operator names a dedicated
+    # admin identity. Issue one short-lived admin certificate per named CA
+    # Operations Staff operator, from the dedicated service-identity CA
+    # (client-ca.crt); shared admin certificates are prohibited. A non-empty
+    # list requires exactly one trust anchor in client-ca.crt (ca-server
+    # refuses to start otherwise). Admin certificates must be issued directly
+    # by the client trust anchor: one issued by an intermediate CA under it is
+    # refused per call (PERMISSION_DENIED, audited admin_issuer_not_anchor).
+    # The chart NetworkPolicy admits only acme/est pods to the gRPC port, so an
+    # admin tool connects via kubectl port-forward or a policy you add.
+    adminClientSubjects: []
+    # Per-namespace end-entity profile allowlists for IssueCertificate, passed
+    # ";"-joined as CA_GRPC_{ACME,EST}_ALLOWED_PROFILES. An Issuer client asking
+    # for any other profile gets PERMISSION_DENIED and an audit event. CA
+    # profiles (e.g. intermediate_ca) are NEVER allowed: rendering fails on
+    # intermediate_ca, and ca-server refuses to start on an unknown profile, a
+    # CA profile (basic_constraints_ca), or an empty list for a namespace that
+    # has client subjects. Admin cannot issue, so there is no admin list.
+    acmeAllowedProfiles:
+      - "acme-default"
+    estAllowedProfiles:
+      - "tls_client"
+      - "tls_server"
+      - "tls_server_client"
+      - "efs"
 
   # CA certificate and key
   # NIST 800-53: SC-12 (Cryptographic Key Establishment)
@@ -195,7 +233,7 @@ acme:
 
   # mTLS client identity for the CA gRPC API. Required when acme is enabled
   # (rendering fails without clientTls.existingSecret). The certificate subject
-  # must be in ca.grpc.allowedClientSubjects (default CN=acme-server) and carry
+  # must be in ca.grpc.acmeClientSubjects (default CN=acme-server) and carry
   # EKU clientAuth. NIST 800-53: SC-8, IA-3; NIAP PP-CA: FCS_TLSC_EXT.2
   caGrpc:
     # TLS server name to verify; empty = host of the CA gRPC URL ("<fullname>-ca").
@@ -263,7 +301,7 @@ est:
 
   # mTLS client identity for the CA gRPC API. Required when est is enabled
   # (rendering fails without clientTls.existingSecret). The certificate subject
-  # must be in ca.grpc.allowedClientSubjects (default CN=est-server) and carry
+  # must be in ca.grpc.estClientSubjects (default CN=est-server) and carry
   # EKU clientAuth. NIST 800-53: SC-8, IA-3; NIAP PP-CA: FCS_TLSC_EXT.2
   caGrpc:
     # TLS server name to verify; empty = host of the CA gRPC URL ("<fullname>-ca").

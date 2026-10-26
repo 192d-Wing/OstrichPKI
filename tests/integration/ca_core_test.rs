@@ -16,8 +16,8 @@
 mod common;
 
 use common::ca_grpc::{
-    assert_issued_certificate, build_issue_request, connect_ca, issue_test_certificate,
-    TEST_REQUESTOR,
+    assert_issued_certificate, build_issue_request, connect_ca, connect_ca_admin,
+    issue_test_certificate, TEST_ADMIN_REQUESTOR, TEST_REQUESTOR,
 };
 use common::{fixtures, generate_test_domain, http_client::create_test_client, TestConfig};
 use ostrich_protocol::{
@@ -314,12 +314,25 @@ async fn test_ca_revoke_certificate() {
     .await;
     assert_issued_certificate(&issued, &common_name, &spki);
 
-    // Revoke with reason keyCompromise (RFC 5280 §5.3.1)
-    let revoke_response = client
+    // AC-5 / AC-6: the issuer identity may not revoke.
+    let denied = client
         .revoke_certificate(tonic::Request::new(RevokeCertificateRequest {
             certificate_id: issued.certificate_id.clone(),
             reason: RevocationReason::KeyCompromise as i32,
             requestor: TEST_REQUESTOR.to_string(),
+            justification: "integration test: issuer must not revoke".to_string(),
+        }))
+        .await
+        .expect_err("issuer client must not revoke");
+    assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+
+    // Revoke with reason keyCompromise (RFC 5280 §5.3.1) as the admin identity
+    let mut admin = connect_ca_admin(&config.ca_grpc_endpoint).await;
+    let revoke_response = admin
+        .revoke_certificate(tonic::Request::new(RevokeCertificateRequest {
+            certificate_id: issued.certificate_id.clone(),
+            reason: RevocationReason::KeyCompromise as i32,
+            requestor: TEST_ADMIN_REQUESTOR.to_string(),
             justification: "integration test: simulated key compromise".to_string(),
         }))
         .await
@@ -332,8 +345,9 @@ async fn test_ca_revoke_certificate() {
         "revocation_time must be a valid timestamp"
     );
 
-    // Verify the certificate is now reported as revoked (RFC 6960 §2.2)
-    let status = client
+    // Verify the certificate is now reported as revoked (RFC 6960 §2.2);
+    // CheckRevocationStatus is admin-only.
+    let status = admin
         .check_revocation_status(tonic::Request::new(CheckRevocationStatusRequest {
             certificate_id: issued.certificate_id.clone(),
         }))
@@ -367,7 +381,14 @@ async fn test_ca_revoke_certificate() {
 #[ignore] // Requires live docker-compose environment (tests/integration/docker-compose.yml)
 async fn test_ca_generate_crl() {
     let config = TestConfig::default();
-    let mut client = connect_ca(&config.ca_grpc_endpoint).await;
+    // AC-6: GenerateCrl is admin-only; the issuer identity is refused.
+    let denied = connect_ca(&config.ca_grpc_endpoint)
+        .await
+        .generate_crl(tonic::Request::new(GenerateCrlRequest {}))
+        .await
+        .expect_err("issuer client must not generate CRLs");
+    assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+    let mut client = connect_ca_admin(&config.ca_grpc_endpoint).await;
 
     let crl = client
         .generate_crl(tonic::Request::new(GenerateCrlRequest {}))

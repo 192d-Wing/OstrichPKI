@@ -15,9 +15,14 @@ Getting Started
    kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-ca 8080:{{ .Values.ca.rest.service.port }} -n {{ .Release.Namespace }}
    curl http://localhost:8080/health
 
-3. Access the CA gRPC API (TLS 1.3 mTLS: client cert from an allow-listed subject required):
+3. Access the CA gRPC API (TLS 1.3 mTLS: client cert from a listed subject required;
+   each RPC is authorized per role, unmapped RPCs are denied):
    kubectl port-forward svc/{{ include "ostrich-pki.fullname" . }}-ca 50051:{{ .Values.ca.grpc.service.port }} -n {{ .Release.Namespace }}
-   Allowed client subjects: {{ include "ostrich-pki.caGrpcAllowedSubjects" . }}
+   ACME issuer clients: {{ include "ostrich-pki.caGrpcClientSubjects" (dict "key" "acmeClientSubjects" "subjects" .Values.ca.grpc.acmeClientSubjects) | default "(none)" }}
+   EST issuer clients:  {{ include "ostrich-pki.caGrpcClientSubjects" (dict "key" "estClientSubjects" "subjects" .Values.ca.grpc.estClientSubjects) | default "(none)" }}
+   Admin clients:       {{ include "ostrich-pki.caGrpcClientSubjects" (dict "key" "adminClientSubjects" "subjects" .Values.ca.grpc.adminClientSubjects) | default "(none: RevokeCertificate, GenerateCrl and CheckRevocationStatus are denied to everyone)" }}
+   ACME issuable profiles: {{ include "ostrich-pki.caGrpcAllowedProfiles" (dict "key" "acmeAllowedProfiles" "profiles" .Values.ca.grpc.acmeAllowedProfiles) | default "(none)" }}
+   EST issuable profiles:  {{ include "ostrich-pki.caGrpcAllowedProfiles" (dict "key" "estAllowedProfiles" "profiles" .Values.ca.grpc.estAllowedProfiles) | default "(none)" }}
    NetworkPolicy admits only acme/est pods to this port in-cluster; see docs/runbooks/ca-grpc-mtls.md
 
 {{- end }}

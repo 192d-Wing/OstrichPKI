@@ -134,18 +134,74 @@ struct Args {
 
     /// Trust anchors (PEM) for gRPC client certificates. Required: every gRPC
     /// client must present a certificate chaining to one of these.
-    /// NIST 800-53: IA-3, IA-5(2).
+    /// NIST 800-53: IA-3, IA-9, IA-5(2).
     #[arg(long = "grpc-tls-client-ca", env = "CA_GRPC_TLS_CLIENT_CA_FILE")]
     grpc_tls_client_ca: Option<String>,
 
-    /// `;`-separated RFC 4514 subject DNs allowed to call the gRPC service
-    /// (commas separate RDNs), e.g. "CN=acme-server;CN=est-server". Empty
-    /// means no client is authorised and the CA refuses to start.
+    /// `;`-separated RFC 4514 subject DNs (commas separate RDNs) of
+    /// acme-server identities: role `Issuer` (IssueCertificate, GetCaInfo,
+    /// ListProfiles), requestor namespace `acme::`. An empty value means none.
     /// NIST 800-53: AC-3, AC-6.
+    #[arg(
+        long = "grpc-acme-client-subjects",
+        env = "CA_GRPC_ACME_CLIENT_SUBJECTS",
+        value_delimiter = ';'
+    )]
+    grpc_acme_client_subjects: Vec<String>,
+
+    /// `;`-separated subject DNs of est-server identities: role `Issuer`,
+    /// requestor namespace `est::`. With the ACME list empty too, the CA
+    /// refuses to start. NIST 800-53: AC-3, AC-6.
+    #[arg(
+        long = "grpc-est-client-subjects",
+        env = "CA_GRPC_EST_CLIENT_SUBJECTS",
+        value_delimiter = ';'
+    )]
+    grpc_est_client_subjects: Vec<String>,
+
+    /// `;`-separated subject DNs of operator identities: role `Admin`
+    /// (RevokeCertificate, GenerateCrl, CheckRevocationStatus, GetCaInfo,
+    /// ListProfiles; never IssueCertificate), requestor namespace `admin::`.
+    /// Empty by default: nobody may revoke over gRPC. A subject may be in
+    /// one list only. NIST 800-53: AC-5, AC-6, CM-6.
+    #[arg(
+        long = "grpc-admin-client-subjects",
+        env = "CA_GRPC_ADMIN_CLIENT_SUBJECTS",
+        value_delimiter = ';'
+    )]
+    grpc_admin_client_subjects: Vec<String>,
+
+    /// `;`-separated certificate profiles the `acme::` namespace may request
+    /// over gRPC (exact names). Must name registered end-entity profiles; a
+    /// CA profile (e.g. `intermediate_ca`) or an unknown name refuses startup,
+    /// and so does an empty list while ACME subjects are configured.
+    /// NIST 800-53: AC-6(10), CM-6, CM-7.
+    #[arg(
+        long = "grpc-acme-allowed-profiles",
+        env = "CA_GRPC_ACME_ALLOWED_PROFILES",
+        value_delimiter = ';',
+        default_value = "acme-default"
+    )]
+    grpc_acme_allowed_profiles: Vec<String>,
+
+    /// `;`-separated certificate profiles the `est::` namespace may request
+    /// over gRPC. Same rules as `--grpc-acme-allowed-profiles`.
+    /// NIST 800-53: AC-6(10), CM-6, CM-7.
+    #[arg(
+        long = "grpc-est-allowed-profiles",
+        env = "CA_GRPC_EST_ALLOWED_PROFILES",
+        value_delimiter = ';',
+        default_value = "tls_client;tls_server;tls_server_client;efs"
+    )]
+    grpc_est_allowed_profiles: Vec<String>,
+
+    /// Removed single allowlist; setting it refuses startup with a migration
+    /// message naming the three role variables (CM-6).
     #[arg(
         long = "grpc-allowed-client-subjects",
         env = "CA_GRPC_ALLOWED_CLIENT_SUBJECTS",
-        value_delimiter = ';'
+        value_delimiter = ';',
+        hide = true
     )]
     grpc_allowed_client_subjects: Vec<String>,
 
@@ -248,6 +304,17 @@ async fn main() -> Result<()> {
     let grpc_mode = grpc_server_options(&args)
         .resolve(!cfg!(debug_assertions))
         .context("CA gRPC listener configuration rejected")?;
+    // SEC-001 / SEC-102: per-namespace issuance profile allowlists, validated
+    // against the profiles this CA registers: `ca_profiles` is the one list
+    // both validated here and registered on the CA in `bootstrap_ca`, so the
+    // two cannot drift (fail closed, before the database). `issue()` also
+    // refuses CA profiles to every gRPC caller at call time.
+    // NIST 800-53: AC-6(10), CM-6, CM-7, SC-24; NIAP PP-CA: FDP_ACF.1, FMT_MTD.1
+    let ca_profiles = default_profiles();
+    let issuer_profiles = Arc::new(
+        grpc_issuer_profiles(&args, &grpc_mode, &ca_profiles)
+            .context("CA gRPC listener configuration rejected")?,
+    );
 
     // Initialize database connection
     // NIST 800-53: SC-8 - Transmission Confidentiality
@@ -297,7 +364,7 @@ async fn main() -> Result<()> {
     // - NIAP PP-CA: FCS_STG_EXT.1 - CertificateAuthority::new validates the
     //   signing key is HSM-backed; software keys are rejected
     // - NIAP PP-CA: FMT_SMF.1 - CA initialization is a security management function
-    let (ca, ca_lineage) = match bootstrap_ca(&args, &db_pool).await? {
+    let (ca, ca_lineage) = match bootstrap_ca(&args, &db_pool, &ca_profiles).await? {
         Some((ca, lineage)) => (Some(ca), Some(lineage)),
         None => (None, None),
     };
@@ -428,10 +495,19 @@ async fn main() -> Result<()> {
             // ancestors are refused per call (`subscriber_issuing_ca`).
             let mut subscriber_cas: Vec<&[u8]> = vec![ca.certificate_der()];
             subscriber_cas.extend(ancestors.iter().map(Vec::as_slice));
+            // SC-24: the service is built from the listener mode, so the mTLS
+            // service always refuses calls without a verified peer; only the
+            // debug plaintext listener skips requestor binding.
+            let grpc_service = ostrich_ca::CaGrpcService::for_mode(
+                &grpc_mode,
+                ca.clone(),
+                issuer_profiles.clone(),
+            );
             let (_, task) = start_grpc_listener(
                 grpc_mode,
                 grpc_addr,
-                ostrich_ca::CaGrpcService::new(ca.clone()),
+                grpc_service,
+                issuer_profiles.summary(),
                 grpc_audit,
                 &subscriber_cas,
                 grpc_shutdown(grpc_stop_rx),
@@ -591,26 +667,50 @@ where
 }
 
 /// Build the gRPC listener options from CLI/env. An empty value (e.g. an
-/// unset `${VAR:-}` in compose) counts as not configured, and blank subject
-/// entries (a trailing `;`) are dropped; all-blank means unset, which the
-/// resolver refuses (fail closed).
+/// unset `${VAR:-}` in compose, or `CA_GRPC_ADMIN_CLIENT_SUBJECTS=""`) counts
+/// as not configured, and blank subject entries (a trailing `;`) are dropped;
+/// an all-blank role list means "no subjects". The resolver still refuses to
+/// start with neither an ACME nor an EST subject (fail closed).
 fn grpc_server_options(args: &Args) -> ostrich_common::GrpcServerOptions {
     let non_empty = |v: &Option<String>| v.clone().filter(|s| !s.trim().is_empty());
-    let subjects: Vec<String> = args
-        .grpc_allowed_client_subjects
-        .iter()
-        // ASCII padding only: an entry of Unicode whitespace (e.g. NBSP) is
-        // passed on and rejected by the allowlist parser (RFC-015).
-        .filter(|s| !s.trim_matches([' ', '\t', '\r', '\n']).is_empty())
-        .cloned()
-        .collect();
+    let subjects = |list: &[String]| -> Vec<String> {
+        list.iter()
+            // ASCII padding only: an entry of Unicode whitespace (e.g. NBSP)
+            // is passed on and rejected by the subject parser (RFC-015).
+            .filter(|s| !s.trim_matches([' ', '\t', '\r', '\n']).is_empty())
+            .cloned()
+            .collect()
+    };
     ostrich_common::GrpcServerOptions {
         cert_path: non_empty(&args.grpc_tls_cert),
         key_path: non_empty(&args.grpc_tls_key),
         client_ca_path: non_empty(&args.grpc_tls_client_ca),
-        allowed_subjects: subjects,
+        acme_subjects: subjects(&args.grpc_acme_client_subjects),
+        est_subjects: subjects(&args.grpc_est_client_subjects),
+        admin_subjects: subjects(&args.grpc_admin_client_subjects),
+        legacy_allowed_subjects: subjects(&args.grpc_allowed_client_subjects),
         insecure_dev_plaintext: args.grpc_insecure_dev_plaintext,
     }
+}
+
+/// Parse the per-namespace issuance profile allowlists
+/// (`CA_GRPC_{ACME,EST}_ALLOWED_PROFILES`) against `profiles`; an empty list
+/// is refused only for a namespace that has client subjects in `mode`.
+fn grpc_issuer_profiles(
+    args: &Args,
+    mode: &ostrich_common::GrpcServerMode,
+    profiles: &[ostrich_x509::CertificateProfile],
+) -> Result<ostrich_ca::grpc_authz::IssuerProfilePolicy> {
+    let clients = match mode {
+        ostrich_common::GrpcServerMode::Mtls { clients, .. } => Some(clients.as_ref()),
+        ostrich_common::GrpcServerMode::InsecureDevPlaintext => None,
+    };
+    Ok(ostrich_ca::grpc_authz::IssuerProfilePolicy::parse(
+        &args.grpc_acme_allowed_profiles,
+        &args.grpc_est_allowed_profiles,
+        clients,
+        profiles,
+    )?)
 }
 
 /// Load the issuing CA's ancestors (`lookup`, see [`walk_ca_ancestors`]) and
@@ -703,15 +803,22 @@ async fn audit_grpc_listener(
 ///
 /// mTLS mode binds the socket before returning (a bind failure is fatal), then
 /// serves `CertificateAuthorityService` behind the listener-wide
-/// [`ostrich_common::SubjectAllowlistLayer`]: only allow-listed client
-/// certificate subjects reach the service; others get PERMISSION_DENIED and an
+/// [`ostrich_common::SubjectAllowlistLayer`] with
+/// [`ostrich_ca::grpc_authz::CA_GRPC_METHOD_RULES`]: a call reaches the
+/// service only when the client subject is in a role list and the method
+/// table grants that role the RPC; others get PERMISSION_DENIED and an
 /// `access_denied` audit record, and failed TLS handshakes are audited as
-/// `tls_handshake_failed`.
+/// `tls_handshake_failed`. The startup record lists the effective client
+/// lists, method rules and per-namespace issuer profiles (CM-3).
 ///
 /// COMPLIANCE MAPPING:
-/// - NIST 800-53: AC-17 (mTLS inter-service), AC-3 / AC-6 (subject allowlist),
+/// - NIST 800-53: AC-17 (mTLS inter-service), AC-3 / AC-5 / AC-6 (per-role,
+///   per-method rules), CM-2 / CM-3 (effective policy audited at start),
 ///   SC-8 / SC-8(1) (TLS 1.3), SC-13 (aws-lc-rs FIPS, `fips()` asserted),
-///   IA-3 / IA-5(2) (client certificate authentication), AU-2 / AU-12
+///   IA-3 / IA-9 / IA-5(2) (client certificate authentication), AU-2 / AU-12,
+///   CM-7 (only the mapped RPCs and listed profiles), AC-6(9)
+///   (RevokeCertificate and GenerateCrl audited with the verified admin
+///   peer; CheckRevocationStatus is an unaudited read, NIST-102)
 /// - NIAP PP-CA: FTP_ITC.1, FCS_TLSS_EXT.1, FCS_TLSS_EXT.2, FDP_ACC.1,
 ///   FDP_ACF.1, FAU_GEN.1
 /// - RFC 8446 (TLS 1.3), RFC 7301 (ALPN h2), RFC 5280 §6 (client cert path validation)
@@ -728,6 +835,7 @@ async fn start_grpc_listener<S, F>(
     mode: ostrich_common::GrpcServerMode,
     grpc_addr: SocketAddr,
     service: S,
+    issuer_profiles: serde_json::Value,
     audit: Arc<dyn ostrich_audit::AuditSink>,
     subscriber_issuing_cas: &[&[u8]],
     shutdown: F,
@@ -741,10 +849,55 @@ where
     let service = CertificateAuthorityServiceServer::new(service);
     match mode {
         ostrich_common::GrpcServerMode::Mtls {
-            config, allowlist, ..
+            config,
+            clients,
+            client_anchors,
         } => {
+            let methods = ostrich_ca::grpc_authz::CA_GRPC_METHOD_RULES;
+            let method_rules = ostrich_common::grpc_tls::grpc_method_rules_summary(methods);
             let hook: Arc<dyn ostrich_common::auth::AuthAuditHook> =
                 Arc::new(ostrich_audit::AuthAuditAdapter::new(audit.clone()));
+            // SEC-203: build (and validate) the authorization layer before the
+            // socket is bound and before `grpc_listener_started` is written,
+            // so a rejected configuration never leaves a "started" record; the
+            // refusal is audited instead.
+            //
+            // COMPLIANCE MAPPING:
+            // - NIST 800-53: AU-2 / AU-3 (refusal recorded), CM-6, AC-3, IA-3
+            //   (fail closed at startup)
+            // - NIAP PP-CA: FAU_GEN.1, FPT_FLS.1, FIA_X509_EXT.1
+            let layer = match ostrich_common::SubjectAllowlistLayer::new(
+                clients.clone(),
+                methods,
+                Some(hook.clone()),
+                GRPC_LISTENER,
+            )
+            .with_subscriber_issuing_cas(subscriber_issuing_cas)
+            // SEC-101 / SEC-201: admin leaves must be issued directly by the
+            // single client trust anchor, matched by AKI = anchor SKI
+            // (NIST 800-53: AC-3, IA-3; NIAP FMT_SMR.2).
+            .and_then(|layer| layer.with_client_trust_anchors(&client_anchors))
+            {
+                Ok(layer) => layer,
+                Err(e) => {
+                    // The reason names configuration items only (variables,
+                    // certificate index); no key material.
+                    audit_grpc_listener(
+                        audit.as_ref(),
+                        ostrich_audit::EventType::ConfigurationChange,
+                        "grpc_listener_refused",
+                        ostrich_audit::EventOutcome::Failure,
+                        serde_json::json!({
+                            "check": "grpc_authorization_layer",
+                            "reason": e.to_string(),
+                        }),
+                    )
+                    .await;
+                    return Err(
+                        anyhow::Error::new(e).context("CA gRPC listener configuration rejected")
+                    );
+                }
+            };
             let mut incoming = ostrich_common::grpc_tls::bind_mtls_incoming(
                 grpc_addr,
                 config,
@@ -761,7 +914,9 @@ where
                 fips = true,
                 mtls = true,
                 aws_lc_version,
-                allowed_subjects = ?allowlist.subjects(),
+                clients = %clients.summary(),
+                method_rules = %method_rules,
+                issuer_profiles = %issuer_profiles,
                 "gRPC mTLS listener (TLS 1.3, FIPS)"
             );
             audit_grpc_listener(
@@ -774,15 +929,13 @@ where
                     "tls": "1.3",
                     "fips": true,
                     "aws_lc_version": aws_lc_version,
-                    "allowed_subjects": allowlist.subjects(),
+                    "clients": clients.summary(),
+                    "method_rules": method_rules,
+                    "issuer_profiles": issuer_profiles,
                     "address": bound.to_string(),
                 }),
             )
             .await;
-            let layer =
-                ostrich_common::SubjectAllowlistLayer::new(allowlist, Some(hook), GRPC_LISTENER)
-                    .with_subscriber_issuing_cas(subscriber_issuing_cas)
-                    .context("CA gRPC listener configuration rejected")?;
             let accept_task = incoming.take_accept_task();
             let flush_layer = layer.clone();
             let task = tokio::spawn(async move {
@@ -813,7 +966,8 @@ where
                  (CA_GRPC_INSECURE_DEV_PLAINTEXT=true, debug build)"
             );
             tracing::warn!(
-                "LOCAL DEVELOPMENT ONLY: any client can request issuance; never deploy \
+                "LOCAL DEVELOPMENT ONLY: any client can issue certificates, revoke \
+                 certificates and generate CRLs, with no verified audit actor; never deploy \
                  this build (NIST 800-53: SC-8, AC-3, AC-17)"
             );
             audit_grpc_listener(
@@ -855,6 +1009,7 @@ where
 async fn bootstrap_ca(
     args: &Args,
     db_pool: &ostrich_db::DatabasePool,
+    profiles: &[ostrich_x509::CertificateProfile],
 ) -> Result<Option<(Arc<ostrich_ca::CertificateAuthority>, CaLineage)>> {
     let repo = ostrich_db::repository::CaRepository::new(db_pool.clone());
 
@@ -972,11 +1127,16 @@ async fn bootstrap_ca(
     )
     .context("CertificateAuthority initialization failed")?;
 
-    // Register the default certificate profiles.
+    // Register the certificate profiles: the same list the gRPC
+    // IssuerProfilePolicy was validated against at startup (SEC-102).
     // NIAP PP-CA: FDP_IFC.1 - issuance policy definitions
-    // POAM: profiles should be loaded from the certificate_profiles table
-    // (CM-2: configuration as data) instead of code defaults.
-    for profile in default_profiles() {
+    // POAM: POAM-2026-10-23-38 - profiles should be loaded from the certificate_profiles table
+    // (CM-2: configuration as data) instead of code defaults. When they are,
+    // IssuerProfilePolicy must be re-validated against the stored profiles
+    // (unknown names and basic_constraints_ca refused) before the gRPC
+    // listener starts; until then `issue()` refuses CA profiles to every
+    // authenticated gRPC caller at call time (NIST-107).
+    for profile in profiles.iter().cloned() {
         tracing::info!(profile = %profile.name, "Registering certificate profile");
         ca.add_profile(profile);
     }
@@ -985,7 +1145,7 @@ async fn bootstrap_ca(
     // NIAP PP-CA: FDP_CER_EXT.3 - approval-required is the secure default.
     // When enabled, the issuer must hold the approval engine + repository so it
     // can verify the referenced request is Approved before issuing (otherwise
-    // issuance fails closed with "Approval repository not configured").
+    // issuance fails closed with an internal "approval workflow unavailable").
     let approval_config = ostrich_ca::approval::ApprovalConfig {
         require_approval: args.require_approval,
         ..Default::default()
@@ -1220,25 +1380,94 @@ mod tests {
         assert!(grpc_server_options(&args).resolve(false).is_err());
     }
 
-    /// `;` separates subjects (commas belong to the DN); blank values count as
-    /// unset so `${VAR:-}` in compose does not create an empty entry.
+    /// `;` separates subjects (commas belong to the DN) in each role list;
+    /// blank values count as unset so `${VAR:-}` in compose does not create
+    /// an empty entry.
     #[test]
     fn grpc_subjects_are_semicolon_delimited_and_blank_is_unset() {
         let args = parse(&[
-            "--grpc-allowed-client-subjects",
-            "CN=acme-server,O=Ostrich;CN=est-server",
+            "--grpc-acme-client-subjects",
+            "CN=acme-server,O=Ostrich;CN=integration-tests",
+            "--grpc-est-client-subjects",
+            "CN=est-server;",
+            "--grpc-admin-client-subjects",
+            "CN=ops-admin",
         ]);
+        let o = grpc_server_options(&args);
         assert_eq!(
-            grpc_server_options(&args).allowed_subjects,
+            o.acme_subjects,
             vec![
                 "CN=acme-server,O=Ostrich".to_string(),
-                "CN=est-server".to_string()
+                "CN=integration-tests".to_string()
             ]
         );
-        let blank = parse(&["--grpc-allowed-client-subjects", " ", "--grpc-tls-cert", ""]);
+        assert_eq!(o.est_subjects, vec!["CN=est-server".to_string()]);
+        assert_eq!(o.admin_subjects, vec!["CN=ops-admin".to_string()]);
+        assert!(o.legacy_allowed_subjects.is_empty());
+
+        let blank = parse(&[
+            "--grpc-acme-client-subjects",
+            " ",
+            "--grpc-est-client-subjects",
+            "",
+            "--grpc-admin-client-subjects",
+            "",
+            "--grpc-tls-cert",
+            "",
+        ]);
         let options = grpc_server_options(&blank);
-        assert!(options.allowed_subjects.is_empty());
+        assert!(options.acme_subjects.is_empty());
+        assert!(options.est_subjects.is_empty());
+        assert!(options.admin_subjects.is_empty());
         assert!(options.cert_path.is_none());
+    }
+
+    /// Deploy shape (compose / Helm / k8s): the admin list is always rendered,
+    /// usually as `""`, and the EST-only CI profile also sets the ACME list to
+    /// `""`. Blank role values mean "no subjects", not a parse error; both
+    /// issuer lists blank still refuses to start (CM-6, SC-24).
+    #[test]
+    fn grpc_blank_role_values_are_no_subjects() {
+        let client_ca = ca("Blank Roles Client CA");
+        let mut o = mtls_options(&client_ca.pem());
+        let args = parse(&[
+            "--grpc-acme-client-subjects",
+            "",
+            "--grpc-est-client-subjects",
+            "CN=est-server",
+            "--grpc-admin-client-subjects",
+            "",
+        ]);
+        let parsed = grpc_server_options(&args);
+        o.acme_subjects = parsed.acme_subjects;
+        o.est_subjects = parsed.est_subjects;
+        o.admin_subjects = parsed.admin_subjects;
+        let mode = o.clone().resolve(true).expect("EST-only with blank admin");
+        let ostrich_common::GrpcServerMode::Mtls { clients, .. } = mode else {
+            panic!("expected Mtls");
+        };
+        assert_eq!(
+            clients.summary(),
+            serde_json::json!({"acme": [], "est": ["CN=est-server"], "admin": []})
+        );
+
+        let args = parse(&[
+            "--grpc-acme-client-subjects",
+            "",
+            "--grpc-est-client-subjects",
+            " ; ",
+            "--grpc-admin-client-subjects",
+            "CN=ops-admin",
+        ]);
+        let parsed = grpc_server_options(&args);
+        o.acme_subjects = parsed.acme_subjects;
+        o.est_subjects = parsed.est_subjects;
+        o.admin_subjects = parsed.admin_subjects;
+        let err = o.resolve(true).expect_err("no issuer");
+        assert!(
+            err.to_string().contains("no issuer client configured"),
+            "{err}"
+        );
     }
 
     /// The dev plaintext flag resolves only outside release builds.
@@ -1252,18 +1481,70 @@ mod tests {
         ));
     }
 
-    /// NIST-013: an allowlist next to the dev plaintext flag is ambiguous.
+    /// NIST-013: a role list next to the dev plaintext flag is ambiguous.
     #[test]
     fn grpc_insecure_with_allowlist_is_ambiguous() {
+        for flag in [
+            "--grpc-acme-client-subjects",
+            "--grpc-est-client-subjects",
+            "--grpc-admin-client-subjects",
+        ] {
+            let args = parse(&["--grpc-insecure-dev-plaintext", flag, "CN=x"]);
+            let err = grpc_server_options(&args)
+                .resolve(false)
+                .expect_err("ambiguous");
+            assert!(err.to_string().contains("ambiguous"), "{flag}: {err}");
+        }
+    }
+
+    /// CM-6: the removed `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` refuses startup
+    /// with a migration message, in both modes.
+    #[test]
+    fn grpc_legacy_allowed_subjects_refuses_to_start() {
+        let client_ca = ca("Legacy Client CA");
+        let mut o = mtls_options(&client_ca.pem());
+        o.legacy_allowed_subjects = grpc_server_options(&parse(&[
+            "--grpc-allowed-client-subjects",
+            "CN=acme-server;CN=est-server",
+        ]))
+        .legacy_allowed_subjects;
+        let err = o.resolve(true).expect_err("legacy refused");
+        let msg = err.to_string();
+        assert!(msg.contains("CA_GRPC_ALLOWED_CLIENT_SUBJECTS"), "{msg}");
+        assert!(msg.contains("CA_GRPC_ACME_CLIENT_SUBJECTS"), "{msg}");
+        assert!(msg.contains("CA_GRPC_EST_CLIENT_SUBJECTS"), "{msg}");
+        assert!(msg.contains("CA_GRPC_ADMIN_CLIENT_SUBJECTS"), "{msg}");
+
         let args = parse(&[
             "--grpc-insecure-dev-plaintext",
             "--grpc-allowed-client-subjects",
             "CN=acme-server",
         ]);
-        let err = grpc_server_options(&args)
-            .resolve(false)
-            .expect_err("ambiguous");
-        assert!(err.to_string().contains("ambiguous"), "{err}");
+        assert!(grpc_server_options(&args).resolve(false).is_err());
+        // Blank legacy value (an unset `${VAR:-}`) is ignored.
+        let args = parse(&["--grpc-allowed-client-subjects", " ; "]);
+        assert!(
+            grpc_server_options(&args)
+                .legacy_allowed_subjects
+                .is_empty()
+        );
+    }
+
+    /// AC-5: a subject in two role lists refuses startup (canonical match).
+    #[test]
+    fn grpc_overlapping_role_lists_refuse_to_start() {
+        let client_ca = ca("Overlap Client CA");
+        let mut o = mtls_options(&client_ca.pem());
+        let parsed = grpc_server_options(&parse(&[
+            "--grpc-acme-client-subjects",
+            "CN=svc, O=Ostrich",
+            "--grpc-admin-client-subjects",
+            "CN=svc,O=Ostrich",
+        ]));
+        o.acme_subjects = parsed.acme_subjects;
+        o.admin_subjects = parsed.admin_subjects;
+        let err = o.resolve(true).expect_err("overlap");
+        assert!(err.to_string().contains("listed in both"), "{err}");
     }
 
     /// RFC-003 / SEC-007: a trailing `;` is dropped; `\;` cannot smuggle a
@@ -1271,27 +1552,150 @@ mod tests {
     /// escape is rejected).
     #[test]
     fn grpc_subject_delimiter_edge_cases() {
-        let args = parse(&["--grpc-allowed-client-subjects", "CN=a;CN=b;"]);
+        let args = parse(&["--grpc-acme-client-subjects", "CN=a;CN=b;"]);
         assert_eq!(
-            grpc_server_options(&args).allowed_subjects,
+            grpc_server_options(&args).acme_subjects,
             vec!["CN=a".to_string(), "CN=b".to_string()]
         );
         assert_eq!(
             ostrich_common::ClientSubjectAllowlist::parse(
-                &grpc_server_options(&args).allowed_subjects
+                &grpc_server_options(&args).acme_subjects
             )
             .expect("parse")
             .subjects(),
             &["CN=a".to_string(), "CN=b".to_string()]
         );
 
-        let args = parse(&["--grpc-allowed-client-subjects", r"CN=a\;CN=b"]);
-        let entries = grpc_server_options(&args).allowed_subjects;
+        let args = parse(&["--grpc-admin-client-subjects", r"CN=a\;CN=b"]);
+        let entries = grpc_server_options(&args).admin_subjects;
         assert_eq!(entries, vec![r"CN=a\".to_string(), "CN=b".to_string()]);
-        assert!(ostrich_common::ClientSubjectAllowlist::parse(&entries).is_err());
+        assert!(
+            ostrich_common::GrpcClientRegistry::parse(&["CN=acme".to_string()], &[], &entries)
+                .is_err()
+        );
 
-        let args = parse(&["--grpc-allowed-client-subjects", ";"]);
-        assert!(grpc_server_options(&args).allowed_subjects.is_empty());
+        let args = parse(&["--grpc-est-client-subjects", ";"]);
+        assert!(grpc_server_options(&args).est_subjects.is_empty());
+    }
+
+    // ---- fix round 1: issuer profile lists (SEC-001), service per mode
+    // (SEC-004 / QA-003), admin anchors (RFC-001) ----
+
+    fn profile_policy(
+        argv: &[&str],
+        mode: &ostrich_common::GrpcServerMode,
+    ) -> Result<ostrich_ca::grpc_authz::IssuerProfilePolicy> {
+        grpc_issuer_profiles(&parse(argv), mode, &default_profiles())
+    }
+
+    fn acme_est_mode() -> ostrich_common::GrpcServerMode {
+        let client_ca = ca("Profiles Client CA");
+        let mut o = mtls_options(&client_ca.pem());
+        o.est_subjects = vec!["CN=est-server".to_string()];
+        o.resolve(true).expect("mtls mode")
+    }
+
+    /// SEC-001: the default lists (acme-default; tls_client, tls_server,
+    /// tls_server_client, efs) parse against the registered profiles and
+    /// never include a CA profile.
+    #[test]
+    fn grpc_profile_defaults() {
+        let args = parse(&[]);
+        assert_eq!(args.grpc_acme_allowed_profiles, vec!["acme-default"]);
+        assert_eq!(
+            args.grpc_est_allowed_profiles,
+            vec!["tls_client", "tls_server", "tls_server_client", "efs"]
+        );
+        let mode = acme_est_mode();
+        let policy = profile_policy(&[], &mode).expect("defaults");
+        assert!(policy.allows("acme", "acme-default"));
+        assert!(!policy.allows("acme", "intermediate_ca"));
+        assert!(!policy.allows("est", "acme-default"));
+        assert!(policy.allows("est", "efs"));
+        for p in default_profiles().iter().filter(|p| p.basic_constraints_ca) {
+            assert!(!policy.allows_any(&p.name), "{}", p.name);
+        }
+        // Dev/test compose: ACME may also request tls_client.
+        let policy = profile_policy(
+            &["--grpc-acme-allowed-profiles", "acme-default;tls_client;"],
+            &mode,
+        )
+        .expect("dev list");
+        assert!(policy.allows("acme", "tls_client"));
+    }
+
+    /// SEC-001: startup refusals for a CA profile, an unknown profile and an
+    /// empty list for a namespace with subjects; EST-only accepts an empty or
+    /// default ACME list.
+    #[test]
+    fn grpc_profile_lists_refuse_to_start() {
+        let mode = acme_est_mode();
+        for argv in [
+            &[
+                "--grpc-acme-allowed-profiles",
+                "acme-default;intermediate_ca",
+            ][..],
+            &["--grpc-est-allowed-profiles", "intermediate_ca"][..],
+            &["--grpc-acme-allowed-profiles", "nope"][..],
+            &["--grpc-acme-allowed-profiles", ""][..],
+            &["--grpc-est-allowed-profiles", ";"][..],
+        ] {
+            let err = profile_policy(argv, &mode).expect_err("refused");
+            assert!(
+                format!("{err:#}").contains("ALLOWED_PROFILES"),
+                "{argv:?}: {err:#}"
+            );
+        }
+        let est_only = {
+            let client_ca = ca("EST-only Client CA");
+            let mut o = mtls_options(&client_ca.pem());
+            o.acme_subjects = vec![String::new()];
+            o.est_subjects = vec!["CN=est-server".to_string()];
+            o.resolve(true).expect("est-only mode")
+        };
+        profile_policy(&[], &est_only).expect("EST-only, default ACME list");
+        profile_policy(&["--grpc-acme-allowed-profiles", ""], &est_only)
+            .expect("EST-only, empty ACME list");
+        assert!(
+            profile_policy(
+                &["--grpc-acme-allowed-profiles", "intermediate_ca"],
+                &est_only
+            )
+            .is_err()
+        );
+    }
+
+    /// SEC-004 / QA-003 (M18): the service's peer requirement follows the
+    /// listener mode: always for mTLS; plaintext only skips it in debug.
+    #[test]
+    fn grpc_service_peer_requirement_follows_mode() {
+        let mode = acme_est_mode();
+        assert!(ostrich_ca::grpc::mode_requires_peer(&mode));
+        let dev = ostrich_common::GrpcServerOptions {
+            insecure_dev_plaintext: true,
+            ..Default::default()
+        }
+        .resolve(false)
+        .expect("dev");
+        assert_eq!(
+            ostrich_ca::grpc::mode_requires_peer(&dev),
+            !cfg!(debug_assertions)
+        );
+    }
+
+    /// RFC-001: an admin list with a two-anchor client CA file refuses to
+    /// start; one anchor is accepted.
+    #[test]
+    fn grpc_admin_requires_single_client_anchor() {
+        let a = ca("Anchor A");
+        let b = ca("Anchor B");
+        let mut o = mtls_options(&format!("{}{}", a.pem(), b.pem()));
+        o.admin_subjects = vec!["CN=ops-admin".to_string()];
+        let err = o.resolve(true).expect_err("two anchors with admin");
+        assert!(err.to_string().contains("trust anchors"), "{err}");
+        let mut o = mtls_options(&a.pem());
+        o.admin_subjects = vec!["CN=ops-admin".to_string()];
+        o.resolve(true).expect("one anchor");
     }
 
     // ---- start_grpc_listener with an injected audit sink (QA-002) ----
@@ -1382,8 +1786,8 @@ mod tests {
             cert_path: Some(write_tmp("cert", &cert.pem())),
             key_path: Some(write_tmp("key", &key.serialize_pem())),
             client_ca_path: Some(write_tmp("client-ca", client_ca_pem)),
-            allowed_subjects: vec!["CN=acme-server".to_string()],
-            insecure_dev_plaintext: false,
+            acme_subjects: vec!["CN=acme-server".to_string()],
+            ..Default::default()
         }
     }
 
@@ -1395,7 +1799,7 @@ mod tests {
     }
 
     /// AU-2 / AU-3: the mTLS listener writes `grpc_listener_started` with its
-    /// mode, TLS/FIPS facts, allowlist and bound address.
+    /// mode, TLS/FIPS facts, client lists, method rules and bound address.
     #[tokio::test]
     async fn start_grpc_listener_mtls_audits_start() {
         let client_ca = ca("Test gRPC Client CA");
@@ -1407,6 +1811,7 @@ mod tests {
             mode,
             "127.0.0.1:0".parse().unwrap(),
             NoCa,
+            serde_json::json!({"acme": ["acme-default"], "est": []}),
             sink.clone(),
             &[],
             std::future::pending::<()>(),
@@ -1427,9 +1832,85 @@ mod tests {
         assert_eq!(d["mode"], "mtls");
         assert_eq!(d["tls"], "1.3");
         assert_eq!(d["fips"], true);
-        assert_eq!(d["allowed_subjects"], serde_json::json!(["CN=acme-server"]));
+        assert_eq!(
+            d["clients"],
+            serde_json::json!({"acme": ["CN=acme-server"], "est": [], "admin": []})
+        );
+        // CM-3: the effective method table is part of the record.
+        let rules = d["method_rules"].as_array().expect("method_rules");
+        assert_eq!(
+            rules.len(),
+            ostrich_ca::grpc_authz::CA_GRPC_METHOD_RULES.len()
+        );
+        let issue = rules
+            .iter()
+            .find(|r| r["path"] == "/ostrich.ca.v1.CertificateAuthorityService/IssueCertificate")
+            .expect("IssueCertificate rule");
+        assert_eq!(issue["roles"], serde_json::json!(["issuer"]));
+        // SEC-001: the per-namespace issuer profile lists are recorded.
+        assert_eq!(
+            d["issuer_profiles"],
+            serde_json::json!({"acme": ["acme-default"], "est": []})
+        );
         assert_eq!(d["address"], bound.to_string());
         assert!(d["aws_lc_version"].is_string());
+    }
+
+    /// SEC-203 / SEC-201: a configuration the authorization layer rejects
+    /// (admin subjects with a client trust anchor that has no
+    /// subjectKeyIdentifier, or an unparsable subscriber-issuing CA) writes
+    /// only `grpc_listener_refused`, never `grpc_listener_started`, and the
+    /// listener does not start.
+    #[tokio::test]
+    async fn start_grpc_listener_refusal_is_audited_without_started_record() {
+        // Self-signed, not a CA in rcgen terms: no subjectKeyIdentifier.
+        let mut p = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+        p.distinguished_name = rcgen::DistinguishedName::new();
+        p.distinguished_name
+            .push(rcgen::DnType::CommonName, "SKI-less Client CA");
+        let ski_less = p
+            .self_signed(&rcgen::KeyPair::generate().expect("key"))
+            .expect("anchor");
+        let mut opts = mtls_options(&ski_less.pem());
+        opts.admin_subjects = vec!["CN=ops-admin".to_string()];
+        let client_ca = ca("Test gRPC Client CA");
+        let cases: [(ostrich_common::GrpcServerOptions, &[&[u8]], &str); 2] = [
+            (opts, &[], "no subjectKeyIdentifier"),
+            (
+                mtls_options(&client_ca.pem()),
+                &[b"junk".as_slice()],
+                "cannot be parsed",
+            ),
+        ];
+        for (opts, subscriber_cas, needle) in cases {
+            let mode = opts.resolve(true).expect("mtls mode");
+            let sink = Arc::new(ostrich_audit::MemoryAuditSink::new());
+            let err = start_grpc_listener(
+                mode,
+                "127.0.0.1:0".parse().unwrap(),
+                NoCa,
+                serde_json::json!({"acme": [], "est": []}),
+                sink.clone(),
+                subscriber_cas,
+                std::future::pending::<()>(),
+            )
+            .await
+            .expect_err("configuration rejected");
+            assert!(format!("{err:#}").contains(needle), "{err:#}");
+            let events = recorded(&sink).await;
+            assert_eq!(events.len(), 1, "{needle}: {} records", events.len());
+            let ev = &events[0];
+            assert_eq!(ev.action, "grpc_listener_refused");
+            assert_eq!(ev.event_type, ostrich_audit::EventType::ConfigurationChange);
+            assert_eq!(ev.outcome, ostrich_audit::EventOutcome::Failure);
+            assert_eq!(ev.target, GRPC_LISTENER);
+            let d = ev.details.as_ref().expect("details");
+            assert_eq!(d["check"], "grpc_authorization_layer");
+            assert!(
+                d["reason"].as_str().expect("reason").contains(needle),
+                "{needle}"
+            );
+        }
     }
 
     /// CM-6 / AU-2: the debug-only plaintext listener writes a
@@ -1447,6 +1928,7 @@ mod tests {
             mode,
             "127.0.0.1:0".parse().unwrap(),
             NoCa,
+            serde_json::json!({"acme": ["acme-default"], "est": []}),
             sink.clone(),
             &[],
             std::future::pending::<()>(),
@@ -1702,6 +2184,7 @@ mod tests {
             mode,
             "127.0.0.1:0".parse().unwrap(),
             NoCa,
+            serde_json::json!({}),
             sink,
             &[issuing.der().as_ref()],
             async move {

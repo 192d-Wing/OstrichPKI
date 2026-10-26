@@ -16,8 +16,14 @@ use ostrich_protocol::{
 use tonic::transport::Channel;
 use x509_parser::prelude::*;
 
-/// Requestor identity used for audit attribution (NIST 800-53: AU-3)
-pub const TEST_REQUESTOR: &str = "integration-tests::ca_core";
+/// Requestor claimed by the issuer test client (`CN=integration-tests`, in
+/// `CA_GRPC_ACME_CLIENT_SUBJECTS` in the integration compose): it must be in
+/// the `acme::` namespace and is recorded as on_behalf_of (NIST 800-53: AU-3).
+pub const TEST_REQUESTOR: &str = "acme::integration-tests-ca-core";
+
+/// Requestor claimed by the admin test client (`CN=integration-admin`, in
+/// `CA_GRPC_ADMIN_CLIENT_SUBJECTS`).
+pub const TEST_ADMIN_REQUESTOR: &str = "admin::integration-tests";
 
 /// Type alias for the connected CA gRPC client
 pub type CaClient = CertificateAuthorityServiceClient<Channel>;
@@ -26,7 +32,9 @@ pub type CaClient = CertificateAuthorityServiceClient<Channel>;
 fn pem_from_env(var: &str) -> String {
     match std::env::var(var).ok().filter(|p| !p.is_empty()) {
         Some(path) => std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{var}={path}: cannot read PEM: {e}")),
+            // The message names neither the variable nor the path (CodeQL
+            // rust/cleartext-logging); the I/O error kind is enough to debug.
+            .unwrap_or_else(|e| panic!("cannot read a configured PEM file: {:?}", e.kind())),
         None => String::new(),
     }
 }
@@ -43,10 +51,33 @@ fn pem_from_env(var: &str) -> String {
 ///
 /// NIST 800-53: SC-8 / AC-17 - the tests use the production transport path.
 pub async fn connect_ca(endpoint: &str) -> CaClient {
+    connect_with(
+        endpoint,
+        "CA_GRPC_CLIENT_CERT_FILE",
+        "CA_GRPC_CLIENT_KEY_FILE",
+    )
+    .await
+}
+
+/// Connect to the CA gRPC endpoint as the admin identity
+/// (`CA_GRPC_ADMIN_CLIENT_CERT_FILE` / `CA_GRPC_ADMIN_CLIENT_KEY_FILE`, the
+/// `CN=integration-admin` certs written by `make dev-grpc-certs`). Only the
+/// admin role may call RevokeCertificate, GenerateCrl and
+/// CheckRevocationStatus (NIST 800-53: AC-5, AC-6).
+pub async fn connect_ca_admin(endpoint: &str) -> CaClient {
+    connect_with(
+        endpoint,
+        "CA_GRPC_ADMIN_CLIENT_CERT_FILE",
+        "CA_GRPC_ADMIN_CLIENT_KEY_FILE",
+    )
+    .await
+}
+
+async fn connect_with(endpoint: &str, cert_var: &str, key_var: &str) -> CaClient {
     let config = ostrich_common::GrpcClientConfig {
         endpoint: endpoint.to_string(),
-        client_cert_pem: pem_from_env("CA_GRPC_CLIENT_CERT_FILE"),
-        client_key_pem: zeroize::Zeroizing::new(pem_from_env("CA_GRPC_CLIENT_KEY_FILE")),
+        client_cert_pem: pem_from_env(cert_var),
+        client_key_pem: zeroize::Zeroizing::new(pem_from_env(key_var)),
         ca_cert_pem: pem_from_env("CA_GRPC_CA_CERT_FILE"),
         server_name: std::env::var("CA_GRPC_SERVER_NAME")
             .ok()

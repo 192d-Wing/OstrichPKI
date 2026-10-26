@@ -35,7 +35,10 @@ spec:
         - protocol: TCP
           port: {{ .Values.ca.rest.port }}
     # gRPC issuance API: only the RA front ends (acme, est) may connect.
-    # Defence in depth in front of mTLS + the client-subject allowlist.
+    # Defence in depth in front of mTLS + the per-role, per-method gRPC
+    # authorization (ca.grpc.*ClientSubjects). Admin-role tools are not
+    # admitted here; they connect via kubectl port-forward or an
+    # operator-supplied NetworkPolicy.
     # NIST 800-53: AC-4, SC-7, AC-6
     - from:
         - podSelector:

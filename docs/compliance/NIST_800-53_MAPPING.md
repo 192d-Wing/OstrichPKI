@@ -1,7 +1,7 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 2.9
-**Date:** 2026-10-25
+**Document Version:** 3.0
+**Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
 **Compliance Status:** Enhanced (75-80%)
@@ -83,7 +83,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - FMT_MOF.1 - Management of Security Functions Behavior
 - FMT_MTD.1 - Management of TSF Data
 - FDP_CER_EXT.3 - Certificate Issuance Approval
-- FDP_ACC.1 / FDP_ACF.1 - Access Control Policy / Functions (CA gRPC subject allowlist, 2026-10-25)
+- FDP_ACC.1 / FDP_ACF.1 - Access Control Policy / Functions (CA gRPC subject allowlist, 2026-10-25; per-role method table, 2026-10-26)
 
 **Implementation:**
 
@@ -134,29 +134,50 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - `DisabledAuthProvider` at `crates/ostrich-common/src/auth/provider.rs` provides
   a fail-closed placeholder: any service running without a real `AuthProvider`
   wired in returns 401 for every protected route.
-- **CA gRPC issuance API (2026-10-25, branch `claude/grpc-mtls`, uncommitted):**
+- **CA gRPC API (2026-10-25, branch `claude/grpc-mtls`; per-method since
+  2026-10-26, branch `claude/grpc-per-method-authz`, uncommitted):**
   `SubjectAllowlistLayer` in
-  [grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs) is a listener-wide
-  tower layer on the ca-server gRPC listener
+  [grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs) is a tower layer
+  on the ca-server gRPC listener
   ([services/ca-server/src/main.rs](../../services/ca-server/src/main.rs)
-  `start_grpc_listener`). It admits a call only if the verified client
-  certificate carries an extendedKeyUsage extension that includes `clientAuth`
-  and its RFC 4514 subject DN exactly matches an entry of
-  `CA_GRPC_ALLOWED_CLIENT_SUBJECTS`. Everything else is denied by default,
-  including RPCs added later: `UNAUTHENTICATED` (no client certificate) or
-  `PERMISSION_DENIED` (`subject_not_allowlisted`, `unparsable_certificate`,
-  `missing_client_auth_eku`). The `access_denied` audit record is written
-  before the status is returned. An empty allowlist stops the process at
-  startup. This is a **service-identity** decision for the whole listener, not
-  a per-method or per-user RBAC decision.
+  `start_grpc_listener`). Each verified client subject maps to exactly one
+  role from three lists: `CA_GRPC_ACME_CLIENT_SUBJECTS` /
+  `CA_GRPC_EST_CLIENT_SUBJECTS` (Issuer, namespaces `acme` / `est`) and
+  `CA_GRPC_ADMIN_CLIENT_SUBJECTS` (Admin, empty by default). The method table
+  `CA_GRPC_METHOD_RULES` in
+  [grpc_authz.rs](../../crates/ostrich-ca/src/grpc_authz.rs) grants Issuer
+  IssueCertificate, GetCaInfo and ListProfiles, and Admin RevokeCertificate,
+  GenerateCrl, CheckRevocationStatus, GetCaInfo and ListProfiles (never
+  IssueCertificate). A call is admitted only if the leaf is valid at call
+  time, carries an EKU extension with `clientAuth`, was not issued by the
+  subscriber-issuing CA, its subject is in a role list, and the exact gRPC
+  path has a rule for that role; Admin leaves must also be issued directly by
+  the single client trust anchor. Everything else is denied by default,
+  including RPCs added later: `UNAUTHENTICATED` (`no_client_certificate`,
+  `unparsable_certificate`, `certificate_not_valid_now`) or
+  `PERMISSION_DENIED` (`missing_client_auth_eku`, `subscriber_issuing_ca`,
+  `subject_not_allowlisted`, `method_not_mapped`, `method_not_permitted`,
+  `admin_issuer_not_anchor`). In the service, Issue and Revoke bind the
+  client `requestor` to the caller's namespace (`requestor_missing`,
+  `requestor_namespace_mismatch`, `requestor_invalid`) and Issue checks the
+  namespace's profile allowlist (`profile_not_permitted`). The
+  `access_denied` audit record is written before the status is returned.
+  Startup is refused with no issuer subject, a subject in two lists, the
+  removed `CA_GRPC_ALLOWED_CLIENT_SUBJECTS`, or an invalid profile list.
+  Evidence: `authorize_peer_method_matrix`, `rules_cover_every_proto_rpc`,
+  e2e `role_method_matrix` and `unknown_method_denied` (TEST_EVIDENCE.md).
+  This is per-method, per-service-identity RBAC; it is not per-user
+  `Permission` RBAC.
 
 **Gaps:**
 
-- CA gRPC: one allowlist covers every RPC, so an allow-listed RA
-  (acme-server, est-server) can also call `RevokeCertificate` and
-  `GenerateCrl` (POAM-2026-10-23-26). Allowlist entries bind the subject DN
-  only, not the issuer or key (POAM-2026-10-23-28); a dedicated
-  service-identity client CA, enforced in part at startup, compensates.
+- CA gRPC: Issuer-role entries bind the subject DN only, not the issuer or
+  key (POAM-2026-10-23-28, open for Issuer roles; Admin requires direct
+  issuance by the single anchor); a dedicated service-identity client CA,
+  enforced in part at startup, compensates. A compromised RA can still issue
+  under any id of its own namespace with that namespace's profiles
+  (POAM-2026-10-23-35). The per-method split (POAM-2026-10-23-26) is closed
+  pending commit.
 - Real `AuthProvider` implementations (password DB, mTLS, OIDC) are not yet wired
   into `services/ca-server`, `services/scms-server`, `services/kra-server`.
   The enforcement scaffolding is complete and fail-closed; a follow-up PR
@@ -215,8 +236,10 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   (`ca-restrict-grpc-port`, listed in `kustomization.yaml`) admits port 50051
   only from pods with `app` in (`acme-server`, `est-server`). Port 8080 stays
   open to any source, as before. Ingress only; egress is unchanged.
-- The policy is defence in depth in front of TLS 1.3 mTLS and the
-  client-subject allowlist (AC-3, IA-3). It also keeps other in-cluster pods
+- The policy is defence in depth in front of TLS 1.3 mTLS and the per-role
+  client-subject lists and method table (AC-3, IA-3). Admin (operator) tools
+  are not admitted by either policy; they reach the port through
+  `kubectl port-forward` or an operator-added policy (runbook, Admin access). It also keeps other in-cluster pods
   from holding the listener's pre-handshake connection slots (SC-5).
 
 **Evidence:**
@@ -281,6 +304,19 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   (services/ca-server `bootstrap_ca`), and the REST issue handler now accepts
   `approval_request_id` (previously hardcoded to None, which made the
   secure-default path always fail).
+- **CA gRPC service identities (2026-10-26, branch
+  `claude/grpc-per-method-authz`, uncommitted):** issuance and revocation are
+  held by disjoint identities. `GrpcClientRegistry::parse`
+  ([grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs)) refuses startup
+  when a subject is in more than one of `CA_GRPC_ACME_CLIENT_SUBJECTS`,
+  `CA_GRPC_EST_CLIENT_SUBJECTS` and `CA_GRPC_ADMIN_CLIENT_SUBJECTS` (also for
+  ASCII case variants), and the method table gives Issuer no revocation /
+  CRL / status RPC and Admin no IssueCertificate. The gRPC Admin role is the
+  CA Operations Staff role on this interface (FMT_SMR.2); one admin
+  certificate per named operator is required by the runbook
+  (`docs/runbooks/ca-grpc-mtls.md`, Admin access). Tests:
+  `registry_rejects_overlap_canonical`, `registry_refuses_case_variant_overlap`,
+  `rules_match_policy_table`, e2e `role_method_matrix`.
 
 **Gaps:**
 
@@ -314,7 +350,7 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 **NIAP Mapping:**
 
 - FMT_MOF.1 - Management of Security Functions Behavior
-- FDP_ACC.1 / FDP_ACF.1 - Access Control Policy / Functions (CA gRPC allowlist; per-method not yet)
+- FDP_ACC.1 / FDP_ACF.1 - Access Control Policy / Functions (CA gRPC per-role method table, 2026-10-26)
 
 **Implementation:**
 
@@ -324,18 +360,34 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 
 - ✅ Cryptographic operations use key handles, not direct key material
 - ✅ HSM design enforces least privilege (keys never leave HSM)
-- 🟡 CA gRPC (2026-10-25): only allow-listed service identities reach the
-  issuance API, default deny (see AC-3). It is not least privilege per method:
-  ACME and EST can also call `RevokeCertificate` / `GenerateCrl`
-  (POAM-2026-10-23-26)
+- ✅ CA gRPC per-method least privilege (2026-10-26, branch
+  `claude/grpc-per-method-authz`, uncommitted; see AC-3): ACME and EST may call
+  only IssueCertificate, GetCaInfo and ListProfiles; Admin may not issue; the
+  admin list is empty by default. Tests: `authorize_peer_method_matrix`,
+  e2e `role_method_matrix`, `admin_list_empty_default_denies_revoke_crl_status_for_all`
+- ✅ AC-6(10) (prohibit non-privileged users from executing privileged
+  functions): issuer identities cannot revoke or generate CRLs, and may
+  request only the end-entity profiles listed for their namespace
+  (`CA_GRPC_ACME_ALLOWED_PROFILES` default `acme-default`,
+  `CA_GRPC_EST_ALLOWED_PROFILES` default
+  `tls_client;tls_server;tls_server_client;efs`); CA profiles
+  (`basic_constraints_ca`) refuse startup and are refused again at call time
+  in `issue()` (`ca_profile_not_permitted`). Tests:
+  `profile_policy_refuses_bad_configuration`,
+  `caller_profile_refusal_blocks_ca_profiles_for_service_callers`, e2e
+  `issuer_profile_allowlist_enforced_and_audited`
+- 🟡 AC-6(9) (log use of privileged functions): RevokeCertificate and
+  GenerateCrl are audited with the verified admin peer as actor;
+  CheckRevocationStatus is an unaudited admin read (only its denials are
+  audited). Handler-level live evidence is pending (POAM-2026-10-23-36)
 - 🔴 No user privilege levels
 
 **Gaps:**
 
 - No user role privilege restrictions
 - All operations available to all users
-- CA gRPC per-method allowlists (issuance-only for ACME/EST) pending
-  (POAM-2026-10-23-26)
+- CA gRPC: authorized `CheckRevocationStatus` reads are not audited
+  (accepted); RA namespace confused deputy (POAM-2026-10-23-35)
 
 **Remediation:** Phase 16 - Assign minimum necessary permissions to each role
 
@@ -500,9 +552,16 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   - `access_denied` (Authorization / Failure): actor = peer DN (or `unknown`),
     target = gRPC method path, remote IP, `details.reason` one of
     `subject_not_allowlisted`, `unparsable_certificate`,
-    `no_client_certificate`, `missing_client_auth_eku`,
-    `subscriber_issuing_ca` (leaf issued by this CA or a database ancestor),
-    plus `details.listener`;
+    `no_client_certificate`, `certificate_not_valid_now`,
+    `missing_client_auth_eku`, `subscriber_issuing_ca` (leaf issued by this
+    CA or a database ancestor), `method_not_mapped`, `method_not_permitted`,
+    `admin_issuer_not_anchor` (layer), and `requestor_missing`,
+    `requestor_namespace_mismatch`, `requestor_invalid`,
+    `profile_not_permitted` (service, same limiter; 2026-10-26), plus
+    `details.listener`, `peer_issuer` / `peer_serial` for a parsed leaf, and
+    `role` / `namespace` for a known subject; requestor denials add
+    `claimed_namespace` / `expected_namespace`, profile denials
+    `requested_profile` / `namespace`;
   - `access_denied_suppressed` (Authorization / Failure): summary
     `{count, window_secs, window_start, window_end, distinct_sources,
     distinct_sources_capped}` when denials exceed the per-listener limit;
@@ -515,7 +574,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   - `tls_handshake_failures_suppressed` (Authentication / Failure): summary
     with the same fields;
   - `grpc_listener_started` (System / Success): `{mode: "mtls", tls: "1.3",
-    fips: true, aws_lc_version, allowed_subjects, address}`;
+    fips: true, aws_lc_version, clients: {acme, est, admin}, method_rules:
+    [{path, roles}], issuer_profiles, address}` (2026-10-26; replaces
+    `allowed_subjects`);
   - `grpc_insecure_dev_plaintext_enabled` (ConfigurationChange / Success,
     debug builds only): `{build: "debug", address}`;
   - `grpc_listener_refused` (ConfigurationChange / Failure, round 2):
@@ -523,8 +584,29 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
     trust-anchor check or the CA-database ancestor walk refuses startup
     (`check_grpc_trust_anchors` in
     [main.rs](../../services/ca-server/src/main.rs); test
-    `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal`). Best effort:
-    a failed write is logged and the refusal still applies.
+    `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal`), and
+    `{check: "grpc_authorization_layer", reason}` (2026-10-26) when building
+    the authorization layer fails (admin list with an anchor file that is not
+    one distinct parsable anchor, an anchor without SKI, or an unparsable
+    subscriber-issuing CA); the socket is not bound and no
+    `grpc_listener_started` is written (test
+    `start_grpc_listener_refusal_is_audited_without_started_record`). Best
+    effort: a failed write is logged and the refusal still applies;
+  - gRPC issuance, revocation and CRL records (2026-10-26): actor = verified
+    peer DN (AU-3 below). Revocation Failure records carry `details.failure`
+    (`invalid_certificate_id`, `invalid_reason`, `certificate_not_found`,
+    `lookup_failed`, `database_error`, `already_revoked`); full and delta CRL
+    generation Failure records carry `details.failure`
+    (`revoked_lookup_failed`, `crl_number_failed`, `unsupported_ca_key_type`,
+    `crl_build_failed`, `signing_failed`, `crl_encoding_failed`,
+    `crl_store_failed`, `base_crl_lookup_failed`, `no_base_crl`); issuance of
+    a CA profile by a gRPC caller writes a Failure record with
+    `failure: ca_profile_not_permitted`. Tests (pure builders):
+    `revocation_failure_event_contents`, `crl_failure_event_contents`,
+    `caller_profile_refusal_blocks_ca_profiles_for_service_callers`; the
+    database paths were not executed (POAM-2026-10-23-36). Authorized
+    `CheckRevocationStatus`, `GetCaInfo` and `ListProfiles` calls are not
+    audited (reads)
 
   Both failure kinds are limited to 60 records per 60 s per listener. The
   suppressed count is flushed by a timer every window and when the accept loop
@@ -584,14 +666,26 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - ✅ **AU-3(1)**: Service tracking (`issuer_service` field in certificates)
 - ✅ **AU-3(b)**: Requestor identity tracking (`requestor` field in certificates)
 - ✅ **AU-3(1)**: Service-specific metadata (ACME order ID, EST enrollment ID)
-- 🟡 CA gRPC calls (2026-10-25): `IssueCertificate`, `RevokeCertificate` and
-  `GenerateCrl` in [grpc.rs](../../crates/ostrich-ca/src/grpc.rs) log the
-  authenticated peer subject (`peer_subject`) next to the stored `request_id`
-  with `tracing::info!`. This is an operational log for correlation only. The
-  `actor` of the issuance and revocation audit records is still the
-  client-asserted `requestor` field, not the authenticated peer
-  (POAM-2026-10-23-25). Denial records (`access_denied`) do carry the verified
-  peer DN as actor (AU-2)
+- ✅ CA gRPC calls (2026-10-26, branch `claude/grpc-per-method-authz`,
+  uncommitted; closes POAM-2026-10-23-25 pending commit): the `actor` of
+  issuance, revocation and CRL records written for `IssueCertificate`,
+  `RevokeCertificate` and `GenerateCrl` in
+  [grpc.rs](../../crates/ostrich-ca/src/grpc.rs) is the verified mTLS peer
+  subject DN (`issuance_request`, `revocation_request`, `crl_actor`;
+  `audit_identity` in [issuance.rs](../../crates/ostrich-ca/src/issuance.rs)).
+  Details add `authenticated_caller`, `authenticated_caller_issuer`,
+  `authenticated_caller_serial` (lowercase hex of the DER INTEGER content
+  octets, sign byte included) and `on_behalf_of` (the requestor, validated
+  against the caller's namespace). The stored `certificates.requestor` stays
+  the validated requestor. REST full and delta CRL records carry the
+  authenticated user (`generate` / `generate_delta`); `system` is the
+  scheduler only. Tests: `issuance_request_carries_verified_caller`,
+  `revocation_request_carries_verified_caller`, `crl_actor_is_verified_peer`,
+  `audit_identity_with_caller_uses_peer_as_actor`,
+  `delta_crl_audit_event_actor` (mutations M11-M13, M12r, M26 killed).
+  Residuals: handler glue (M13h) and the live `audit_signing_e2e` assertions
+  NOT RUN (POAM-2026-10-23-36); `on_behalf_of` is a namespace-bound claim,
+  not a verified account (POAM-2026-10-23-35)
 
 **Phase 12 Enhancements:**
 
@@ -890,10 +984,21 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - ✅ **Live tamper-detection proof (mechanism)**: [crates/ostrich-audit/tests/signed_chain_tamper.rs](../../crates/ostrich-audit/tests/signed_chain_tamper.rs) writes signed records to Postgres, forges the last record's content and recomputes its `event_hash` (which fools the hash-only `verify_chain`), and shows `verify_signed_chain` still detects it because the stale signature no longer verifies over the forged hash.
 - ✅ **Live end-to-end proof (production wiring)**: [crates/ostrich-ca/src/audit_signing_e2e.rs](../../crates/ostrich-ca/src/audit_signing_e2e.rs) builds a `CertificateAuthority` backed by a SoftHSM (PKCS#11) ECDSA key, performs a real revocation, and asserts the resulting audit record is signed (`signature` non-null, `signing_key_id` = CA key) and that `verify_signed_chain` accepts it against the CA public key — and rejects it after a signature byte is corrupted.
 - 🟡 **RSA PKCS#11 CA keys (added 2026-10-23, NIST-005):** audit records are signed with `ca_key.algorithm` ([crates/ostrich-ca/src/ca.rs](../../crates/ostrich-ca/src/ca.rs), `CertificateAuthority::new`). For an RSA key generated through `Pkcs11Provider` that algorithm is `RsaPssSha256`. Before the 2026-10-23 fix, PKCS#11 RSA-PSS `C_Sign` failed (`CKR_GENERAL_ERROR`), so **audit-record signing with an RSA PKCS#11 CA key did not work**. X.509 certificate, CRL and OCSP signing with RSA CA keys uses PKCS#1 v1.5 (`recommended_signature_algorithm`, [crates/ostrich-x509/src/signing.rs](../../crates/ostrich-x509/src/signing.rs)) and was not affected. The provider fix is verified on SoftHSM 2.6.1 (Linux CI [run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654): 28 passed / 0 failed / 1 ignored, exit 0) and SoftHSM 2.7.0 (local, 28/0/1); POAM-2026-10-23-17 closed 2026-10-23. SoftHSM is a test double; the production HSM is not yet validated (POAM-2026-10-23-21). `audit_signing_e2e` covers an EC P-256 CA key only; there is no RSA variant yet, so this bullet stays 🟡
+- 🟡 **CA gRPC actor in signed records (2026-10-26, branch
+  `claude/grpc-per-method-authz`, uncommitted):** the signed issuance,
+  revocation and CRL records for gRPC calls now name the verified mTLS peer
+  as actor, with its certificate issuer and serial, instead of the
+  client-asserted `requestor` (see AU-3; POAM-2026-10-23-25 closed pending
+  commit). `audit_signing_e2e` now also asserts actor `CN=ops-admin` and
+  `on_behalf_of = admin::audit-e2e` on the signed revocation record, but that
+  test needs Postgres and SoftHSM and was **NOT RUN** for this change
+  (POAM-2026-10-23-36). The mechanism status above is unchanged
 - 🔴 No CSR→Certificate linkage (missing request_id)
 
 **Gaps / POA&M:**
 
+- `on_behalf_of` on gRPC records is a namespace-bound claim of the RA, not a
+  verified ACME account or EST client (POAM-2026-10-23-35)
 - Cannot prove which CSR led to which certificate (Phase 15 - add request_id to certificates table)
 - Audit records are signed with the CA key itself, and since 2026-10-25 the audit sink refuses SLH-DSA signing keys (`ensure_audit_signing_algorithm` in [sink.rs](../../crates/ostrich-audit/src/sink.rs); signing runs under the audit chain lock), so a CA with an SLH-DSA key cannot run ca-server. Decoupling the audit signing key (dedicated ML-DSA or ECDSA key; `signing_key_id` already records the key per row) is POAM-2026-10-23-34. Currently moot: no provider signs SLH-DSA
 - No end-to-end test of signed audit records with an RSA (RSA-PSS) PKCS#11 CA key (NIST-005, follow-up). The RSA-PSS provider fix now has Linux CI evidence ([run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654); POAM-2026-10-23-17 closed 2026-10-23), but AU-10 with RSA HSM CA keys is demonstrated at the provider level on SoftHSM only, not end to end
@@ -931,6 +1036,17 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   the ca-server bin tests assert the `grpc_listener_started` and
   `grpc_insecure_dev_plaintext_enabled` record contents with
   `MemoryAuditSink` (9 ca-server bin tests passed 2026-10-25)
+- ✅ CA gRPC per-method authorization (2026-10-26, branch
+  `claude/grpc-per-method-authz`, uncommitted): method-table, admin-issuer,
+  requestor and profile denials generate `access_denied` records through the
+  listener's rate limiter before the response (including from the service,
+  via `AuthorizedGrpcPeer::deny`), and an authorization-layer build failure
+  generates `grpc_listener_refused` (`check=grpc_authorization_layer`) with no
+  `grpc_listener_started`. Tests: `qa_layer_denies_and_audits_unmapped_paths`,
+  `peer_deny_record_survives_dropped_future`, e2e
+  `requestor_denial_audit_is_cancel_proof`, bin
+  `start_grpc_listener_refusal_is_audited_without_started_record`
+  (ca-server bins 21/21, `grpc_mtls_e2e` 39/39, 2026-10-26)
 
 **Evidence Required for ATO:**
 
@@ -1098,8 +1214,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   | ca-server | `CA_GRPC_TLS_CERT_FILE` / `--grpc-tls-cert` | none | server chain PEM |
   | ca-server | `CA_GRPC_TLS_KEY_FILE` / `--grpc-tls-key` | none | server key PEM |
   | ca-server | `CA_GRPC_TLS_CLIENT_CA_FILE` / `--grpc-tls-client-ca` | none | required; must be a dedicated service-identity CA (startup refuses an anchor with this CA's issuing SPKI or subject, issued by it, its issuer, or matching a CA-database ancestor; refusal audited as `grpc_listener_refused`; warns on more than one anchor) |
-  | ca-server | `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` / `--grpc-allowed-client-subjects` | empty ⇒ refuse to start | `;`-delimited RFC 4514 DNs; blank entries dropped; dangling or ambiguous escapes refused |
-  | ca-server | `CA_GRPC_INSECURE_DEV_PLAINTEXT` / `--grpc-insecure-dev-plaintext` | `false` | debug builds only; refused in release builds; refused together with any TLS option or allowlist (ambiguous) |
+  | ca-server | `CA_GRPC_ACME_CLIENT_SUBJECTS` / `--grpc-acme-client-subjects` | none (compose / Helm / kustomize / `.env.example`: `CN=acme-server`) | Issuer, namespace `acme`; `;`-delimited RFC 4514 DNs; blank = no subjects; dangling or ambiguous escapes and undecodable numeric OIDs refused (2026-10-26) |
+  | ca-server | `CA_GRPC_EST_CLIENT_SUBJECTS` / `--grpc-est-client-subjects` | none (deployments: `CN=est-server`) | Issuer, namespace `est`; same syntax; ACME and EST both empty ⇒ refuse to start |
+  | ca-server | `CA_GRPC_ADMIN_CLIENT_SUBJECTS` / `--grpc-admin-client-subjects` | **empty** | Admin, namespace `admin`; non-empty requires exactly one distinct client trust anchor with an SKI, and admin leaves issued directly by it |
+  | ca-server | `CA_GRPC_ACME_ALLOWED_PROFILES` / `--grpc-acme-allowed-profiles` | `acme-default` | unknown or CA profile, or empty while ACME subjects exist ⇒ refuse to start |
+  | ca-server | `CA_GRPC_EST_ALLOWED_PROFILES` / `--grpc-est-allowed-profiles` | `tls_client;tls_server;tls_server_client;efs` | same rules |
+  | ca-server | `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` (removed; hidden flag) | unset | any non-blank value ⇒ refuse to start with a migration message (Helm key fails rendering) |
+  | ca-server | `CA_GRPC_INSECURE_DEV_PLAINTEXT` / `--grpc-insecure-dev-plaintext` | `false` | debug builds only; refused in release builds; refused together with any TLS option or role list (ambiguous) |
   | acme-server, est-server | `CA_GRPC_CLIENT_CERT_FILE`, `CA_GRPC_CLIENT_KEY_FILE`, `CA_GRPC_CA_CERT_FILE` | none | all or none; none ⇒ plaintext refused unless the dev flag is set in a debug build |
   | acme-server, est-server | `CA_GRPC_SERVER_NAME` | URL host | TLS server name to verify |
   | acme-server | `CA_GRPC_INSECURE` / `--ca-insecure` | `false` | refused in release builds |
@@ -1111,7 +1232,14 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   `grpc_insecure_with_allowlist_is_ambiguous`,
   `grpc_client_ca_must_not_be_the_issuing_ca` in ca-server; `plan_channel`
   release-plaintext test in `grpc_client.rs`; `plaintext_policy_is_debug_only`
-  in `ostrich-est`; `ca_insecure_allowed` test in acme-server). Deployment
+  in `ostrich-est`; `ca_insecure_allowed` test in acme-server; since
+  2026-10-26 also `grpc_legacy_allowed_subjects_refuses_to_start`,
+  `grpc_overlapping_role_lists_refuse_to_start`,
+  `grpc_blank_role_values_are_no_subjects`, `grpc_profile_lists_refuse_to_start`,
+  `grpc_admin_requires_single_client_anchor` and
+  `start_grpc_listener_refusal_is_audited_without_started_record`; ca-server
+  bins 21/21). A subject in two role lists (also differing only in ASCII
+  case) refuses startup. Deployment
   wiring: Helm `ca.grpc.*`, `acme.caGrpc.*`, `est.caGrpc.*` (secrets required;
   rendering fails without them), kustomize base, compose files and
   `.env.example`. Exact startup messages are in
@@ -1160,6 +1288,21 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - `oauth2` 5.0.0 is a declared but unused dependency of `ostrich-web-ui`; its default features link `reqwest` 0.12 and enable the `rustls` `ring` feature in the web-ui binary (POAM-2026-10-23-23; `ring` paths also POAM-2026-10-23-08)
 - No automated check for unused dependencies (for example `cargo machete` or `cargo udeps`) in CI
 - Ports, protocols and services per deployment are not yet documented against this control
+
+**CA gRPC (2026-10-26, branch `claude/grpc-per-method-authz`, uncommitted):**
+
+- ✅ Only the RPCs in `CA_GRPC_METHOD_RULES`
+  ([grpc_authz.rs](../../crates/ostrich-ca/src/grpc_authz.rs)) are reachable,
+  each only for its roles; any other path (future RPCs, health, reflection,
+  case or encoding variants) is denied `method_not_mapped`. Tests:
+  `rules_cover_every_proto_rpc` (ties the table to `proto/ca_service.proto`),
+  `qa_authorize_peer_non_canonical_paths_are_not_mapped`, e2e
+  `qa_unmapped_path_variants_denied_over_the_wire`
+- ✅ Issuer clients may request only the end-entity profiles listed for their
+  namespace; CA profiles are never issuable over gRPC (see AC-6(10))
+- ✅ The plaintext dev constructor (`CaGrpcService::new_insecure_dev_plaintext`)
+  exists only in debug builds; release builds refuse peerless calls
+  (`grpc_service_peer_requirement_follows_mode`)
 
 **Remediation (POA&M, see [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)):**
 
@@ -1326,6 +1469,10 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
 - FIA_X509_EXT.1 - X.509 Certificate Validation (revocation is a gap)
 - FCS_TLSS_EXT.2 / FCS_TLSC_EXT.2 - TLS with mutual authentication
 - FTP_ITC.1 - Inter-TSF Trusted Channel
+- FMT_SMR.2 - Security Roles (gRPC Issuer / Admin identities, 2026-10-26)
+
+Related: IA-9 (Service Identification and Authentication), cited with IA-3 in
+the code annotations since 2026-10-26.
 
 **Implementation:**
 
@@ -1335,8 +1482,18 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
   client authentication, path validation to `CA_GRPC_TLS_CLIENT_CA_FILE`,
   validity period and EKU (`grpc_server_config` in
   [grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs)). The service is
-  then identified by its exact subject DN against the allowlist, and the leaf
-  must carry an EKU extension with `clientAuth` (`authorize_peer`).
+  then identified by its exact subject DN against the three role lists
+  (2026-10-26), which fix its role and requestor namespace, and the leaf must
+  carry an EKU extension with `clientAuth` (`authorize_peer_at`). The leaf
+  validity period is re-checked on every call (RFC 5280 §4.1.2.5;
+  `certificate_not_valid_now`, `UNAUTHENTICATED`), so a long-lived HTTP/2
+  connection cannot outlive the leaf; intermediates and the anchor are checked
+  at the handshake only. An Admin identity is accepted only for a leaf issued
+  directly by the single client trust anchor (issuer DN = anchor subject and
+  AKI = anchor SKI; `admin_issuer_not_anchor`), and ca-server refuses to start
+  with admin subjects and more than one distinct anchor or an anchor without
+  SKI. The verified peer subject, issuer and serial become the audit identity
+  (AU-3).
 - Trust-anchor separation: after the CA loads, ca-server walks the issuing
   CA's ancestors in the CA database (`walk_ca_ancestors` over
   `ca_certificates.parent_ca_id`; fails closed on a missing row, a cycle or
@@ -1373,14 +1530,29 @@ instances, with the database as the single source of truth. See AC-12 / SC-23.
   `issued_by_checks_cover_name_and_key_id_independently` and
   `authorize_peer_refuses_subscriber_issuing_ca_leaf` (41 `grpc_tls::tests`
   passed 2026-10-25, re-run by the compliance scribe)
+- ✅ Per-method change (2026-10-26, branch `claude/grpc-per-method-authz`,
+  uncommitted; final tree after the nit pass): `grpc_tls` unit tests 66/66
+  (`authorize_peer_refuses_leaf_outside_validity`,
+  `admin_requires_leaf_issued_directly_by_anchor`,
+  `layer_admin_anchor_builder_and_denial`,
+  `resolve_refuses_admin_with_several_client_anchors`,
+  `authorize_peer_records_issuer_and_serial`); `grpc_mtls_e2e` 39/39
+  (`certificate_expiring_on_live_connection_is_refused`,
+  `admin_under_intermediate_is_refused`); ca-server bins 21/21
+  (`grpc_admin_requires_single_client_anchor`); mutations M20, M21, M23, M24,
+  M28 killed. Counts are coder-reported from the final tree (`fixes-nits.md`)
 
 **Gaps:**
 
 - No revocation checking of client certificates (no CRL in the verifier;
   same on REST mTLS) (POAM-2026-10-23-27). Compensating control in the
-  runbook: remove the subject from the allowlist and reissue under a new
-  subject, or rotate the service-identity CA
-- Allowlist entries are not bound to an issuer or SPKI (POAM-2026-10-23-28)
+  runbook: remove the subject from its role list and reissue under a new
+  subject, or rotate the service-identity CA; admin certificates short-lived,
+  one per named operator
+- Issuer-role entries are not bound to an issuer or SPKI
+  (POAM-2026-10-23-28; Admin entries are bound to direct issuance by the
+  single anchor)
+- Per-call validity covers the leaf only
 - The trust-anchor guard covers the issuing CA's database lineage only.
   Sibling subordinate CAs, grandchildren (CAs issued by a subordinate of this
   CA; the per-call check compares the leaf's direct issuer only) and an
@@ -2481,6 +2653,31 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
   re-run by the compliance scribe). Unit test
   `subject_parsing_never_panics_on_mutated_input` (3000 deterministic
   iterations) is part of the 34 passing `grpc_tls::tests`
+- ✅ CA gRPC requestor and role-list validation (2026-10-26, branch
+  `claude/grpc-per-method-authz`, uncommitted): `validate_requestor` in
+  [grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs) accepts a
+  `requestor` only with the caller's exact namespace prefix (`acme::`,
+  `est::`, `admin::`), a non-empty id of printable ASCII `0x21`-`0x7E`, and at
+  most 255 bytes (`MAX_REQUESTOR_LEN`, the `certificates.requestor` column
+  width); the claimed namespace is truncated to 32 characters and escaped in
+  the denial record, the requested profile to 64. The gRPC method path is
+  matched exactly (no case folding or percent-decoding). est-server applies
+  the same rule before enrollment (EST ids 1-250 printable ASCII, HTTP 403,
+  `ca_requestor_matches_ca_rule`). Numeric OID attribute types in the role
+  lists must decode again under const-oid: `fuzz_grpc_peer_subject` found a
+  `Display` panic ("OID malformed: ArcTooBig") on operator configuration text,
+  now refused (`check_attribute_type`; test
+  `allowlist_refuses_undecodable_numeric_oid`). Fuzz (coder-reported, final
+  tree, 60 s each): `fuzz_grpc_requestor` 246,720 runs, `fuzz_grpc_peer_subject`
+  135,145 runs, no crash after the fix. Unit: `validate_requestor_cases`,
+  `qa_validate_requestor_boundaries`; e2e requestor-edge-case tests
+  (`grpc_mtls_e2e` 39/39)
+- 🟡 Related SI-11 (error handling), 2026-10-26: gRPC errors that are not
+  client-correctable return `INTERNAL` "<op> failed: internal error" with the
+  detail logged (`grpc_status`, test `grpc_status_hides_internal_errors`);
+  CSR parse / verify errors and the missing approval repository use fixed
+  messages. REST 5xx bodies still carry internal error text
+  (POAM-2026-10-23-37). No separate SI-11 section is added here
 
 **Gaps:**
 
@@ -2641,6 +2838,14 @@ Missing 5 + 2 + 0 + 1 + 1 + 0 + 1 + 1 = 11, so TOTAL stays
 (6 + 0.5 × 24) / 41 = 18 / 41 = 43.9%, shown as 44%. No control status changed
 in the final refresh.
 
+On 2026-10-26 (per-method CA gRPC authorization) no control was added and no
+control status changed, so the table is unchanged: AC-3 stays 🟢 Implemented,
+AC-5 🟢, AC-6 🟡 Partial (the REST user-privilege gaps remain), AU-3 ✅, AU-10
+🟢, AU-12 🟢, CM-6 🟡, CM-7 🟡, IA-3 🟡 (revocation and Issuer-role binding
+gaps), SI-10 as before. SI-11 and IA-9 are cited as related controls inside
+existing sections, not counted as new rows. TOTAL stays
+(6 + 0.5 × 24) / 41 = 18 / 41 = 43.9%, shown as 44%.
+
 ---
 
 ## Cross-Reference: NIAP SFR ↔ NIST 800-53
@@ -2676,7 +2881,7 @@ in the final refresh.
 | FIA_X509_EXT.2 | IA-2, IA-5 |
 | FMT_MOF.1 | AC-3, AC-6 |
 | FMT_MTD.1 | AC-3 |
-| FMT_SMR.2 | AC-2, AC-5 |
+| FMT_SMR.2 | AC-2, AC-5, IA-3 |
 | FPT_FLS.1 | SC-24 (Fail in Known State), SI-13 (Predictable Failure Prevention), SI-17 (Fail-Safe Procedures) |
 | FPT_KST_EXT.1 | SC-12 |
 | FPT_KST_EXT.2 | SC-12 |
@@ -2906,6 +3111,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 2.7 | 2026-10-24 | OstrichPKI Team | Dependency cleanup (branch `claude/deps-cleanup`, uncommitted; run record `target/agent-workflow/20261024-104215-deps-cleanup/`). RA-5: ignore count 5 → 3 (RUSTSEC-2026-0097 and RUSTSEC-2026-0387 removed); 2026-10-24 local gate evidence added; remediation items for POAM-11/-16/-22 marked done, POAM-23 (unused `oauth2`) added. SI-2: new 2026-10-24 evidence table (RUSTSEC-2026-0097 `rand` 0.8.5 → 0.8.6 and RUSTSEC-2026-0387 `crypto-bigint` 0.5.5 removed, both remediated); the two corresponding gaps replaced by a CI-pending note and the `oauth2` item. CM-7: new section, 🟡 Partial (openidconnect and p256 removal as evidence, 28 crates; gap POAM-23 `oauth2`; SR-3 noted). SC-13: added a pre-existing gap (PQC-001, CSPs from `rand` `ThreadRng`; POAM-24). RA-5 and SI-2 stay 🟡 Partial; SC-13 status unchanged. Control Implementation Summary: CM row 3 → 4 controls (50% unchanged), TOTAL 38 → 39 controls, (6 + 0.5 × 22) / 39 = 43.6% → 44% (was 43%) |
 | 2.8 | 2026-10-25 | OstrichPKI Team | CA gRPC behind mTLS with the aws-lc-rs FIPS provider (branch `claude/grpc-mtls`, uncommitted; run record `target/agent-workflow/20261024-225627-grpc-mtls/`). New sections AC-4 (🟡 Partial; Helm and kustomize CA NetworkPolicy for the gRPC port; maps to OE.NETWORK, no TOE SFR) and IA-3 (🟡 Partial; CA gRPC client-certificate authentication, trust-anchor separation; revocation and issuer binding are gaps). AC-3 (gRPC subject allowlist, default deny), AC-6 (listener-wide only, POAM-26), AC-17 (gRPC mTLS; FCS_TLSS_EXT.2 / FCS_TLSC_EXT.2 added), AU-2 (new gRPC events), AU-3 (peer subject logged only, POAM-25), AU-8 (unbounded chain-order timestamp shift), AU-9 / AU-9(3) (atomic chain append Implemented, Postgres test not run, POAM-31; lock held across signing; upgrade note), AU-12, CM-6 (CA_GRPC_* baseline, release-build refusals incl. clients; compose `./certs` exposure POAM-32), IA-5 (IA-5(2) on gRPC), SC-8 (gRPC TLS 1.3 mTLS; earlier gRPC ✅ claims corrected; tonic `tls-ring` gap resolved, ring remains elsewhere), SC-13 (process `fips_gate`, gRPC `fips()` assertions, gRPC provider with SECP256R1MLKEM768 first and narrowed signature algorithms; CMVP pending; ring gap narrowed), SC-23 (gRPC claim corrected), SC-24 (start-up gate and gRPC refusals), SI-10 (allowlist parsing, fuzz), SI-12 (gRPC client key zeroize). Cross-reference: FCS_TLSS_EXT.2, FDP_ACC.1, FDP_ACF.1 added; IA-3 added to FCS_TLSC_EXT.2, FIA_X509_EXT.1 and FTP_ITC.1. POA&M IDs 25-33 referenced. **No existing control status raised.** Summary table: AC 7 → 9 controls (14% → 22%), IA 3 → 4 (33% → 38%), TOTAL 39 → 41, 18 / 41 = 43.9% → 44% (arithmetic under the table). Header version 2.6 → 2.8 (2.7 had not updated it) |
 | 2.9 | 2026-10-25 | OstrichPKI Team | CA gRPC mTLS final refresh after fix round 3 (same branch and run record). Summary table AC row corrected to 8 / 0 / 3 / 5 = 19% (was shown as 9 / 0 / 4 / 5 = 22%; AC-4 is the only added AC control); TOTAL unchanged at 18 / 41 = 44% (arithmetic under the table). IA-3: trust-anchor guard now walks the CA-database lineage (subject alone, issued-by, issuer, ancestors), refusal audited as `grpc_listener_refused`, per-call `subscriber_issuing_ca`; residual siblings / grandchildren / external roots (POAM-28). AU-2: `grpc_listener_refused`, `subscriber_issuing_ca`, summary fields, cancelled-request and shutdown residuals; pre-database startup refusals still log-only. AU-5: `alert="audit_write_failed"` and commit `outcome=unknown` recorded as supporting only (status stays 🔴, no alert routing). AU-8: `details.occurred_at` / `caller_occurred_at`. AU-9 / AU-9(3): checked `append`, lock / statement / idle-in-transaction timeouts, sign on the blocking pool, SLH-DSA audit key refused; Postgres tests (incl. new `sign_timeout_db.rs`) NOT RUN, `OSTRICH_DB_TESTS` opt-in now fails when the DB is unreachable; hung-HSM thread / shutdown residual (SEC-017). AU-10, SC-13: SLH-DSA CA keys unsupported (POAM-2026-10-23-34, new). SC-8 / SC-23: REST plain-HTTP qualifier (NIST-023). SC-24: trust-anchor and SLH-DSA refusals. CM-6 client-CA row. Test counts: `grpc_mtls_e2e` 21/21, 41 `grpc_tls::tests`. **No control status changed** |
+| 3.0 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization and verified audit actor (branch `claude/grpc-per-method-authz`, uncommitted; run record `target/agent-workflow/20261025-202226-grpc-per-method/`). AC-3: three role lists, default-deny method table, admin-issuer, requestor and profile checks. AC-5: disjoint issuer / admin identities, one admin certificate per named operator. AC-6: per-method least privilege (✅), AC-6(10) profile allowlists and CA-profile refusal (✅), AC-6(9) Revoke / GenerateCrl audited, CheckRevocationStatus unaudited read (🟡); stale POAM-26 gap removed. AU-2: new denial reasons and detail fields, `grpc_listener_started` `clients` / `method_rules` / `issuer_profiles`, `grpc_listener_refused` `grpc_authorization_layer`, revocation and CRL Failure records. AU-3: gRPC actor = verified peer DN with `authenticated_caller*` and `on_behalf_of` (POAM-25 closed pending commit). AU-10: signed records attribute the peer; `audit_signing_e2e` actor assertion NOT RUN. AU-12, CM-6 (role-list, profile and legacy-variable rows), CM-7 (method table, profiles, debug-only plaintext constructor), IA-3 (per-call leaf validity, admin direct-issuance, IA-9 related), SI-10 (requestor validation, const-oid fuzz finding fixed; related SI-11 note). Cross-reference: FMT_SMR.2 → IA-3 added. POA&M IDs 35-38 referenced. Test counts (coder-reported, final tree): `grpc_tls` 66, `grpc_mtls_e2e` 39, `ostrich-ca` 78, ca-server bins 21, `make test-unit` 782. **No control status changed; summary table unchanged (18 / 41 = 44%)** |
 
 ---
 

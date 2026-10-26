@@ -1,7 +1,7 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 2.4
-**Date:** 2026-10-25
+**Document Version:** 2.5
+**Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Excellent (85%)
 **Last Updated:** Phase 19 completion - HSM enforcement and 98% NIAP compliance
@@ -368,7 +368,29 @@ validate peer chains with **rustls-webpki 0.103.16**, not with the
     §4.2.1.1 / §4.2.1.2), is its issuer (name match unless both key
     identifiers are present and differ), or matches (SPKI or subject) a
     database ancestor (`ensure_dedicated_client_ca`). A refusal is audited as
-    `grpc_listener_refused` before exit. It warns on more than one anchor
+    `grpc_listener_refused` before exit. It warns on more than one anchor;
+    since 2026-10-26 it **refuses** to start with more than one distinct
+    anchor (duplicate PEM blocks counted once) when
+    `CA_GRPC_ADMIN_CLIENT_SUBJECTS` is non-empty, and refuses an anchor
+    without a subjectKeyIdentifier (§4.2.1.2) in that case
+  - **Admin issuer (2026-10-26, branch `claude/grpc-per-method-authz`,
+    uncommitted):** an Admin-role leaf is admitted only if it was issued
+    directly by the single anchor: issuer DN = anchor subject (§4.1.2.4) and
+    the leaf authorityKeyIdentifier keyIdentifier present and equal to the
+    anchor subjectKeyIdentifier (§4.2.1.1 / §4.2.1.2), with no DN-only
+    fallback; otherwise `admin_issuer_not_anchor`. Issuer roles may still
+    chain through intermediates. §4.2.1.1 requires an AKI in every
+    non-self-signed certificate, so conforming admin leaves meet this
+  - **Per-call leaf validity (2026-10-26):** the leaf validity period
+    (§4.1.2.5, inclusive bounds) is re-checked on every call against the
+    system clock, so a long-lived HTTP/2 connection or TLS session cannot
+    keep using an expired leaf (`certificate_not_valid_now`,
+    `UNAUTHENTICATED`). Only the leaf is re-checked; intermediates and the
+    anchor are validated at the handshake only (narrower than re-running
+    §6.1.3(a)(2) on the whole path)
+  - **Peer serial format (§4.1.2.2):** audit records carry the peer
+    certificate serial as lowercase hex of the DER INTEGER content octets,
+    sign byte included (serial 0x8001 is `008001`; OpenSSL prints `8001`)
   - **Per-call check:** a client leaf whose issuer DN equals the subject of
     the issuing CA or of a database ancestor, or whose AKI equals one of their
     SKIs, is denied (`subscriber_issuing_ca`). Only the leaf's direct issuer
@@ -400,7 +422,14 @@ validate peer chains with **rustls-webpki 0.103.16**, not with the
     AKI = SKI branches tested separately) and
     `authorize_peer_refuses_subscriber_issuing_ca_leaf`; ca-server bin tests
     `walk_ca_ancestors_follows_parent_ca_id_and_fails_closed` and
-    `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal`
+    `grpc_trust_anchor_check_walks_db_chain_and_audits_refusal`. Added
+    2026-10-26 (coder-reported, final tree): `grpc_mtls_e2e` 39/39 (incl.
+    `certificate_expiring_on_live_connection_is_refused`,
+    `admin_under_intermediate_is_refused`), `grpc_tls` unit tests 66/66 (incl.
+    `authorize_peer_refuses_leaf_outside_validity`,
+    `admin_requires_leaf_issued_directly_by_anchor`,
+    `resolve_refuses_admin_with_several_client_anchors`,
+    `authorize_peer_records_issuer_and_serial`)
 
 ---
 
@@ -442,7 +471,8 @@ validate peer chains with **rustls-webpki 0.103.16**, not with the
 - Validates attribute structure before certificate issuance
 - Used by ACME (RFC 8555) and EST (RFC 7030) for CSR validation
 
-**CA gRPC client-subject allowlist (2026-10-25, branch `claude/grpc-mtls`,
+**CA gRPC client-subject lists (2026-10-25, branch `claude/grpc-mtls`;
+three role lists since 2026-10-26, branch `claude/grpc-per-method-authz`,
 uncommitted):** [grpc_tls.rs](../../crates/ostrich-common/src/grpc_tls.rs)
 `certificate_subject_dn` renders the peer certificate subject with `x509-cert`'s
 RFC 4514 `Display` (§2: last RDN first, §2.4 escaping), and
@@ -457,6 +487,18 @@ way. The REST `peer_cert_subject` now delegates to the same function.
 - Claimable (rounds 2-3): hex escapes must decode to valid UTF-8 (§3 /
   RFC 5280 §4.1.2.4 UTF8String; `CN=\FF`, `CN=\C3\28` refused, `CN=\C3\A9`
   accepted)
+- 2026-10-26: the same parser is applied to each of
+  `CA_GRPC_ACME_CLIENT_SUBJECTS`, `CA_GRPC_EST_CLIENT_SUBJECTS` and
+  `CA_GRPC_ADMIN_CLIENT_SUBJECTS` (the single
+  `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` is removed and refused). A canonical
+  subject in two lists, or two entries in different lists that differ only in
+  ASCII letter case, refuses startup (runtime matching stays exact). A
+  numeric attribute type (§3 `numericoid`) must also decode again from its
+  own DER encoding: const-oid 0.9.6 encodes some large arcs that its decoder
+  refuses, and its `Display` panicked on them (found by
+  `fuzz_grpc_peer_subject`); such entries are now refused at startup (test
+  `allowlist_refuses_undecodable_numeric_oid`; 135,145 fuzz runs / 61 s
+  clean after the fix, coder-reported)
 - Deviations:
   - `;` is the list separator and is never part of a DN (an escaped `\;`
     leaves a dangling `\` and is refused; `\3B` is accepted);
@@ -756,6 +798,14 @@ Key corrections in this phase:
 
 **Status:** 🟢 **Good** (85% compliant)
 
+**§7.6 revocation (noted 2026-10-26):** the ACME directory advertises a
+`revokeCert` URL, but acme-server has no revocation route, and since the
+per-method CA gRPC authorization (branch `claude/grpc-per-method-authz`) the
+acme-server identity (Issuer role) is not permitted to call
+`RevokeCertificate` on the CA. A future scoped grant would add the Issuer role
+to that rule plus a check that the target certificate's stored requestor
+namespace is `acme`. §7.6 is not implemented; no status change.
+
 **ACME client (NPE portal, HTTP-01):** In addition to the OstrichPKI ACME
 *server* below, the NPE portal embeds an ACME *client* (`instant-acme`, FIPS /
 aws-lc-rs backend) so it auto-enrolls and auto-renews **its own TLS server
@@ -1039,6 +1089,19 @@ of identifiers authorized in the order.
 ### RFC 7030: Enrollment over Secure Transport (EST)
 
 **Status:** 🟢 **Enrollment working** (simpleenroll issues real certificates)
+
+**Client identifier rule (2026-10-26, branch `claude/grpc-per-method-authz`,
+uncommitted; RFC-104):** the CA now binds the EST requestor to the `est::`
+namespace with a printable-ASCII id of at most 250 characters (255 bytes in
+total). est-server applies the same rule (`ca_requestor` in
+[ca_integration.rs](../../crates/ostrich-est/src/ca_integration.rs)) before
+any enrollment row or CA call on `simpleenroll`, `simplereenroll` and
+`serverkeygen`, and refuses other client ids with HTTP 403 (§4.2.3 permits an
+error response for an unauthorised client), audited
+`client_identifier_not_issuable`. The 403 body is the EST service's JSON
+error object (`error: "forbidden"`, a fixed `error_description`), not a
+PKCS#7 or CMC structure. Usernames with spaces or non-ASCII characters can no
+longer enroll through the CA. Test: `ca_requestor_matches_ca_rule`.
 
 **Live evidence (Phase 16):** an EST client (authenticated bearer session,
 RaStaff role) POSTed a PKCS#10 CSR to `/.well-known/est/simpleenroll` and
@@ -1448,6 +1511,42 @@ success the resolved identity flows through the same RBAC permission checks
 
 ---
 
+### gRPC over HTTP/2 (RFC 9113): CA gRPC authorization and status semantics (2026-10-26)
+
+Branch `claude/grpc-per-method-authz`, uncommitted. gRPC status codes are
+defined by the gRPC protocol specification, not an RFC; the transport is
+HTTP/2 (RFC 9113).
+
+- ✅ **Method matching:** the authorization layer matches the HTTP/2
+  `:path` exactly (case-sensitive, no percent-decoding or segment
+  normalisation) against `CA_GRPC_METHOD_RULES`
+  ([grpc_authz.rs](../../crates/ostrich-ca/src/grpc_authz.rs)), which agrees
+  with tonic routing. Query strings are not an authorization input (they do
+  not affect tonic routing either). Default deny: every path without a rule
+  is refused before the service runs
+- ✅ **Denials are trailers-only responses** written after the audit record
+- ✅ **Status mapping:** no verified certificate → `UNAUTHENTICATED`
+  "client certificate required"; an unparsable leaf or a leaf outside its
+  validity at call time → `UNAUTHENTICATED` "client certificate not
+  accepted"; every authorization failure → `PERMISSION_DENIED` "client is not
+  authorised for this call" (a profile refusal: "certificate profile is not
+  permitted for this client"). Non-client-correctable server errors →
+  `INTERNAL` "<op> failed: internal error"
+- ⚠️ **Deviation (RFC-003):** an unknown or unmapped method returns
+  `PERMISSION_DENIED` (`method_not_mapped`), not `UNIMPLEMENTED`, so that
+  callers cannot enumerate methods
+- ⚠️ **Deviation (RFC-004):** a malformed `requestor` (empty for an issuer,
+  wrong namespace, non-printable-ASCII id or more than 255 bytes) returns
+  `PERMISSION_DENIED`, not `INVALID_ARGUMENT`: the requestor is the caller's
+  authorization claim, so all rejections share one deny path
+- Tests: `authorize_peer_method_matrix`,
+  `qa_authorize_peer_non_canonical_paths_are_not_mapped`,
+  `authorize_peer_decisions`, `grpc_status_hides_internal_errors`; e2e
+  `qa_unmapped_path_variants_denied_over_the_wire`, `unknown_method_denied`
+  (`grpc_mtls_e2e` 39/39, coder-reported)
+
+---
+
 ### Dependency protocol conformance fixes (2026-10-23)
 
 Lockfile updates that fix advisories in protocol implementations (see NIST SI-2):
@@ -1703,6 +1802,7 @@ consumed by the TAMP messages above.
 | 2.4 | 2026-10-25 | OstrichPKI Team | CA gRPC mTLS final refresh after fix round 3 (same branch). RFC 5280 §6.1 trust-anchor input: guard now refuses an anchor with the issuing CA's subject alone, one issued by the issuing CA (issuer name or AKI = SKI), its issuer, or any CA-database ancestor; refusal audited (`grpc_listener_refused`); per-call `subscriber_issuing_ca` (direct issuer only). Now claimed: ancestor detection within the CA-database lineage (revision 2.3 did not claim any ancestor detection). Still not claimed: siblings, grandchildren, roots outside the lineage (POAM-28), revocation, issuer binding, name-constraint and policy processing, caseIgnoreMatch, `:authority` coupling under `CA_GRPC_SERVER_NAME`. RFC 4514: UTF-8 hex-escape requirement claimed; deviations updated (ASCII-only trim, non-ASCII whitespace rejected, `\20` and backslash-space both accepted, backslash-comma not allow-listable even hex-escaped). Test counts: `grpc_mtls_e2e` 20/20 → 21/21 (incl. `no_alpn_refusal_sends_close_notify`), `grpc_tls::tests` 34 → 41. No status changed |
 | 2.3 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS fix: added "RFC 8017 / RFC 4055 — RSASSA-PSS" note. PKCS#11 RSA-PSS now follows RFC 8017 §8.1/§9.1 (mHash = Hash(M) computed on the host), verified against an independent software verifier locally; Linux CI pending. Recorded the pre-existing RFC 4055 deviation: the X.509 layer does not encode or parse RSASSA-PSS-params (POAM-2026-10-23-20). No RFC section status changed. |
 | 2.4 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): "RFC 8017 / RFC 4055 — RSASSA-PSS" status updated with GitHub Actions run 40063317654 (SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0); scoped to SoftHSM and the PKCS#11 provider. RFC 4055 deviation (POAM-20) unchanged. No RFC section status changed. |
+| 2.5 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization (branch `claude/grpc-per-method-authz`, uncommitted). RFC 5280: admin list requires one distinct anchor with SKI (refusal, not warning); Admin leaf issued directly by the anchor (§4.1.2.4, §4.2.1.1 / §4.2.1.2, no DN-only fallback); per-call leaf validity (§4.1.2.5, leaf only); peer serial format (§4.1.2.2). RFC 4514: three role lists, case-variant overlap refusal, undecodable numeric OIDs refused (const-oid fuzz finding). New "gRPC over HTTP/2" subsection: exact path matching, status mapping, deviations RFC-003 (unknown method → PERMISSION_DENIED) and RFC-004 (malformed requestor → PERMISSION_DENIED). RFC 7030: EST client-identifier rule and HTTP 403 JSON body (RFC-104). ACME RFC 8555 §7.6 revocation still does not reach the CA. Counts: `grpc_mtls_e2e` 39, `grpc_tls` 66 (coder-reported). Version numbers 2.3 / 2.4 appear twice in this table (2026-10-23 and 2026-10-25); this entry continues from 2.4. No status change |
 
 ---
 

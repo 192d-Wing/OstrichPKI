@@ -854,6 +854,7 @@ async fn simple_enroll(
     let label = label.map(|p| p.0);
     // Use authenticated user identity as client identifier
     let client_identifier = &user.username;
+    reject_unissuable_client_id(&state, client_identifier, "est:enroll").await?;
 
     // Decode base64-encoded CSR
     let csr_der = match BASE64_STANDARD.decode(&body) {
@@ -1065,6 +1066,35 @@ async fn emit_enrollment_audit(
     )
     .build();
     let _ = state.audit_sink.record(&mut event).await;
+}
+
+/// RFC-007: refuse (403, audited `client_identifier_not_issuable`) an
+/// authenticated EST identity that the CA would refuse as the `est::<id>`
+/// requestor, before any enrollment row or CA call (see
+/// [`crate::ca_integration::ca_requestor`]). The audit actor is the
+/// identifier escaped for logs.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: SI-10, SI-11, AU-2; NIAP PP-CA: FAU_GEN.1
+/// - RFC 7030 §4.2.3
+async fn reject_unissuable_client_id(
+    state: &EstState,
+    client_identifier: &str,
+    resource: &str,
+) -> Result<()> {
+    match crate::ca_integration::ca_requestor(client_identifier) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let shown: String = client_identifier
+                .chars()
+                .take(300)
+                .collect::<String>()
+                .escape_debug()
+                .to_string();
+            emit_failure_audit(state, &shown, resource, "client_identifier_not_issuable").await;
+            Err(e)
+        }
+    }
 }
 
 /// Audit a security-relevant EST failure (H2).
@@ -1485,6 +1515,7 @@ async fn simple_reenroll(
     let label = label.map(|p| p.0);
     // Use authenticated user identity as client identifier
     let client_identifier = &user.username;
+    reject_unissuable_client_id(&state, client_identifier, "est:reenroll").await?;
 
     // Decode base64-encoded CSR
     let csr_der = match BASE64_STANDARD.decode(&body) {
@@ -1823,6 +1854,7 @@ async fn server_key_gen(
     use ostrich_crypto::KeyType;
 
     let client_identifier = &user.username;
+    reject_unissuable_client_id(&state, client_identifier, "est:serverkeygen").await?;
 
     // Resolve the CA backend + profile first (fail closed; RFC 7030 §3.2.2 label
     // routing selects the backend by key algorithm and the profile by type). The

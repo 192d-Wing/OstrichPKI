@@ -29,7 +29,12 @@
 #   acme-server.crt / .key         client, CN=acme-server, EKU clientAuth
 #   est-server.crt / .key          client, CN=est-server, EKU clientAuth
 #   integration-tests.crt / .key   client, CN=integration-tests, EKU clientAuth
+#                                  (ACME namespace in the dev/test compose files)
+#   integration-admin.crt / .key   client, CN=integration-admin, EKU clientAuth
+#                                  (admin role: Revoke/GenerateCrl/
+#                                  CheckRevocationStatus in dev/test compose)
 #   integration-tests.env          host-side CA_GRPC_* env for `cargo test`
+#                                  (issuer client + CA_GRPC_ADMIN_CLIENT_*)
 #
 # Per-service subdirectories (copies of the files above, laid out like the
 # Kubernetes secrets) so a container can mount ONLY its own key material
@@ -37,11 +42,15 @@
 #   ca-server/   tls.crt, tls.key (CN=ca-service), client-ca.crt (= ca.crt)
 #   acme-server/ tls.crt, tls.key (CN=acme-server), ca.crt
 #   est-server/  tls.crt, tls.key (CN=est-server),  ca.crt
+# The integration-tests / integration-admin identities are host-side only (used
+# by `cargo test`), so they get no container subdirectory.
 #
 # The dev CA is a DEDICATED service-identity CA: it issues only these gRPC
 # certificates and nothing else, which is what ca-server requires of
 # CA_GRPC_TLS_CLIENT_CA_FILE (it refuses to start if that file holds its own
-# subscriber-issuing CA certificate).
+# subscriber-issuing CA certificate). client-ca.crt holds exactly this one
+# trust anchor, which ca-server also requires whenever the admin list
+# (CA_GRPC_ADMIN_CLIENT_SUBJECTS) is non-empty.
 #
 # The dev CA private key is generated in a temporary directory and DELETED once
 # the leaves are signed: it is never written to the output directory, so no CA
@@ -78,7 +87,7 @@ DIGEST="sha384"
 CA_SUBJECT="/CN=OstrichPKI Dev gRPC CA"
 SERVER_NAME="ca-service"
 SERVER_SANS="DNS:ca-service,DNS:ca,DNS:localhost,IP:127.0.0.1"
-CLIENT_NAMES="acme-server est-server integration-tests"
+CLIENT_NAMES="acme-server est-server integration-tests integration-admin"
 # Per-service mount directories: "<subdir>:<leaf name>:<trust anchor file name>".
 SERVICE_DIRS="ca-server:${SERVER_NAME}:client-ca.crt acme-server:acme-server:ca.crt est-server:est-server:ca.crt"
 
@@ -172,6 +181,8 @@ existing_set_is_usable() {
     for f in $EXPECTED_CERTS $EXPECTED_KEYS integration-tests.env $EXPECTED_SUBDIR_FILES; do
         [ -s "$OUTDIR/$f" ] || return 1
     done
+    # Sets generated before the admin identity existed lack these variables.
+    grep -q '^CA_GRPC_ADMIN_CLIENT_CERT_FILE=' "$OUTDIR/integration-tests.env" || return 1
     for f in $EXPECTED_CERTS; do
         openssl x509 -in "$OUTDIR/$f" -noout -checkend 86400 >/dev/null 2>&1 || return 1
     done
@@ -256,7 +267,7 @@ sign_leaf() {
 # --- Server ------------------------------------------------------------------
 sign_leaf "$SERVER_NAME" server_ext
 
-# --- Clients (subjects must match CA_GRPC_ALLOWED_CLIENT_SUBJECTS) -----------
+# --- Clients (subjects must be in a CA_GRPC_{ACME,EST,ADMIN}_CLIENT_SUBJECTS list)
 for name in $CLIENT_NAMES; do
     cat >> "$WORK/ext.cnf" <<EOF
 
@@ -280,6 +291,11 @@ CA_GRPC_URL="https://localhost:50051"
 CA_GRPC_CLIENT_CERT_FILE="${OUTDIR}/integration-tests.crt"
 CA_GRPC_CLIENT_KEY_FILE="${OUTDIR}/integration-tests.key"
 CA_GRPC_CA_CERT_FILE="${OUTDIR}/ca.crt"
+# Admin-role client (CN=integration-admin, in CA_GRPC_ADMIN_CLIENT_SUBJECTS in
+# the dev/test compose files) for the Revoke/GenerateCrl/CheckRevocationStatus
+# tests. Issuer identities are denied those RPCs.
+CA_GRPC_ADMIN_CLIENT_CERT_FILE="${OUTDIR}/integration-admin.crt"
+CA_GRPC_ADMIN_CLIENT_KEY_FILE="${OUTDIR}/integration-admin.key"
 EOF
 
 # --- Install -----------------------------------------------------------------
@@ -324,6 +340,10 @@ for f in $EXPECTED_CERTS; do
 done
 echo "Per-service mount directories: ca-server/ acme-server/ est-server/"
 echo
-echo "ca-server allowlist for these clients (CA_GRPC_ALLOWED_CLIENT_SUBJECTS):"
-echo "  CN=acme-server;CN=est-server;CN=integration-tests"
+echo "ca-server per-role client lists for these clients (dev/test compose):"
+echo "  CA_GRPC_ACME_CLIENT_SUBJECTS=CN=acme-server;CN=integration-tests"
+echo "  CA_GRPC_EST_CLIENT_SUBJECTS=CN=est-server"
+echo "  CA_GRPC_ADMIN_CLIENT_SUBJECTS=CN=integration-admin"
+echo "  CA_GRPC_ACME_ALLOWED_PROFILES=acme-default;tls_client"
+echo "  CA_GRPC_EST_ALLOWED_PROFILES=tls_client;tls_server;tls_server_client;efs"
 echo "Restart running ca/acme/est containers to pick up regenerated files."

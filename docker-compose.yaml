@@ -13,7 +13,7 @@
 # Production deployments MUST use FIPS 140-2 Level 2+ validated HSMs.
 #
 # PREREQUISITE: run `make dev-grpc-certs` first. The CA gRPC API (50051) only
-# serves TLS 1.3 mutual TLS (aws-lc-rs FIPS) with a client-subject allowlist;
+# serves TLS 1.3 mutual TLS (aws-lc-rs FIPS) with per-role client lists;
 # ca-service exits at startup if the certificate files are missing, and there
 # is no plaintext fallback in these release-built images.
 # NIST 800-53: SC-8, AC-17, IA-3, AC-3 (docs/runbooks/ca-grpc-mtls.md)
@@ -88,11 +88,27 @@ services:
       DATABASE_URL: postgresql://ostrich:${POSTGRES_PASSWORD:-changeme}@postgres:5432/ostrich_pki?sslmode=disable
       CA_GRPC_ADDRESS: 0.0.0.0:50051
       CA_REST_ADDRESS: 0.0.0.0:8080
-      # gRPC mTLS server identity + client trust anchor + allowlist (";"-joined DNs)
+      # gRPC mTLS server identity + client trust anchor + per-role client lists
       CA_GRPC_TLS_CERT_FILE: /app/grpc-tls/ca-service.crt
       CA_GRPC_TLS_KEY_FILE: /app/grpc-tls/ca-service.key
       CA_GRPC_TLS_CLIENT_CA_FILE: /app/grpc-tls/ca.crt
-      CA_GRPC_ALLOWED_CLIENT_SUBJECTS: ${CA_GRPC_ALLOWED_CLIENT_SUBJECTS:-CN=acme-server;CN=est-server}
+      # Per-role client subject lists (";"-joined RFC 4514 DNs). ACME/EST =
+      # Issuer role (IssueCertificate, GetCaInfo, ListProfiles; requestor must
+      # be acme::/est::). ADMIN = Revoke/GenerateCrl/CheckRevocationStatus and
+      # the read RPCs, never Issue; empty by default (no one may revoke over
+      # gRPC). A DN may appear in only one list.
+      CA_GRPC_ACME_CLIENT_SUBJECTS: ${CA_GRPC_ACME_CLIENT_SUBJECTS:-CN=acme-server}
+      CA_GRPC_EST_CLIENT_SUBJECTS: ${CA_GRPC_EST_CLIENT_SUBJECTS:-CN=est-server}
+      CA_GRPC_ADMIN_CLIENT_SUBJECTS: ${CA_GRPC_ADMIN_CLIENT_SUBJECTS:-}
+      # Removed variable, forwarded only so a stale .env value makes ca-service
+      # refuse to start instead of being silently ignored (blank = unset).
+      CA_GRPC_ALLOWED_CLIENT_SUBJECTS: ${CA_GRPC_ALLOWED_CLIENT_SUBJECTS:-}
+      # Per-namespace ";"-joined end-entity profiles the ACME / EST Issuer
+      # clients may request (else PERMISSION_DENIED + audit). CA profiles
+      # (e.g. intermediate_ca) are never allowed; unknown, CA or empty lists
+      # for a namespace with subjects refuse startup. NIST 800-53: AC-3, AC-6.
+      CA_GRPC_ACME_ALLOWED_PROFILES: ${CA_GRPC_ACME_ALLOWED_PROFILES:-acme-default}
+      CA_GRPC_EST_ALLOWED_PROFILES: ${CA_GRPC_EST_ALLOWED_PROFILES:-tls_client;tls_server;tls_server_client;efs}
       # HSM Configuration (SoftHSM for development)
       # The PKCS#11 slot is read from the ca_keys row registered by ca-init.
       PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so

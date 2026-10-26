@@ -1,7 +1,7 @@
 # OstrichPKI Security Target
 
-**Document Version:** 1.5
-**Document Date:** January 2026 (revised 2026-10-25)
+**Document Version:** 1.6
+**Document Date:** January 2026 (revised 2026-10-26)
 **Protection Profile:** NIAP Protection Profile for Certification Authorities (PP-CA) v2.1
 **Common Criteria Version:** 3.1 Release 5
 **Assurance Level:** EAL2+ (ALC_FLR.2)
@@ -65,7 +65,7 @@ The TOE consists of:
 
 2. **External Interfaces:**
    - REST APIs (ACME, EST, SCMS, Health)
-   - gRPC APIs (inter-service communication). The CA issuance API (`ostrich.ca.v1.CertificateAuthorityService`, port 50051) is TLS 1.3 mutually authenticated with a client-subject allowlist since 2026-10-25 (branch `claude/grpc-mtls`, uncommitted); callers are acme-server and est-server. Client-certificate revocation is not checked (POAM-2026-10-23-27)
+   - gRPC APIs (inter-service communication). The CA gRPC API (`ostrich.ca.v1.CertificateAuthorityService`, port 50051) is TLS 1.3 mutually authenticated since 2026-10-25 (branch `claude/grpc-mtls`). Since 2026-10-26 (branch `claude/grpc-per-method-authz`, uncommitted) each client certificate subject holds one role: Issuer (acme-server, est-server: IssueCertificate for listed end-entity profiles, GetCaInfo, ListProfiles) or Admin (CA Operations Staff, empty by default: RevokeCertificate, GenerateCrl, CheckRevocationStatus and the two reads, never IssueCertificate; leaf issued directly by the single client trust anchor). Any other method is denied. The audit actor is the verified client certificate subject. Client-certificate revocation is not checked (POAM-2026-10-23-27). The plaintext dev listener exists only in debug builds; release builds refuse it; callers are acme-server and est-server. Client-certificate revocation is not checked (POAM-2026-10-23-27)
    - PKCS#11 interface (HSM communication)
    - PostgreSQL database connection
 
@@ -794,6 +794,7 @@ All SFR dependencies are satisfied per PP-CA v2.1 analysis.
 | 1.3 | 2026-10-23 | OstrichPKI Team | CI hardening. ALC_FLR.2 / AVA_VAN.2: dependency gate fails on new advisories; `cargo deny` passes locally; not yet a required check, AO timeframes still pending. ALC_CMC.2: branch-protection claim corrected to "planned, not configured" (verified via GitHub API). ALC_CMS.2: `rust-toolchain.toml` added as a configuration item. No assurance-level change |
 | 1.4 | 2026-10-24 | OstrichPKI Team | Dependency cleanup. ALC_FLR.2 / AVA_VAN.2: latest local `cargo audit --deny warnings` result recorded (exit 0, 614 crates, 3 accepted advisories; RUSTSEC-2026-0097 and RUSTSEC-2026-0387 no longer ignored). No assurance claim changed |
 | 1.5 | 2026-10-25 | OstrichPKI Team | TOE interfaces: CA gRPC issuance API recorded as TLS 1.3 mTLS with a client-subject allowlist (uncommitted branch `claude/grpc-mtls`); revocation gap noted (POAM-27). Architecture diagram note: "gRPC + mTLS" scoped to RA → CA; database, HSM and audit paths corrected; CA gRPC NetworkPolicy mapped to OE.NETWORK. No SFR claim or assurance level changed. Header version 1.3 → 1.5 (1.4 had not updated it) |
+| 1.6 | 2026-10-26 | OstrichPKI Team | TOE interfaces: CA gRPC API per-role, per-method authorization (Issuer / Admin = CA Operations Staff, default deny), verified client subject as audit actor, Admin leaf issued directly by the single anchor (uncommitted branch `claude/grpc-per-method-authz`). No SFR claim or status change |
 
 ---
 

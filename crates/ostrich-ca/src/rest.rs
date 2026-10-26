@@ -557,6 +557,7 @@ async fn issue_certificate(
         subject_alt_names,
         public_key,
         requestor: user.username.clone(), // Use authenticated identity
+        authenticated_caller: None,
         metadata: req.metadata,
         csr_der: req.csr_der, // when present, issue() verifies proof-of-possession (RFC 2986)
         approval_request_id,
@@ -1631,6 +1632,7 @@ async fn revoke_certificate(
         certificate_id,
         reason: req.reason,
         requestor: user.username.clone(), // Use authenticated identity
+        authenticated_caller: None,
         justification: req.justification,
     };
 
@@ -1672,16 +1674,21 @@ async fn check_revocation_status(
 /// NIAP PP-CA: FDP_ACC.1.1 - Requires authorized administrator
 /// NIAP PP-CA: FIA_UAU.1 - Authenticated user required
 /// NIST 800-53: AC-3 - Access enforcement (checked by middleware)
-/// NIST 800-53: AU-2 - Auditable event (actor identity logged)
+/// NIST 800-53: AU-2 / AU-3 - the CrlGeneration record's actor is the
+/// authenticated user (NIST-001); "system" is reserved for the scheduler
+/// NIAP PP-CA: FAU_GEN.2 - user identity association
 async fn generate_crl(
     State(state): State<Arc<ApiState>>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
 ) -> Result<Json<GenerateCrlResponse>> {
     // Generate CRL
     let crl = state
         .ca
         .revocation_manager()
-        .generate_crl(state.ca.ca_dn.clone())
+        .generate_crl_by(
+            state.ca.ca_dn.clone(),
+            crate::revocation::CrlActor::User(&user.username),
+        )
         .await?;
 
     Ok(Json(GenerateCrlResponse {
@@ -1730,14 +1737,24 @@ async fn get_crl(State(state): State<Arc<ApiState>>) -> Result<Response> {
 
 /// Generate a delta CRL (RFC 5280 §5.2.4) listing entries revoked since the
 /// latest full (base) CRL. Requires a base full CRL to exist.
+///
+/// COMPLIANCE MAPPING:
+/// - NIST 800-53: AC-3 (checked by middleware); AU-2 / AU-3 - the
+///   CrlGeneration (`generate_delta`) record's actor is the authenticated
+///   user (NIST-101); "system" is reserved for the scheduler
+/// - NIAP PP-CA: FMT_SMF.1, FAU_GEN.2 - user identity association
+/// - RFC 5280 §5.2.4 - Delta CRL Indicator
 async fn generate_delta_crl(
     State(state): State<Arc<ApiState>>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
 ) -> Result<Json<GenerateCrlResponse>> {
     let crl = state
         .ca
         .revocation_manager()
-        .generate_delta_crl(state.ca.ca_dn.clone())
+        .generate_delta_crl_by(
+            state.ca.ca_dn.clone(),
+            crate::revocation::CrlActor::User(&user.username),
+        )
         .await?;
 
     Ok(Json(GenerateCrlResponse {
@@ -1873,6 +1890,7 @@ async fn issue_from_approved_request(
         subject_alt_names,
         public_key: parsed.public_key,
         requestor: request.requestor_username.clone(),
+        authenticated_caller: None,
         metadata: None,
         csr_der: Some(csr_der),
         approval_request_id: Some(request.id),
@@ -3704,6 +3722,10 @@ impl IntoResponse for Error {
             Error::SelfApprovalProhibited => (
                 StatusCode::FORBIDDEN,
                 "Self-approval prohibited: requestor cannot approve their own request".to_string(),
+            ),
+            Error::ProfileNotPermitted => (
+                StatusCode::FORBIDDEN,
+                "certificate profile is not permitted for this client".to_string(),
             ),
             Error::InsufficientRole { required } => (
                 StatusCode::FORBIDDEN,

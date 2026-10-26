@@ -283,20 +283,23 @@ procedure, exact error messages and verification steps are in the runbook
 **1. Dedicated service-identity CA (required).** Before the first install,
 create or choose a CA (normally an offline intermediate with `pathlen:0`) that
 issues **only** the gRPC service certificates: ca-server's gRPC server
-certificate and the acme-server and est-server client certificates. It must not
+certificate, the acme-server and est-server client certificates, and the
+operator (Admin) client certificates. It must not
 be the CA that this ca-server operates, and it must not issue certificates to
 subscribers, devices or users. Record it and its owner in the system inventory
 (CM-8).
 
-- Why: the allowlist matches the client subject DN only. If the client trust
+- Why: the role lists match the client subject DN only. If the client trust
   anchor also issues subscriber certificates, anyone who can enroll for
-  `CN=est-server` gets past both the handshake and the allowlist.
+  `CN=est-server` gets past both the handshake and the role lookup and holds
+  the Issuer role.
 - What ca-server checks: after it loads the CA, it walks the issuing CA's
   ancestors in the CA database and refuses to start the listener if a
   client-CA anchor has the issuing certificate's public key or subject, was
   issued by the issuing CA, is its issuer, or matches a database ancestor. The
   refusal is written as a `grpc_listener_refused` audit record. It warns if the
-  file holds more than one anchor. Per call, it denies client certificates
+  file holds more than one anchor, and refuses to start with more than one
+  distinct anchor when the admin list is non-empty. Per call, it denies client certificates
   issued directly by the issuing CA or an ancestor
   (`reason=subscriber_issuing_ca`). It cannot detect sibling subordinate CAs,
   CAs issued by a subordinate of this CA, or roots outside its database
@@ -332,24 +335,59 @@ directories outside `./certs` (`CA_GRPC_TLS_DIR`, `ACME_CA_GRPC_CLIENT_DIR`,
 `EST_CA_GRPC_CLIENT_DIR`); `make dev-grpc-certs` writes DEV ONLY material to
 `.dev-grpc-certs/` and must never be used for a persistent environment.
 
-**4. Allowlist.** `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` (Helm
-`ca.grpc.allowedClientSubjects`, a list) names the client subjects that may
-call the API, for example `CN=acme-server;CN=est-server`.
+**4. Roles and methods.** Three `;`-separated lists of RFC 4514 subject DNs
+(Helm takes lists) give each client certificate subject exactly one role:
 
+| Variable (Helm `ca.grpc.*`) | Role, requestor namespace | RPCs | Deployment default |
+|---|---|---|---|
+| `CA_GRPC_ACME_CLIENT_SUBJECTS` (`acmeClientSubjects`) | Issuer, `acme::` | IssueCertificate, GetCaInfo, ListProfiles | `CN=acme-server` |
+| `CA_GRPC_EST_CLIENT_SUBJECTS` (`estClientSubjects`) | Issuer, `est::` | IssueCertificate, GetCaInfo, ListProfiles | `CN=est-server` |
+| `CA_GRPC_ADMIN_CLIENT_SUBJECTS` (`adminClientSubjects`) | Admin (CA Operations Staff), `admin::` | RevokeCertificate, GenerateCrl, CheckRevocationStatus, GetCaInfo, ListProfiles; never IssueCertificate | **empty** |
+
+- Any other RPC, including RPCs added later, is denied (`PERMISSION_DENIED`,
+  audited). An RA service cannot revoke or generate CRLs over gRPC.
 - Matching is exact and case-sensitive on the RFC 4514 form, most specific RDN
   first (as printed by `openssl x509 -noout -subject -nameopt RFC2253`).
-- `;` separates entries; an empty list stops ca-server.
-- Every allow-listed client can call every RPC on the listener, including
-  `RevokeCertificate` and `GenerateCrl` (POAM-2026-10-23-26). Allow-list only
-  the RA services.
-- Changes take effect at restart. Treat every allowlist change as a CM-3
-  change; the start-up audit record `grpc_listener_started` records the
-  effective list.
+- A subject may be in one list only (also no case variants across lists).
+  ca-server refuses to start if the ACME and EST lists are both empty, if an
+  entry cannot be parsed, or if the removed `CA_GRPC_ALLOWED_CLIENT_SUBJECTS`
+  (Helm `ca.grpc.allowedClientSubjects`) is still set; see the runbook
+  section "Upgrade from the single allowlist (PR #183)".
+- **Issuable profiles.** `CA_GRPC_ACME_ALLOWED_PROFILES` (default
+  `acme-default`) and `CA_GRPC_EST_ALLOWED_PROFILES` (default
+  `tls_client;tls_server;tls_server_client;efs`) limit which end-entity
+  profiles each namespace may request. CA profiles are never allowed; an
+  unknown or CA profile, or an empty list for a namespace with subjects,
+  refuses startup. If est-server issues another profile (`EST_ENROLL_PROFILE`
+  or a per-user profile), add it before you upgrade.
+- **Requestor.** acme-server and est-server already send `acme::<id>` /
+  `est::<id>`; the CA refuses other namespaces, non-printable-ASCII ids and
+  values over 255 bytes. EST usernames must therefore be 1-250 printable
+  ASCII characters (est-server returns HTTP 403 otherwise). The audit actor is
+  the client certificate subject; the requestor is recorded as
+  `on_behalf_of`.
+- **Admin identities.** Issue one short-lived admin certificate per named CA
+  Operations Staff operator (for example `CN=ops-alice`); shared admin
+  certificates are prohibited, because the certificate subject is the audit
+  actor. Admin certificates must be issued **directly** by the single
+  service-identity CA in `client-ca.crt` (issuer DN and authorityKeyIdentifier
+  matching that CA's subject and subjectKeyIdentifier), not by an
+  intermediate; that CA must carry a subjectKeyIdentifier. The chart and the
+  kustomize NetworkPolicy admit only acme/est pods to the gRPC port, so
+  operators connect with `kubectl port-forward` (needs RBAC `create` on
+  `pods/portforward`) or through a NetworkPolicy you add. Authorized
+  `CheckRevocationStatus` calls are not audited (reads); revocations and CRL
+  generations are.
+- Changes take effect at restart. Treat every role-list or profile-list
+  change as a CM-3 change; the start-up audit record `grpc_listener_started`
+  records the effective `clients`, `method_rules` and `issuer_profiles`.
 
 **5. Revoking a service identity.** Revocation is not checked on this channel
 (POAM-2026-10-23-27). To lock out a compromised client at once, remove its
-subject from the allowlist and restart ca-server, then reissue under a **new**
-subject, or rotate the service-identity CA and remove the old anchor.
+subject from its role list and restart ca-server, then reissue under a **new**
+subject, or rotate the service-identity CA and remove the old anchor. While
+the admin list is non-empty, ca-server will not start with two anchors, so
+empty the admin list for the duration of a CA rotation.
 
 **6. Upgrade.** Stop all audit writers before starting a version that changes
 audit-chain locking, then verify the chain (see runbook "Upgrade note").
@@ -990,7 +1028,9 @@ ostrich-admin backup create
 | `OSTRICH_CONFIG_PATH` | Configuration file path |
 | `OSTRICH_LOG_LEVEL` | Logging level (debug, info, warn, error) |
 | `CA_GRPC_TLS_CERT_FILE`, `CA_GRPC_TLS_KEY_FILE`, `CA_GRPC_TLS_CLIENT_CA_FILE` | ca-server gRPC server chain, key and client trust anchor (file paths; Section 3.6) |
-| `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` | ca-server: `;`-separated allow-listed client subject DNs |
+| `CA_GRPC_ACME_CLIENT_SUBJECTS`, `CA_GRPC_EST_CLIENT_SUBJECTS`, `CA_GRPC_ADMIN_CLIENT_SUBJECTS` | ca-server: `;`-separated client subject DNs per role (Issuer ACME, Issuer EST, Admin; Section 3.6) |
+| `CA_GRPC_ACME_ALLOWED_PROFILES`, `CA_GRPC_EST_ALLOWED_PROFILES` | ca-server: `;`-separated end-entity profiles each issuer namespace may request |
+| `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` | removed; ca-server refuses to start if it is set |
 | `CA_GRPC_CLIENT_CERT_FILE`, `CA_GRPC_CLIENT_KEY_FILE`, `CA_GRPC_CA_CERT_FILE` | acme-server / est-server gRPC client certificate, key and CA trust anchor |
 | `CA_GRPC_SERVER_NAME` | acme-server / est-server: TLS server name override (default: the URL host) |
 
@@ -1271,7 +1311,9 @@ Complete this checklist before placing OstrichPKI into production:
 - [ ] No conflicting role assignments
 - [ ] mTLS certificates deployed
 - [ ] CA gRPC client trust anchor is a dedicated service-identity CA (Section 3.6), not the CA's issuing CA or any subscriber-issuing CA
-- [ ] `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` lists only the RA services
+- [ ] `CA_GRPC_ACME_CLIENT_SUBJECTS` / `CA_GRPC_EST_CLIENT_SUBJECTS` list only the RA services; `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` is unset
+- [ ] `CA_GRPC_ADMIN_CLIENT_SUBJECTS` is empty, or lists one subject per named CA Operations Staff operator with short-lived certificates issued directly by the service-identity CA
+- [ ] `CA_GRPC_EST_ALLOWED_PROFILES` covers every profile est-server issues and contains no CA profile
 
 ### C.7 Documentation
 
@@ -1290,3 +1332,4 @@ Complete this checklist before placing OstrichPKI into production:
 | 1.1 | January 2026 | OstrichPKI Team | Added NIAP compliance appendix |
 | 1.2 | 2026-10-25 | OstrichPKI Team | Section 3.6 CA gRPC issuance channel (dedicated service-identity CA, bootstrap, secrets, allowlist, revocation compensating control, upgrade, monitoring); Section 3.5 dev plaintext flags; Appendix A `CA_GRPC_*` variables; Appendix C checklist items. Branch `claude/grpc-mtls`, uncommitted |
 | 1.3 | 2026-10-25 | OstrichPKI Team | Section 3.6 trust-anchor check updated to the final code (CA-database ancestor walk, subject alone, issued-by, audited refusal, per-call `subscriber_issuing_ca`; residual POAM-28); audit-signing note (SLH-DSA CA key unsupported, POAM-34; `audit_write_failed` alert) |
+| 1.4 | 2026-10-26 | OstrichPKI Team | Section 3.6 item 4 rewritten for per-method gRPC authorization (three role lists, method table, profile allowlists, requestor and EST username rule, admin identities: one per named operator, issued directly by the single anchor, port-forward / NetworkPolicy access); item 5 role-list removal and CA-rotation note; Appendix A and C.6 updated. Branch `claude/grpc-per-method-authz`, uncommitted |
