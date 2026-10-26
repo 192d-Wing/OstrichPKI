@@ -1,6 +1,6 @@
 # OstrichPKI Security Target
 
-**Document Version:** 1.8
+**Document Version:** 1.9
 **Document Date:** January 2026 (revised 2026-10-26)
 **Protection Profile:** NIAP Protection Profile for Certification Authorities (PP-CA) v2.1
 **Common Criteria Version:** 3.1 Release 5
@@ -804,7 +804,8 @@ All SFR dependencies are satisfied per PP-CA v2.1 analysis.
 | 1.5 | 2026-10-25 | OstrichPKI Team | TOE interfaces: CA gRPC issuance API recorded as TLS 1.3 mTLS with a client-subject allowlist (uncommitted branch `claude/grpc-mtls`); revocation gap noted (POAM-27). Architecture diagram note: "gRPC + mTLS" scoped to RA → CA; database, HSM and audit paths corrected; CA gRPC NetworkPolicy mapped to OE.NETWORK. No SFR claim or assurance level changed. Header version 1.3 → 1.5 (1.4 had not updated it) |
 | 1.6 | 2026-10-26 | OstrichPKI Team | TOE interfaces: CA gRPC API per-role, per-method authorization (Issuer / Admin = CA Operations Staff, default deny), verified client subject as audit actor, Admin leaf issued directly by the single anchor (uncommitted branch `claude/grpc-per-method-authz`). No SFR claim or status change |
 | 1.7 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation. ALC_FLR.2: dependency-gate claim qualified to RustSec advisories; npm gate limits and unscanned npe-portal SPA noted. AVA_VAN.2: 2026-10-26 local result recorded. No assurance claim changed |
-| 1.8 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (uncommitted branch `claude/dns01-resolver-fix`). Added assumption A.DNS_RESOLVER and objective OE.DNS_RESOLVER (DNSSEC-validating recursive resolver on a trusted segment; SC-21 inherited, not in the TOE; POAM-41) and a port 53 row in Section 11.3. Proposed by the compliance scribe; not yet reviewed against the PP-CA assumption set. No SFR or assurance claim changed |
+| 1.8 | 2026-10-26 | OstrichPKI Team | web-ui react-router v7 migration (branch `claude/react-router-v7`, uncommitted). ALC_FLR.2: remediation record added (GHSA-wrjc-x8rr-h8h6 and GHSA-337j-9hxr-rhxg, POAM-39 closed pending commit, proposed window missed). AVA_VAN.2: full web-ui `pnpm audit` 0 recorded; new POA&M items 43 (BFF proxy path decoding) and 44 (no web-ui test runner). No assurance claim changed |
+| 1.9 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (uncommitted branch `claude/dns01-resolver-fix`). Added assumption A.DNS_RESOLVER and objective OE.DNS_RESOLVER (DNSSEC-validating recursive resolver on a trusted segment; SC-21 inherited, not in the TOE; POAM-41) and a port 53 row in Section 11.3. Proposed by the compliance scribe; not yet reviewed against the PP-CA assumption set. No SFR or assurance claim changed |
 
 ---
 
@@ -945,6 +946,7 @@ This section describes how OstrichPKI satisfies each Security Assurance Requirem
 - GitHub Security Advisories enabled
 - Dependabot for dependency vulnerabilities
 - Dependency gate ([.github/workflows/audit.yml](../../.github/workflows/audit.yml), jobs `cargo audit` and `cargo deny`; CI hardening 2026-10-23, not yet merged): `cargo audit --deny warnings` and `cargo deny check` fail the workflow on any new **RustSec** advisory, on every pull request, on push to `main` and weekly. `.cargo/audit.toml` (mirrored in `deny.toml`) is the only exception path. GitHub-only advisories (no RustSec alias) are found by Dependabot and do not fail CI. The web-ui npm gate (`pnpm audit --prod --audit-level=high`) does not cover development/build dependencies or medium/low advisories, and the npe-portal SPA is not scanned (POA&M POAM-2026-10-23-40, -42). The gate is not yet a required status check, so a failure does not by itself block a merge (POA&M). Flaw-remediation time periods are proposed and pending AO approval. See NIST SI-2 / RA-5 in [NIST_800-53_MAPPING.md](NIST_800-53_MAPPING.md)
+- Remediation record, 2026-10-26 (web-ui react-router v7 migration; branch `claude/react-router-v7`, uncommitted; local only): GHSA-wrjc-x8rr-h8h6 (CWE-601) and GHSA-337j-9hxr-rhxg (CWE-915), Dependabot alerts 27 and 28, fixed only in react-router 7.18.0, were remediated by replacing `react-router-dom` ^6.30.6 with `react-router` ^7.18.1 (7.18.4). Published 2026-07-23 and remediated on day 95, past the proposed 90-day window for medium advisories. A same-origin navigation guard was added as defence in depth (SI-10). POA&M POAM-2026-10-23-39 closed pending commit; follow-ups POAM-2026-10-23-43 and -44
 
 ### 10.4 Tests (ATE)
 
@@ -1002,6 +1004,7 @@ This section describes how OstrichPKI satisfies each Security Assurance Requirem
 - Dependabot alerts enabled
 - `cargo audit --deny warnings` in the CI dependency gate — fails the workflow on new advisories; not yet a required check (POA&M). Last recorded result: 0 vulnerabilities, 0 warnings on 2026-10-23 (642 crates; local run) after remediating 18 vulnerabilities and 4 warnings found on `main`. Latest local result: 2026-10-24 (dependency cleanup, not yet in CI), exit 0, 614 crates, with 3 accepted advisories (RUSTSEC-2023-0071, RUSTSEC-2024-0436, RUSTSEC-2025-0134)
 - 2026-10-26 (Dependabot alert remediation; local only, first CI run pending): 19 of 21 open Dependabot alerts remediated by lockfile updates, including 3 hickory-resolver GHSAs that `cargo audit` did not report (no RustSec alias). `cargo audit --deny warnings` exit 0 (1378 advisories, 614 crates); full web-ui `pnpm audit` 28 → 2 moderate. The 2 remaining react-router v6 advisories are on the POA&M (POAM-2026-10-23-39)
+- 2026-10-26, later (web-ui react-router v7 migration; local only, CI not run): full web-ui `pnpm audit` "No known vulnerabilities found" after the move to `react-router` 7.18.4 (POAM-2026-10-23-39 closed pending commit). The CI npm gate form is unchanged (`--prod --audit-level=high`, POAM-2026-10-23-42)
 - `cargo deny check` (cargo-deny 0.20.2) passes locally on 2026-10-23 (`advisories ok, bans ok, licenses ok, sources ok`) with crate-scoped license exceptions; first CI run pending (POA&M POAM-2026-10-23-06, closed pending CI)
 - Security review checklist
 

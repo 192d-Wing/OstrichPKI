@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import {
   Alert,
   Box,
@@ -135,7 +135,8 @@ export function CertificateIssuePage() {
                 variant="h2"
                 description={`Serial ${r.serial_number} · valid ${r.not_before} → ${r.not_after}`}
                 actions={
-                  <Button onClick={() => navigate(`/certificates/${r.certificate_id}`)}>
+                  // NIST 800-53: SI-10 - server-returned id encoded as one path segment
+                  <Button onClick={() => navigate(`/certificates/${encodeURIComponent(r.certificate_id)}`)}>
                     View details
                   </Button>
                 }

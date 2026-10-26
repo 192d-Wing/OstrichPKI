@@ -917,14 +917,16 @@ Run record `target/agent-workflow/20261026-dependabot-remediation/`
 (`qa-report.md`, `gates-final.log`, `pnpm-audit-before.txt`,
 `pnpm-audit-after.txt`). Changes: `Cargo.lock` hickory-resolver, hickory-net
 and hickory-proto 0.26.1 → 0.26.2 only; web-ui `pnpm-lock.yaml` and two
-`package.json` floors (`vite` ^8.1.6, `react-router-dom` ^6.30.6).
+`package.json` floors (`vite` ^8.1.6, `react-router-dom` ^6.30.6). The
+`react-router-dom` floor and the 2 remaining advisories are superseded by the
+react-router v7 record below (`react-router` ^7.18.1; full audit 0).
 
 | Scan | Command | Result |
 |------|---------|--------|
 | Dependabot alerts | GitHub API `dependabot/alerts?state=open`, 2026-10-26 | 21 open before the change (3 Rust runtime; 18 npm: 15 development, 3 runtime). 19 remediated by this change; 2 remain (react-router GHSA-wrjc-x8rr-h8h6, GHSA-337j-9hxr-rhxg; POAM-2026-10-23-39). Auto-close happens only after merge |
 | Advisories (gate form) | `cargo audit --deny warnings` (in `make security`) | exit 0; 1378 advisories loaded, 614 crates (final re-run). The 3 hickory GHSAs have no RustSec alias, so this tool did not report them before the change either |
 | Supply-chain policy | `cargo deny check` (in `make security`) | exit 0: `advisories ok, bans ok, licenses ok, sources ok` |
-| Web UI, full audit | `pnpm audit` (`services/web-ui/web`) | before: 28 vulnerabilities (1 low / 9 moderate / 18 high); after: 2 moderate (the two react-router advisories) |
+| Web UI, full audit | `pnpm audit` (`services/web-ui/web`) | before: 28 vulnerabilities (1 low / 9 moderate / 18 high); after: 2 moderate (the two react-router advisories; 0 since the react-router v7 record below) |
 | Web UI, CI gate form | `pnpm audit --prod --audit-level=high` | exit 0 before and after: this gate does not discriminate for this change (POAM-2026-10-23-42) |
 | Web UI build chain | `pnpm install --frozen-lockfile` (pnpm 9.15.9), `pnpm typecheck`, `pnpm lint`, `pnpm build` | pass (pre-existing >500 kB chunk warning) |
 | Regression | `make clippy`, `make test-unit` | pass; 782 passed / 0 failed / 1 ignored |
@@ -938,6 +940,44 @@ Limits of this evidence:
   changed
 - Per-advisory versions, scope and timeliness: NIST SI-2 in
   [NIST_800-53_MAPPING.md](NIST_800-53_MAPPING.md#si-2-flaw-remediation)
+
+**Recorded result — 2026-10-26, web-ui react-router v7 migration (RA-5 / SI-2 / SI-10 / CA-5):**
+
+Branch `claude/react-router-v7` (restacked on `main` @ 9fad04f), uncommitted.
+Run record `target/agent-workflow/20261026-091035-react-router-v7/`
+(`qa-report.md`, `fixes-round-1.md`, `impl-notes.md`, `smoke.md`,
+`safe-path-check.mjs`, `router-smoke.mjs`). Changes: web-ui `package.json`
+`react-router-dom` ^6.30.6 → `react-router` ^7.18.1 (line 24); `pnpm-lock.yaml`
+router packages and their two new dependencies only; source imports; the same-origin guard
+[safe-path.ts](../../services/web-ui/web/src/lib/safe-path.ts); encoded
+server-ID path segments. POAM-2026-10-23-39 closed pending commit.
+
+| Scan / check | Command | Result |
+|--------------|---------|--------|
+| Web UI, full audit | `pnpm audit` (`services/web-ui/web`) | **"No known vulnerabilities found"** (2 moderate before). Re-run by the compliance scribe on 2026-10-26 |
+| Router version | `pnpm-lock.yaml`; `node -p 'require("./node_modules/react-router/package.json").version'` | `react-router` 7.18.4 (lockfile lines 26-28); `react-router-dom`, `react-router` 6.30.6 and `@remix-run/router` 1.23.4 removed; added `cookie` 1.1.1, `set-cookie-parser` 2.7.3 |
+| Web UI, CI gate form | `pnpm audit --prod --audit-level=high` | unchanged in `ci.yml` (line 96); it could not see these medium advisories (POAM-2026-10-23-42) |
+| Web UI build chain | `pnpm install --frozen-lockfile` (pnpm 9.15.9), `pnpm typecheck`, `pnpm lint`, `pnpm build` | pass (pre-existing >500 kB chunk warning) |
+| Navigation guard (manual) | `node --experimental-strip-types safe-path-check.mjs`; `node router-smoke.mjs` (run record) | 181 checks / 0 failures; 5 / 0. Re-run by the compliance scribe |
+| Browser smoke (manual) | `pnpm dev` with a mock BFF | login redirect, client-side nav, encoded detail route: PASS. OIDC SSO and logout not covered |
+
+Secure configuration recorded (CM-6 / SI-10): web-ui navigation targets that
+are not compile-time literals pass through `safeInternalPath` (fallback
+`/dashboard`); server-derived path segments are encoded with
+`encodeURIComponent`. The app stays in Declarative Mode (`<BrowserRouter>`).
+
+Limits of this evidence:
+
+- Local run only; CI not run. After merge, attach the CI `web-ui-react` run and
+  the Dependabot auto-close of alerts 27 and 28
+- Remediated on day 95 against the proposed 90-day window for medium
+  advisories (SI-2(c) missed; windows pending AO approval)
+- The guard vectors live in run-record scripts, not in a committed test; web-ui
+  has no test runner (POAM-2026-10-23-44)
+- The BFF proxy forwards a percent-decoded path to the backends, so the
+  client-side encoding protects only the browser → BFF hop
+  (POAM-2026-10-23-43)
+- Test detail: [TEST_EVIDENCE.md §2.11](TEST_EVIDENCE.md#211-test-run-2026-10-26-web-ui-react-router-v7-migration)
 
 **CM-6: CI workflow secure defaults (2026-10-23, CI hardening):**
 

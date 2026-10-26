@@ -1,6 +1,6 @@
 import { lazy, Suspense, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router";
 import Spinner from "@cloudscape-design/components/spinner";
 
 import { CloudscapeLayout } from "@/components/layout/cloudscape-layout";

@@ -1,9 +1,9 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.2
+**Document Version:** 2.3
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
-**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 817 unit tests passed, 0 failed, 1 ignored, 2026-10-26 (§2.11, `make test-unit`)
+**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 817 unit tests passed, 0 failed, 1 ignored, 2026-10-26 (§2.12, `make test-unit`)
 
 ---
 
@@ -500,9 +500,76 @@ env-var form of the role lists (only the CLI flag, the same clap argument, is
 tested); how an EST client sees a CA requestor refusal beyond the HTTP 403
 pre-check; deployed NetworkPolicy and port-forward admin access.
 
+### 2.11 Test Run 2026-10-26 (Web UI react-router v7 migration)
+
+**Scope:** branch `claude/react-router-v7`, uncommitted, restacked on `main` @
+9fad04f (run record
+`target/agent-workflow/20261026-091035-react-router-v7/`): web-ui
+`react-router-dom` ^6.30.6 → `react-router` ^7.18.1 (7.18.4), the same-origin
+navigation guard `src/lib/safe-path.ts`, and encoded server-ID path segments.
+Closes POAM-2026-10-23-39 (pending commit). No Rust code changed and no Rust
+test was run.
+**Sources:** `qa-report.md` (QA round on the pre-restack tree, `main` @
+1294f63; PASS), `fixes-round-1.md`, the orchestrator's restack note in
+`impl-notes.md`, and `smoke.md`. Rows marked "scribe" were re-run by the
+compliance scribe on the restacked tree on 2026-10-26.
+
+| Gate | Command (cwd `services/web-ui/web`, pnpm 9.15.9 via `npx --yes pnpm@9.15.9`) | Result | Counts / notes |
+|------|------|--------|----------------|
+| Frozen install | `pnpm install --frozen-lockfile` | PASS | QA round and restacked tree |
+| Typecheck | `pnpm typecheck` (`tsc --noEmit`) | PASS | 0 errors |
+| Lint | `pnpm lint` (`eslint .`) | PASS | 0 problems |
+| Build | `pnpm build` | PASS | pre-existing warning: `cloudscape` vendor chunk about 945 kB, over the 500 kB limit |
+| Full audit | `pnpm audit` (not `--prod`) | PASS | "No known vulnerabilities found" (restacked tree; scribe) |
+| No v6 router | `grep -nE "react-router\|@remix-run" pnpm-lock.yaml`; `node -p 'require("./node_modules/react-router/package.json").version'` | PASS | only `react-router` (specifier `^7.18.1`, version 7.18.4); no `react-router-dom` or `@remix-run/router` (scribe) |
+| Guard vectors (manual) | `node --experimental-strip-types safe-path-check.mjs` (run record) | PASS | **181 checks, 0 failures** after fix round 1 (scribe); QA round: 150 checks before the dot-segment fix |
+| Router composition (manual) | `node router-smoke.mjs` (run record) | PASS | **5 ok, 0 failures** against react-router 7.18.4 (scribe) |
+| Mutation check of the vectors | weakened copies of `safe-path.ts` (QA, scratchpad) | PASS | 3 non-equivalent mutants killed; 2 equivalent mutants survive (each of the regex and the URL-origin check rejects every protocol-relative and backslash form on its own) |
+| Browser smoke | `pnpm dev` (vite 8.1.6) with a throwaway node mock BFF; built-in browser | PASS (limited) | see below |
+| CI | GitHub / GitLab pipelines | **NOT RUN** | change not committed |
+
+**What the guard vectors cover (`safe-path-check.mjs`, sections A-G):**
+
+- A: the original accept / reject vectors and fallback behaviour (`""`,
+  `//evil`, `/\evil`, `/\t/evil`, `https://…`, `http:/…`, `javascript:…`,
+  `./x`, `?x`, `#x`, a leading space)
+- B: percent-encoded and Unicode slash look-alikes, mixed `/\`, `///`, C0
+  controls, leading NUL / TAB / LF / BOM / NBSP, mixed-case and other schemes
+  (`data:`, `vbscript:`, `file:`, `mailto:`), bare hosts
+- C: non-string runtime input fails closed without throwing
+- D: 5 MB inputs give correct verdicts in linear time (no ReDoS)
+- E: every accepted input stays same-origin after react-router 7.18.4
+  `resolvePath` / `createPath`
+- F: seeded property run, 100,000 random strings over a hostile alphabet
+- G (fix round 1): `//` anywhere and `.` / `..` segments are rejected
+  (`/..//evil.com`, `/a/./b`, `/a/..`); app routes and dot-containing names
+  (`/.well-known`, `/fqdns/a.example.com`) are accepted
+
+**Router checks (`router-smoke.mjs`):** `/certificates/abc%2Fdef` matches
+`certificates/:id` and the parameter decodes to `abc/def`; the static
+`certificates/issue` route outranks `:id`; special characters round-trip; a
+declarative `<MemoryRouter>` with `useParams` renders the decoded parameter.
+
+**Browser smoke (orchestrator, `smoke.md`):** unauthenticated deep link
+`/static/certificates` → `/login`; internal login → `/dashboard`; side-nav
+follow through `safeInternalPath` → `/fqdns` without a document reload;
+`history.back()` → `/dashboard`; dashboard quick action → `/audit` without a
+reload; `/certificates/abc%2Fdef` → detail route with a single-segment API
+request (`GET /api/ca/api/v1/certificates/abc%2Fdef`). All PASS.
+
+**Not covered:** OIDC SSO login and logout (server-side redirects; they need
+the real BFF); the browser smoke used a mock BFF, so the BFF proxy's
+percent-decoding of the forwarded path was not exercised (POAM-2026-10-23-43);
+router composition is tested through `resolvePath` / `createPath`, not
+through `BrowserRouter` in a real DOM; the `encodeURIComponent` in `lib/ca.ts`
+is checked by review, typecheck and the one smoke request only; the
+`fqdns/:fqdn` decode is not separately tested. The vectors are in run-record
+scripts that are not committed and not run in CI: web-ui has no test runner
+(POAM-2026-10-23-44).
+
 ---
 
-### 2.11 Test Run 2026-10-26 (ACME dns-01 resolver fix)
+### 2.12 Test Run 2026-10-26 (ACME dns-01 resolver fix)
 
 **Scope:** branch `claude/dns01-resolver-fix`, uncommitted (run record
 `target/agent-workflow/20261026-091032-dns01-resolver/`): the dns-01 resolver
@@ -924,7 +991,7 @@ warnings` exit 0 (1352 advisories, 614 crates) after `rand` 0.8.5 → 0.8.6 and
 the removal of `openidconnect` and `p256`. The ignore list is down to 3 IDs
 (RUSTSEC-2023-0071, -2024-0436, -2025-0134). Local only (§2.7).
 
-**2026-10-26, Dependabot alert remediation (latest recorded):** `cargo audit
+**2026-10-26, Dependabot alert remediation:** `cargo audit
 --deny warnings` exit 0 (1378 advisories, 614 crates) and `cargo deny check`
 exit 0 after hickory-resolver/-net/-proto 0.26.1 → 0.26.2. Those three GHSAs
 have no RustSec alias and were found by Dependabot, not `cargo audit`. Web UI
@@ -932,6 +999,13 @@ full `pnpm audit`: 28 (1 low / 9 moderate / 18 high) → 2 moderate (react-route
 v6, POAM-2026-10-23-39). Regression: `make test-unit` 782 / 0 / 1, `make clippy`
 and the web-ui frozen install, typecheck, lint and build pass. No tests were
 added. Local only; first CI run pending (ATO_EVIDENCE.md §2.3).
+
+**2026-10-26, react-router v7 migration (latest recorded):** web-ui full
+`pnpm audit`: 2 moderate → **0** ("No known vulnerabilities found") after
+`react-router-dom` ^6.30.6 was replaced by `react-router` ^7.18.1 (7.18.4),
+closing GHSA-wrjc-x8rr-h8h6 and GHSA-337j-9hxr-rhxg (POAM-2026-10-23-39). The
+CI gate form `pnpm audit --prod --audit-level=high` is unchanged
+(POAM-2026-10-23-42). Cargo files did not change. Local only (§2.11).
 
 ### 5.3 License Compliance
 
@@ -964,7 +1038,7 @@ closed pending first green CI run).
 | gRPC peer subject / allowlist (`fuzz_grpc_peer_subject`, 2026-10-25) | 237,187 (61 s) after the fix | 1 before the fix (OID-arc overflow panic, fixed) | Pass after fix (implementer-reported, §2.8) |
 | gRPC peer subject / role lists (`fuzz_grpc_peer_subject`, 2026-10-26) | 135,145 (61 s) after the fix | 1 before the fix (const-oid `Display` panic on an undecodable numeric OID, fixed) | Pass after fix (coder-reported, §2.10) |
 | gRPC requestor binding (`fuzz_grpc_requestor`, new 2026-10-26) | 246,720 (61 s) | 0 | Pass (coder-reported, §2.10) |
-| ACME dns-01 query name (`fuzz_dns01_query_name`, new 2026-10-26) | 131,276 (61 s, QA oracle); 136,323 (46 s) after fix round 1 | 0 | Pass (QA- and coder-reported, §2.11) |
+| ACME dns-01 query name (`fuzz_dns01_query_name`, new 2026-10-26) | 131,276 (61 s, QA oracle); 136,323 (46 s) after fix round 1 | 0 | Pass (QA- and coder-reported, §2.12) |
 
 ### 5.5 Secrets Scanning
 
@@ -1139,4 +1213,5 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 1.9 | 2026-10-25 | OstrichPKI Team | Added §2.9, the CA gRPC mTLS final-code run after fix rounds 2-3: `grpc_mtls_e2e` 21/21, `fips_gate_preinstalled` 1/1, 41 `grpc_tls::tests`, `ostrich-audit` lib 20/20 (re-run by the scribe); `make test-unit` 732/0 and service bins (coder). Postgres tests incl. new `sign_timeout_db.rs` NOT RUN |
 | 2.0 | 2026-10-26 | OstrichPKI Team | Added §2.10, the per-method CA gRPC authorization run (coder-reported, final tree; not re-run by the scribe): `make test-unit` 782 / 0 / 1, `grpc_tls` 66, `ostrich-ca` 78, ca-server bins 21, `ostrich-est` 44, `grpc_mtls_e2e` 39; fuzz `fuzz_grpc_requestor` 246,720 runs and `fuzz_grpc_peer_subject` 135,145 runs after a const-oid panic fix; mutations M1-M29 killed except M13h (NOT RUN). DB-gated suites NOT RUN (POAM-2026-10-23-36). §5.4 fuzz rows added |
 | 2.1 | 2026-10-26 | OstrichPKI Team | §5.2: recorded the Dependabot alert remediation result (`cargo audit` exit 0, 1378 advisories / 614 crates; full web-ui `pnpm audit` 28 → 2 moderate; `make test-unit` 782 / 0 / 1); "latest recorded" moved to it. No new tests. Local only |
-| 2.2 | 2026-10-26 | OstrichPKI Team | Added §2.11, the ACME dns-01 resolver fix run: `make test-unit` 817 / 0 / 1 and `ostrich-acme` lib 72 / acme-server bins 7 (re-run by the scribe); fuzz `fuzz_dns01_query_name` (new) and mutation checks recorded; Helm render, integration, live dns-01 E2E and binary smoke NOT RUN. §5.4: new fuzz row. Header "latest recorded run" updated |
+| 2.2 | 2026-10-26 | OstrichPKI Team | Added §2.11, the web-ui react-router v7 migration run: frozen install, typecheck, lint, build pass; full `pnpm audit` 0 and react-router 7.18.4 (re-run by the scribe); manual guard vectors `safe-path-check.mjs` 181 / 0 and `router-smoke.mjs` 5 / 0 (re-run by the scribe; run-record scripts, not committed); browser smoke against a mock BFF (OIDC and logout not covered); CI NOT RUN. §5.2: 2026-10-26 react-router result added and "latest recorded" moved to it. No automated test added (no web-ui test runner, POAM-2026-10-23-44) |
+| 2.3 | 2026-10-26 | OstrichPKI Team | Added §2.12, the ACME dns-01 resolver fix run: `make test-unit` 817 / 0 / 1 and `ostrich-acme` lib 72 / acme-server bins 7 (re-run by the scribe); fuzz `fuzz_dns01_query_name` (new) and mutation checks recorded; Helm render, integration, live dns-01 E2E and binary smoke NOT RUN. §5.4: new fuzz row. Header "latest recorded run" updated |

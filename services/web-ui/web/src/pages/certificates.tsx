@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import {
   useMutation,
   useQuery,
@@ -209,7 +209,8 @@ export function CertificatesPage() {
             header: "",
             cell: (c) => (
               <SpaceBetween direction="horizontal" size="xs">
-                <Link onFollow={() => navigate(`/certificates/${c.id}`)}>
+                {/* NIST 800-53: SI-10 - server-returned id encoded as one path segment */}
+                <Link onFollow={() => navigate(`/certificates/${encodeURIComponent(c.id)}`)}>
                   View
                 </Link>
                 {c.status === "active" && (
