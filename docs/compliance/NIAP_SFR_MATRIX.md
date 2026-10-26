@@ -1,6 +1,6 @@
 # NIAP PP-CA v2.1 SFR Implementation Matrix
 
-**Document Version:** 1.4
+**Document Version:** 1.5
 **Last Updated:** 2026-10-26
 **Protection Profile:** NIAP PP-CA v2.1 FINAL
 **TOE:** OstrichPKI v1.0
@@ -90,7 +90,7 @@ This document provides a comprehensive mapping of all Security Functional Requir
 | Element | Implementation | Evidence |
 |---------|---------------|----------|
 | FAU_GEN.2.1 | AuditEvent includes actor field | [crates/ostrich-db/src/models/audit.rs:20-35](../../crates/ostrich-db/src/models/audit.rs#L20-L35) |
-| FAU_GEN.2.1 (CA gRPC, 2026-10-26) | Actor of gRPC issuance, revocation and CRL records = verified mTLS peer subject DN, plus `authenticated_caller_issuer` / `_serial`; the client `requestor` is namespace-bound and recorded as `on_behalf_of` | [grpc.rs](../../crates/ostrich-ca/src/grpc.rs) `issuance_request` / `revocation_request` / `crl_actor`, [grpc_authz.rs](../../crates/ostrich-ca/src/grpc_authz.rs) `bind_caller`; unit and e2e tests passed, DB-backed handler test pending (POAM-2026-10-23-36) |
+| FAU_GEN.2.1 (CA gRPC, 2026-10-26) | Actor of gRPC issuance, revocation and CRL records = verified mTLS peer subject DN, plus `authenticated_caller_issuer` / `_serial`; the client `requestor` is namespace-bound and recorded as `on_behalf_of` | [grpc.rs](../../crates/ostrich-ca/src/grpc.rs) `issuance_request` / `revocation_request` / `crl_actor`, [grpc_authz.rs](../../crates/ostrich-ca/src/grpc_authz.rs) `bind_caller`; unit and e2e tests passed, DB-backed handler test pending (POAM-2026-10-23-36). 2026-10-26: DB-backed test [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs) written with a CI path (`.github/workflows/integration-db.yml`), **NOT RUN** |
 
 **Actor Identification:**
 
@@ -947,3 +947,4 @@ grep -r "NIAP PP-CA:" crates/ --include="*.rs"
 | 1.2 | 2026-10-25 | OstrichPKI Team | FTP_ITC.1: inter-service bullets corrected (TLS 1.3 only, both AES-GCM suites, key-exchange groups, allowlist) and a 2026-10-25 note added: the CA gRPC channel is now TLS 1.3 mTLS on the aws-lc-rs FIPS provider; before this the ✅ overstated the state. Status and overall percentage unchanged |
 | 1.3 | 2026-10-25 | OstrichPKI Team | FTP_ITC.1 evidence count updated to `grpc_mtls_e2e` 21/21 (final code after fix round 3). No status change |
 | 1.4 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization (branch `claude/grpc-per-method-authz`, uncommitted). FAU_GEN.2: gRPC actor row (verified peer). FMT_SMR.2: gRPC Issuer / Admin role table (Admin = CA Operations Staff). FTP_ITC.1: per-role lists replace the allowlist bullet; 2026-10-26 note, `grpc_mtls_e2e` 39/39. No status change |
+| 1.5 | 2026-10-26 | OstrichPKI Team | CI evidence gaps (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed). FAU_GEN.2 gRPC actor row: DB-backed `ca_grpc_audit_e2e` and its `integration-db.yml` CI path named; NOT RUN. No status change |

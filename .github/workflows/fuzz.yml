@@ -1,0 +1,152 @@
+# Coverage-guided fuzzing of the gRPC authorization input parsers
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SI-10 (Information Input Validation: client-asserted
+#   requestor and peer-certificate subject parsing must never panic), SA-11
+#   (SA-11(8) dynamic code analysis), CA-2
+# - NIST 800-53: CM-2 / SA-15 / SR-3 (nightly pinned by date, cargo-fuzz by
+#   version, actions by SHA; `cargo fetch --locked` enforces fuzz/Cargo.lock;
+#   cargo-fuzz is built from source each run, never restored from a cache)
+# - NIST 800-53: CM-6 - least-privilege token (contents: read), no secrets
+# Weekly + manual (time budget 60..3600 s per target), plus a fixed 60 s
+# smoke run on PRs that touch the fuzz crate, this workflow or the fuzzed
+# code (both targets call `ostrich_common::grpc_tls` only). The manual budget
+# is passed through env (never interpolated into a script) and range-checked.
+# The corpus is persisted in the Actions cache; only non-PR runs save it.
+
+name: Fuzz
+
+on:
+  schedule:
+    - cron: '30 6 * * 1'
+  pull_request:
+    paths:
+      - fuzz/**
+      - .github/workflows/fuzz.yml
+      - crates/ostrich-common/src/grpc_tls.rs
+      - crates/ostrich-common/src/tls.rs
+      - crates/ostrich-common/src/auth/**
+      - crates/ostrich-common/Cargo.toml
+      - Cargo.toml
+      - rust-toolchain.toml
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: Seconds per target (60-3600)
+        default: "600"
+        required: false
+
+permissions:
+  contents: read
+
+# Only superseded PR runs are cancelled.
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  FUZZ_TOOLCHAIN: nightly-2026-10-23
+  CARGO_FUZZ_VERSION: 0.13.2
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fuzz_grpc_requestor, fuzz_grpc_peer_subject]
+    env:
+      T: ${{ matrix.target }}
+      # PR: fixed 60 s. Schedule: 600 s. Dispatch: the input (validated below).
+      MAX_TOTAL_TIME: ${{ github.event_name == 'pull_request' && '60' || inputs.max_total_time || '600' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate the time budget
+        run: |
+          [[ "$MAX_TOTAL_TIME" =~ ^[1-9][0-9]{1,3}$ ]] && (( MAX_TOTAL_TIME >= 60 && MAX_TOTAL_TIME <= 3600 )) || {
+            echo "::error::max_total_time must be an integer in 60..3600"
+            exit 1
+          }
+
+      # aws-lc-rs (FIPS module) builds C/asm; same list as ci.yml.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev golang-go perl pkg-config nasm protobuf-compiler libssl-dev
+
+      - name: Install toolchains (rust-toolchain.toml + pinned nightly)
+        run: |
+          rustup toolchain install && rustc --version
+          rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
+          rustc +"$FUZZ_TOOLCHAIN" -V
+
+      # One cache per toolchain and target; saved from main only. cache-bin
+      # is off so a restored ~/.cargo/bin can never stand in for the pinned
+      # cargo-fuzz built below.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz -> target
+          key: fuzz-${{ env.FUZZ_TOOLCHAIN }}-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-bin: false
+
+      - name: Install pinned cargo-fuzz
+        run: |
+          cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+          cargo fuzz --version
+
+      # `cargo fuzz` has no --locked: fail here if fuzz/Cargo.lock is stale.
+      - name: Fetch locked fuzz dependencies
+        run: cargo +"$FUZZ_TOOLCHAIN" fetch --locked --manifest-path fuzz/Cargo.toml
+
+      - name: Build fuzz target
+        run: cargo +"$FUZZ_TOOLCHAIN" fuzz build "$T"
+
+      # Corpus (test inputs only, no keys): restore the newest saved corpus
+      # for this target; a new key per run attempt so each non-PR run can save.
+      - name: Restore fuzz corpus
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Run fuzz target
+        run: |
+          set -euo pipefail
+          mkdir -p "fuzz/corpus/$T"
+          cargo +"$FUZZ_TOOLCHAIN" fuzz run "$T" "fuzz/corpus/$T" -- -max_total_time="$MAX_TOTAL_TIME" -timeout=10 -rss_limit_mb=2048 -print_final_stats=1 2>&1 | tee "$RUNNER_TEMP/fuzz-$T.txt"
+
+      # PR runs never write the shared corpus cache.
+      - name: Save fuzz corpus
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload fuzz log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-log-${{ matrix.target }}
+          path: ${{ runner.temp }}/fuzz-${{ matrix.target }}.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Crash reproducers (test inputs only, no keys).
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+          retention-days: 30

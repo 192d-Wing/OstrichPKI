@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 3.1
+**Document Version:** 3.2
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -379,7 +379,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - 🟡 AC-6(9) (log use of privileged functions): RevokeCertificate and
   GenerateCrl are audited with the verified admin peer as actor;
   CheckRevocationStatus is an unaudited admin read (only its denials are
-  audited). Handler-level live evidence is pending (POAM-2026-10-23-36)
+  audited). Handler-level live evidence is pending (POAM-2026-10-23-36;
+  CI path added 2026-10-26, NOT RUN)
 - 🔴 No user privilege levels
 
 **Gaps:**
@@ -604,7 +605,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
     `failure: ca_profile_not_permitted`. Tests (pure builders):
     `revocation_failure_event_contents`, `crl_failure_event_contents`,
     `caller_profile_refusal_blocks_ca_profiles_for_service_callers`; the
-    database paths were not executed (POAM-2026-10-23-36). Authorized
+    database paths were not executed and have no live test yet
+    (POAM-2026-10-23-36). Authorized
     `CheckRevocationStatus`, `GetCaInfo` and `ListProfiles` calls are not
     audited (reads)
 
@@ -686,6 +688,15 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   Residuals: handler glue (M13h) and the live `audit_signing_e2e` assertions
   NOT RUN (POAM-2026-10-23-36); `on_behalf_of` is a namespace-bound claim,
   not a verified account (POAM-2026-10-23-35)
+- 🟡 DB-backed test of the gRPC handler glue (2026-10-26, CI path added,
+  **NOT RUN**):
+  [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs)
+  asserts actor, `authenticated_caller*` and `on_behalf_of` on the stored
+  Issue, Revoke and GenerateCrl records written by the real `CaGrpcService`;
+  it runs in
+  [integration-db.yml](../../.github/workflows/integration-db.yml), which has
+  not run. M13h: kill argued by construction, not executed. The REST CRL
+  handler glue still has no live test (POAM-2026-10-23-36)
 
 **Phase 12 Enhancements:**
 
@@ -881,7 +892,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   Without `OSTRICH_DB_TESTS=1` they skip and are reported as passed, so those
   results are not evidence. With the opt-in they now fail if the database is
   unreachable, so a green GitLab `test:integration` job (which sets it) will
-  be evidence once it has run (POAM-2026-10-23-31). The in-memory
+  be evidence once it has run (POAM-2026-10-23-31). Since 2026-10-26
+  `integration-db.yml` also runs them and fails unless all three report
+  `ok` (CI path added, NOT RUN). The in-memory
   `MemoryAuditSink` concurrency test is not evidence for the database path.
   Residuals: signing still happens under the global lock, so signer latency
   serialises every audit writer of every service. A hung HSM call cannot be
@@ -992,7 +1005,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   commit). `audit_signing_e2e` now also asserts actor `CN=ops-admin` and
   `on_behalf_of = admin::audit-e2e` on the signed revocation record, but that
   test needs Postgres and SoftHSM and was **NOT RUN** for this change
-  (POAM-2026-10-23-36). The mechanism status above is unchanged
+  (POAM-2026-10-23-36). The mechanism status above is unchanged.
+  2026-10-26: `audit_signing_e2e` and the new
+  [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs)
+  (`verify_signed_chain` over gRPC-written records against the CA SPKI, then
+  false after the `crl_generation` signature is corrupted) have a CI path in
+  [integration-db.yml](../../.github/workflows/integration-db.yml),
+  **NOT RUN**
 - 🔴 No CSR→Certificate linkage (missing request_id)
 
 **Gaps / POA&M:**
@@ -1047,6 +1066,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   `requestor_denial_audit_is_cancel_proof`, bin
   `start_grpc_listener_refusal_is_audited_without_started_record`
   (ca-server bins 21/21, `grpc_mtls_e2e` 39/39, 2026-10-26)
+- 🟡 Stored denial record (2026-10-26, CI path added, **NOT RUN**):
+  [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs)
+  asserts one stored `access_denied` Failure record in Postgres when an
+  Issuer calls GenerateCrl, through an `AuthAuditAdapter` stack that the test
+  assembles to mirror `start_grpc_listener` (not `start_grpc_listener`
+  itself); job [integration-db.yml](../../.github/workflows/integration-db.yml)
+  (POAM-2026-10-23-36)
 
 **Evidence Required for ATO:**
 
@@ -3153,6 +3179,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 2.9 | 2026-10-25 | OstrichPKI Team | CA gRPC mTLS final refresh after fix round 3 (same branch and run record). Summary table AC row corrected to 8 / 0 / 3 / 5 = 19% (was shown as 9 / 0 / 4 / 5 = 22%; AC-4 is the only added AC control); TOTAL unchanged at 18 / 41 = 44% (arithmetic under the table). IA-3: trust-anchor guard now walks the CA-database lineage (subject alone, issued-by, issuer, ancestors), refusal audited as `grpc_listener_refused`, per-call `subscriber_issuing_ca`; residual siblings / grandchildren / external roots (POAM-28). AU-2: `grpc_listener_refused`, `subscriber_issuing_ca`, summary fields, cancelled-request and shutdown residuals; pre-database startup refusals still log-only. AU-5: `alert="audit_write_failed"` and commit `outcome=unknown` recorded as supporting only (status stays 🔴, no alert routing). AU-8: `details.occurred_at` / `caller_occurred_at`. AU-9 / AU-9(3): checked `append`, lock / statement / idle-in-transaction timeouts, sign on the blocking pool, SLH-DSA audit key refused; Postgres tests (incl. new `sign_timeout_db.rs`) NOT RUN, `OSTRICH_DB_TESTS` opt-in now fails when the DB is unreachable; hung-HSM thread / shutdown residual (SEC-017). AU-10, SC-13: SLH-DSA CA keys unsupported (POAM-2026-10-23-34, new). SC-8 / SC-23: REST plain-HTTP qualifier (NIST-023). SC-24: trust-anchor and SLH-DSA refusals. CM-6 client-CA row. Test counts: `grpc_mtls_e2e` 21/21, 41 `grpc_tls::tests`. **No control status changed** |
 | 3.0 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization and verified audit actor (branch `claude/grpc-per-method-authz`, uncommitted; run record `target/agent-workflow/20261025-202226-grpc-per-method/`). AC-3: three role lists, default-deny method table, admin-issuer, requestor and profile checks. AC-5: disjoint issuer / admin identities, one admin certificate per named operator. AC-6: per-method least privilege (✅), AC-6(10) profile allowlists and CA-profile refusal (✅), AC-6(9) Revoke / GenerateCrl audited, CheckRevocationStatus unaudited read (🟡); stale POAM-26 gap removed. AU-2: new denial reasons and detail fields, `grpc_listener_started` `clients` / `method_rules` / `issuer_profiles`, `grpc_listener_refused` `grpc_authorization_layer`, revocation and CRL Failure records. AU-3: gRPC actor = verified peer DN with `authenticated_caller*` and `on_behalf_of` (POAM-25 closed pending commit). AU-10: signed records attribute the peer; `audit_signing_e2e` actor assertion NOT RUN. AU-12, CM-6 (role-list, profile and legacy-variable rows), CM-7 (method table, profiles, debug-only plaintext constructor), IA-3 (per-call leaf validity, admin direct-issuance, IA-9 related), SI-10 (requestor validation, const-oid fuzz finding fixed; related SI-11 note). Cross-reference: FMT_SMR.2 → IA-3 added. POA&M IDs 35-38 referenced. Test counts (coder-reported, final tree): `grpc_tls` 66, `grpc_mtls_e2e` 39, `ostrich-ca` 78, ca-server bins 21, `make test-unit` 782. **No control status changed; summary table unchanged (18 / 41 = 44%)** |
 | 3.1 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation (branch `claude/dependabot-remediation`, uncommitted; run record `target/agent-workflow/20261026-dependabot-remediation/`). RA-5: "fails on any new advisory" qualified as RustSec-only (GitHub-only advisories reach us only through Dependabot); npm gate described with its limits (`--prod --audit-level=high`); Dependabot ecosystems listed (npe-portal not covered); 2026-10-26 evidence (21 open alerts; full `pnpm audit` 28 → 2 moderate); new gaps for GHSA-only coverage, npm dev/medium not gated, npe-portal unscanned and untriaged alerts (POAM-39, -40, -42). SI-2: `pnpm audit` named in Implementation; new 2026-10-26 evidence table (19 GHSAs, scope, first-patched version, days open against proposed windows); residual react-router → POAM-39; timeliness gap. Local gates only. **No control status or percentage changed** (RA-5 and SI-2 stay 🟡 Partial; summary table not recalculated) |
+| 3.2 | 2026-10-26 | OstrichPKI Team | CI evidence gaps (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; run record `target/agent-workflow/20261026-082358-ci-evidence-gaps/`). AU-3, AU-10, AU-12: name the new DB-backed `tests/integration/ca_grpc_audit_e2e.rs` and the `integration-db.yml` job, CI path added, **NOT RUN**; M13h kill argued by construction, not executed. AC-6(9), AU-2, AU-9: POAM-36 / -31 cross-references updated. No new control sections; **no status or percentage changes** |
 
 ---
 

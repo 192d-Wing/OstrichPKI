@@ -8,7 +8,9 @@
 //! (PKCS#7) certificate, as confirmed by the external `openssl` tool.
 //!
 //! Gated on DATABASE_URL + PKCS11_MODULE_PATH + PKCS11_SLOT + PKCS11_PIN and the
-//! `openssl` binary; skips otherwise.
+//! `openssl` binary; skips otherwise. With `OSTRICH_REQUIRE_LIVE_TESTS=1` (CI) a
+//! missing variable or openssl fails the test instead, and the database name
+//! must have a `test` token before any table is cleared (test-safety guard).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -24,6 +26,10 @@ use ostrich_crypto::{Algorithm, CryptoProvider, CryptoProviderFactory, KeyType};
 use ostrich_db::{models::Certificate, repository::CaRepository, DatabasePool, PoolConfig};
 use ostrich_x509::extensions::SubjectAltName;
 use ostrich_x509::{profile::KeyUsage, CertificateBuilder};
+
+#[path = "common/live.rs"]
+mod live;
+use live::{assert_disposable_db, live_env, LiveEnv};
 
 /// AuthProvider that authenticates every request as a fixed RA-staff user (which
 /// holds Permission::SubmitRequest). Lets the test drive the protected
@@ -104,24 +110,21 @@ async fn wait_for_port(addr: std::net::SocketAddr) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn est_serverkeygen_full_stack_over_http() {
-    let (Ok(db_url), Ok(module), Ok(slot), Ok(pin)) = (
-        std::env::var("DATABASE_URL"),
-        std::env::var("PKCS11_MODULE_PATH"),
-        std::env::var("PKCS11_SLOT"),
-        std::env::var("PKCS11_PIN"),
-    ) else {
-        eprintln!("est_serverkeygen_e2e: set DATABASE_URL + PKCS11_* to run; skipping");
+    let Some(LiveEnv {
+        db_url,
+        module,
+        slot,
+        pin,
+    }) = live_env("est_serverkeygen_e2e", true)
+    else {
         return;
     };
-    if Command::new("openssl").arg("version").output().is_err() {
-        eprintln!("est_serverkeygen_e2e: openssl not found; skipping");
-        return;
-    }
-    let slot: u64 = slot.parse().expect("PKCS11_SLOT numeric");
 
     let pool = DatabasePool::new(&PoolConfig::from_url(&db_url).unwrap())
         .await
         .unwrap();
+    // Test-safety guard: never DELETE from a non-test database.
+    assert_disposable_db(&pool, "est_serverkeygen_e2e").await;
     for t in [
         "audit_events",
         "est_enrollments",

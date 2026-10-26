@@ -1,6 +1,6 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.1
+**Document Version:** 2.2
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
 **Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 667 unit tests passed, 0 failed, 1 ignored, 2026-10-24 (§2.6)
@@ -469,8 +469,8 @@ reported by the coder, except where the QA round is named.
 | Mutation | QA script plus the coder's round 1 / round 2 / nit-pass scripts; each mutation reverted and the file hash verified | PASS except M13h | Killed: M1-M11, M14-M17 (QA round); M12, M12r, M13, M18-M22 (round 1, after QA-002 / QA-003 fixes; M12, M13, M18 had survived the QA round); M23-M29 (round 2); DN-only fallback restored in `issued_directly` (nit pass). **M13h (GenerateCrl handler passes `crl_actor(None)`) NOT RUN / survives without a database** |
 | Format / lint / release | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo check --release ... --all-targets`, `cargo build --release -p ostrich-ca-server` | PASS | rc=0 |
 | Supply chain | `cargo deny check`, `cargo audit` | PASS | implementer-reported (round 0); Cargo.lock gained dependency edges only (`tonic-prost`, `time` for tests) |
-| Helm / compose render | scratch `helm lint` / `helm template` (v3.19, postgresql dependency stripped), compose-go loader | PASS | deploy coder; QA did not re-verify (no `helm` on the QA host). Negative cases (legacy key, no issuer, overlap, `intermediate_ca`, empty profile list) fail rendering as intended |
-| DB-gated | `ca_core_test`, `ocsp_revocation_test` (`--ignored`), `est_serverkeygen_e2e`, live `audit_signing_e2e` / `crl_delta_e2e` | **NOT RUN** | no Postgres or Docker on the host; tracked as POAM-2026-10-23-36 |
+| Helm / compose render | scratch `helm lint` / `helm template` (v3.19, postgresql dependency stripped), compose-go loader | PASS | deploy coder; QA did not re-verify (no `helm` on the QA host). Negative cases (legacy key, no issuer, overlap, `intermediate_ca`, empty profile list) fail rendering as intended. Scripted as `scripts/helm-chart-check.sh` on 2026-10-26 (§2.11) |
+| DB-gated | `ca_core_test`, `ocsp_revocation_test` (`--ignored`), `est_serverkeygen_e2e`, live `audit_signing_e2e` / `crl_delta_e2e` | **NOT RUN** | no Postgres or Docker on the host; tracked as POAM-2026-10-23-36. CI path added 2026-10-26 for all but `ca_core_test` / `ocsp_revocation_test`, still NOT RUN (§2.11) |
 | CI | GitHub / GitLab pipelines | **NOT RUN** | change not committed |
 
 **Key `grpc_mtls_e2e` additions (39 total):** `role_method_matrix`
@@ -499,6 +499,89 @@ revocation (POAM-2026-10-23-27); issuer / SPKI binding for the Issuer roles
 env-var form of the role lists (only the CLI flag, the same clap argument, is
 tested); how an EST client sees a CA requestor refusal beyond the HTTP 403
 pre-check; deployed NetworkPolicy and port-forward admin access.
+
+### 2.11 Test Run 2026-10-26 (CI evidence gaps: live DB + SoftHSM, Helm and fuzz jobs)
+
+**Scope:** branch `pr/hopeful-sammet-b6708c` on `main` @ 460f62c, uncommitted
+and not pushed (run record
+`target/agent-workflow/20261026-082358-ci-evidence-gaps/`). Test-only and
+CI-only change: three new GitHub workflows, the new
+`tests/integration/ca_grpc_audit_e2e.rs`, the `OSTRICH_REQUIRE_LIVE_TESTS`
+fail-on-skip gate, a token-based disposable-database check, the
+`migrate_test_db` example and GitLab `test:integration` fixes. The only
+production-source edit is two comment-only `// POAM:` markers in
+[rest.rs](../../crates/ostrich-ca/src/rest.rs). **Sources:** `qa-report.md`
+(QA round) and `fixes-round-1.md` (final tree). The compliance scribe did not
+re-run these commands.
+
+**Host:** aarch64-apple-darwin, no Postgres or Docker, a scratch Helm v3.19,
+Homebrew SoftHSM 2.7.0. **No live database test ran.** Every result below is
+an offline gate, a skip-path run, or a negative run of the gate itself.
+
+**Executed locally (2026-10-26, final tree):**
+
+| Gate | Command | Result | Counts |
+|------|---------|--------|--------|
+| Format | `cargo fmt --all -- --check` | PASS | exit 0 |
+| Lint | `cargo clippy -p ostrich-ca -p ostrich-db -p ostrich-audit -p ostrich-integration-tests --all-targets --locked -- -D warnings` | PASS | exit 0, no warnings |
+| Unit | `cargo test -p ostrich-ca --lib --locked` | PASS | **85 passed, 0 failed**: includes the `live_test_env::tests::*` gate tests (among them `disposable_db_name_requires_a_test_token`); the 4 e2e modules pass on the skip path, which is **not** evidence |
+| Unit | `cargo test -p ostrich-audit --locked` | PASS | lib 20; `chain_concurrency`, `sign_timeout_db`, `signed_chain_tamper` 2 each (skip path plus the DB-name guard unit test; not evidence) |
+| Unit | `cargo test -p ostrich-db --locked` | PASS | lib 54; example `migrate_test_db` 1 (DB-name guard unit test) |
+| Build | `cargo test -p ostrich-integration-tests --locked --no-run` | PASS | 17 test executables, including `ca_grpc_audit_e2e` |
+| Live-gate unit tests | `cargo test -p ostrich-integration-tests --locked --test ca_grpc_audit_e2e --test est_serverkeygen_e2e -- --show-output` (env unset) | PASS | 7 passed per binary: 6 `live::tests::*` plus the live test on the skip path (prints the `skipped (` note) |
+| Negative: require-live (lib) | `OSTRICH_REQUIRE_LIVE_TESTS=1 cargo test -p ostrich-ca --lib --locked e2e` | PASS (fails as required) | **exit 101**: 0 passed, 4 failed, 81 filtered out; each `live test required but DATABASE_URL is not set` |
+| Negative: require-live (integration) | `OSTRICH_REQUIRE_LIVE_TESTS=1 cargo test --locked -p ostrich-integration-tests --test ca_grpc_audit_e2e --test est_serverkeygen_e2e --no-fail-fast` | PASS (fails as required) | **exit 101**: 6 passed, 1 failed per binary |
+| Negative: no secret echo | as above with a `DATABASE_URL` containing a test password, PKCS11 module and slot set, PIN unset | PASS | exit 101, names `PKCS11_PIN`; 0 occurrences of the password in the output |
+| Negative: audit opt-in | `OSTRICH_DB_TESTS=1 cargo test --locked -p ostrich-audit --test chain_concurrency --test signed_chain_tamper --test sign_timeout_db --no-fail-fast` | PASS (fails as required) | each suite 1 failed (no database) |
+| Workflow check step, simulated | the "Every targeted live test ran and passed" `run:` block on captured logs (QA) | PASS | all-skipped logs → rc=1; one expected name removed → rc=1; all names, no skip → rc=0 |
+| Helm script | `HELM=<scratch helm v3.19> HELM_{CACHE,CONFIG,DATA}_HOME=<scratch> bash scripts/helm-chart-check.sh <scratch chart copy + postgresql-14.3.3.tgz>` | PASS | **15 passed, 0 failed** (P1-P4, N0a-N0c, N1-N8), exit 0. Helm **3.19 on macOS, not the pinned 3.22.1** |
+| Helm script, mutant chart | as above, CA gRPC TLS `required` guard replaced by a default (QA) | PASS (mutant killed) | `FAIL N0a`, 14 passed, 1 failed, exit 1 |
+| Fuzz smoke | `cargo +nightly-2026-10-23 fuzz run <target> -- -max_total_time=30 -timeout=10 -rss_limit_mb=2048` (ASan) | PASS | `fuzz_grpc_requestor` **128,734 runs** / 31 s; `fuzz_grpc_peer_subject` **80,018 runs** / 31 s; no crash (§5.4) |
+| Fuzz budget validator | the `Validate the time budget` step, in bash | PASS | accepts 60, 600, 3600; rejects 59, 3601, 0600, `1;id`, empty, `abc` |
+| YAML / pins | Ruby `YAML.safe_load` on all workflows and `.gitlab-ci.yml`; scan for `uses:` not pinned `@<40-hex> # v` in the new workflows | PASS | all parse; 0 unpinned |
+| `actionlint`, `shellcheck` | | **NOT RUN** | not installed |
+
+**CI jobs added (not run: the change is not pushed):**
+
+| Workflow / job | Triggers | What it runs | Artifact (retention) | Status |
+|---|---|---|---|---|
+| [integration-db.yml](../../.github/workflows/integration-db.yml) `DB + SoftHSM live tests` | push to `main`, pull request, dispatch | migrations via `migrate_test_db`; `ostrich-audit` Postgres suites; `ostrich-ca` lib e2e modules; `ca_grpc_audit_e2e`; `est_serverkeygen_e2e`; then fails unless all 9 expected tests report `ok` and no log reports a skip | `live-db-softhsm-results` (90 days) | **NOT RUN** |
+| [helm.yml](../../.github/workflows/helm.yml) `Helm chart validation` | push to `main`, pull request, dispatch | Helm v3.22.1 (sha256-verified), `helm dependency build` plus sha256 check of `postgresql-14.3.3.tgz`, `scripts/helm-chart-check.sh` (15 cases) | `helm-chart-results` (90 days) | **NOT RUN** |
+| [fuzz.yml](../../.github/workflows/fuzz.yml) `Fuzz <target>` | weekly (Monday 06:30 UTC, 600 s), dispatch (60-3600 s), path-filtered pull request (60 s) | `fuzz_grpc_requestor`, `fuzz_grpc_peer_subject` on `nightly-2026-10-23`, cargo-fuzz 0.13.2 | `fuzz-log-<target>` (30 days); `fuzz-crash-<target>` on failure (30 days) | **NOT RUN** |
+| `.gitlab-ci.yml` `test:integration` | GitLab pipeline | `sslmode=disable`, `PKCS11_SLOT` by token label, `OSTRICH_REQUIRE_LIVE_TESTS=1`, `migrate_test_db`, `cargo test --test '*'` plus the `ostrich-ca --lib` e2e filters | job log | **NOT RUN** |
+
+**DB-gated suites after this change (supersedes the §2.10 "DB-gated" row):**
+
+| Suite | CI path | Executed |
+|---|---|---|
+| `chain_concurrency`, `signed_chain_tamper`, `sign_timeout_db` (`ostrich-audit`, `OSTRICH_DB_TESTS=1`) | `integration-db.yml`; GitLab `test:integration` | **NOT RUN** (POAM-2026-10-23-31) |
+| `audit_signing_e2e`, `crl_delta_e2e`, `issuance_aia_e2e`, `pop_e2e` (`ostrich-ca` lib modules) | `integration-db.yml`; GitLab `test:integration` (new `--lib` filter run) | **NOT RUN** (POAM-2026-10-23-36) |
+| `ca_grpc_audit_e2e` (new) | `integration-db.yml`; GitLab `test:integration` | **NOT RUN** (POAM-2026-10-23-36) |
+| `est_serverkeygen_e2e` | `integration-db.yml`; GitLab `test:integration` | **NOT RUN** |
+| `ca_core_test`, `ocsp_revocation_test` (`--ignored`, need the compose stack) | **none** | **NOT RUN** (POAM-2026-10-23-36 residual) |
+
+**`ca_grpc_audit_e2e` (`grpc_handlers_record_verified_peer_as_audit_actor`,
+written, NOT RUN):** serves the real `CaGrpcService` behind
+`SubjectAllowlistLayer` over mTLS with a SoftHSM-backed CA key and asserts,
+for IssueCertificate, RevokeCertificate and GenerateCrl, actor = verified peer
+DN, `authenticated_caller` / `_issuer` / `_serial` and `on_behalf_of`; then
+`verify_signed_chain` against the CA SPKI must return true, and false after one
+byte of the gRPC-written `crl_generation` signature is corrupted. It asserts
+one stored `access_denied` Failure record (actor `CN=acme-server`, reason
+`method_not_permitted`) when an Issuer calls GenerateCrl. The denial path uses
+an `AuthAuditAdapter` stack that the test assembles to mirror
+`start_grpc_listener`, not `start_grpc_listener` itself. **M13h:** kill argued
+by construction (the mutant writes actor `unauthenticated`); not executed.
+
+**PR #184 release findings:** REL-002 (Helm in CI), REL-005 (DB/HSM CI path)
+and REL-008 (fuzz in CI) are addressed in code by the three workflows; close
+each on a linked green run.
+
+**Not covered:** every live assertion above; the REST `generate_crl` /
+`generate_delta_crl` handler glue; CRL and Revoke failure audits on the
+database paths; the call-time `ca_profile_not_permitted` refusal through
+`issue()`; Helm v3.22.1 on Linux; ASan with the AWS-LC FIPS module on Linux;
+the GitLab changes.
 
 ---
 
@@ -890,6 +973,9 @@ closed pending first green CI run).
 | gRPC peer subject / allowlist (`fuzz_grpc_peer_subject`, 2026-10-25) | 237,187 (61 s) after the fix | 1 before the fix (OID-arc overflow panic, fixed) | Pass after fix (implementer-reported, §2.8) |
 | gRPC peer subject / role lists (`fuzz_grpc_peer_subject`, 2026-10-26) | 135,145 (61 s) after the fix | 1 before the fix (const-oid `Display` panic on an undecodable numeric OID, fixed) | Pass after fix (coder-reported, §2.10) |
 | gRPC requestor binding (`fuzz_grpc_requestor`, new 2026-10-26) | 246,720 (61 s) | 0 | Pass (coder-reported, §2.10) |
+| gRPC requestor binding (`fuzz_grpc_requestor`, 2026-10-26 smoke, `nightly-2026-10-23`, cargo-fuzz 0.13.2, ASan, aarch64-apple-darwin) | 128,734 (31 s) | 0 | Pass (coder-reported, §2.11; local smoke, not the CI job) |
+| gRPC peer subject (`fuzz_grpc_peer_subject`, 2026-10-26 smoke, same toolchain) | 80,018 (31 s) | 0 | Pass (coder-reported, §2.11; local smoke, not the CI job) |
+| Both gRPC targets, scheduled / dispatch / PR job ([fuzz.yml](../../.github/workflows/fuzz.yml)) | n/a | n/a | **NOT RUN** (workflow added 2026-10-26, not pushed; scheduled and dispatch runs need the workflow on `main`) |
 
 ### 5.5 Secrets Scanning
 
@@ -989,11 +1075,9 @@ cargo tarpaulin --workspace --out Html
 
 ### 8.2 CI/CD Pipeline
 
-Tests are automatically executed on:
-
-- Every pull request
-- Every merge to main branch
-- Nightly builds
+Tests are executed on every pull request and every push to `main`; some
+workflows also run weekly. There is no nightly build (corrected 2026-10-26:
+earlier text listed one).
 
 **Pipeline Stages:**
 
@@ -1001,6 +1085,24 @@ Tests are automatically executed on:
 2. Unit Tests (`cargo test`)
 3. Security Scan (`cargo audit`, `cargo deny`)
 4. Build (`cargo build --release`)
+
+**GitHub Actions workflows (2026-10-26):**
+
+| Workflow | Triggers | Test evidence | Artifact (retention) | Recorded run |
+|---|---|---|---|---|
+| [ci.yml](../../.github/workflows/ci.yml) `CI` | pull request, push to `main` | fmt, clippy, `cargo test --workspace --lib --bins`, offline `grpc_mtls_e2e` / `fips_gate_preinstalled` (no database), web-ui build | `web-ui-sbom` | not recorded in this document |
+| [audit.yml](../../.github/workflows/audit.yml) `dependency gate` | pull request, push to `main`, weekly, dispatch | `cargo audit --deny warnings`, `cargo deny check` | none | PR 181 checks green (§2.5) |
+| [hsm-integration.yml](../../.github/workflows/hsm-integration.yml) `HSM integration` | pull request, push to `main`, dispatch | PKCS#11 suite on SoftHSM2 | `pkcs11-softhsm-results` (90 days) | run 40063317654: 28 / 0 / 1 (§2.5) |
+| [integration-db.yml](../../.github/workflows/integration-db.yml) `Live DB + SoftHSM tests` (added 2026-10-26) | pull request, push to `main`, dispatch | Postgres + SoftHSM live suites; fails on a skipped or missing test (§2.11) | `live-db-softhsm-results` (90 days) | **NOT RUN** |
+| [helm.yml](../../.github/workflows/helm.yml) `Helm chart` (added 2026-10-26) | pull request, push to `main`, dispatch | Helm v3.22.1 lint, template and 15 positive / negative cases (§2.11) | `helm-chart-results` (90 days) | **NOT RUN** |
+| [fuzz.yml](../../.github/workflows/fuzz.yml) `Fuzz` (added 2026-10-26) | weekly, dispatch, path-filtered pull request | `fuzz_grpc_requestor`, `fuzz_grpc_peer_subject` (§5.4) | `fuzz-log-<target>`, `fuzz-crash-<target>` (30 days) | **NOT RUN** |
+| `docker-publish.yml` | push to `main`, tags, dispatch | image build and publish (no tests) | build output | not test evidence (tag-pinned actions, POAM-2026-10-23-15) |
+
+GitLab `test:integration` (`.gitlab-ci.yml`) was corrected on 2026-10-26
+(§2.11) and has no recorded pipeline run. A job counts as evidence only with
+its run URL, the commit SHA and the sha256 of the downloaded artifact,
+archived in the run record before the artifact expires (ATO_EVIDENCE.md
+Appendix B).
 
 ### 8.3 Test Output Files
 
@@ -1064,3 +1166,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 1.9 | 2026-10-25 | OstrichPKI Team | Added §2.9, the CA gRPC mTLS final-code run after fix rounds 2-3: `grpc_mtls_e2e` 21/21, `fips_gate_preinstalled` 1/1, 41 `grpc_tls::tests`, `ostrich-audit` lib 20/20 (re-run by the scribe); `make test-unit` 732/0 and service bins (coder). Postgres tests incl. new `sign_timeout_db.rs` NOT RUN |
 | 2.0 | 2026-10-26 | OstrichPKI Team | Added §2.10, the per-method CA gRPC authorization run (coder-reported, final tree; not re-run by the scribe): `make test-unit` 782 / 0 / 1, `grpc_tls` 66, `ostrich-ca` 78, ca-server bins 21, `ostrich-est` 44, `grpc_mtls_e2e` 39; fuzz `fuzz_grpc_requestor` 246,720 runs and `fuzz_grpc_peer_subject` 135,145 runs after a const-oid panic fix; mutations M1-M29 killed except M13h (NOT RUN). DB-gated suites NOT RUN (POAM-2026-10-23-36). §5.4 fuzz rows added |
 | 2.1 | 2026-10-26 | OstrichPKI Team | §5.2: recorded the Dependabot alert remediation result (`cargo audit` exit 0, 1378 advisories / 614 crates; full web-ui `pnpm audit` 28 → 2 moderate; `make test-unit` 782 / 0 / 1); "latest recorded" moved to it. No new tests. Local only |
+| 2.2 | 2026-10-26 | OstrichPKI Team | Added §2.11, the CI evidence-gaps run (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; coder- and QA-reported, not re-run by the scribe): fmt / clippy clean; `ostrich-ca` lib 85 / 0; `OSTRICH_REQUIRE_LIVE_TESTS=1` negative runs exit 101; live-gate unit tests; `helm-chart-check.sh` 15 / 15 with Helm 3.19 (not the pinned 3.22.1); fuzz 30 s smoke 128,734 / 80,018 runs. New jobs `integration-db.yml`, `helm.yml`, `fuzz.yml` and the GitLab `test:integration` fixes: **NOT RUN**. All live DB + SoftHSM suites, including the new `ca_grpc_audit_e2e`, NOT RUN; M13h kill argued by construction, not executed. §2.10 Helm and DB-gated rows cross-referenced. §5.4: smoke and CI rows. §8.2: workflow table; the "nightly builds" claim removed (no such workflow) |

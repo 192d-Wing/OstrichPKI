@@ -71,6 +71,12 @@ path = "integration/grpc_mtls_e2e.rs"
 name = "fips_gate_preinstalled"
 path = "integration/fips_gate_preinstalled.rs"
 
+# Live (Postgres + SoftHSM): real CaGrpcService behind the mTLS listener +
+# SubjectAllowlistLayer; asserts the stored audit actor (POAM-2026-10-23-36, M13h).
+[[test]]
+name = "ca_grpc_audit_e2e"
+path = "integration/ca_grpc_audit_e2e.rs"
+
 [dependencies]
 # OstrichPKI crates
 ostrich-common = { path = "../crates/ostrich-common" }

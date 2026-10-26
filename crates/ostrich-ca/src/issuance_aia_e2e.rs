@@ -15,6 +15,10 @@
 //! Gated on DATABASE_URL + PKCS11_MODULE_PATH + PKCS11_SLOT + PKCS11_PIN and the
 //! presence of the `openssl` binary; skips (passes) when not configured.
 //!
+//! With `OSTRICH_REQUIRE_LIVE_TESTS=1` (CI) a missing variable or openssl fails
+//! the test instead (`crate::live_test_env`); the database name must have
+//! a `test` token before any table is cleared (test-safety guard).
+//!
 //! Run live with `--test-threads=1`: this and the audit_signing_e2e test share
 //! the database and the SoftHSM token, and two PKCS#11 providers opened against
 //! the same module concurrently can crash.
@@ -53,27 +57,21 @@ fn assemble_certificate(tbs_der: &[u8], signature: &[u8]) -> Vec<u8> {
 
 #[tokio::test]
 async fn issued_certificates_carry_aia_extension_verified_by_openssl() {
-    let (Ok(db_url), Ok(module), Ok(slot), Ok(pin)) = (
-        std::env::var("DATABASE_URL"),
-        std::env::var("PKCS11_MODULE_PATH"),
-        std::env::var("PKCS11_SLOT"),
-        std::env::var("PKCS11_PIN"),
-    ) else {
-        eprintln!(
-            "issuance_aia_e2e: set DATABASE_URL + PKCS11_MODULE_PATH + PKCS11_SLOT + \
-             PKCS11_PIN to run this live test; skipping"
-        );
+    let Some(crate::live_test_env::LiveEnv {
+        db_url,
+        module,
+        slot,
+        pin,
+    }) = crate::live_test_env::live_env("issuance_aia_e2e", true)
+    else {
         return;
     };
-    if Command::new("openssl").arg("version").output().is_err() {
-        eprintln!("issuance_aia_e2e: openssl not found; skipping");
-        return;
-    }
-    let slot: u64 = slot.parse().expect("PKCS11_SLOT must be numeric");
 
     let pool = DatabasePool::new(&PoolConfig::from_url(&db_url).unwrap())
         .await
         .expect("connect to test DB");
+    // Test-safety guard: never DELETE from a non-test database.
+    crate::live_test_env::assert_disposable_db(&pool, "issuance_aia_e2e").await;
     for table in ["audit_events", "certificates", "ca_certificates", "ca_keys"] {
         sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(pool.pool())
