@@ -2508,7 +2508,7 @@ mod tests {
                 assert_eq!(allowlist.subjects().len(), 2);
                 assert_eq!(client_anchors.len(), 1);
             }
-            other => panic!("expected Mtls, got {other:?}"),
+            _ => panic!("expected Mtls mode"),
         }
     }
 

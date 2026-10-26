@@ -1029,7 +1029,7 @@ async fn dev_cert_script_material_works_with_rust_server_and_client() {
                 "dev script ships one client anchor"
             );
         }
-        other => panic!("expected Mtls, got {other:?}"),
+        _ => panic!("expected Mtls mode"),
     }
     let mut served = serve_stub(
         &TlsSettings {
