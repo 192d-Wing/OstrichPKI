@@ -62,6 +62,10 @@ spec:
               value: {{ .Values.acme.allowPrivateIpDomains | quote }}
             - name: ACME_HTTP01_PORT
               value: {{ .Values.acme.http01Port | quote }}
+            {{- with .Values.acme.dns01Resolvers }}
+            - name: ACME_DNS01_RESOLVERS
+              value: {{ include "ostrich-pki.acmeDns01Resolvers" $ | quote }}
+            {{- end }}
             {{- if .Values.acme.baseUrl }}
             - name: ACME_BASE_URL
               value: {{ .Values.acme.baseUrl | quote }}

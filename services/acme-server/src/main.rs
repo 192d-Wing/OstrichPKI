@@ -82,6 +82,25 @@ struct Args {
     #[arg(long, env = "ACME_ALLOW_PRIVATE_IP_DOMAINS", default_value = "false")]
     allow_private_ip_domains: bool,
 
+    /// Upstream recursive resolvers for dns-01 validation: comma-separated
+    /// IPv4/IPv6 literals (port 53, UDP with TCP fallback), at most 8, no
+    /// spaces. Unset or empty (ACME_DNS01_RESOLVERS="") uses the host's
+    /// system resolver configuration (e.g. /etc/resolv.conf); no third-party
+    /// public resolver is ever used implicitly. Production: point this at the
+    /// enclave's DNSSEC-validating recursive resolver(s) on a trusted network
+    /// segment - the CA-to-resolver channel is not authenticated (no TSIG/DoT)
+    /// and the AD bit is not checked. Invalid entries (unspecified, multicast,
+    /// broadcast, duplicates, malformed list syntax) refuse startup.
+    /// NIST 800-53: CM-6 (Configuration Settings); SC-21 is inherited from the
+    /// operator's validating resolver (POAM-2026-10-23-41).
+    #[arg(
+        long = "dns01-resolvers",
+        env = "ACME_DNS01_RESOLVERS",
+        value_name = "IP[,IP...]",
+        value_parser = parse_dns01_resolvers
+    )]
+    dns01_resolvers: Option<Dns01Resolvers>,
+
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     log_level: String,
@@ -110,6 +129,14 @@ async fn main() -> Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         "Starting OstrichPKI ACME Server"
     );
+
+    // dns-01 resolver configuration (RFC 8555 §8.4). A bad operator list
+    // refuses startup; a host without system name servers only disables
+    // dns-01 (every attempt fails closed), so http-01/tls-alpn-01 keep working.
+    // COMPLIANCE MAPPING:
+    // - NIST 800-53: CM-6 (Configuration Settings), SI-10 (Input Validation)
+    // - NIAP PP-CA: FMT_SMF.1, FPT_FLS.1
+    log_dns01_resolver_source(args.dns01_resolver_ips())?;
 
     // Initialize database connection
     let db_config = ostrich_db::PoolConfig::from_url(&args.database_url)?;
@@ -171,7 +198,8 @@ async fn main() -> Result<()> {
         args.base_url.clone(),
         ca_client,
     )
-    .with_challenge_options(args.http01_port, args.allow_private_ip_domains);
+    .with_challenge_options(args.http01_port, args.allow_private_ip_domains)
+    .with_dns01_resolvers(args.dns01_resolver_ips().to_vec());
 
     // Create REST API router
     let app = ostrich_acme::rest::create_router(state);
@@ -274,6 +302,78 @@ fn ca_insecure_allowed(requested: bool, release_build: bool) -> Result<bool> {
     Ok(requested)
 }
 
+/// Parsed `--dns01-resolvers` / `ACME_DNS01_RESOLVERS` value.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Dns01Resolvers(Vec<std::net::IpAddr>);
+
+/// Parse the dns-01 resolver list.
+///
+/// The empty string means "not configured" (system resolvers), so
+/// `ACME_DNS01_RESOLVERS=""` behaves exactly like leaving it unset. Anything
+/// else must be a comma-separated list of IP literals with no empty items and
+/// no whitespace; otherwise startup is refused.
+// COMPLIANCE MAPPING:
+// - NIST 800-53: CM-6 (Configuration Settings) - explicit, documented default
+// - NIST 800-53: SI-10 (Information Input Validation) - strict list syntax
+fn parse_dns01_resolvers(raw: &str) -> std::result::Result<Dns01Resolvers, String> {
+    if raw.is_empty() {
+        return Ok(Dns01Resolvers::default());
+    }
+    raw.split(',')
+        .map(|item| {
+            item.parse::<std::net::IpAddr>()
+                .map_err(|_| format!("{item:?} is not an IPv4/IPv6 address literal"))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map(Dns01Resolvers)
+}
+
+impl Args {
+    /// Configured dns-01 resolvers; empty means the system configuration.
+    fn dns01_resolver_ips(&self) -> &[std::net::IpAddr] {
+        self.dns01_resolvers
+            .as_ref()
+            .map(|r| r.0.as_slice())
+            .unwrap_or_default()
+    }
+}
+
+/// Validate the dns-01 resolver list and log which resolver source is in use.
+///
+/// An invalid operator list is a startup error (NIST 800-53: CM-6, SI-10). With
+/// no list, the system configuration is probed once: if it yields no name
+/// servers, dns-01 validation fails closed per attempt, so this only warns.
+fn log_dns01_resolver_source(resolvers: &[std::net::IpAddr]) -> Result<()> {
+    use ostrich_acme::validation::{
+        DNS01_TIMEOUT, dns01_resolver_config, system_resolver_config, validate_dns01_resolver_ips,
+    };
+
+    validate_dns01_resolver_ips(resolvers)
+        .map_err(|e| anyhow::anyhow!("invalid ACME_DNS01_RESOLVERS / --dns01-resolvers: {e}"))?;
+
+    if resolvers.is_empty() {
+        match dns01_resolver_config(&[], system_resolver_config, DNS01_TIMEOUT) {
+            Ok((config, _opts)) => tracing::info!(
+                source = "system",
+                name_servers = config.name_servers().len(),
+                "dns-01 resolver configuration"
+            ),
+            Err(_) => tracing::warn!(
+                "dns-01 validation will fail closed: no system name servers; set \
+                 ACME_DNS01_RESOLVERS to enable dns-01"
+            ),
+        }
+    } else {
+        tracing::info!(
+            source = "configured",
+            name_servers = resolvers.len(),
+            resolvers = ?resolvers,
+            "dns-01 resolver configuration"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +420,116 @@ mod tests {
                 .is_empty()
         );
         assert!(read_pem(&Some("/nonexistent/x.pem".to_string())).is_err());
+    }
+
+    /// CM-6: dns-01 resolvers default to the system configuration and parse
+    /// as a comma-separated list of IP literals.
+    #[test]
+    fn dns01_resolvers_arg_parses() {
+        assert!(parse(&[]).dns01_resolver_ips().is_empty());
+        let args = parse(&["--dns01-resolvers", "192.0.2.53,2001:db8::53"]);
+        assert_eq!(
+            args.dns01_resolver_ips(),
+            vec![
+                "192.0.2.53".parse::<std::net::IpAddr>().expect("v4"),
+                "2001:db8::53".parse::<std::net::IpAddr>().expect("v6"),
+            ]
+        );
+        assert!(log_dns01_resolver_source(args.dns01_resolver_ips()).is_ok());
+    }
+
+    /// CM-6 / SI-10: malformed or unusable resolver entries refuse startup.
+    #[test]
+    fn dns01_resolvers_invalid_refuses_startup() {
+        let argv = |v: &str| {
+            Args::try_parse_from([
+                "ostrich-acme-server",
+                "--database-url",
+                "postgres://unused",
+                "--dns01-resolvers",
+                v,
+            ])
+        };
+        assert!(argv("not-an-ip").is_err());
+        assert!(argv("192.0.2.53:53").is_err());
+        let unusable = argv("0.0.0.0").expect("parses as an IP");
+        assert!(log_dns01_resolver_source(unusable.dns01_resolver_ips()).is_err());
+        let dup = argv("192.0.2.53,192.0.2.53").expect("parses");
+        assert!(log_dns01_resolver_source(dup.dns01_resolver_ips()).is_err());
+    }
+
+    /// CM-6 / SI-10 boundaries for the resolver list: 8 entries are accepted,
+    /// 9 refuse startup; mapped-IPv4 duplicates, multicast and broadcast
+    /// refuse startup; malformed list syntax is a parse error (fail closed).
+    #[test]
+    fn dns01_resolvers_boundaries() {
+        let argv = |v: &str| {
+            Args::try_parse_from([
+                "ostrich-acme-server",
+                "--database-url",
+                "postgres://unused",
+                "--dns01-resolvers",
+                v,
+            ])
+        };
+        let list = |n: u8| {
+            (1..=n)
+                .map(|i| format!("192.0.2.{i}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+
+        let eight = argv(&list(8)).expect("parses");
+        assert_eq!(eight.dns01_resolver_ips().len(), 8);
+        assert!(log_dns01_resolver_source(eight.dns01_resolver_ips()).is_ok());
+
+        let nine = argv(&list(9)).expect("parses");
+        assert_eq!(nine.dns01_resolver_ips().len(), 9);
+        assert!(log_dns01_resolver_source(nine.dns01_resolver_ips()).is_err());
+
+        for unusable in [
+            "192.0.2.53,::ffff:192.0.2.53",
+            "224.0.0.251",
+            "ff02::fb",
+            "255.255.255.255",
+            "::",
+        ] {
+            let a = argv(unusable).expect("parses as IPs");
+            assert!(
+                log_dns01_resolver_source(a.dns01_resolver_ips()).is_err(),
+                "{unusable} must refuse startup"
+            );
+        }
+
+        // Malformed list syntax never yields a partially-accepted list.
+        for malformed in [
+            "192.0.2.53,",
+            ",192.0.2.53",
+            "192.0.2.53, 192.0.2.54",
+            "192.0.2.53;192.0.2.54",
+            "[2001:db8::53]",
+            "dns.example",
+        ] {
+            assert!(argv(malformed).is_err(), "{malformed:?} must not parse");
+        }
+    }
+
+    /// QA-002: an empty value (`ACME_DNS01_RESOLVERS=""` or
+    /// `--dns01-resolvers ""`) is the same as unset: system resolvers. Clap
+    /// feeds an env value through the same `parse_dns01_resolvers`, so the
+    /// parser is checked directly as well. Whitespace is not "empty".
+    #[test]
+    fn dns01_resolvers_empty_value_means_system_resolvers() {
+        assert_eq!(parse_dns01_resolvers(""), Ok(Dns01Resolvers::default()));
+        let args = parse(&["--dns01-resolvers", ""]);
+        assert!(args.dns01_resolver_ips().is_empty());
+        assert!(log_dns01_resolver_source(args.dns01_resolver_ips()).is_ok());
+
+        for not_empty in [" ", ",", " , "] {
+            assert!(
+                parse_dns01_resolvers(not_empty).is_err(),
+                "{not_empty:?} must refuse startup"
+            );
+        }
     }
 }
