@@ -5628,13 +5628,24 @@ mod tests {
         let key_pem = std::fs::read_to_string(&key_path).expect("key");
         let mode = o.resolve(true).expect("mtls");
         let dbg = format!("{mode:?}");
-        assert!(!dbg.contains("PRIVATE KEY"), "{dbg}");
+        // Assertion messages never echo `dbg` (it is derived from the loaded
+        // certificates; CodeQL rust/cleartext-logging).
+        assert!(
+            !dbg.contains("PRIVATE KEY"),
+            "mode Debug contains a PEM key"
+        );
         let body: String = key_pem
             .lines()
             .filter(|l| !l.starts_with("-----"))
             .collect();
-        assert!(!dbg.contains(&body[..body.len().min(32)]), "{dbg}");
-        assert!(dbg.contains("clients"), "{dbg}");
+        assert!(
+            !dbg.contains(&body[..body.len().min(32)]),
+            "mode Debug contains key material"
+        );
+        assert!(
+            dbg.contains("clients"),
+            "mode Debug lacks the client registry"
+        );
     }
 
     // ---- fix round 1: RFC-001 / RFC-002 / RFC-005 / RFC-006 ----

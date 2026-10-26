@@ -32,7 +32,9 @@ pub type CaClient = CertificateAuthorityServiceClient<Channel>;
 fn pem_from_env(var: &str) -> String {
     match std::env::var(var).ok().filter(|p| !p.is_empty()) {
         Some(path) => std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{var}={path}: cannot read PEM: {e}")),
+            // The message names neither the variable nor the path (CodeQL
+            // rust/cleartext-logging); the I/O error kind is enough to debug.
+            .unwrap_or_else(|e| panic!("cannot read a configured PEM file: {:?}", e.kind())),
         None => String::new(),
     }
 }
