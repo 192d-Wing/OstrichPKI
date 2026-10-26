@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router";
 import {
   Badge,
   Box,

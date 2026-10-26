@@ -61,7 +61,8 @@ export function revokeCertificate(
   reason: RevocationReason,
   notes?: string,
 ): Promise<unknown> {
-  return api.post(`/ca/api/v1/certificates/${id}/revoke`, {
+  // NIST 800-53: SI-10 - id encoded as a single path segment
+  return api.post(`/ca/api/v1/certificates/${encodeURIComponent(id)}/revoke`, {
     reason,
     notes: notes && notes.trim() ? notes.trim() : null,
   });
@@ -161,7 +162,8 @@ export interface CertificateDetails {
 }
 
 export function fetchCertificateDetail(id: string): Promise<CertificateDetails> {
-  return api.get<CertificateDetails>(`/ca/api/v1/certificates/${id}`);
+  // NIST 800-53: SI-10 - id encoded as a single path segment
+  return api.get<CertificateDetails>(`/ca/api/v1/certificates/${encodeURIComponent(id)}`);
 }
 
 // ---- Issuance (snake_case request/response) --------------------------------

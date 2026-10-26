@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router";
 import {
   Alert,
   Box,
@@ -158,7 +158,8 @@ export function FqdnDetailPage() {
       header: "",
       cell: (c: CertificateSummary) => (
         <SpaceBetween direction="horizontal" size="xs">
-          <Link onFollow={() => navigate(`/certificates/${c.id}`)}>View</Link>
+          {/* NIST 800-53: SI-10 - server-returned id encoded as one path segment */}
+          <Link onFollow={() => navigate(`/certificates/${encodeURIComponent(c.id)}`)}>View</Link>
           {c.status === "active" && can("revoke_certificates") && (
             <Link variant="secondary" onFollow={() => openRevoke(c)}>
               Revoke
@@ -231,12 +232,15 @@ export function FqdnDetailPage() {
         {
           id: "cert",
           header: "Issued cert",
-          cell: (t) =>
-            t.usedByCert ? (
-              <Link onFollow={() => navigate(`/certificates/${t.usedByCert}`)}>View</Link>
+          cell: (t) => {
+            const certId = t.usedByCert;
+            // NIST 800-53: SI-10 - server-returned id encoded as one path segment
+            return certId ? (
+              <Link onFollow={() => navigate(`/certificates/${encodeURIComponent(certId)}`)}>View</Link>
             ) : (
               "—"
-            ),
+            );
+          },
         },
       ]}
     />
