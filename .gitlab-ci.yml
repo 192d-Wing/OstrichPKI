@@ -13,7 +13,9 @@ variables:
   POSTGRES_USER: ostrich_test
   POSTGRES_PASSWORD: test_password_insecure
   POSTGRES_DB: ostrich_pki_test
-  DATABASE_URL: postgresql://ostrich_test:test_password_insecure@postgres:5432/ostrich_pki_test
+  # The postgres service has no TLS and PoolConfig requires TLS by default
+  # (SC-8 / CM-6): sslmode=disable is an explicit, test-only choice.
+  DATABASE_URL: postgresql://ostrich_test:test_password_insecure@postgres:5432/ostrich_pki_test?sslmode=disable
 
 # Cache configuration
 # NIST 800-53: CM-2 - the key includes rust-toolchain.toml so a toolchain/image
@@ -265,7 +267,9 @@ test:integration:
   needs:
     - test:unit
   services:
-    - name: postgres:16-alpine
+    # Same multi-arch index digest as .github/workflows/integration-db.yml
+    # (NIST 800-53: CM-2, SR-3).
+    - name: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
       alias: postgres
   script:
     - apt-get install -y softhsm2
@@ -273,24 +277,33 @@ test:integration:
     - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
     - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
     - softhsm2-util --init-token --free --label "ostrich-test" --pin 1234 --so-pin 5678
+    # --init-token --free reassigns the slot number: derive it by label (the
+    # live e2e tests read PKCS11_SLOT; same awk as integration-db.yml).
+    - >-
+      export PKCS11_SLOT="$(softhsm2-util --show-slots | awk -v l=ostrich-test '/^Slot [0-9]+$/{s=$2} $1=="Label:"{v=$0; sub(/^[[:space:]]*Label:[[:space:]]*/,"",v); sub(/[[:space:]]+$/,"",v); if(v==l){print s; exit}}')"
+    - '[[ "$PKCS11_SLOT" =~ ^[0-9]+$ ]] || { echo "SoftHSM slot for ostrich-test not found"; exit 1; }'
     # Wait for PostgreSQL
     - apt-get install -y postgresql-client
     - until pg_isready -h postgres -p 5432; do sleep 2; done
-    # Run migrations
-    - cargo install sqlx-cli --no-default-features --features postgres
-    - sqlx database create || true
-    - sqlx migrate run
+    # Run migrations with the production embedded migrator (CM-3); refuses a
+    # database whose name has no `test` token (separated by _ - .). Replaces an unpinned sqlx-cli install.
+    - cargo run --locked -q -p ostrich-db --example migrate_test_db
     # Run integration tests (every workspace member's tests/ targets, incl.
     # ostrich-integration-tests grpc_mtls_e2e and fips_gate_preinstalled).
     - cargo test --test '*' -- --test-threads=1
+    # `--test '*'` never runs src/ lib test modules: run the live ostrich-ca
+    # e2e modules explicitly.
+    - 'cargo test -p ostrich-ca --lib -- --test-threads=1 audit_signing_e2e:: crl_delta_e2e:: issuance_aia_e2e:: pop_e2e::'
   variables:
     PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
-    PKCS11_SLOT_ID: "0"
     PKCS11_PIN: "1234"
+    # Live e2e tests fail instead of skipping when their environment is
+    # incomplete (NIST 800-53: SA-11, CA-2).
+    OSTRICH_REQUIRE_LIVE_TESTS: "1"
     CRYPTO_PROVIDER: software
     RUST_LOG: info
     # Opt in to the DB-backed ostrich-audit suites (they TRUNCATE audit_events
-    # and refuse unless the database name contains "test"; the service DB is
+    # and refuse unless the database name has a `test` token; the service DB is
     # the disposable ostrich_pki_test from the global DATABASE_URL).
     # NIST 800-53: SA-11, AU-9 (chain concurrency / tamper detection tests)
     OSTRICH_DB_TESTS: "1"

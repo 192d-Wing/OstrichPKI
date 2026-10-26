@@ -19,6 +19,24 @@ updates:
       - dependencies
       - rust
 
+  # The fuzz crate is its own workspace with its own fuzz/Cargo.lock, so the
+  # root entry never updates it. Without this entry the lock drifts behind the
+  # root workspace and `cargo fetch --locked` in fuzz.yml fails.
+  # NIST 800-53: SI-2 (Flaw Remediation), CM-2 (Baseline Configuration)
+  - package-ecosystem: cargo
+    directory: "/fuzz"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      fuzz-cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+      - rust
+
   # ---- npm / pnpm (React web-ui) ----
   # The shadcn frontend's JS dependency tree. Dependabot reads pnpm-lock.yaml
   # under the npm ecosystem. Keeps the npm supply chain patched (SI-2) alongside
