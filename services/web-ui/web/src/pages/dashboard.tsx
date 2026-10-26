@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import {
   Box,
   ColumnLayout,
@@ -11,6 +11,7 @@ import {
 } from "@cloudscape-design/components";
 
 import { fetchCertificates, type CertificateStatus } from "@/lib/ca";
+import { safeInternalPath } from "@/lib/safe-path";
 
 function Stat({
   label,
@@ -60,7 +61,8 @@ export function DashboardPage() {
   const follow = (e: CustomEvent<{ href?: string; external?: boolean }>) => {
     if (e.detail.href && !e.detail.external) {
       e.preventDefault();
-      navigate(e.detail.href);
+      // NIST 800-53: SI-10 - same-origin check on the Cloudscape-supplied href
+      navigate(safeInternalPath(e.detail.href));
     }
   };
 

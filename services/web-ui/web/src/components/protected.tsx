@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { Navigate, Outlet } from "react-router-dom";
+import { Navigate, Outlet } from "react-router";
 import { Box, Spinner } from "@cloudscape-design/components";
 
 import { useAuth } from "@/lib/auth-context";

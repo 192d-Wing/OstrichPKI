@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 3.1
+**Document Version:** 3.2
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -1687,6 +1687,7 @@ the code annotations since 2026-10-26.
 - ✅ 2026-10-23, later (PKCS#11 RSA-PSS fix, same branch): RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5, timing variability, published 2026-10-23) made `cargo audit --deny warnings` and `cargo deny check` fail with `Cargo.lock` unchanged. That shows the gate catches a new advisory on an unchanged lockfile. No compatible fix exists (fixed only in ≥0.7.6). After the user-approved ignore (POAM-2026-10-23-16), both commands pass locally (run record `target/agent-workflow/20261023-230002-pkcs11-rsa-pss/`, `fixes-round-1.md`)
 - ✅ 2026-10-24, dependency cleanup (branch `claude/deps-cleanup`, uncommitted; run record `target/agent-workflow/20261024-104215-deps-cleanup/`): `rand` 0.8.5 → 0.8.6, `openidconnect` removed from `ostrich-web-ui`, and the integration-test crate's `p256` dependency removed; 28 packages left `Cargo.lock` (642 → 614). `crypto-bigint` 0.5.5 and `rand` 0.8.5 are no longer in the resolved graph (`cargo tree -i … --target all -e all` → "did not match any packages"). With the RUSTSEC-2026-0097 and RUSTSEC-2026-0387 ignores removed: `cargo audit --deny warnings` exit 0 (1352 advisories, 614 crates) and `cargo deny check` exit 0; ignore lists identical (3 IDs). Re-run by the compliance scribe on 2026-10-24 with the same exit codes. Local only
 - ✅ 2026-10-26, Dependabot alert remediation (branch `claude/dependabot-remediation`, uncommitted; run record `target/agent-workflow/20261026-dependabot-remediation/`): Dependabot reported 21 open alerts (GitHub API, 2026-10-26; 3 Rust, 18 npm). The 3 hickory-resolver GHSAs have no RustSec alias, and `cargo audit` on `main` @ 1294f63 did not report them. After the change: `cargo audit --deny warnings` exit 0 (1378 advisories loaded, 614 crates; final re-run) and `cargo deny check` exit 0; full `pnpm audit` (web-ui) 28 vulnerabilities (1 low / 9 moderate / 18 high) before, 2 moderate after (the two react-router advisories, POAM-2026-10-23-39). `pnpm audit --prod --audit-level=high` returned exit 0 both before and after, so it does not discriminate (NIST-003). Local only; first CI run pending. Per-advisory detail: SI-2
+- ✅ 2026-10-26, react-router v7 migration (branch `claude/react-router-v7`, uncommitted; run record `target/agent-workflow/20261026-091035-react-router-v7/`): web-ui `react-router-dom` ^6.30.6 replaced by `react-router` ^7.18.1 (resolves to 7.18.4). Full `pnpm audit` (`services/web-ui/web`): **"No known vulnerabilities found"** (2 moderate before; re-run by the compliance scribe on the restacked tree, `main` @ 9fad04f plus the working-tree diff). `pnpm-lock.yaml` has no `react-router-dom`, `react-router` 6.x or `@remix-run/router`. The CI gate form (`pnpm audit --prod --audit-level=high`) is unchanged and would not have reported these medium advisories (POAM-2026-10-23-42). Local only; after merge, the Dependabot auto-close of alerts 27 and 28 is the CI-side evidence
 - 🟡 No CI run of the new gate has been recorded for the dependency-cleanup change (the 2026-10-23 gate passed on PR 181, run 40063317688)
 
 **Gaps:**
@@ -1698,7 +1699,7 @@ the code annotations since 2026-10-26.
 - **The cargo gate is RustSec-only.** GitHub-only advisories (GHSA-6w6g-hm98-mhgm, GHSA-5j98-2g5x-46v6, GHSA-6f2x-v7q7-m7m5 in hickory-resolver, 2026-10-05) pass CI and are seen only through Dependabot (POAM-2026-10-23-42)
 - **The npm gate does not cover development/build dependencies or medium/low advisories.** It could see none of the 18 npm alerts open on 2026-10-26 (15 development scope; the 3 runtime react-router alerts are medium) (POAM-2026-10-23-42)
 - **The npe-portal SPA is unscanned:** no lockfile, no Dependabot entry, no audit job, and its image build runs `npm install --no-audit` (POAM-2026-10-23-40)
-- **Dependabot alerts are not triaged on a schedule.** On 2026-10-26, 9 npm advisories (10 alerts) were past the proposed windows, and 2 of them (react-router GHSA-wrjc-x8rr-h8h6, GHSA-337j-9hxr-rhxg) remain open (POAM-2026-10-23-39, POAM-2026-10-23-42). See the SI-2 table
+- **Dependabot alerts are not triaged on a schedule.** On 2026-10-26, 9 npm advisories (10 alerts) were past the proposed windows. The last 2 of them (react-router GHSA-wrjc-x8rr-h8h6, GHSA-337j-9hxr-rhxg) were remediated later on 2026-10-26, on day 95 (POAM-2026-10-23-39, closed pending commit); no triage schedule exists yet (POAM-2026-10-23-42). See the SI-2 table
 
 **Remediation (POA&M, see [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)):**
 
@@ -1709,7 +1710,8 @@ the code annotations since 2026-10-26.
 - ~~Remove the RUSTSEC-2026-0387 ignore (POAM-16) and the unused `openidconnect` dependency (POAM-22)~~ done 2026-10-24 by removing `crypto-bigint` 0.5.5 from the graph, both closed pending first green CI run. The RustCrypto 0.3 migration (issue #21) no longer blocks any advisory
 - Remove the unused `oauth2` dependency from `ostrich-web-ui` (CM-7; POAM-23)
 - Add an OSV/GHSA-aware scan of `Cargo.lock` or a release-gate check on open high/critical Dependabot alerts; gate npm development dependencies at `high`; schedule Dependabot triage (POAM-42)
-- Pin, monitor and audit the npe-portal SPA (POAM-40); migrate web-ui to `react-router` >= 7.18 (POAM-39)
+- Pin, monitor and audit the npe-portal SPA (POAM-40)
+- ~~Migrate web-ui to `react-router` >= 7.18 (POAM-39)~~ done 2026-10-26 (react-router 7.18.4; branch `claude/react-router-v7`, uncommitted), closed pending commit
 
 **Evidence Required for ATO:**
 
@@ -2535,8 +2537,8 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
 | GHSA-5j98-2g5x-46v6 | hickory-resolver | runtime | 0.26.1 → 0.26.2 | 0.26.2 | high | 2026-10-05 | 21 | 30 | ✅ Remediated, within window. Not reachable (DNSSEC feature not enabled) |
 | GHSA-6f2x-v7q7-m7m5 | hickory-resolver | runtime | 0.26.1 → 0.26.2 | 0.26.2 | medium | 2026-10-05 | 21 | 90 | ✅ Remediated, within window. Not reachable (`recursor` feature not enabled) |
 | GHSA-jjmj-jmhj-qwj2 | react-router-dom | runtime | 6.30.4 → 6.30.6 | 6.30.6 | medium | 2026-07-23 | 95 | 90 | ✅ Remediated, overdue |
-| GHSA-wrjc-x8rr-h8h6 | react-router | runtime | 6.30.4 → 6.30.6 (still affected) | 7.18.0 | medium | 2026-07-23 | 95 | 90 | 🔴 Open, overdue since 2026-10-21 (POAM-2026-10-23-39) |
-| GHSA-337j-9hxr-rhxg | react-router | runtime | 6.30.4 → 6.30.6 (still affected) | 7.18.0 | medium | 2026-07-23 | 95 | 90 | 🔴 Open, overdue since 2026-10-21; not reachable (Declarative Mode) (POAM-2026-10-23-39) |
+| GHSA-wrjc-x8rr-h8h6 | react-router | runtime | 6.30.4 → 6.30.6 (still affected); 7.18.4 on 2026-10-26 | 7.18.0 | medium | 2026-07-23 | 95 | 90 | ✅ Remediated 2026-10-26 (react-router v7 migration), overdue (window ended 2026-10-21) (POAM-2026-10-23-39, closed pending commit) |
+| GHSA-337j-9hxr-rhxg | react-router | runtime | 6.30.4 → 6.30.6 (still affected); 7.18.4 on 2026-10-26 | 7.18.0 | medium | 2026-07-23 | 95 | 90 | ✅ Remediated 2026-10-26 (react-router v7 migration), overdue (window ended 2026-10-21); was not reachable (Declarative Mode) (POAM-2026-10-23-39, closed pending commit) |
 | GHSA-587h-7wmj-h5pm | vite | build | 8.1.3 → 8.1.6 | 8.1.6 | high | 2026-10-20 | 6 | 30 | ✅ Remediated, within window |
 | GHSA-698v-4r3x-3vcv | vite | build | 8.1.3 → 8.1.6 | 8.1.6 | medium | 2026-10-20 | 6 | 90 | ✅ Remediated, within window |
 | GHSA-r825-w8mm-5pxw | vite | build | 8.1.3 → 8.1.6 | 8.1.6 | medium | 2026-10-20 | 6 | 90 | ✅ Remediated, within window |
@@ -2553,7 +2555,19 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
 
 - ✅ Result: 19 GHSAs, 21 open Dependabot alerts (brace-expansion has one alert per major line). 17 GHSAs (19 alerts) remediated; 2 GHSAs (alerts 27, 28) remain. Also updated as dependencies of vite: rolldown 1.1.4 → 1.1.5 and lightningcss; `@remix-run/router` 1.23.3 → 1.23.4 with react-router. `package.json` floors raised: `vite` ^8.1.6, `react-router-dom` ^6.30.6. No other `Cargo.lock` entry changed (an unplanned socket2 downgrade was reverted, SEC-001 / NIST-001)
 - ✅ Regression gates (local only; first CI run pending): `make security` (`cargo audit --deny warnings`, `cargo deny check`), `make clippy` and `make test-unit` (782 passed / 0 failed / 1 ignored) pass; web-ui `pnpm install --frozen-lockfile`, typecheck, lint and build pass; full `pnpm audit` 28 → 2 moderate. Integration tests were not run (no database on the host; no code path changed). After merge, cite the Dependabot auto-close of the 19 alerts as CI-side evidence
-- 🔴 Residual: react-router v6 GHSA-wrjc-x8rr-h8h6 and GHSA-337j-9hxr-rhxg → POAM-2026-10-23-39 (migration to `react-router` >= 7.18, proposed target 2026-11-25; AO decision pending)
+- ✅ ~~Residual: react-router v6 GHSA-wrjc-x8rr-h8h6 and GHSA-337j-9hxr-rhxg → POAM-2026-10-23-39~~ closed by the react-router v7 migration on 2026-10-26 (next record)
+
+**Evidence: 2026-10-26 react-router v7 migration (branch `claude/react-router-v7`, uncommitted; run record `target/agent-workflow/20261026-091035-react-router-v7/`)**
+
+| GHSA | Package | Scope | Before → After | First patched | Severity | Published | Days open | Window | Status |
+|------|---------|-------|----------------|---------------|----------|-----------|-----------|--------|--------|
+| GHSA-wrjc-x8rr-h8h6 | react-router | runtime | 6.30.6 (via `react-router-dom` 6.30.6) → 7.18.4 | 7.18.0 | medium | 2026-07-23 | 95 | 90 | ✅ Remediated, overdue |
+| GHSA-337j-9hxr-rhxg | react-router | runtime | 6.30.6 → 7.18.4 | 7.18.0 | medium | 2026-07-23 | 95 | 90 | ✅ Remediated, overdue (was not reachable) |
+
+- ✅ Change: `services/web-ui/web/package.json` (line 24) `react-router-dom` ^6.30.6 → `react-router` ^7.18.1 (v7 is a single package). `pnpm-lock.yaml`: removed `react-router-dom` 6.30.6, `react-router` 6.30.6 and `@remix-run/router` 1.23.4; added `react-router` 7.18.4, `cookie` 1.1.1 and `set-cookie-parser` 2.7.3; no other package changed. The development-dependency fixes (brace-expansion, js-yaml, picomatch, vite 8.1.6) came with the earlier Dependabot remediation on `main` and are not part of this change. Imports moved from `react-router-dom` to `react-router` in 11 source files; the app stays in Declarative Mode (`<BrowserRouter basename>`)
+- ✅ Defence in depth for the CWE-601 class (SI-10): non-literal navigation targets go through `safeInternalPath`, and server-returned IDs are encoded as one path segment (see SI-10)
+- ✅ Gates (local, 2026-10-26): `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm lint`, `pnpm build` pass (pre-existing >500 kB chunk warning); full `pnpm audit` "No known vulnerabilities found" (re-run by the compliance scribe). [TEST_EVIDENCE.md §2.11](TEST_EVIDENCE.md#211-test-run-2026-10-26-web-ui-react-router-v7-migration)
+- 🟡 Timeliness: remediated on day 95 against the proposed 90-day window (SI-2(c) missed). No CI run yet; after merge, cite the Dependabot auto-close of alerts 27 and 28
 
 **Gaps:**
 
@@ -2562,7 +2576,7 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
 - The cryptoki fix has SoftHSM test evidence only. The SoftHSM CI job ran on Linux before the RSA-PSS fix (16 passed / 3 RSA-PSS failed / 1 ignored, exit 101) and after it ([run 40063317654](https://github.com/192d-Wing/OstrichPKI/actions/runs/40063317654): 28 passed / 0 failed / 1 ignored, exit 0); local SoftHSM 2.7.0 also gives 28/0/1. POAM-2026-10-23-07 and POAM-2026-10-23-17 closed 2026-10-23. No run exercises the `CKA_ALLOWED_MECHANISMS` decode path, because `ostrich-crypto/src/pkcs11` never reads that attribute
 - The 2026-10-24 removals of RUSTSEC-2026-0097 and RUSTSEC-2026-0387 (POAM-11, POAM-16, POAM-22) are verified locally only; they stay on the POA&M until a CI run of the gate records the same result
 - `oauth2` 5.0.0 is a declared but unused dependency of `ostrich-web-ui` (no call sites); removal tracked as POAM-2026-10-23-23 (CM-7)
-- **SI-2(c) timeliness was missed** for 9 of the 19 npm and Rust advisories in the 2026-10-26 table (measured against the proposed windows); 2 of them are still open (POAM-2026-10-23-39). Dependabot alerts are not triaged on a schedule (POAM-2026-10-23-42)
+- **SI-2(c) timeliness was missed** for 9 of the 19 npm and Rust advisories in the 2026-10-26 table (measured against the proposed windows). The last 2 (react-router, POAM-2026-10-23-39) were remediated on 2026-10-26 on day 95 and stay in this count. Dependabot alerts are not triaged on a schedule (POAM-2026-10-23-42)
 - The 2026-10-26 remediation is verified locally only; no CI run is recorded yet
 
 **Remediation:** see RA-5 and the POA&M in [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)
@@ -2712,6 +2726,27 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
   135,145 runs, no crash after the fix. Unit: `validate_requestor_cases`,
   `qa_validate_requestor_boundaries`; e2e requestor-edge-case tests
   (`grpc_mtls_e2e` 39/39)
+- ✅ Web UI client-side navigation guard (2026-10-26, branch `claude/react-router-v7`, uncommitted; defence in
+  depth, CWE-601). [safe-path.ts](../../services/web-ui/web/src/lib/safe-path.ts)
+  `isSafeInternalPath` accepts a navigation target only if it starts with one
+  `/` not followed by `/` or `\`, contains no `\` and no C0 / DEL control
+  character, has no empty (`//`) or `.` / `..` segment, and still has the probe
+  origin under the WHATWG URL parser; `safeInternalPath` otherwise returns
+  `/dashboard`. Call sites: the Cloudscape `onFollow` handlers in
+  `src/components/layout/cloudscape-layout.tsx` (line 68) and
+  `src/pages/dashboard.tsx` (line 65), after `preventDefault()`. Server-returned
+  IDs are encoded with `encodeURIComponent` as one path segment in route
+  targets (`certificate-issue.tsx` line 139, `certificates.tsx` line 213,
+  `fqdn-detail.tsx` lines 162 and 239, `fqdns.tsx` line 64) and in the CA API
+  paths (`src/lib/ca.ts` lines 65 and 166; `src/lib/fqdn.ts` already did this).
+  **Standing rule:** every web-ui navigation target that is not a compile-time
+  literal goes through `safeInternalPath`, and every server-derived path
+  segment is encoded. Server-side validation in the BFF and the backends
+  remains the control; the BFF proxy still forwards a percent-decoded path
+  (POAM-2026-10-23-43). Evidence: run-record script `safe-path-check.mjs`
+  181 checks / 0 failures and `router-smoke.mjs` 5 / 0 (manual; no web-ui
+  test runner, POAM-2026-10-23-44); browser smoke against a mock BFF
+  ([TEST_EVIDENCE.md §2.11](TEST_EVIDENCE.md#211-test-run-2026-10-26-web-ui-react-router-v7-migration))
 - 🟡 Related SI-11 (error handling), 2026-10-26: gRPC errors that are not
   client-correctable return `INTERNAL` "<op> failed: internal error" with the
   detail logged (`grpc_status`, test `grpc_status_hides_internal_errors`);
@@ -3153,6 +3188,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 2.9 | 2026-10-25 | OstrichPKI Team | CA gRPC mTLS final refresh after fix round 3 (same branch and run record). Summary table AC row corrected to 8 / 0 / 3 / 5 = 19% (was shown as 9 / 0 / 4 / 5 = 22%; AC-4 is the only added AC control); TOTAL unchanged at 18 / 41 = 44% (arithmetic under the table). IA-3: trust-anchor guard now walks the CA-database lineage (subject alone, issued-by, issuer, ancestors), refusal audited as `grpc_listener_refused`, per-call `subscriber_issuing_ca`; residual siblings / grandchildren / external roots (POAM-28). AU-2: `grpc_listener_refused`, `subscriber_issuing_ca`, summary fields, cancelled-request and shutdown residuals; pre-database startup refusals still log-only. AU-5: `alert="audit_write_failed"` and commit `outcome=unknown` recorded as supporting only (status stays 🔴, no alert routing). AU-8: `details.occurred_at` / `caller_occurred_at`. AU-9 / AU-9(3): checked `append`, lock / statement / idle-in-transaction timeouts, sign on the blocking pool, SLH-DSA audit key refused; Postgres tests (incl. new `sign_timeout_db.rs`) NOT RUN, `OSTRICH_DB_TESTS` opt-in now fails when the DB is unreachable; hung-HSM thread / shutdown residual (SEC-017). AU-10, SC-13: SLH-DSA CA keys unsupported (POAM-2026-10-23-34, new). SC-8 / SC-23: REST plain-HTTP qualifier (NIST-023). SC-24: trust-anchor and SLH-DSA refusals. CM-6 client-CA row. Test counts: `grpc_mtls_e2e` 21/21, 41 `grpc_tls::tests`. **No control status changed** |
 | 3.0 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization and verified audit actor (branch `claude/grpc-per-method-authz`, uncommitted; run record `target/agent-workflow/20261025-202226-grpc-per-method/`). AC-3: three role lists, default-deny method table, admin-issuer, requestor and profile checks. AC-5: disjoint issuer / admin identities, one admin certificate per named operator. AC-6: per-method least privilege (✅), AC-6(10) profile allowlists and CA-profile refusal (✅), AC-6(9) Revoke / GenerateCrl audited, CheckRevocationStatus unaudited read (🟡); stale POAM-26 gap removed. AU-2: new denial reasons and detail fields, `grpc_listener_started` `clients` / `method_rules` / `issuer_profiles`, `grpc_listener_refused` `grpc_authorization_layer`, revocation and CRL Failure records. AU-3: gRPC actor = verified peer DN with `authenticated_caller*` and `on_behalf_of` (POAM-25 closed pending commit). AU-10: signed records attribute the peer; `audit_signing_e2e` actor assertion NOT RUN. AU-12, CM-6 (role-list, profile and legacy-variable rows), CM-7 (method table, profiles, debug-only plaintext constructor), IA-3 (per-call leaf validity, admin direct-issuance, IA-9 related), SI-10 (requestor validation, const-oid fuzz finding fixed; related SI-11 note). Cross-reference: FMT_SMR.2 → IA-3 added. POA&M IDs 35-38 referenced. Test counts (coder-reported, final tree): `grpc_tls` 66, `grpc_mtls_e2e` 39, `ostrich-ca` 78, ca-server bins 21, `make test-unit` 782. **No control status changed; summary table unchanged (18 / 41 = 44%)** |
 | 3.1 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation (branch `claude/dependabot-remediation`, uncommitted; run record `target/agent-workflow/20261026-dependabot-remediation/`). RA-5: "fails on any new advisory" qualified as RustSec-only (GitHub-only advisories reach us only through Dependabot); npm gate described with its limits (`--prod --audit-level=high`); Dependabot ecosystems listed (npe-portal not covered); 2026-10-26 evidence (21 open alerts; full `pnpm audit` 28 → 2 moderate); new gaps for GHSA-only coverage, npm dev/medium not gated, npe-portal unscanned and untriaged alerts (POAM-39, -40, -42). SI-2: `pnpm audit` named in Implementation; new 2026-10-26 evidence table (19 GHSAs, scope, first-patched version, days open against proposed windows); residual react-router → POAM-39; timeliness gap. Local gates only. **No control status or percentage changed** (RA-5 and SI-2 stay 🟡 Partial; summary table not recalculated) |
+| 3.2 | 2026-10-26 | OstrichPKI Team | react-router v7 migration in web-ui (branch `claude/react-router-v7`, uncommitted; run record `target/agent-workflow/20261026-091035-react-router-v7/`). SI-2: GHSA-wrjc-x8rr-h8h6 and GHSA-337j-9hxr-rhxg marked remediated (react-router 7.18.4), overdue; residual line closed; new 2026-10-26 evidence record; both stay in the SI-2(c) missed count. RA-5: 2026-10-26 full `pnpm audit` = 0 recorded; POAM-39 migration marked done; triage gap reworded. SI-10: web-ui same-origin navigation guard and encoded path segments added as client-side defence in depth, with the standing rule; BFF proxy decode gap → POAM-43, no web-ui test runner → POAM-44. CA-5: POAM-39 closure recorded in NIAP_GAP_ANALYSIS.md §11 (no CA-5 section exists here; none added). Local evidence only. **No control status or percentage changed** (SI-2 and RA-5 stay 🟡 Partial; SI-10 stays 🟢 Good (85%); summary table not recalculated) |
 
 ---
 
