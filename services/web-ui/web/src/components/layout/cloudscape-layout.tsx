@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Outlet, useLocation, useNavigate } from "react-router";
 import AppLayout from "@cloudscape-design/components/app-layout";
 import BreadcrumbGroup from "@cloudscape-design/components/breadcrumb-group";
 import Spinner from "@cloudscape-design/components/spinner";
@@ -11,6 +11,7 @@ import TopNavigation from "@cloudscape-design/components/top-navigation";
 import { useTheme } from "@/components/theme-provider";
 import { displayName, logoutUrl } from "@/lib/auth";
 import { useAuth } from "@/lib/auth-context";
+import { safeInternalPath } from "@/lib/safe-path";
 
 interface NavItem {
   to: string;
@@ -63,7 +64,8 @@ export function CloudscapeLayout() {
   const follow = (e: CustomEvent<{ href?: string; external?: boolean }>) => {
     if (e.detail.href && !e.detail.external) {
       e.preventDefault();
-      navigate(e.detail.href);
+      // NIST 800-53: SI-10 - same-origin check on the Cloudscape-supplied href
+      navigate(safeInternalPath(e.detail.href));
     }
   };
 

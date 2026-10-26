@@ -552,12 +552,45 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
 
 - react-router v6 still has GHSA-wrjc-x8rr-h8h6 and GHSA-337j-9hxr-rhxg (medium). They are fixed only
   in v7 and need a react-router-dom v6 -> react-router v7 migration (POAM-2026-10-23-39).
+  Closed before release by "web-ui console: react-router v7 migration" below.
 - The npe-portal SPA has no committed lockfile. Its image build runs `npm install` from
   `package.json`, and Dependabot and the CI audit gate do not cover it (POAM-2026-10-23-40).
 - The ACME dns-01 resolver is configured with no name servers. This predates the change and fails
   closed (POAM-2026-10-23-41).
 - Scan coverage has gaps. The cargo gate is RustSec-only, so GitHub-only advisories do not fail CI,
   and npm dev and moderate advisories are not gated (POAM-2026-10-23-42).
+
+#### web-ui console: react-router v7 migration (GHSA-wrjc-x8rr-h8h6, GHSA-337j-9hxr-rhxg)
+
+Closes POAM-2026-10-23-39.
+
+##### ostrich-web-ui (web/package.json, web/pnpm-lock.yaml, web/src)
+
+- **react-router-dom** ^6.30.6 (6.30.6 locked) replaced by **react-router** ^7.18.1 (7.18.4 locked;
+  runtime). Fixes GHSA-wrjc-x8rr-h8h6 (open redirect, CWE-601) and GHSA-337j-9hxr-rhxg (CWE-915),
+  both medium. `react-router-dom` and `@remix-run/router` leave the lockfile; `cookie` 1.1.1 and
+  `set-cookie-parser` 2.7.3 are added. No other package changes. A full `pnpm audit` (dev
+  included) reports no known vulnerabilities.
+- The SPA still uses declarative `<BrowserRouter>`. Only imports change. v7 defaults
+  (`startTransition`, relative splat paths) do not change routing here.
+- New `src/lib/safe-path.ts`: navigation targets that come from component events (side
+  navigation, dashboard links) must be same-origin absolute paths. Protocol-relative (`//`),
+  backslash, scheme, control-character, interior `//` and `.`/`..` segment paths fall back to
+  `/dashboard`.
+- Certificate IDs are now URL-encoded in route links and in the `/api/ca/...` detail and revoke
+  paths.
+- **NIST 800-53**: SI-2, RA-5, SI-10, CM-2, SR-3
+
+##### Known limitations (POA&M)
+
+- The web-ui BFF proxy (`services/web-ui/src/server/proxy.rs`) percent-decodes the forwarded path,
+  so client-side encoding protects only the browser-to-BFF hop. This predates the change
+  (POAM-2026-10-23-43).
+- The web-ui SPA has no unit test runner. The navigation guard is checked by an out-of-tree script
+  only (POAM-2026-10-23-44).
+- The login redirect and navigation were smoke-tested in a browser against a local mock BFF only.
+  OIDC sign-in and logout were not exercised. `login.tsx` and `protected.tsx` changed only their
+  import lines.
 
 ### Added
 
@@ -729,9 +762,9 @@ the new jobs or live tests has run yet; see "Known limitations" below.
   the same evidence.
 - The default Helm subchart image `docker.io/bitnami/postgresql:16.2.0-debian-12-r8` returns 404.
   It moved to the unmaintained `bitnamilegacy` repository. This predates the change, and
-  `helm.yml` pulls no images, so the job cannot catch it (POAM-2026-10-23-43).
+  `helm.yml` pulls no images, so the job cannot catch it (POAM-2026-10-23-45).
 - `actions/cache` v4.3.0 and `actions/upload-artifact` v4.6.2 run on the deprecated node20
-  runtime. Moving to node24 majors is a follow-up (POAM-2026-10-23-44).
+  runtime. Moving to node24 majors is a follow-up (POAM-2026-10-23-46).
 - `helm.yml` downloads the live Bitnami chart index on every run. This is an availability risk,
   deferred.
 
