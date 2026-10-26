@@ -18,8 +18,13 @@ cause Helm rendering or workload startup to fail closed.
 
 - The bootstrap Job creates a non-extractable P-384 CA key inside SoftHSM and
   stores only token state on the dedicated PVC.
-- PKCS#11 and administrator authenticators enter Pods through Secret references;
+- PKCS#11 and EST enrollee authenticators enter Pods through Secret references;
   they are not Helm values, command-line arguments, ConfigMaps, or log fields.
+- The Basic bootstrap identity receives only the machine-only `EstEnrollee`
+  role (`SubmitRequest`). The role is fixed in `ostrich-init`, cannot be
+  operator-selected, and is distinct from Administrator and approval roles.
+- The integration profile does not provision an Administrator account because
+  the disposable conformance workflow has no administrative operation.
 - The CA Deployment waits for a valid CA database record before starting and
   mounts the same token PVC read/write.
 - Database readiness containers use a multi-architecture digest-pinned
@@ -38,11 +43,12 @@ cause Helm rendering or workload startup to fail closed.
 | Requirement | Evidence |
 |---|---|
 | NIST 800-53 CM-2, CM-6 | Explicit opt-in profile and convergent bootstrap Job |
-| NIST 800-53 IA-5, IA-7 | Secret-backed administrator and PKCS#11 authenticators |
+| NIST 800-53 AC-2, AC-3, AC-6 | Explicit machine-only `EstEnrollee` account with only `SubmitRequest` |
+| NIST 800-53 IA-5, IA-7 | Secret-backed EST enrollee and PKCS#11 authenticators |
 | NIST 800-53 SC-12, SC-17 | P-384 CA key and certificate bootstrapped in SoftHSM |
 | NIST 800-53 SA-11, CA-2 | Repeatable external-issuer integration assessment |
 | NIAP FCS_CKM.1, FCS_STG_EXT.1 | Non-extractable CA key in a PKCS#11 token |
-| RFC 7030 sections 3.2.3 and 4.2 | TLS-protected Basic bootstrap and simple enrollment |
+| RFC 7030 sections 3.2.3 and 4.2 | TLS-protected Basic bootstrap by a least-privilege enrollee and simple enrollment |
 | RFC 8446 | TLS listener used for all EST traffic |
 
 ## Validation

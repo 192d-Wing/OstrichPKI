@@ -78,6 +78,12 @@ Every setting can be given as a config-file key, a CLI flag, or an env var.
 | `tlsCaCert` | `--tls-ca-cert` | `TLS_CA_CERT_FILE` | — | Trust anchor for **mTLS client auth**; presence enables mTLS |
 | `enrollIdentityPolicy` | `--enroll-identity-policy` | `EST_IDENTITY_POLICY` | `username` | Identity authorization policy: `username` or `allowlist` (see §5) |
 | `allowBasicAuth` | `--allow-basic-auth` | `EST_ALLOW_BASIC_AUTH` | `false` | Accept HTTP Basic as a fallback (requires `tlsCaCert`) |
+
+When the explicit CA bootstrap Job is enabled, `est.basicBootstrap` can create
+a Secret-backed Basic identity for disposable integration environments. Its
+role is fixed to `EstEnrollee` (`SubmitRequest` only); it cannot provision an
+administrator or approval role. Production deployments should prefer mTLS or
+single-use enrollment tokens.
 | `allowBearerAuth` | `--allow-bearer-auth` | `EST_ALLOW_BEARER_AUTH` | `false` | Permit bearer-token auth when no mTLS CA configured |
 | `caGrpcClientCert` | `--ca-grpc-client-cert` | `CA_GRPC_CLIENT_CERT_FILE` | — | Client cert (PEM) for mTLS to the CA |
 | `caGrpcClientKey` | `--ca-grpc-client-key` | `CA_GRPC_CLIENT_KEY_FILE` | — | Client key (PEM) for mTLS to the CA |
