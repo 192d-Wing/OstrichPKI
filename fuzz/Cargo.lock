@@ -1987,7 +1987,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-common"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2026,7 +2026,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-crypto"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "aes 0.9.3",
  "anyhow",
@@ -2070,7 +2070,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-protocol"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "ostrich-common",
  "prost",
@@ -2084,7 +2084,7 @@ dependencies = [
 
 [[package]]
 name = "ostrich-x509"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "async-trait",
