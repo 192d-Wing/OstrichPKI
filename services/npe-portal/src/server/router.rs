@@ -46,7 +46,7 @@ pub struct AppState {
 
 /// Extract the client IP for audit attribution from forwarding headers (the
 /// portal terminates TLS behind a load balancer). Falls back to `None`.
-fn client_ip(headers: &HeaderMap) -> Option<String> {
+pub(super) fn client_ip(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())

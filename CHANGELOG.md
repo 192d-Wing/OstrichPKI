@@ -9,6 +9,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+#### npe-portal BFF proxy forwards the raw request path (confused-deputy fix)
+
+> **Behaviour change.** The npe-portal `/api/ca/...` and `/api/est/...` proxy now refuses unsafe
+> paths with `400 {"error":"invalid_path",...}` and never contacts the backend. This includes a
+> trailing slash (`/api/ca/a/`), empty segments (`//`) and encoded delimiters (`%2F`, `%3F`, `%23`,
+> `%5C`), which used to be forwarded. Clients that send any of these must drop the extra `/` or
+> stop encoding delimiters in path segments. `/api/ca/` with nothing after it still returns 404.
+> `/api/ocsp` is unchanged.
+
+Closes POAM-2026-10-23-46.
+
+##### ostrich-npe-portal
+
+- Before this fix, the CA and EST proxy handlers built the backend URL from axum's
+  percent-decoded `Path` capture. `%2F`, `%3F` and `%2E%2E` therefore reached the backend as `/`,
+  `?` and `..`. A crafted link could make the portal send a backend request to a path of the
+  attacker's choosing with the signed-in NPE operator's `X-Npe-*` identity over the trusted-proxy
+  mTLS bridge.
+- The backend path is now taken from the raw (still percent-encoded) request path and forwarded
+  unchanged. Legitimate escapes reach the backend still encoded. The query string is appended
+  verbatim; it cannot change the backend path. `X-Npe-*` identity headers are attached only after
+  the path is accepted.
+- A path is rejected if any segment:
+  - is empty;
+  - is `.` or `..`, literal or percent-encoded;
+  - contains a malformed escape (`%` not followed by two hex digits);
+  - decodes to `/`, `?`, `#` or `\`;
+  - decodes to a control character (0x00-0x1F, 0x7F).
+- Each rejection writes an `ostrich_audit` record (`EventType::Authorization`,
+  `EventOutcome::Failure`, action `proxy_path_rejected`, target `npe-portal/{ca,est}`) with the
+  certificate CN as actor, the client IP, method, escaped path and reason. It also logs a
+  `proxy_path_rejected` security event (`tracing` warn) with `request_id`, `actor`
+  (Debug-escaped, so a crafted CN cannot forge log fields), `client_ip` (only if it parses as an
+  IP address, otherwise `-`), `method`, `service`, the escaped path, `reason` and
+  `outcome=denied`. No session id or cookie is logged or recorded.
+- New `audit::proxy_path_rejected`. The private audit emitter now takes a pre-built
+  `AuditEventBuilder`; the existing authentication records are unchanged.
+- 12 new tests, 42 in the crate. Router-level tests against a local echo backend cover CA and EST
+  with every HTTP method, the real `require_session` layer, raw path and query forwarding,
+  forged identity header stripping, OCSP sub-paths and the audit record and security event
+  fields. A rejected path must cause zero backend requests.
+- **NIST 800-53**: SI-10, SI-11, AC-3, AC-4, AU-2, AU-3, AU-12.
+  **NIAP PP-CA**: FDP_ACF.1 (supporting), FAU_GEN.1.1. **RFC** 3986 §2.1, §3.3, §5.2.4.
+
+##### ostrich-common
+
+- New `ostrich_common::util::proxy_path` module (`validate_backend_path`,
+  `percent_decode_segment`, `PathRejection` with stable `reason()` tokens). This is the
+  canonical BFF raw-path validator, taken from the web-ui POAM-2026-10-23-43 fix. It never decodes
+  or normalises the accepted path; it returns an unmodified suffix of the input.
+- 17 unit tests, including an exhaustive table of all 256 `%XX` escapes.
+- **NIST 800-53**: SI-10, AC-3, AC-4.
+
+##### ostrich-fuzz
+
+- New fuzz target `fuzz_proxy_path`. It checks that the validator never panics, that an accepted
+  remainder is a suffix of the input, and that every accepted segment is non-empty, decodable,
+  not a dot segment and free of delimiter and control bytes. A 60-second local run found no
+  crashes.
+- **NIST 800-53**: SA-11, SI-10.
+
+##### Known limitations (POA&M)
+
+These are recorded as residuals in the POAM-2026-10-23-46 row
+(`docs/compliance/NIAP_GAP_ANALYSIS.md` §11).
+
+- web-ui still has its own copy of the validator (`services/web-ui/src/server/proxy.rs`). It has
+  the same logic, but nothing checks that the two copies agree. Switching web-ui to
+  `ostrich_common::util::proxy_path` is a follow-up.
+- The npe-portal audit `client_ip` comes from the left-most `X-Forwarded-For` hop, which the
+  client sets. This predates the change.
+- npe-portal has no request-id middleware, so `request_id` is logged as `-`.
+- The npe-portal session cookie is `SameSite=Lax`, so a cross-site top-level link can still make
+  the portal send a GET to a valid backend path with the operator's identity.
 #### ACME challenge validation hardening (dns-01, http-01, tls-alpn-01)
 
 ##### ostrich-acme

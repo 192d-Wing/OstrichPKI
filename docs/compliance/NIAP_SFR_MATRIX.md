@@ -1,6 +1,6 @@
 # NIAP PP-CA v2.1 SFR Implementation Matrix
 
-**Document Version:** 1.7
+**Document Version:** 1.8
 **Last Updated:** 2026-10-26
 **Protection Profile:** NIAP PP-CA v2.1 FINAL
 **TOE:** OstrichPKI v1.0
@@ -90,7 +90,7 @@ This document provides a comprehensive mapping of all Security Functional Requir
 | Element | Implementation | Evidence |
 |---------|---------------|----------|
 | FAU_GEN.2.1 | AuditEvent includes actor field | [crates/ostrich-db/src/models/audit.rs:20-35](../../crates/ostrich-db/src/models/audit.rs#L20-L35) |
-| FAU_GEN.2.1 (CA gRPC, 2026-10-26) | Actor of gRPC issuance, revocation and CRL records = verified mTLS peer subject DN, plus `authenticated_caller_issuer` / `_serial`; the client `requestor` is namespace-bound and recorded as `on_behalf_of` | [grpc.rs](../../crates/ostrich-ca/src/grpc.rs) `issuance_request` / `revocation_request` / `crl_actor`, [grpc_authz.rs](../../crates/ostrich-ca/src/grpc_authz.rs) `bind_caller`; unit and e2e tests passed, DB-backed handler test pending (POAM-2026-10-23-36). 2026-10-26: DB-backed test [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs) written with a CI path (`.github/workflows/integration-db.yml`), **NOT RUN** |
+| FAU_GEN.2.1 (CA gRPC, 2026-10-26) | Actor of gRPC issuance, revocation and CRL records = verified mTLS peer subject DN, plus `authenticated_caller_issuer` / `_serial`; the client `requestor` is namespace-bound and recorded as `on_behalf_of` | [grpc.rs](../../crates/ostrich-ca/src/grpc.rs) `issuance_request` / `revocation_request` / `crl_actor`, [grpc_authz.rs](../../crates/ostrich-ca/src/grpc_authz.rs) `bind_caller`; unit and e2e tests passed. DB-backed handler test [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs) (`.github/workflows/integration-db.yml`): executed 2026-10-26, CI [run 40376869764](https://github.com/192d-Wing/OstrichPKI/actions/runs/40376869764), commit 2eb959a, artifact `live-db-softhsm-results` sha256 `12fd4a28226d9af9766b7c291f6a71afc387647b687bb608dfbb13e1f787e91f`. Residuals: REST CRL handler glue and M13h mutant not executed (POAM-2026-10-23-36) |
 
 **Actor Identification:**
 
@@ -970,4 +970,5 @@ grep -r "NIAP PP-CA:" crates/ --include="*.rs"
 | 1.4 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization (branch `claude/grpc-per-method-authz`, uncommitted). FAU_GEN.2: gRPC actor row (verified peer). FMT_SMR.2: gRPC Issuer / Admin role table (Admin = CA Operations Staff). FTP_ITC.1: per-role lists replace the allowlist bullet; 2026-10-26 note, `grpc_mtls_e2e` 39/39. No status change |
 | 1.5 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted). FDP_CER_EXT.1: ACME issuance-gating note with open POA&M items 41, 49, 52. FPT_FLS.1: dns-01 fail-closed evidence. FMT_SMF.1: dns-01 resolvers are deployment-time settings, not a management function. No status change |
 | 1.6 | 2026-10-26 | OstrichPKI Team | CI evidence gaps (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed). FAU_GEN.2 gRPC actor row: DB-backed `ca_grpc_audit_e2e` and its `integration-db.yml` CI path named; NOT RUN. No status change |
-| 1.7 | 2026-10-26 | OstrichPKI Team | ACME wildcard identifiers (branch `claude/acme-wildcard-identifiers`, uncommitted). FDP_CER_EXT.1: ACME note updated (wildcard and IP-identifier handling fixed, finalize binding; open items 41, 49 narrowed, 52, 56). No status change. The §10 test summary table is historical and was not updated |
+| 1.7 | 2026-10-26 | OstrichPKI Team | First green CI runs on `main` (commit 2eb959a). FAU_GEN.2 gRPC actor row: `ca_grpc_audit_e2e` executed green in `integration-db.yml` run 40376869764 (artifact sha256 recorded); POAM-36 narrowed. No status change |
+| 1.8 | 2026-10-26 | OstrichPKI Team | ACME wildcard identifiers (branch `claude/acme-wildcard-identifiers`, uncommitted). FDP_CER_EXT.1: ACME note updated (wildcard and IP-identifier handling fixed, finalize binding; open items 41, 49 narrowed, 52, 56). No status change. The §10 test summary table is historical and was not updated |
