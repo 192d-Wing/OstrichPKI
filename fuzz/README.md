@@ -58,10 +58,31 @@ make fuzz-all
 
 ### Continuous fuzzing (for CI/CD)
 
+`.github/workflows/fuzz.yml` runs `fuzz_grpc_requestor` and
+`fuzz_grpc_peer_subject` weekly (Monday 06:30 UTC), on manual dispatch
+(`max_total_time`, 60-3600 s per target; default 600), and for a fixed 60 s
+on pull requests that touch `fuzz/`, the workflow,
+`crates/ostrich-common/src/{grpc_tls.rs,tls.rs,auth/**}`,
+`crates/ostrich-common/Cargo.toml`, the root `Cargo.toml` or
+`rust-toolchain.toml`.
+It pins the toolchain to `nightly-2026-10-23` and cargo-fuzz to `0.13.2`
+(`cargo install --locked`, never restored from a cache), checks
+`fuzz/Cargo.lock` with `cargo fetch --locked`, keeps the corpus per target in
+the Actions cache (saved by scheduled and manual runs only), and uploads the
+run log plus any crash reproducers from `fuzz/artifacts/<target>/`.
+Reproduce locally:
+
+```bash
+cargo install cargo-fuzz --version 0.13.2 --locked
+cargo +nightly-2026-10-23 fuzz run fuzz_grpc_requestor -- -max_total_time=600
+```
+
+To sweep every target:
+
 ```bash
 # Run each target for 5 minutes
 for target in $(cargo fuzz list); do
-    cargo +nightly fuzz run $target -- -max_total_time=300
+    cargo +nightly-2026-10-23 fuzz run $target -- -max_total_time=300
 done
 ```
 

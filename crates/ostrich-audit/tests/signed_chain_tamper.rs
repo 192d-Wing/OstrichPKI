@@ -12,7 +12,7 @@
 //! - NIAP PP-CA: FAU_STG.4 (Prevention of undetected audit modification)
 //!
 //! Opt-in: requires `OSTRICH_DB_TESTS=1` and a reachable DATABASE_URL (with
-//! migrations 0000x + 00007 applied) whose database name contains `test` (it
+//! migrations 0000x + 00007 applied) whose database name has a `test` token (it
 //! TRUNCATEs audit_events); skipped otherwise. See `tests/common/mod.rs`.
 
 use std::sync::Arc;

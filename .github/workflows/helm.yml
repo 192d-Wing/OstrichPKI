@@ -1,0 +1,83 @@
+# Helm chart validation: lint, template and fail-closed guard (negative) cases
+#
+# COMPLIANCE MAPPING:
+# - NIST 800-53: CM-2 / CM-6 (baseline renders with secure defaults; the
+#   chart refuses to render without the mTLS secrets), CM-3, SA-11
+# - NIST 800-53: AC-3 / AC-5 / AC-6 (gRPC role lists and issuer profile
+#   allowlists fail closed), CM-2 / SA-15 / SR-3 (Helm pinned by version and
+#   sha256, the postgresql dependency by Chart.lock digest and sha256)
+# - NIST 800-53: CM-6 - least-privilege token (contents: read), no secrets
+# - NIAP PP-CA: FMT_SMR.2 (role separation), FTP_ITC.1 (mTLS secrets required)
+# Runs on every PR (about a minute, no path filter) so it can be a required check.
+
+name: Helm chart
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # linux-amd64 tarball sha256: get.helm.sh/helm-v3.22.1-linux-amd64.tar.gz.sha256sum
+  # and the v3.22.1 GitHub release notes (both checked 2026-10-26).
+  HELM_VERSION: v3.22.1
+  HELM_SHA256: 896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
+  # postgresql-14.3.3.tgz from charts.bitnami.com (checked 2026-10-26).
+  PG_CHART_SHA256: 9e1cd8fcf98bd109086a1c4a45d56136de1ecaa5665767229230d1d614b06132
+
+jobs:
+  helm-chart:
+    name: Helm chart validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The pinned binary is used by absolute path, never the runner's helm.
+      - name: Install pinned Helm (sha256-verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/helm"
+          tar -xzf "$RUNNER_TEMP/helm.tgz" -C "$RUNNER_TEMP/helm" --strip-components=1 linux-amd64/helm
+          echo "HELM=$RUNNER_TEMP/helm/helm" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/helm/helm" version
+
+      # Isolated Helm homes. The integrity control is the `sha256sum -c` of the
+      # fetched tarball against PG_CHART_SHA256 below: the Chart.lock digest
+      # covers the resolved dependency list, not the archive bytes. charts/
+      # is gitignored, so it is always fetched fresh here.
+      - name: Vendor chart dependencies (verified)
+        run: |
+          set -euo pipefail
+          export HELM_CACHE_HOME="$RUNNER_TEMP/helm-home/cache"
+          export HELM_CONFIG_HOME="$RUNNER_TEMP/helm-home/config"
+          export HELM_DATA_HOME="$RUNNER_TEMP/helm-home/data"
+          "$HELM" repo add bitnami https://charts.bitnami.com/bitnami
+          "$HELM" dependency build deploy/helm/ostrich-pki
+          echo "${PG_CHART_SHA256}  deploy/helm/ostrich-pki/charts/postgresql-14.3.3.tgz" | sha256sum -c -
+
+      - name: Lint, template and negative cases
+        run: |
+          set -euo pipefail
+          ./scripts/helm-chart-check.sh deploy/helm/ostrich-pki 2>&1 | tee "$RUNNER_TEMP/helm-check.txt"
+
+      - name: Upload Helm check record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: helm-chart-results
+          path: ${{ runner.temp }}/helm-check.txt
+          if-no-files-found: warn
+          retention-days: 90

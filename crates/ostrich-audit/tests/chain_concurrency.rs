@@ -10,7 +10,7 @@
 //! - NIAP PP-CA: FAU_STG.4 (Prevention of undetected audit modification)
 //!
 //! Opt-in: requires `OSTRICH_DB_TESTS=1` and a reachable DATABASE_URL whose
-//! database name contains `test` (it TRUNCATEs audit_events); skipped
+//! database name has a `test` token (it TRUNCATEs audit_events); skipped
 //! otherwise. See `tests/common/mod.rs`.
 // POAM: POAM-2026-10-23-31 - this Postgres test is opt-in and not yet run in
 // CI; the append path now has lock/statement/sign/commit timeouts, keeps the

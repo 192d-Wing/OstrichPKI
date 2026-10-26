@@ -321,13 +321,19 @@ docker-down: ## Stop services with docker-compose
 docker-logs: ## View docker-compose logs
 	cd tests/integration && docker-compose logs -f
 
+# Mirrors .github/workflows/helm.yml (which pins Helm by version + sha256).
+# NIST 800-53: CM-2 / CM-6 / SA-11 - chart renders and its guards fail closed.
+.PHONY: helm-check
+helm-check: ## Lint/template the Helm chart incl. negative cases (needs helm + helm dependency build)
+	./scripts/helm-chart-check.sh deploy/helm/ostrich-pki
+
 # ==============================================================================
 # Fuzzing Commands
 # ==============================================================================
 
 .PHONY: fuzz-setup
-fuzz-setup: ## Set up fuzzing infrastructure
-	cargo install cargo-fuzz
+fuzz-setup: ## Set up fuzzing infrastructure (cargo-fuzz pinned as in fuzz.yml)
+	cargo install cargo-fuzz --version 0.13.2 --locked
 
 .PHONY: fuzz-list
 fuzz-list: ## List available fuzz targets

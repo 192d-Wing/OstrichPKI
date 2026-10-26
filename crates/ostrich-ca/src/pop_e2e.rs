@@ -15,6 +15,10 @@
 //! Gated on DATABASE_URL + PKCS11_MODULE_PATH + PKCS11_SLOT + PKCS11_PIN; skips
 //! when not configured. Run live with `--test-threads=1` (shares the DB +
 //! SoftHSM token with the other e2e tests).
+//!
+//! With `OSTRICH_REQUIRE_LIVE_TESTS=1` (CI) a missing variable fails
+//! the test instead (`crate::live_test_env`); the database name must have
+//! a `test` token before any table is cleared (test-safety guard).
 
 use std::path::Path;
 
@@ -90,20 +94,21 @@ fn req(profile_name: &str, public_key: Vec<u8>, csr_der: Option<Vec<u8>>) -> Iss
 
 #[tokio::test]
 async fn proof_of_possession_is_enforced_for_end_entity_issuance() {
-    let (Ok(db_url), Ok(module), Ok(slot), Ok(pin)) = (
-        std::env::var("DATABASE_URL"),
-        std::env::var("PKCS11_MODULE_PATH"),
-        std::env::var("PKCS11_SLOT"),
-        std::env::var("PKCS11_PIN"),
-    ) else {
-        eprintln!("pop_e2e: set DATABASE_URL + PKCS11_* to run; skipping");
+    let Some(crate::live_test_env::LiveEnv {
+        db_url,
+        module,
+        slot,
+        pin,
+    }) = crate::live_test_env::live_env("pop_e2e", false)
+    else {
         return;
     };
-    let slot: u64 = slot.parse().expect("PKCS11_SLOT numeric");
 
     let pool = DatabasePool::new(&PoolConfig::from_url(&db_url).unwrap())
         .await
         .unwrap();
+    // Test-safety guard: never DELETE from a non-test database.
+    crate::live_test_env::assert_disposable_db(&pool, "pop_e2e").await;
     for table in ["audit_events", "certificates", "ca_certificates", "ca_keys"] {
         sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(pool.pool())

@@ -40,9 +40,9 @@ jobs:
       - name: Build
         run: cargo build --workspace --locked
 
-      # Unit/lib + binary tests only. The PKCS#11 / SoftHSM suite runs in
-      # .github/workflows/hsm-integration.yml. PostgreSQL-backed integration
-      # tests are not yet run in GitHub Actions.
+      # Unit/lib + binary tests only (live e2e modules skip here). The PKCS#11
+      # / SoftHSM suite runs in .github/workflows/hsm-integration.yml; the
+      # PostgreSQL + SoftHSM live suites run in integration-db.yml.
       - name: Test
         run: cargo test --workspace --lib --bins --locked
 

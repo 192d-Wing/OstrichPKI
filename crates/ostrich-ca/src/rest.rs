@@ -1668,6 +1668,9 @@ async fn check_revocation_status(
     }))
 }
 
+// POAM: POAM-2026-10-23-36 - the REST handler glue into the CrlGeneration
+// audit record (actor = authenticated user) has no live-database test; only
+// the pure event builders are unit-tested.
 /// Generate a new CRL
 ///
 /// NIAP PP-CA: FMT_SMF.1.1 - CRL generation endpoint
@@ -1735,6 +1738,9 @@ async fn get_crl(State(state): State<Arc<ApiState>>) -> Result<Response> {
     }
 }
 
+// POAM: POAM-2026-10-23-36 - the REST handler glue into the CrlGeneration
+// (`generate_delta`) audit record has no live-database test; only the pure
+// event builders are unit-tested.
 /// Generate a delta CRL (RFC 5280 §5.2.4) listing entries revoked since the
 /// latest full (base) CRL. Requires a base full CRL to exist.
 ///

@@ -175,6 +175,123 @@ Closes POAM-2026-10-23-45.
   through, and it defaults to empty, which means system resolvers.
 - **NIST 800-53**: CM-2, CM-6, SC-7
 
+#### CI paths for the live DB + SoftHSM suites, the Helm chart and fuzzing
+
+This adds CI paths only. No production code path changes, and `Cargo.lock` is unchanged. None of
+the new jobs or live tests has run yet; see "Known limitations" below.
+
+##### workspace (CI)
+
+- New `.github/workflows/integration-db.yml` ("Live DB + SoftHSM tests"). It runs on every pull
+  request, on pushes to `main` and on manual dispatch:
+  - Services: `postgres:16-alpine`, pinned by its multi-arch index digest, plus SoftHSM2 on
+    ubuntu-24.04. The token slot is found by label.
+  - The schema is applied with the production embedded migrator (`ostrich-db` example
+    `migrate_test_db`).
+  - It runs these suites with one test thread each:
+    - the ostrich-audit Postgres suites `chain_concurrency`, `signed_chain_tamper` and
+      `sign_timeout_db`;
+    - the ostrich-ca live e2e modules `audit_signing_e2e`, `crl_delta_e2e`, `issuance_aia_e2e`
+      and `pop_e2e`;
+    - `ca_grpc_audit_e2e` and `est_serverkeygen_e2e`.
+  - `OSTRICH_REQUIRE_LIVE_TESTS=1` is set, so a test whose environment is incomplete fails
+    instead of skipping. A final step fails the job unless every targeted live test reports `ok`.
+  - The suites run only if the build and migrate steps succeeded. A later suite still runs after
+    an earlier suite fails.
+  - The run records are uploaded as `live-db-softhsm-results` (kept 90 days).
+  - rust-cache saves only on `main`.
+- New `.github/workflows/helm.yml` ("Helm chart"). It runs on every pull request with no path
+  filter, so it can be a required check:
+  - Helm v3.22.1 is pinned and checked against its sha256.
+  - The vendored `postgresql-14.3.3.tgz` dependency is checked with `sha256sum -c` against
+    `PG_CHART_SHA256`.
+  - `scripts/helm-chart-check.sh` lints and templates the chart. It also runs negative cases, which
+    must fail rendering: missing mTLS secrets, the removed `ca.grpc.allowedClientSubjects`, and
+    the role and profile guards.
+  - The record is uploaded as `helm-chart-results` (kept 90 days).
+  - New `make helm-check` runs the same script locally.
+- New `.github/workflows/fuzz.yml` ("Fuzz"). It fuzzes `fuzz_grpc_requestor` and
+  `fuzz_grpc_peer_subject`:
+  - It runs weekly (Mon 06:30 UTC) for 600 s per target.
+  - Manual dispatch takes a `max_total_time` of 60-3600 s. The value is passed through `env`
+    and range-checked; it is never interpolated into the script.
+  - A fixed **60 s** job runs on pull requests that touch `fuzz/**`, the workflow,
+    `crates/ostrich-common/src/{grpc_tls.rs,tls.rs,auth/**}`, `crates/ostrich-common/Cargo.toml`,
+    the root `Cargo.toml` or `rust-toolchain.toml`.
+  - The nightly toolchain is pinned to `nightly-2026-10-23`.
+  - It runs with `--sanitizer none`: AddressSanitizer breaks the AWS-LC FIPS module build on
+    Linux, so CI has libFuzzer coverage, panics and overflow checks but no memory sanitizer.
+  - cargo-fuzz 0.13.2 is built from source with `--locked` on every run (`cache-bin: false`).
+  - `fuzz/Cargo.lock` is enforced with `cargo fetch --locked`.
+  - The corpus is kept per target in the Actions cache. Every run restores it; only scheduled and
+    manual runs save it, so PR runs never write it.
+  - The run log and crash reproducers are uploaded (kept 30 days).
+  - Cache keys are separate for each toolchain and target.
+  - `make fuzz-setup` now pins cargo-fuzz 0.13.2 `--locked` in the same way.
+- GitLab `test:integration`:
+  - The `postgres:16-alpine` service is pinned by the same digest.
+  - `DATABASE_URL` sets `sslmode=disable` explicitly. This is test-only: the service has no TLS,
+    and `PoolConfig` requires TLS by default.
+  - Migrations use the production embedded migrator. This replaces an unpinned `sqlx-cli` install.
+  - `PKCS11_SLOT` is derived from the token label.
+  - `OSTRICH_REQUIRE_LIVE_TESTS=1` is set.
+  - The ostrich-ca live e2e lib modules now run explicitly. `--test '*'` never ran them.
+- Every new `uses:` is pinned to a full commit SHA, every checkout sets
+  `persist-credentials: false`, and every workflow token is `contents: read`. Only superseded PR
+  runs are cancelled.
+- **NIST 800-53**: SA-11, CA-2, CM-2, CM-3, CM-6, SA-15, SR-3, SI-10.
+  **NIAP PP-CA**: ATE_FUN.1, ATE_IND.1
+
+##### ostrich-integration-tests
+
+- New live test `ca_grpc_audit_e2e`. It runs the real `CaGrpcService` behind the mTLS listener and
+  `SubjectAllowlistLayer`, with Postgres and SoftHSM:
+  - Issue, Revoke and GenerateCrl calls store the verified peer as the audit actor
+    (`authenticated_caller*`, peer serial, `on_behalf_of`).
+  - `verify_signed_chain` must succeed over the gRPC-written records. The test then flips one
+    signature byte of the gRPC-written `crl_generation` record and requires verification to fail.
+  - An issuer identity (`CN=acme-server`) that calls `GenerateCrl` is denied. Exactly one
+    `access_denied` record must be stored, with reason `method_not_permitted`, listener `ca-grpc`
+    and the peer serial.
+  - The audit hook is assembled by the test to mirror `start_grpc_listener`. That function is
+    private to the ca-server binary, so the test does not call it.
+  - Temporary key and certificate files go in a private `0700` directory, are created as `0600`
+    files with `create_new`, and are removed on drop. Assertions never print stored values.
+- New shared `common::live` gate. A pure `decide()` function makes the run, skip or fail decision
+  and has 6 unit tests. Error messages name a missing variable but never print its value.
+- `est_serverkeygen_e2e` uses the same gate.
+- **NIST 800-53 (test evidence)**: AU-3, AU-10, AU-12, IA-3, AC-3, AC-6(9)
+
+##### ostrich-ca / ostrich-audit / ostrich-db
+
+- New shared helper `live_test_env` (test-only) for the ostrich-ca live e2e modules.
+- **Test-safety guard.** The live suites refuse any database whose name lacks a delimited `test`
+  token: a `_`, `-` or `.` separated segment that equals `test`, ignoring case.
+  - `ostrich_pki_test` passes. `latest`, `contest_ca` and `testing` are refused.
+  - This replaces a substring `contains("test")` check.
+  - The guard has 4 copies, one per crate or target kind, and each has a unit test.
+  - It protects developer databases. It is not an AU-9 control.
+- New `ostrich-db` example `migrate_test_db` (CI and test helper, not shipped). It runs the
+  embedded migrator behind the same guard. `[[example]] test = true` makes
+  `cargo test -p ostrich-db` run that guard's unit test.
+- `rest.rs` `generate_crl` / `generate_delta_crl`: new `// POAM: POAM-2026-10-23-36` markers
+  (comments only).
+
+##### Known limitations (POA&M)
+
+- **No new job has run yet.** `integration-db.yml`, `helm.yml`, `fuzz.yml`, GitLab
+  `test:integration` and the new live assertions in `ca_grpc_audit_e2e` are **CI path added,
+  NOT RUN**. POAM-2026-10-23-31 and POAM-2026-10-23-36 stay open until a green run is linked (run
+  URL, commit SHA and artifact sha256). PR #184 findings REL-002, REL-005 and REL-008 close on
+  the same evidence.
+- The default Helm subchart image `docker.io/bitnami/postgresql:16.2.0-debian-12-r8` returns 404.
+  It moved to the unmaintained `bitnamilegacy` repository. This predates the change, and
+  `helm.yml` pulls no images, so the job cannot catch it (POAM-2026-10-23-53).
+- `actions/cache` v4.3.0 and `actions/upload-artifact` v4.6.2 run on the deprecated node20
+  runtime. Moving to node24 majors is a follow-up (POAM-2026-10-23-54).
+- `helm.yml` downloads the live Bitnami chart index on every run. This is an availability risk,
+  deferred.
+
 ### Changed
 
 #### ACME challenge validation behaviour
