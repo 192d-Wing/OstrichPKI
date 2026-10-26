@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-26
+
+**Release summary.** This release has breaking changes. The CA gRPC issuance API is now
+mutual-TLS only (TLS 1.3, aws-lc-rs FIPS provider); release builds refuse plaintext (PR #183).
+ca-server takes per-role client subject lists (`CA_GRPC_ACME_CLIENT_SUBJECTS`,
+`CA_GRPC_EST_CLIENT_SUBJECTS`, `CA_GRPC_ADMIN_CLIENT_SUBJECTS`) and authorizes every RPC by
+role, with the verified mTLS identity as the audit actor (PR #184). The single
+`CA_GRPC_ALLOWED_CLIENT_SUBJECTS` allowlist is removed, and setting it is a startup error.
+ca-server, acme-server and est-server must be upgraded together. Follow
+`docs/runbooks/ca-grpc-mtls.md` before upgrading. The Helm chart is 0.14.0 (appVersion 0.17.0).
+The release also fixes a race that could fork the audit hash chain, fixes PKCS#11 RSA-PSS
+signing, clears the open `cargo audit` advisories and makes the dependency gate blocking in CI.
+It also remediates 19 of 21 open Dependabot alerts (hickory-resolver 0.26.2, web-ui build chain
+and react-router 6.30.6; PR #186); two react-router v6 advisories remain (POAM-2026-10-23-39).
+
 ### Security
 
 #### CA gRPC issuance API behind mutual TLS (TLS 1.3, aws-lc-rs FIPS)
@@ -587,6 +602,22 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
   - `peer_incompatible`
 - **NIST 800-53**: AU-2, AU-3, AU-12
 
+#### EST external-issuer integration profile (Helm)
+
+##### workspace (deploy, docs)
+
+- New `deploy/helm/ostrich-pki/values-est-issuer-ci.yaml` profile that brings up only PostgreSQL,
+  a SoftHSM-backed P-384 CA and the EST service, for automated RFC 7030 external-issuer
+  conformance testing on disposable clusters. Described in
+  `docs/compliance/EST_ISSUER_INTEGRATION.md`.
+- New optional CA bootstrap Job (`ca-bootstrap.yaml`): creates a non-extractable P-384 CA key in
+  SoftHSM on a dedicated token PVC. PKCS#11 and administrator authenticators come only from
+  Secret references. Bootstrap is off by default and fails closed when its Secret or token
+  volume is missing.
+- Production defaults are unchanged: CA approval stays required and EST Basic authentication
+  stays disabled.
+- **NIST 800-53**: CM-6, SC-12, IA-5. **NIAP PP-CA**: FCS_STG_EXT.1
+
 #### Dev gRPC certificates, runbook and tests
 
 ##### workspace (deploy, scripts, docs)
@@ -635,6 +666,9 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
 - If any of these fails, the process refuses to start. This replaces the ad hoc `install_default()`
   calls in ca-server, npe-portal and notify-server.
 - New `tls::ensure_fips_client()`, which does the same check for client configs.
+- New `tls::ensure_fips(&ServerConfig)`, called from `TlsSettings::load` and first in
+  `serve_with_config`, so every HTTPS listener refuses to start unless its rustls config reports
+  `fips()`. This covers npe-portal ACME mode, which builds its own `ServerConfig`.
 - POAM-2026-10-23-05 is narrowed, not closed.
 - **NIST 800-53**: SC-13, SC-24. **NIAP PP-CA**: FPT_TST_EXT.1, FPT_FLS.1
 
@@ -756,6 +790,40 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
 
 ### Fixed
 
+#### PKCS#11 ECDSA signatures on tokens without combined hash mechanisms
+
+##### ostrich-crypto
+
+- `Pkcs11Provider` ECDSA signing (P-256/SHA-256, P-384/SHA-384, P-521/SHA-512) now hashes the
+  message in the AWS-LC FIPS module and passes the digest to raw `CKM_ECDSA`. It previously used
+  the combined `CKM_ECDSA_SHA*` mechanisms, which PKCS#11 makes optional, so signing failed on
+  tokens that do not implement them. Signatures are unchanged where the combined mechanisms
+  worked.
+- **NIST 800-53**: SC-13. **NIAP PP-CA**: FCS_COP.1. FIPS 180-4, FIPS 186-5
+
+#### EST Basic bootstrap could not complete the TLS handshake
+
+##### ostrich-est-server
+
+- In `MtlsWithBasicFallback` mode the listener now requests, but does not require, a client
+  certificate, as the trusted-proxy bridge already did. Clients without a certificate can finish
+  the handshake and then authenticate with HTTP Basic (RFC 7030 §3.2.3). A certificate that is
+  presented is still validated, and unauthenticated requests are still refused by the HTTP
+  middleware.
+- **NIST 800-53**: AC-3, IA-2, SC-8. **NIAP PP-CA**: FIA_UAU.5, FTP_ITC.1
+
+#### Helm deployment fixes
+
+- Database transport is explicit: `database.sslMode` defaults to `require` for an external
+  database. The bundled in-cluster PostgreSQL keeps `sslmode=disable`, since it has no TLS
+  listener.
+- The PostgreSQL client image used by the readiness init containers is pinned by digest
+  (`postgresClientImage`), so a mutable tag cannot change startup behaviour.
+- When EST runs with mTLS (`est.tls.caCertFile` set), its liveness and readiness probes use a TCP
+  check. Kubernetes HTTP probes cannot present a client certificate, so they failed against the
+  authenticated listener.
+- **NIST 800-53**: SC-8, CM-6, SR-3
+
 #### ca-server panic on an undecodable numeric OID in a client subject list
 
 ##### ostrich-common
@@ -830,7 +898,410 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
   the wrong message gives exactly `Ok(false)`, and that a token fault gives `Err`.
 - **NIST 800-53**: SC-13, AU-10, SI-7. **NIAP PP-CA**: FCS_COP.1(1), FCS_COP.1(2)
 
+## [0.16.3] - 2026-07-17
+
+### Fixed
+
+#### ACME TLS-ALPN-01 rejected the critical acmeIdentifier extension (PR #159)
+
+##### ostrich-acme
+
+- The TLS-ALPN-01 validator now accepts the challenge certificate's critical `acmeIdentifier`
+  extension, which RFC 8737 requires. rustls checked the handshake `CertificateVerify` signature
+  through webpki, and webpki rejects that critical extension, so validation always failed. The
+  validator now checks the challenge certificate and its handshake signature without webpki
+  parsing and relies on the post-handshake extension check. With 0.16.2 this makes TLS-ALPN-01
+  work end to end.
+
+## [0.16.2] - 2026-07-17
+
+### Fixed
+
+#### ACME TLS-ALPN-01 rejected every self-signed challenge certificate (PR #158)
+
+##### ostrich-acme
+
+- The TLS-ALPN-01 validator now accepts the self-signed challenge certificate that RFC 8737
+  specifies. Before this fix every handshake failed with `UnknownIssuer`.
+
+### Security
+
+#### RUSTSEC-2026-0204 (crossbeam-epoch)
+
+##### workspace (Cargo.lock)
+
+- crossbeam-epoch 0.9.18 -> 0.9.20 (transitive) clears RUSTSEC-2026-0204, a null-pointer
+  dereference in `fmt::Display`.
+
+## [0.16.1] - 2026-07-17
+
+### Fixed
+
+#### ACME interoperability fixes (PR #157)
+
+##### ostrich-acme
+
+- `newAccount` is idempotent on the account key (RFC 8555 §7.3). A returning client gets its
+  existing account instead of a duplicate-key 500.
+- TLS-ALPN-01 validation now honors `allow_private_ip_domains`, so all challenge types apply the
+  same SSRF policy (SI-10).
+
+### Security
+
+#### Internal error details in ACME problem documents (PR #157)
+
+##### ostrich-acme
+
+- Problem documents no longer include internal error details. Details are logged server-side
+  only (SI-11).
+
+## [0.16.0] - 2026-07-13
+
+> **Upgrade notes.**
+>
+> - **serverAuth certificates are capped at 397 days.** Profile validation rejects any
+>   `id-kp-serverAuth` profile with a validity over 397 days. clientAuth-only profiles are not
+>   affected.
+> - **Container images use the Iron Bank UBI 10 runtime base** (was `debian:bookworm-slim`) and
+>   are published for linux/amd64 and linux/arm64.
+> - **Kubernetes: NATS needs TLS and password auth.** Provide the `nats-server-tls`,
+>   `nats-client-ca` and `nats-auth` secrets. ca-server and notify read `NATS_CA_FILE`,
+>   `NATS_USER` and `NATS_PASSWORD`.
+> - **NPE sponsors see only their own certificates, FQDN records and EST tokens.**
+
+### Added
+
+#### NPE portal and supporting services (PR #134)
+
+##### ostrich-npe-portal
+
+- New standalone NPE (non-person entity) certificate portal: a BFF and SPA with Sponsor, Sponsor
+  Admin, RA and CAA roles. It includes application submission (CSR paste, upload or in-browser
+  generation; SAN editor; KU/EKU; CC/S/A behind `dodMode`), RA application review, approval and
+  revocation, CAA user, namespace and system-configuration management, bulk enrollment, an EST
+  enrollment catalog, an audit log viewer, an OCSP status checker, CSV/PDF search export,
+  session-timeout warning, a classification banner and an in-app user guide.
+- Identity bridge: the portal forwards the authenticated mTLS identity to the CA and EST backends.
+- The portal can serve mTLS with its own auto-renewing ACME certificate.
+- The application status page shows the submitted details and offers the issued certificate for
+  download (PR #145). Profile-driven KU/EKU defaults (PR #144).
+
+##### ostrich-ca
+
+- Issue the certificate on approval of an application. RA can work the approval queue with a
+  validation override.
+- CAA management APIs: users (with a self-action block and an NPE-role privilege ceiling),
+  wildcard/namespace policy, and system configuration.
+- Bulk enrollment API with bounded upload size and ZIP entry count.
+- EFS certificate profile.
+- Expiry-notification producer that publishes to NATS, and an expiring-in-90-days count in the
+  certificate statistics.
+
+##### ostrich-common
+
+- New read-only `NpeAuditor` role for separation-of-duties audit review (AC-5).
+
+##### ostrich-notify-server
+
+- New certificate-expiry notification service (NATS JetStream -> SMTP). `SMTP_SECURITY` selects
+  `none`, `starttls` (default) or `tls`; `SMTP_TLS_PORT` sets the implicit-TLS port.
+- NATS client TLS and password authentication (`NATS_CA_FILE`, `NATS_USER`, `NATS_PASSWORD`).
+
+##### ostrich-est / ostrich-est-server
+
+- RFC 7030 §3.2.2 label routing to multiple CA backends.
+- EFS server-side key generation that delivers an encrypted PKCS#12.
+
+##### ostrich-x509
+
+- Encrypted PKCS#12 (PFX) builder for EFS key delivery.
+
+#### ACME subject CN from a DNS SAN (PR #153)
+
+##### ostrich-acme
+
+- When the CSR subject is empty, the subject CN is derived from a DNS SAN that fits the 64-character
+  ub-common-name limit (RFC 5280 §4.1.2.6, RFC 8555 §7.4) (PR #153).
+
+#### Deployment and CI
+
+##### workspace (deploy, CI)
+
+- NPE portal Docker image, compose service, Helm chart and Kustomize manifests, including an ACME
+  production overlay and a TLS-passthrough route.
+- notify Dockerfile target, publish workflow entry and Kubernetes manifests.
+- Container images build on a native per-architecture runner matrix and are merged into one
+  multi-arch manifest (PR #141).
+
+### Changed
+
+#### 397-day serverAuth validity cap
+
+##### ostrich-x509
+
+- serverAuth profiles are capped at 397 days (`SERVER_AUTH_MAX_VALIDITY_DAYS`) (CM-6).
+
+#### Iron Bank UBI 10 runtime base (PR #141)
+
+##### workspace (Dockerfile)
+
+- The runtime base is the Iron Bank Red Hat UBI 10 image (PR #141). SoftHSM comes from Debian's
+  OpenSSL 3 build.
+
+### Fixed
+
+#### Issuance, CSR and protocol fixes
+
+##### ostrich-ca
+
+- Issuing from an approved application uses the SANs on the application form and falls back to
+  the CSR's SANs. Before, a SAN-required profile could reject the request (PR #143).
+- Bridged NPE identities are provisioned so approval foreign keys resolve.
+- Configuration value types and namespace lengths are validated.
+
+##### ostrich-x509
+
+- PKCS#10 CSRs that omit the mandatory `attributes` field are accepted by injecting an empty field
+  before the fallback decode. The self-signature is still verified over the original bytes. The
+  portal's CSR generator now always emits the field (PR #142).
+
+##### ostrich-acme
+
+- `newNonce` returns 200 for HEAD and 204 for GET (RFC 8555 §7.2).
+
+##### ostrich-web-ui
+
+- The web console reaches the CA over TLS again, so admin login works.
+
+### Security
+
+#### NPE portal access control and audit hardening
+
+##### ostrich-ca / ostrich-npe-portal
+
+- Own-scope enforcement: self-service sponsors see only their own certificates, statistics, FQDN
+  records and EST tokens. `get_fqdn_record` returns 404 before it reads other notifications, which
+  closes an FQDN enumeration and renewal-email leak. Rejection needs `RejectRequest`.
+- Portal sessions are bound to the presented client certificate fingerprint (SC-23).
+- `/api/v1/audit/verify` results are cached for 30 s, so repeated calls cannot force a full chain
+  rehash (SC-5). Listing and verifying the audit log are now audited (AU-2, AU-6).
+- The bulk result CSV neutralizes spreadsheet formula injection.
+
+#### Kubernetes NetworkPolicies
+
+##### workspace (deploy)
+
+- NetworkPolicies limit NATS (4222) to ca-server and the notify services, notify-postgres to the
+  notify services, and the EST cleartext port 8443 to the portal and web-ui (AC-3, SC-7).
+
+#### Dependency advisories (PR #138)
+
+##### workspace (Cargo.lock, web-ui)
+
+- Dependency advisories cleared (PR #138): async-nats 0.38 -> 0.49 drops rustls-webpki 0.102.8
+  (RUSTSEC-2026-0104, -0049, -0098, -0099); anyhow 1.0.103 (RUSTSEC-2026-0190); openssl 0.10.81
+  (seven rust-openssl advisories); web-ui vite 5.4 -> 8.1 and esbuild 0.28 (dev-server advisories).
+
+## [0.15.1] - 2026-07-03
+
+> **Note.** This patch release holds all work from 2026-01-04 to 2026-07-03, including breaking
+> changes. The release commit names only the CSR fix (PR #130).
+>
+> - **ML-DSA (FIPS 204) and SLH-DSA (FIPS 205) are removed from the CA's allowed algorithms.**
+>   All classical algorithms now run in the AWS-LC FIPS module, which does not provide them.
+>   The `ring` and pure-Rust `rsa` backends are removed from ostrich-crypto.
+> - **The web console is a React/Cloudscape app at `/`.** The Yew SPA is retired.
+> - **Sessions are stored in Postgres** (migration 00011).
+
+### Added
+
+#### Core PKI services working end to end
+
+##### ostrich-ca
+
+- Working end-to-end issuance: CA bootstrap from the database, CA hierarchy (root issues
+  intermediate), the approval workflow and CSR-based issuance over REST, with proof-of-possession
+  enforced on the direct issuance API (RFC 2986, SI-10).
+- CRLs persisted and served at a public distribution point; CDP and AIA in issued certificates;
+  delta-CRL generation (RFC 5280 §5.2.4, §5.2.6).
+- Serial numbers drawn from the FIPS DRBG (FCS_RBG_EXT.1); `request_id` recorded on certificates
+  and carried through the gRPC API (FDP_CER_EXT.2); secure-default profile policy enforced at
+  issuance (FMT_MSA.1).
+- Certificate inventory API with SQL-side filtering, search, sorting and pagination (PR #64), the
+  certificate detail view, per-FQDN certificate history records (PR #114), and audit-log review
+  with on-demand integrity verification (PR #67).
+
+##### ostrich-audit
+
+- Signed audit records (AU-10), wired into the CA in production. Auth failures, lockouts and
+  unlocks are audited (AU-2, AC-7).
+
+##### ostrich-crypto
+
+- FIPS 203 ML-KEM key encapsulation.
+- PKCS#11 key destruction and inventory (FCS_CKM.4) (PR #68).
+- PKCS#8 export of software keys (for EST server-side key generation).
+
+##### ostrich-x509
+
+- PKCS#10 CSR builder (RFC 2986); delta-CRL and indirect-CRL extensions.
+
+##### ostrich-est / ostrich-est-server
+
+- End-to-end RFC 7030 enrollment; server-side key generation (§4.4); mTLS client authentication
+  (§3.3); HTTP Basic authentication (§3.2.3); configurable identity policy and a per-account
+  identity allow-list admin API; JSON config file with schema validation.
+- Operator-minted single-use enrollment tokens with list, revoke and a selectable certificate
+  profile; shared-port token bootstrap with mTLS re-enrollment (PR #74); two-port serving,
+  in-cluster HTTP plus external HTTPS with optional mTLS (PR #76).
+
+##### ostrich-acme
+
+- Full RFC 8555 issuance flow, end to end.
+
+##### ostrich-ocsp
+
+- RFC 6960 responder, end to end.
+
+##### ostrich-kra
+
+- Key escrow and recovery round trip with AES-256-GCM under a per-escrow KEK (replaces the
+  placeholder XOR scheme).
+
+#### Trust Anchor Management Protocol (PR #73)
+
+##### ostrich-tamp
+
+- New crate: RFC 5934 Trust Anchor Management Protocol, manager role (PR #73).
+
+#### Authentication, sessions and web console
+
+##### ostrich-common
+
+- Shared TLS 1.3 serving module for all service binaries (`TLS_CERT_FILE`, `TLS_KEY_FILE`,
+  `TLS_CLIENT_CA_FILE`).
+- Postgres-backed sessions that survive restart, "sign out everywhere", "sign out my other
+  sessions" (PR #97) and a configurable concurrent-session cap.
+
+##### ostrich-web-ui
+
+- Internal CA authentication mode (no external IdP) and server-side session validation.
+- Console pages for certificates (issue, detail, revoke), CRLs, profiles, EST enrollment and
+  tokens, audit logs, system status and FQDN records.
+
+#### CI and deployment
+
+##### workspace (CI, deploy)
+
+- GitHub Actions CI and Dependabot; container images published to GHCR (including web-ui),
+  built on native arm64 with a cargo-chef dependency cache.
+- Containerized development environment.
+
+### Changed
+
+#### FIPS-only cryptography (BREAKING)
+
+##### ostrich-crypto
+
+- **BREAKING:** all classical algorithms (RSA, ECDSA, Ed25519, SHA-2) and the DRBG run in the
+  AWS-LC FIPS module (`aws-lc-rs` `fips` feature). ML-DSA is removed (POA&M: restore when AWS-LC
+  FIPS ships it). `ring` and `rsa` are no longer dependencies.
+
+##### ostrich-x509
+
+- SLH-DSA removed from the CA's allowed algorithms and key types (no AWS-LC backend).
+
+##### ostrich-common
+
+- Service TLS uses the aws-lc-rs FIPS rustls provider instead of ring (SC-13).
+
+#### Web console and dependencies
+
+##### ostrich-web-ui
+
+- The console is rebuilt in React with AWS Cloudscape and served at `/`; the Yew SPA is retired
+  (PR #111).
+
+##### workspace (dependencies)
+
+- hickory 0.26, rand/rand_core 0.10, aes 0.9 / cipher 0.5.
+
+### Fixed
+
+#### Correctness and interoperability fixes
+
+##### ostrich-x509
+
+- CSRs whose `challengePassword` encoding x509-parser rejects (`InvalidAttributes`) are accepted
+  through a der-based fallback parse (PR #130).
+
+##### ostrich-crypto
+
+- Software RSA PKCS#1 v1.5 signatures now include the DigestInfo prefix (RFC 8017). Before, other
+  verifiers rejected them.
+
+##### ostrich-ca
+
+- Certificate and CRL signing matches the declared AlgorithmIdentifier (RFC 5280 §4.1.1.2).
+  Before, RSA-PSS was used under `sha256WithRSAEncryption`, so signatures did not verify.
+- `issuer_service` is recorded correctly for each enrollment path (PR #117).
+
+##### ostrich-est
+
+- Re-enrollment keeps the identity's broadest prior profile, so a serverAuth+clientAuth
+  certificate is not narrowed to clientAuth on renewal (RFC 7030 §4.2.2).
+- mTLS re-enrollment is authorized by the existing CA-issued certificate as a least-privilege
+  `EstDevice` principal (PR #101).
+- Identity length is counted in characters, not bytes; revoke acts only on live tokens.
+
+##### ostrich-common
+
+- The session reaper locks idle sessions so they free the concurrent-session cap (PR #93).
+
+##### ostrich-acme
+
+- RFC 8555 conformance: absolute URLs, POST-as-GET, optional new-account fields (PR #69), and the
+  §7.5.1 `up` Link from challenge to authorization (PR #70).
+
+### Security
+
+#### ACME authorization, replay and SSRF fixes
+
+##### ostrich-acme
+
+- Finalize did not check the CSR identifiers against the order's authorized identifiers, so a
+  client could obtain a certificate for names it had not validated (RFC 8555 §7.4).
+- A replayed nonce was accepted because the result of `consume_nonce` was ignored (§6.5).
+- HTTP-01 and TLS-ALPN-01 validation was open to DNS-rebinding SSRF. Names are now resolved and
+  rejected unless every address is globally routable.
+- hickory 0.26 fixes RUSTSEC-2026-0119 (DNS name-compression DoS).
+
+#### Authentication, access control and input validation
+
+##### ostrich-common
+
+- mTLS subject-DN extraction was a placeholder that mapped every client certificate to one
+  constant DN. It now returns the real subject, escaped as canonical RFC 4514, which also closes
+  a DN aliasing vector.
+- Lockout thresholds come from `LockoutConfig` instead of hardcoded values (CM-6).
+
+##### ostrich-scms / ostrich-ca / ostrich-web-ui
+
+- SCMS endpoints require authentication, RBAC and audit, with PIN lockout (FIA_AFL.1).
+  `/api/v1/profiles` requires `ViewConfig`; the web-ui proxy requires a session.
+
+##### ostrich-est
+
+- Fails closed on a plaintext EST -> CA gRPC channel; re-enrollment binds the full subject DN
+  and SAN set; requested identity is authorized against the principal; 5xx bodies are generic.
+
+##### ostrich-ocsp
+
+- The OCSP nonce is bounded to 1..=32 octets (RFC 8954 §2.1).
+
 ## [0.15.0] - 2026-01-04
+
+> **Note.** These are development-phase notes written on 2026-01-04, before release tags existed. No `v0.15.0` tag was cut; the NIST SP 800-90A DRBG notes were mislabelled `[0.16.0]` and are merged here.
 
 ### Added
 
@@ -864,72 +1335,6 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
   - Prevents CA startup with software-backed signing keys
   - Clear error messages referencing FCS_STG_EXT.1 requirement
 
-### Changed
-
-- **Version bump**: 0.14.0 → 0.15.0
-- **NIAP PP-CA v2.1 Compliance**: 96% → 98% (49/50 applicable SFRs)
-- **Compliance Documentation**:
-  - `NIAP_COMPLIANCE.md` version 2.2 → 2.3
-  - `NIAP_GAP_ANALYSIS.md` version 2.3 → 2.4
-  - FCS_STG_EXT.1: 🔴 Missing → 🟢 **Compliant**
-  - FCS_CDP_EXT.1: 🟡 Partial → 🟢 **Compliant**
-  - FCS_CKM.1: 🟡 Partial → 🟢 **Compliant**
-  - FIA_ESTC_EXT.1: 🟡 Partial → 🟢 **Compliant**
-  - FIA_ESTS_EXT.1: 🟡 Partial → 🟢 **Compliant**
-
-### Testing
-
-- **Unit Tests** (`src/hsm_validation.rs`): 7 comprehensive tests
-  - HSM key validation success (PKCS#11 provider)
-  - Software key validation failure with proper error message
-  - HSM provider type checking
-  - CA signing key validation with HSM
-  - Software key rejection for CA signing
-  - Post-quantum key type support (EC P-256, Ed25519)
-  - All tests passing
-
-### Compliance
-
-- **NIAP PP-CA v2.1**: 98% Compliant (49/50 applicable SFRs)
-  - ✅ **FCS_STG_EXT.1**: Cryptographic Key Storage - HSM enforcement COMPLETE
-  - ✅ **FTA_SSL.3**: TSF-initiated session termination (verified existing)
-  - ✅ **FTA_SSL.4**: User-initiated session termination (verified existing)
-  - ✅ **FCS_CDP_EXT.1**: Cryptographic Dependencies (documentation complete)
-  - ✅ **FCS_CKM.1**: Cryptographic Key Generation (documentation complete)
-  - ✅ **FIA_ESTC_EXT.1**: EST Client Authentication (documentation complete)
-  - ✅ **FIA_ESTS_EXT.1**: EST Server Authentication (documentation complete)
-
-- **Compliance Breakdown**:
-  - 49 SFRs Compliant (98%)
-  - 1 SFR N/A (selection-based: FIA_X509_EXT.3)
-  - 2 SFRs Optional (deployment-level: FPT_TUD_EXT.1, FTA_TAB.1)
-  - 4 SFRs Operational Environment (HSM hardware, OS security)
-
-- **NIST 800-53 Rev 5**:
-  - **SC-12**: Cryptographic Key Establishment and Management
-  - **SC-13**: Cryptographic Protection
-
-### Documentation
-
-- **Updated Compliance Files**:
-  - `docs/compliance/NIAP_COMPLIANCE.md` - Comprehensive evidence for all 5 SFRs
-  - `docs/compliance/NIAP_GAP_ANALYSIS.md` - Target compliance ACHIEVED
-  - Code annotations with FCS_STG_EXT.1 references
-
-### Notes
-
-- HSM enforcement is configurable via `require_hsm` flag (default: true)
-- Development/test environments can disable HSM requirement
-- Production deployments should always use HSM-backed CA keys
-- Clear error messages guide operators to NIAP compliance requirements
-- Ready for NIAP certification submission
-
----
-
-## [0.16.0] - 2026-01-04
-
-### Added
-
 #### NIST SP 800-90A DRBG Implementation (Phase 15 - Option 5 Complete)
 
 ##### ostrich-crypto
@@ -961,90 +1366,6 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
   - Platform-independent DRBG creation
   - Automatic health test execution on instantiation
   - Error handling for initialization failures
-
-### Changed
-
-- **ostrich-crypto** (`Cargo.toml`):
-  - Added `aes = "0.8"` for AES block cipher
-  - Added `ctr = "0.9"` for CTR mode
-  - Added `getrandom = "0.2"` for entropy source
-
-- **ostrich-crypto** (`src/lib.rs`):
-  - Added `pub mod drbg;` to expose DRBG module
-
-### Testing
-
-- **Unit Tests** (`src/drbg/tests.rs`): 21 comprehensive tests
-  - CTR_DRBG instantiation with/without personalization
-  - Generation with multiple requests
-  - Reseeding functionality
-  - Health test failures (repetition count, adaptive proportion)
-  - Reseed counter overflow protection
-  - Concurrent access (thread safety)
-  - Factory creation patterns
-  - Error handling for all failure modes
-
-- **Test Coverage**:
-  - Startup health tests (repetition count, adaptive proportion)
-  - Continuous health tests during generation
-  - Automatic reseeding before 2^48 requests
-  - Entropy source integration
-  - Personalization and additional input
-  - Error propagation
-
-- **Quality Assurance**:
-  - All tests passing: `cargo test --package ostrich-crypto`
-  - Code formatting: `cargo fmt`
-  - Linting: `cargo clippy` (clean)
-
-### Compliance
-
-- **NIAP PP-CA v2.1**:
-  - **FCS_RBG_EXT.1**: Random Bit Generation - ✅ IMPLEMENTED
-  - Gap status: 🔴 Missing → 🟢 **Compliant**
-  - Critical priority gap CLOSED
-
-- **NIST 800-53 Rev 5**:
-  - **SC-13**: Cryptographic Protection - Enhanced with DRBG
-  - DRBG provides cryptographically secure randomness for:
-    - Certificate serial numbers (≥20 bits random per RFC 5280)
-    - ACME nonces (replay protection)
-    - Key generation seeds
-    - Challenge tokens
-
-- **Standards Compliance**:
-  - **NIST SP 800-90A Rev 1**: CTR_DRBG §10.2 ✅
-  - **FIPS 140-3 IG D.K**: Entropy requirements ✅
-  - **FIPS 140-3 IG 9.3.A**: Health testing requirements ✅
-
-### Documentation
-
-- **Compliance Documentation**:
-  - Updated `docs/compliance/NIAP_GAP_ANALYSIS.md` v2.0 → v2.1
-  - FCS_RBG_EXT.1 section completely rewritten with implementation evidence
-  - Updated overall compliance: 70-75% → 75-80%
-  - Updated FCS (Cryptographic Support) family: 8/9 → 9/9 (100%)
-  - Removed FCS_RBG_EXT.1 from Priority 1 critical gaps
-
-- **Code Comments**:
-  - NIST SP 800-90A compliance annotations
-  - FIPS 140-3 health test references
-  - Security rationale for design decisions
-
-### Notes
-
-- DRBG implementation ready for NIST CAVP testing
-- Entropy source uses OS-provided RNG (getrandom crate)
-- Health tests align with FIPS 140-3 Implementation Guidance
-- Thread-safe design supports concurrent operations
-- Automatic reseeding prevents state exhaustion
-- Integration with serial number generation pending (Phase 16)
-
----
-
-## [0.15.0] - 2026-01-04
-
-### Added
 
 #### RFC 5280 §6 Certificate Path Validation (Phase 15 - Complete)
 
@@ -1125,25 +1446,76 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
 
 ### Changed
 
+#### NIAP PP-CA v2.1 compliance (Phase 19)
+
+- **Version bump**: 0.14.0 → 0.15.0
+- **NIAP PP-CA v2.1 Compliance**: 96% → 98% (49/50 applicable SFRs)
+- **Compliance Documentation**:
+  - `NIAP_COMPLIANCE.md` version 2.2 → 2.3
+  - `NIAP_GAP_ANALYSIS.md` version 2.3 → 2.4
+  - FCS_STG_EXT.1: 🔴 Missing → 🟢 **Compliant**
+  - FCS_CDP_EXT.1: 🟡 Partial → 🟢 **Compliant**
+  - FCS_CKM.1: 🟡 Partial → 🟢 **Compliant**
+  - FIA_ESTC_EXT.1: 🟡 Partial → 🟢 **Compliant**
+  - FIA_ESTS_EXT.1: 🟡 Partial → 🟢 **Compliant**
+
+#### NIST SP 800-90A DRBG (Phase 15)
+
+- **ostrich-crypto** (`Cargo.toml`):
+  - Added `aes = "0.8"` for AES block cipher
+  - Added `ctr = "0.9"` for CTR mode
+  - Added `getrandom = "0.2"` for entropy source
+
+- **ostrich-crypto** (`src/lib.rs`):
+  - Added `pub mod drbg;` to expose DRBG module
+
+#### RFC 5280 §6 path validation (Phase 15)
+
 - **ostrich-x509** (`src/lib.rs`):
   - Added `pub mod validation;` to expose path validation module
 
 - **ostrich-x509** (`Cargo.toml`):
   - Added `tokio` to dev-dependencies for async tests
 
-### Documentation
-
-- **RFC Compliance** (`docs/compliance/RFC_COMPLIANCE.md`):
-  - Updated RFC 5280 §6 from "Missing" to "Implemented"
-  - Added comprehensive validation feature documentation
-  - Updated overall compliance: 72% → 85%
-  - Updated Core PKI (X.509) category: 90% → 100%
-  - Updated total compliance: 70% → 75%
-  - Removed RFC 5280 §6 from Priority 1 critical gaps
-  - Document version: 1.3 → 1.4
-  - OstrichPKI version: 0.14.0 → 0.15.0
-
 ### Testing
+
+#### NIAP PP-CA v2.1 compliance (Phase 19)
+
+- **Unit Tests** (`src/hsm_validation.rs`): 7 comprehensive tests
+  - HSM key validation success (PKCS#11 provider)
+  - Software key validation failure with proper error message
+  - HSM provider type checking
+  - CA signing key validation with HSM
+  - Software key rejection for CA signing
+  - Post-quantum key type support (EC P-256, Ed25519)
+  - All tests passing
+
+#### NIST SP 800-90A DRBG (Phase 15)
+
+- **Unit Tests** (`src/drbg/tests.rs`): 21 comprehensive tests
+  - CTR_DRBG instantiation with/without personalization
+  - Generation with multiple requests
+  - Reseeding functionality
+  - Health test failures (repetition count, adaptive proportion)
+  - Reseed counter overflow protection
+  - Concurrent access (thread safety)
+  - Factory creation patterns
+  - Error handling for all failure modes
+
+- **Test Coverage**:
+  - Startup health tests (repetition count, adaptive proportion)
+  - Continuous health tests during generation
+  - Automatic reseeding before 2^48 requests
+  - Entropy source integration
+  - Personalization and additional input
+  - Error propagation
+
+- **Quality Assurance**:
+  - All tests passing: `cargo test --package ostrich-crypto`
+  - Code formatting: `cargo fmt`
+  - Linting: `cargo clippy` (clean)
+
+#### RFC 5280 §6 path validation (Phase 15)
 
 - **Unit Tests**: 80 tests in ostrich-x509 (40 new tests for validation)
   - 12 tests for trust anchor management
@@ -1166,6 +1538,49 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
 
 ### Compliance
 
+#### NIAP PP-CA v2.1 compliance (Phase 19)
+
+- **NIAP PP-CA v2.1**: 98% Compliant (49/50 applicable SFRs)
+  - ✅ **FCS_STG_EXT.1**: Cryptographic Key Storage - HSM enforcement COMPLETE
+  - ✅ **FTA_SSL.3**: TSF-initiated session termination (verified existing)
+  - ✅ **FTA_SSL.4**: User-initiated session termination (verified existing)
+  - ✅ **FCS_CDP_EXT.1**: Cryptographic Dependencies (documentation complete)
+  - ✅ **FCS_CKM.1**: Cryptographic Key Generation (documentation complete)
+  - ✅ **FIA_ESTC_EXT.1**: EST Client Authentication (documentation complete)
+  - ✅ **FIA_ESTS_EXT.1**: EST Server Authentication (documentation complete)
+
+- **Compliance Breakdown**:
+  - 49 SFRs Compliant (98%)
+  - 1 SFR N/A (selection-based: FIA_X509_EXT.3)
+  - 2 SFRs Optional (deployment-level: FPT_TUD_EXT.1, FTA_TAB.1)
+  - 4 SFRs Operational Environment (HSM hardware, OS security)
+
+- **NIST 800-53 Rev 5**:
+  - **SC-12**: Cryptographic Key Establishment and Management
+  - **SC-13**: Cryptographic Protection
+
+#### NIST SP 800-90A DRBG (Phase 15)
+
+- **NIAP PP-CA v2.1**:
+  - **FCS_RBG_EXT.1**: Random Bit Generation - ✅ IMPLEMENTED
+  - Gap status: 🔴 Missing → 🟢 **Compliant**
+  - Critical priority gap CLOSED
+
+- **NIST 800-53 Rev 5**:
+  - **SC-13**: Cryptographic Protection - Enhanced with DRBG
+  - DRBG provides cryptographically secure randomness for:
+    - Certificate serial numbers (≥20 bits random per RFC 5280)
+    - ACME nonces (replay protection)
+    - Key generation seeds
+    - Challenge tokens
+
+- **Standards Compliance**:
+  - **NIST SP 800-90A Rev 1**: CTR_DRBG §10.2 ✅
+  - **FIPS 140-3 IG D.K**: Entropy requirements ✅
+  - **FIPS 140-3 IG 9.3.A**: Health testing requirements ✅
+
+#### RFC 5280 §6 path validation (Phase 15)
+
 - **NIAP PP-CA v2.1**:
   - **FIA_X509_EXT.1**: X.509 Certificate Validation - ✅ IMPLEMENTED
   - **FDP_CER_EXT.1**: Certificate Validation - ✅ IMPLEMENTED
@@ -1183,7 +1598,61 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
   - **§6.1.5**: Wrap-Up Procedure ✅
   - **§6.1.6**: Outputs - ValidationResult ✅
 
+### Documentation
+
+#### NIAP PP-CA v2.1 compliance (Phase 19)
+
+- **Updated Compliance Files**:
+  - `docs/compliance/NIAP_COMPLIANCE.md` - Comprehensive evidence for all 5 SFRs
+  - `docs/compliance/NIAP_GAP_ANALYSIS.md` - Target compliance ACHIEVED
+  - Code annotations with FCS_STG_EXT.1 references
+
+#### NIST SP 800-90A DRBG (Phase 15)
+
+- **Compliance Documentation**:
+  - Updated `docs/compliance/NIAP_GAP_ANALYSIS.md` v2.0 → v2.1
+  - FCS_RBG_EXT.1 section completely rewritten with implementation evidence
+  - Updated overall compliance: 70-75% → 75-80%
+  - Updated FCS (Cryptographic Support) family: 8/9 → 9/9 (100%)
+  - Removed FCS_RBG_EXT.1 from Priority 1 critical gaps
+
+- **Code Comments**:
+  - NIST SP 800-90A compliance annotations
+  - FIPS 140-3 health test references
+  - Security rationale for design decisions
+
+#### RFC 5280 §6 path validation (Phase 15)
+
+- **RFC Compliance** (`docs/compliance/RFC_COMPLIANCE.md`):
+  - Updated RFC 5280 §6 from "Missing" to "Implemented"
+  - Added comprehensive validation feature documentation
+  - Updated overall compliance: 72% → 85%
+  - Updated Core PKI (X.509) category: 90% → 100%
+  - Updated total compliance: 70% → 75%
+  - Removed RFC 5280 §6 from Priority 1 critical gaps
+  - Document version: 1.3 → 1.4
+  - OstrichPKI version: 0.14.0 → 0.15.0
+
 ### Notes
+
+#### NIAP PP-CA v2.1 compliance (Phase 19)
+
+- HSM enforcement is configurable via `require_hsm` flag (default: true)
+- Development/test environments can disable HSM requirement
+- Production deployments should always use HSM-backed CA keys
+- Clear error messages guide operators to NIAP compliance requirements
+- Ready for NIAP certification submission
+
+#### NIST SP 800-90A DRBG (Phase 15)
+
+- DRBG implementation ready for NIST CAVP testing
+- Entropy source uses OS-provided RNG (getrandom crate)
+- Health tests align with FIPS 140-3 Implementation Guidance
+- Thread-safe design supports concurrent operations
+- Automatic reseeding prevents state exhaustion
+- Integration with serial number generation pending (Phase 16)
+
+#### RFC 5280 §6 path validation (Phase 15)
 
 - Signature verification integration point ready for ostrich-crypto
 - Revocation checking integration point ready for ostrich-ocsp
@@ -2008,7 +2477,6 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
 - AU-10: Non-repudiation
 - SC-12: Cryptographic key establishment and management
 - SC-13: Cryptographic protection
-[0.7.0]: https://github.com/yourusername/ostrich-pki/compare/v0.6.0...v0.7.0
 - SC-28: Protection of information at rest
 - IA-2: Database authentication
 - IA-7: Cryptographic module authentication
@@ -2050,13 +2518,11 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
 - Project architecture documentation
 - Workspace structure with all crate stubs
 
-[Unreleased]: https://github.com/yourusername/ostrich-pki/compare/v0.9.0...HEAD
-[0.9.0]: https://github.com/yourusername/ostrich-pki/compare/v0.8.0...v0.9.0
-[0.8.0]: https://github.com/yourusername/ostrich-pki/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/yourusername/ostrich-pki/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/yourusername/ostrich-pki/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/yourusername/ostrich-pki/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/yourusername/ostrich-pki/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/yourusername/ostrich-pki/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/yourusername/ostrich-pki/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/yourusername/ostrich-pki/releases/tag/v0.1.0
+[Unreleased]: https://github.com/192d-Wing/OstrichPKI/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/192d-Wing/OstrichPKI/compare/v0.16.3...v0.17.0
+[0.16.3]: https://github.com/192d-Wing/OstrichPKI/compare/v0.16.2...v0.16.3
+[0.16.2]: https://github.com/192d-Wing/OstrichPKI/compare/v0.16.1...v0.16.2
+[0.16.1]: https://github.com/192d-Wing/OstrichPKI/compare/v0.16.0...v0.16.1
+[0.16.0]: https://github.com/192d-Wing/OstrichPKI/compare/v0.15.1...v0.16.0
+[0.15.1]: https://github.com/192d-Wing/OstrichPKI/compare/dcf3edb...v0.15.1
+[0.15.0]: https://github.com/192d-Wing/OstrichPKI/tree/dcf3edb
