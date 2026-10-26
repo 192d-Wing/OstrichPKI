@@ -1,6 +1,6 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.3
+**Document Version:** 2.4
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
 **Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 667 unit tests passed, 0 failed, 1 ignored, 2026-10-24 (§2.6)
@@ -638,6 +638,66 @@ either way, QA G-1); no fuzz or property test for the validator (QA G-4). The
 rejection event is a `tracing` log line, not an `ostrich-audit` record
 (POAM-2026-10-23-47).
 
+### 2.14 Test Run 2026-10-26 (Web UI legacy /next open redirect)
+
+**Scope:** branch `pr/blissful-chandrasekhar-6051b3`, uncommitted, based on
+`main` @ c9a159c (v0.17.0; includes PR #191) (run record
+`target/agent-workflow/20261026-113122-next-open-redirect/`). Changed file:
+`services/web-ui/src/server/router.rs` (`legacy_next_router`,
+`legacy_next_redirect`, `legacy_next_target` and tests). Closes
+POAM-2026-10-23-45 (CWE-601, SI-10) pending the first green CI run.
+**Sources:** `qa-report.md` (QA round on base 460f62c, before the rebase onto
+e56a09e: 37 / 0; PASS), `fixes-round-1.md` (61 / 0 after the fixes and the
+rebase). Rows marked "scribe" were re-run by the compliance scribe on the
+final working tree on 2026-10-26.
+
+| Gate | Command | Result | Counts / notes |
+|------|---------|--------|----------------|
+| Format | `cargo fmt -p ostrich-web-ui -- --check` | PASS | exit 0 (QA, coder, scribe) |
+| Lint | `cargo clippy -p ostrich-web-ui --all-targets -- -D warnings` | PASS | 0 warnings (QA, coder, scribe) |
+| Unit tests | `cargo test -p ostrich-web-ui` | PASS | **61 passed, 0 failed, 0 ignored** (coder after fix round 1; scribe). QA round before the fixes and the rebase: 37 / 0 |
+| Scoped run | `cargo test -p ostrich-web-ui legacy_next` | PASS | 20 passed, 0 failed (coder after fix round 1; scribe). QA round: 18 / 0 |
+| Doc tests | n/a | NOT RUN | binary-only crate |
+| Workspace | `cargo fmt --all --check` / `make clippy` / `make test-unit` | NOT RUN | scoped to one crate |
+| Supply chain | `make security` | NOT RUN | no `Cargo.toml` / `Cargo.lock` change |
+| Fuzz | n/a | NOT RUN | no new parser; the helper is covered by a table-driven corpus test |
+| CI | GitHub `CI` / `Build & test` (`cargo test --workspace --lib --bins --locked`) | **NOT RUN** | change not committed |
+
+**New tests (20, all `server::router::tests::test_legacy_next_*`):**
+
+- Coder (8): `test_legacy_next_encoded_slash_fails_secure` (`%2F`, `%2f`),
+  `test_legacy_next_double_slash_fails_secure`,
+  `test_legacy_next_encoded_backslash_upper_fails_secure`,
+  `test_legacy_next_encoded_backslash_lower_fails_secure` (all 308 `/`),
+  `test_legacy_next_preserves_deep_link` (`/next/certificates/abc` →
+  `/certificates/abc`), `test_legacy_next_drops_query`,
+  `test_legacy_next_root_redirects_to_root` (`/next` and `/next/` → `/`),
+  `test_legacy_next_target_helper` (unit)
+- QA (10, as revised in fix round 1):
+  `test_legacy_next_double_encoded_separators_stay_in_origin` (`%252F` stays
+  literal), `test_legacy_next_mixed_case_encoded_separators_anywhere_fail_secure`,
+  `test_legacy_next_literal_backslash_fails_secure`,
+  `test_legacy_next_dot_segments_fail_secure` (15 dot-segment variants → `/`;
+  `.well-known`, `a.b`, `...` preserved),
+  `test_legacy_next_prefix_must_be_exact_segment` (`/nextfoo`, `/Next` → 404,
+  no `Location`), `test_legacy_next_whitespace_variants`,
+  `test_legacy_next_query_and_fragment_do_not_influence_path`,
+  `test_legacy_next_methods` (HEAD 308 `/`, POST 405),
+  `test_legacy_next_non_visible_ascii_fails_secure` (DEL and raw UTF-8 → 308
+  `/`; replaced QA's `test_legacy_next_del_byte_fails_closed`, which recorded
+  a 500), `test_legacy_next_target_invariant_corpus` (18 inputs checked
+  against the same-origin `Location` invariant)
+- Fix round 1 (2): `test_legacy_next_inner_double_slash_fails_secure`,
+  `test_legacy_next_merged_router_fails_secure` (legacy router merged before
+  a fallback and wrapped in `audit_middleware`, as `create_router` does)
+
+**Not covered:** `create_router` itself (it needs a `WebUiConfig` and a static
+directory); wire-level request-target parsing through hyper / httparse (tests
+build requests with `http::Uri`); no test captures the
+`legacy_redirect_rejected` warn event (no tracing-capture dev-dependency; the
+Ok / Err split that drives it is tested at helper level). The event is a
+`tracing` log line, not an `ostrich-audit` record (POAM-2026-10-23-47).
+
 ---
 
 ## 3. Unit Test Results
@@ -1211,3 +1271,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 2.1 | 2026-10-26 | OstrichPKI Team | §5.2: recorded the Dependabot alert remediation result (`cargo audit` exit 0, 1378 advisories / 614 crates; full web-ui `pnpm audit` 28 → 2 moderate; `make test-unit` 782 / 0 / 1); "latest recorded" moved to it. No new tests. Local only |
 | 2.2 | 2026-10-26 | OstrichPKI Team | Added §2.11, the web-ui react-router v7 migration run: frozen install, typecheck, lint, build pass; full `pnpm audit` 0 and react-router 7.18.4 (re-run by the scribe); manual guard vectors `safe-path-check.mjs` 181 / 0 and `router-smoke.mjs` 5 / 0 (re-run by the scribe; run-record scripts, not committed); browser smoke against a mock BFF (OIDC and logout not covered); CI NOT RUN. §5.2: 2026-10-26 react-router result added and "latest recorded" moved to it. No automated test added (no web-ui test runner, POAM-2026-10-23-44) |
 | 2.3 | 2026-10-26 | OstrichPKI Team | Added §2.12, the web-ui BFF proxy raw-path run (closes POAM-2026-10-23-43 pending first green CI run): `cargo test -p ostrich-web-ui` 41 / 0 / 0 with 22 new tests (validator, router-level zero-backend-hit, AU-3 log capture, inbound header stripping, `SessionData` `Debug` redaction); fmt and clippy clean (re-run by the scribe); QA flake check 120 / 120; workspace, supply-chain, fuzz and CI NOT RUN. §2.11 "Not covered" cross-referenced to §2.12 |
+| 2.4 | 2026-10-26 | OstrichPKI Team | Added §2.14, the web-ui legacy `/next` open-redirect run (closes POAM-2026-10-23-45 pending first green CI run; SI-10, CWE-601): `cargo test -p ostrich-web-ui` 61 / 0 / 0 with 20 new `test_legacy_next_*` tests; `legacy_next` filter 20 / 0; fmt and clippy clean (re-run by the scribe); workspace, supply-chain, fuzz and CI NOT RUN |

@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 3.3
+**Document Version:** 3.4
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -2839,8 +2839,36 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
   through (they cannot form a delimiter); a trailing slash is now 400;
   `..;` segments are passed through (axum backends do not strip path
   parameters). Not yet fixed: the same defect in the npe-portal proxy
-  (POAM-2026-10-23-46) and the web-ui `/next/{*rest}` open redirect
-  (POAM-2026-10-23-45)
+  (POAM-2026-10-23-46). The web-ui `/next/{*rest}` open redirect
+  (POAM-2026-10-23-45) is fixed by the next item
+- ✅ Web UI legacy `/next` redirect target validation (2026-10-26, branch
+  `pr/blissful-chandrasekhar-6051b3`, uncommitted; CWE-601; closes
+  POAM-2026-10-23-45 pending first green CI run). In
+  [router.rs](../../services/web-ui/src/server/router.rs),
+  `legacy_next_router` sends `/next`, `/next/` and `/next/{*rest}` to
+  `legacy_next_redirect`, which takes the raw, still percent-encoded path from
+  `OriginalUri` instead of axum's percent-decoded `Path` capture.
+  `legacy_next_target` maps `/next` and `/next/` to `/` and otherwise keeps
+  the remainder after `/next/` only if it is visible ASCII (0x21-0x7E) and has
+  no empty segment (leading `/` or `//`), no `\`, no `%2F` / `%5C` (any
+  case) and no `.` / `..` segment (raw or `%2e`-encoded). Anything else fails
+  secure to `308 Location: /`, so the `Location` is always `/` or `/`
+  followed by a character that is neither `/` nor `\`. The query string is
+  dropped. Each fallback emits a `tracing::warn!` with
+  `security_event="legacy_redirect_rejected"`, `request_id`, `client_ip`,
+  `method`, Debug-escaped `path`, `reason`, `detail` and
+  `outcome="redirected_to_root"` (a log line, not an `ostrich-audit` record:
+  POAM-2026-10-23-47). No NIAP PP-CA SFR covers HTTP redirect targets.
+  Tests: 20 `server::router::tests::test_legacy_next_*` tests (encoded,
+  doubled, backslash and mixed-case separators, dot segments, DEL and
+  non-ASCII bytes, `%252F` kept literal, deep link preserved, query and
+  fragment ignored, `/nextfoo` not matched, HEAD and POST, an invariant
+  corpus, and a router merged before a fallback and wrapped in
+  `audit_middleware`). Results: `cargo test -p ostrich-web-ui` 61 / 0, fmt
+  and clippy clean, local only, re-run by the compliance scribe
+  ([TEST_EVIDENCE.md §2.14](TEST_EVIDENCE.md#214-test-run-2026-10-26-web-ui-legacy-next-open-redirect)).
+  Not tested: `create_router` itself and wire-level parsing through hyper;
+  the warn event is not captured by a test
 - 🟡 Related SI-11 (error handling), 2026-10-26: gRPC errors that are not
   client-correctable return `INTERNAL` "<op> failed: internal error" with the
   detail logged (`grpc_status`, test `grpc_status_hides_internal_errors`);
@@ -2850,9 +2878,10 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
 
 **Gaps:**
 
-- ⚠️ Web UI `/next/{*rest}` legacy redirect builds `Location` from a decoded
-  path: open redirect, CWE-601 (POAM-2026-10-23-45); the npe-portal proxy
-  forwards a percent-decoded path (POAM-2026-10-23-46)
+- ⚠️ The npe-portal proxy forwards a percent-decoded path
+  (POAM-2026-10-23-46). The web-ui `/next/{*rest}` open redirect
+  (POAM-2026-10-23-45) is fixed in the working tree and closed pending the
+  first green CI run (see Evidence)
 - ⚠️ No comprehensive malformed CSR rejection testing
 - ⚠️ Need dedicated unit tests for CSR signature verification with test vectors
 
@@ -3287,6 +3316,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 3.1 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation (branch `claude/dependabot-remediation`, uncommitted; run record `target/agent-workflow/20261026-dependabot-remediation/`). RA-5: "fails on any new advisory" qualified as RustSec-only (GitHub-only advisories reach us only through Dependabot); npm gate described with its limits (`--prod --audit-level=high`); Dependabot ecosystems listed (npe-portal not covered); 2026-10-26 evidence (21 open alerts; full `pnpm audit` 28 → 2 moderate); new gaps for GHSA-only coverage, npm dev/medium not gated, npe-portal unscanned and untriaged alerts (POAM-39, -40, -42). SI-2: `pnpm audit` named in Implementation; new 2026-10-26 evidence table (19 GHSAs, scope, first-patched version, days open against proposed windows); residual react-router → POAM-39; timeliness gap. Local gates only. **No control status or percentage changed** (RA-5 and SI-2 stay 🟡 Partial; summary table not recalculated) |
 | 3.2 | 2026-10-26 | OstrichPKI Team | react-router v7 migration in web-ui (branch `claude/react-router-v7`, uncommitted; run record `target/agent-workflow/20261026-091035-react-router-v7/`). SI-2: GHSA-wrjc-x8rr-h8h6 and GHSA-337j-9hxr-rhxg marked remediated (react-router 7.18.4), overdue; residual line closed; new 2026-10-26 evidence record; both stay in the SI-2(c) missed count. RA-5: 2026-10-26 full `pnpm audit` = 0 recorded; POAM-39 migration marked done; triage gap reworded. SI-10: web-ui same-origin navigation guard and encoded path segments added as client-side defence in depth, with the standing rule; BFF proxy decode gap → POAM-43, no web-ui test runner → POAM-44. CA-5: POAM-39 closure recorded in NIAP_GAP_ANALYSIS.md §11 (no CA-5 section exists here; none added). Local evidence only. **No control status or percentage changed** (SI-2 and RA-5 stay 🟡 Partial; SI-10 stays 🟢 Good (85%); summary table not recalculated) |
 | 3.3 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path (branch `claude/web-ui-proxy-raw-path`, uncommitted, based on `main` @ 82cdcd4 (PR #188 merged); run record `target/agent-workflow/20261026-093447-proxy-raw-path/`). SI-10: new evidence item for `validate_backend_path` / `proxy_to_service` (raw path, strict decoder, fail-closed 400; residuals listed); the POAM-43 reference in the client-side guard item now says closed pending first green CI run; gaps POAM-45 (`/next` open redirect) and POAM-46 (npe-portal proxy) added. AC-3: web-ui session gate bullet rewritten with code references (`require_session` validates against `SessionManager`); the stale gap claiming the proxy checked only cookie presence removed (verified against `middleware/session.rs`, lines 36, 62, 70); new BFF proxy target / credential bullet (inbound `Authorization`, `Cookie`, `X-Npe-*` stripped); gaps POAM-46 and POAM-48 (cross-site GET); FDP_ACF.1 listed as supporting only. AU-2 / AU-3: `proxy_path_rejected` event and its fields, including `client_ip`, recorded as 🟡 (log line only). AU-12: web-ui `ostrich-audit` gap added (POAM-47). Local evidence only (`cargo test -p ostrich-web-ui` 41 / 0, re-run by the scribe). **No control status or percentage changed** (AC-3 stays 🟢 Implemented, SI-10 🟢 Good (85%), AU-2 / AU-12 🟢 Compliant, AU-3 ✅; summary table not recalculated) |
+| 3.4 | 2026-10-26 | OstrichPKI Team | web-ui legacy `/next` open redirect, CWE-601 (branch `pr/blissful-chandrasekhar-6051b3`, uncommitted, based on `main` @ c9a159c (v0.17.0; includes PR #191); run record `target/agent-workflow/20261026-113122-next-open-redirect/`). SI-10: new evidence item for `legacy_next_target` / `legacy_next_redirect` / `legacy_next_router` (raw `OriginalUri` path; fail secure to `/` for empty, `//`, `\`, `%2F` / `%5C`, dot and non-visible-ASCII remainders; query dropped; `legacy_redirect_rejected` warn event); the proxy item's "not yet fixed" sentence and the SI-10 gap no longer describe POAM-2026-10-23-45 as open (closed pending first green CI run). No NIAP SFR mapped (none covers HTTP redirect targets); cross-reference table unchanged. Local evidence only (`cargo test -p ostrich-web-ui` 61 / 0, re-run by the scribe). **No control status or percentage changed** (SI-10 stays 🟢 Good (85%); summary table not recalculated) |
 
 ---
 

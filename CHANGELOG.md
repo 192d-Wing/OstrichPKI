@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+#### web-ui legacy `/next` redirect stays same-origin (open redirect, CWE-601)
+
+> **Behaviour change.** Legacy `/next/...` deep links that contain an encoded `/` or `\`
+> (`%2F`, `%5C`), a `.` or `..` segment (literal or `%2E`-encoded), an empty segment (`//`), or
+> any byte outside visible ASCII (raw UTF-8, space, control characters) now redirect to `/`
+> instead of the matching console page. The query string of a `/next/...` link is dropped.
+> Ordinary links such as `/next/certificates/abc` still redirect to `/certificates/abc`.
+
+Closes POAM-2026-10-23-45.
+
+##### ostrich-web-ui
+
+- Before this fix, the unauthenticated `/next/{*rest}` route built `Location` from axum's
+  percent-decoded `Path` capture. `GET /next/%2Fevil.com` and `GET /next//evil.com` returned
+  `308 Location: //evil.com`, and `GET /next/%5Cevil.com` returned `Location: /\evil.com`, which
+  browsers follow as `//evil.com`. Any link on the console's origin could send a user to another
+  site.
+- The target is now taken from the raw (still percent-encoded) request path. The remainder after
+  `/next/` is copied into `Location` only if it is visible ASCII and has no empty segment, no
+  raw or encoded `/` or `\` inside a segment, and no `.`/`..` segment. Anything else redirects to
+  `/`. `Location` is therefore always `/` or `/` followed by a character other than `/` or `\`.
+- `/next` and `/next/` (now an explicit route) redirect to `/`. `/nextfoo/...` is not a legacy
+  link and falls through to the SPA as before.
+- Each unsafe target logs a `legacy_redirect_rejected` security event (`tracing` warn) with
+  `request_id`, `client_ip` (logged only if it parses as an IP address, otherwise `-`), `method`,
+  the escaped path, `reason`, `detail` and `outcome=redirected_to_root`, matching the
+  `proxy_path_rejected` event.
+- 20 `legacy_next` tests in `server::router`, through the real router and the merged
+  router with the audit middleware. They cover the reported payloads, upper- and lower-case
+  escapes, dot-segment and whitespace variants, non-ASCII input, and a same-origin invariant over
+  a hostile corpus.
+- **NIST 800-53**: SI-10, AU-2, AU-3. **NIAP PP-CA**: none (no SFR covers HTTP redirect targets).
+  **RFC** 3986 §3.3, §4.2; RFC 9110 §10.2.2.
+
+##### Known limitations (POA&M)
+
+- The `legacy_redirect_rejected` event goes to `tracing` only, not to `ostrich-audit`, like the
+  other web-ui security events (POAM-2026-10-23-47).
+
 ## [0.17.0] - 2026-10-26
 
 **Release summary.** This release has breaking changes. The CA gRPC issuance API is now
