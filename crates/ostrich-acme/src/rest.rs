@@ -88,6 +88,10 @@ pub struct AcmeState {
     /// Permit private-IP/localhost identifiers (disables the SI-10 SSRF
     /// guard). Dev/E2E ONLY.
     pub allow_private_ip_domains: bool,
+    /// Upstream recursive resolvers for dns-01 validation (RFC 8555 §8.4).
+    /// Empty = system resolver configuration.
+    /// NIST 800-53: CM-6 - operator-controlled, validated at configuration load.
+    pub dns01_resolvers: Vec<std::net::IpAddr>,
 }
 
 impl AcmeState {
@@ -107,6 +111,7 @@ impl AcmeState {
             ca_client,
             http01_port: 80,
             allow_private_ip_domains: false,
+            dns01_resolvers: Vec::new(),
         }
     }
 
@@ -121,6 +126,17 @@ impl AcmeState {
     ) -> Self {
         self.http01_port = http01_port;
         self.allow_private_ip_domains = allow_private_ip_domains;
+        self
+    }
+
+    /// Use these upstream recursive resolvers for dns-01 validation instead of
+    /// the system resolver configuration. Callers should validate the list with
+    /// [`crate::validation::validate_dns01_resolver_ips`] at configuration load;
+    /// the validator re-checks it and fails closed.
+    ///
+    /// NIST 800-53: CM-6 (Configuration Settings). NIAP PP-CA: FMT_SMF.1.
+    pub fn with_dns01_resolvers(mut self, ips: Vec<std::net::IpAddr>) -> Self {
+        self.dns01_resolvers = ips;
         self
     }
 }
@@ -659,6 +675,7 @@ async fn new_account(State(state): State<AcmeState>, body: Bytes) -> Result<Resp
 ///
 /// - **SI-10**: Input validation on domain identifiers.
 /// - **AU-2/AU-3**: Order lifecycle events logged.
+// POAM: POAM-2026-10-23-45 - identifiers are not validated here (SI-10 claim above is not yet met), `*.` wildcards are stored with wildcard=false, and dns-01 is offered for IP identifiers (RFC 8555 §7.1.4, RFC 8738 §7).
 async fn new_order(State(state): State<AcmeState>, body: Bytes) -> Result<Response> {
     // Validate JWS and extract payload
     let url = format!("{}/acme/new-order", state.base_url);
@@ -866,7 +883,8 @@ async fn get_authorization(
 ///
 /// # NIST 800-53 Controls
 ///
-/// - **IA-5(1)**: Challenge-response authentication mechanism.
+/// - **SC-17**: Identifier control verified before certificate issuance.
+// POAM: POAM-2026-10-23-46 - no ownership/state check on the challenge POST and validation tasks are spawned without a concurrency bound (AC-3, SC-5; RFC 8555 §7.5.1).
 async fn respond_to_challenge(
     State(state): State<AcmeState>,
     Path(id): Path<String>,
@@ -911,7 +929,7 @@ async fn respond_to_challenge(
         });
 
     // RFC 8555 §8.3/§8.4 - perform the actual domain-control validation.
-    // NIAP PP-CA: FIA_UAU.1 - proof of identifier control before issuance.
+    // NIAP PP-CA: FDP_CER_EXT.1 - proof of identifier control before issuance.
     tokio::spawn(run_challenge_validation(state.clone(), db_challenge));
 
     let challenge = map_db_challenge_to_service(updated_challenge, &state.base_url);
@@ -937,9 +955,12 @@ async fn respond_to_challenge(
 /// and order -> ready once every authorization is valid (§7.1.6).
 ///
 /// COMPLIANCE MAPPING:
-/// - NIAP PP-CA: FIA_UAU.1 - identifier control proven before issuance
-/// - NIST 800-53: IA-5(1) - challenge-response authentication
+/// - NIAP PP-CA: FDP_CER_EXT.1 - identifier control proven before issuance
+/// - NIST 800-53: SC-17 - identifier control verified before certificate issuance
 /// - NIST 800-53: AU-2 - validation outcome audited
+/// - NIST 800-53: SI-11 - challenge `error` built from the client-safe detail
+/// - RFC 8555 §6.7 / §7.1.5 - challenge `error` is a problem document whose
+///   type matches the failure (e.g. `dns`, `incorrectResponse`, `serverInternal`)
 async fn run_challenge_validation(state: AcmeState, challenge: ostrich_db::models::AcmeChallenge) {
     let repo = ostrich_db::repository::AcmeRepository::new(state.db_pool.clone());
     let challenge_id = challenge.challenge_id.clone();
@@ -952,10 +973,7 @@ async fn run_challenge_validation(state: AcmeState, challenge: ostrich_db::model
         }
         Err(e) => {
             tracing::warn!(challenge_id = %challenge_id, error = %e, "Challenge validation failed");
-            let detail = serde_json::json!({
-                "type": "urn:ietf:params:acme:error:unauthorized",
-                "detail": e.to_string(),
-            });
+            let detail = challenge_error_document(&e);
             let _ = repo
                 .update_challenge_status(&challenge_id, "invalid", None, Some(detail))
                 .await;
@@ -972,6 +990,7 @@ async fn run_challenge_validation(state: AcmeState, challenge: ostrich_db::model
     }
 
     // AU-2: audit the validation outcome
+    // POAM: POAM-2026-10-23-47 - this record lacks challenge type, identifier, account and failure category, so a CA misconfiguration is indistinguishable from a subscriber failure (AU-3).
     let mut event = ostrich_audit::AuditEventBuilder::new(
         ostrich_audit::EventType::Authentication,
         "acme-validator",
@@ -985,6 +1004,21 @@ async fn run_challenge_validation(state: AcmeState, challenge: ostrich_db::model
     )
     .build();
     let _ = state.audit_sink.record(&mut event).await;
+}
+
+/// The RFC 8555 §6.7 problem document stored as a failed challenge's `error`.
+///
+/// The type comes from the error variant and the detail from
+/// [`Error::client_detail`], so internal-class errors (configuration, database)
+/// reach the subscriber only as a generic message.
+// COMPLIANCE MAPPING:
+// - NIST 800-53: SI-11 (Error Handling) - no internal detail in client errors
+// - RFC 8555 §6.7 - problem document type/detail
+fn challenge_error_document(e: &Error) -> serde_json::Value {
+    serde_json::json!({
+        "type": e.error_type(),
+        "detail": e.client_detail(),
+    })
 }
 
 /// Whether the challenge ended up valid (for the audit record).
@@ -1035,6 +1069,7 @@ async fn validate_challenge_inner(
         }
         "dns-01" => {
             crate::validation::Dns01Validator::new()
+                .with_resolvers(state.dns01_resolvers.clone())
                 .validate(domain, token, thumbprint)
                 .await?
         }
@@ -1053,8 +1088,10 @@ async fn validate_challenge_inner(
         }
     };
 
+    // RFC 8555 §6.7: a response that was retrieved but did not match is
+    // `incorrectResponse`.
     if !valid {
-        return Err(Error::ChallengeValidation(
+        return Err(Error::IncorrectResponse(
             "Challenge response did not match key authorization".to_string(),
         ));
     }
@@ -1477,6 +1514,64 @@ fn map_db_challenge_to_service(db: ostrich_db::models::AcmeChallenge, base_url: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RFC-010 / SEC-003 / NIST-008: a failed challenge's `error` carries the
+    /// problem type of the actual failure and only the client-safe detail.
+    #[test]
+    fn challenge_error_document_uses_type_and_client_detail() {
+        // Exhausted DNS lookups -> `dns`, detail names only the query name.
+        let doc = challenge_error_document(&Error::Dns(
+            "DNS lookup failed for _acme-challenge.example.com.".to_string(),
+        ));
+        assert_eq!(doc["type"], "urn:ietf:params:acme:error:dns");
+        assert_eq!(
+            doc["detail"],
+            "DNS error: DNS lookup failed for _acme-challenge.example.com."
+        );
+
+        // Retrieved but non-matching response -> `incorrectResponse`.
+        let doc = challenge_error_document(&Error::IncorrectResponse(
+            "Challenge response did not match key authorization".to_string(),
+        ));
+        assert_eq!(doc["type"], "urn:ietf:params:acme:error:incorrectResponse");
+
+        // Malformed identifier -> `malformed` with its descriptive detail.
+        let doc = challenge_error_document(&Error::Malformed(
+            "dns-01 identifier is not a valid DNS name".to_string(),
+        ));
+        assert_eq!(doc["type"], "urn:ietf:params:acme:error:malformed");
+
+        // CA-side resolver misconfiguration never reaches the subscriber.
+        let doc = challenge_error_document(&Error::ServerInternal(
+            "dns-01 resolver has no name servers configured".to_string(),
+        ));
+        assert_eq!(doc["type"], "urn:ietf:params:acme:error:serverInternal");
+        assert_eq!(doc["detail"], "Internal server error");
+        let rendered = doc.to_string();
+        assert!(!rendered.contains("name servers"), "{rendered}");
+        assert!(!rendered.contains("resolver"), "{rendered}");
+        // The old hardcoded type is gone.
+        assert!(!rendered.contains("unauthorized"), "{rendered}");
+    }
+
+    /// RFC-013: whatever a validator returns, the stored challenge `error` is a
+    /// problem type registered in RFC 8555 §6.7, and the http-01 / tls-alpn-01
+    /// failure details carry no raw transport, TLS, or resolver text.
+    #[test]
+    fn challenge_error_document_only_emits_registered_types() {
+        use crate::error::tests::{RFC8555_REGISTERED_TYPES, one_of_every_variant};
+
+        for e in one_of_every_variant() {
+            let doc = challenge_error_document(&e);
+            let t = doc["type"].as_str().unwrap_or_default();
+            let name = t.strip_prefix("urn:ietf:params:acme:error:").unwrap_or(t);
+            assert!(
+                RFC8555_REGISTERED_TYPES.contains(&name),
+                "{e:?} produced unregistered challenge error type {t}"
+            );
+            assert_ne!(name, "challengeFailed");
+        }
+    }
 
     /// RFC 8555 §7.4 - the finalize CSR identifiers must exactly match the
     /// order's authorized identifiers (the authorization-bypass guard).

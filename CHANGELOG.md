@@ -555,9 +555,97 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
 - The npe-portal SPA has no committed lockfile. Its image build runs `npm install` from
   `package.json`, and Dependabot and the CI audit gate do not cover it (POAM-2026-10-23-40).
 - The ACME dns-01 resolver is configured with no name servers. This predates the change and fails
-  closed (POAM-2026-10-23-41).
+  closed (POAM-2026-10-23-41). Fixed in this release (see Fixed: "ACME dns-01 validation never
+  succeeded"). POAM-2026-10-23-41 stays open, narrowed to CAA and DNSSEC.
 - Scan coverage has gaps. The cargo gate is RustSec-only, so GitHub-only advisories do not fail CI,
   and npm dev and moderate advisories are not gated (POAM-2026-10-23-42).
+
+#### ACME challenge validation hardening (dns-01, http-01, tls-alpn-01)
+
+##### ostrich-acme
+
+- A TXT record counts only if its owner is `_acme-challenge.<domain>.` or a name reached from it
+  through CNAME records in the same answer. The match is case-insensitive, chains are capped at 8
+  hops, and loops are refused. A matching record placed at an unrelated owner name no longer
+  validates the challenge (RFC 8555 §8.4).
+- The digest comparison is byte-exact on the concatenated character-strings. Lossy UTF-8 decoding
+  is no longer on the trust path.
+- `dns01_query_name` validates the identifier before any DNS traffic. It rejects IP literals
+  (RFC 8738 §7), trailing dots, over-long names, any label that is not LDH (including `*`, empty
+  labels and control characters) and an all-numeric last label (RFC 3696 §2). The query name is a fully qualified name, so search domains and `ndots` cannot
+  rewrite it.
+- Every failure path fails closed. The only success is a byte-exact digest match. A DNS error,
+  a missing or invalid resolver configuration, or a failure to build the resolver never permits
+  issuance.
+- Challenge `error.detail` no longer carries internal text. Internal failures return the generic
+  "Internal server error". Resolver addresses and "no name servers" messages are logged
+  server-side only (SI-11, CWE-209).
+- `read_system_conf` now runs on the blocking pool (`spawn_blocking`) instead of the async
+  runtime. A join failure fails closed.
+- New fuzz target `fuzz_dns01_query_name`: 136,323 runs in 46 s with no crash or invariant failure.
+- tls-alpn-01 no longer panics on a malformed `acmeIdentifier` extension. The old parser sliced
+  32 bytes after checking only the total length, so a challenge server could present an
+  extension value of `04 20` followed by 30 or 31 bytes and panic the validation task. The value
+  is now parsed with bounds-checked slice patterns. The accepted forms are unchanged (a DER
+  `04 20 || 32 bytes` value or a bare 32-byte value), and any other length fails with
+  `incorrectResponse` (SI-10). Test: `acme_identifier_digest_is_bounds_checked`.
+- http-01 and tls-alpn-01 `error.detail` no longer carries internal text: no raw reqwest, I/O,
+  rustls or x509-parser errors, no peer ALPN bytes and no socket addresses. A detail names only
+  the identifier or host and, for an HTTP status failure, the numeric status. The raw cause is
+  logged server-side (SI-11, CWE-209).
+- SSRF guard: if an http-01 or tls-alpn-01 challenge host resolves to a non-public address, the
+  challenge now fails with `rejectedIdentifier` and a generic detail ("does not resolve to a
+  publicly routable address"). It used to fail with `malformed` and put the resolved IP in the
+  client-visible detail, which turned the challenge into an oracle for internal DNS. The host and
+  IP are logged server-side only. Test: `resolve_pinned_enforces_ssrf_guard_unless_allowed`.
+- **NIST 800-53**: SC-17, SI-10, SI-11, SC-5, CM-6. **NIAP PP-CA**: FDP_CER_EXT.1, FPT_FLS.1
+
+##### workspace (deploy)
+
+- Helm NetworkPolicy hardening (defence in depth behind the validator's SSRF guard):
+  - acme: the TCP 80/443 challenge egress rule to `0.0.0.0/0` now also excepts `0.0.0.0/8`,
+    `100.64.0.0/10`, `127.0.0.0/8`, `169.254.0.0/16` (including cloud metadata
+    `169.254.169.254`), `192.0.0.0/24`, `198.18.0.0/15`, `224.0.0.0/4` and `240.0.0.0/4`.
+    RFC 1918 was already excluded. There is still no IPv6 peer, so IPv6-only challenge targets
+    fail closed, as before.
+  - ca, acme, ocsp: new opt-in value `networkPolicy.dnsNamespace` (default `""`). The default
+    keeps the existing behaviour, where the cluster DNS egress peer (`k8s-app: kube-dns`) matches
+    pods in any namespace, so upgrades need no action. We recommend setting it to `kube-system`
+    (or the namespace that runs cluster DNS) as SC-7 hardening. A pod labelled `k8s-app: kube-dns`
+    in any other namespace then cannot receive the services' DNS queries. The value is matched on
+    the `kubernetes.io/metadata.name` label (Kubernetes 1.22 and later).
+  - `acme.dns01Resolvers` is validated at render time, by both the acme Deployment and the
+    NetworkPolicy, so the check also applies with `networkPolicy.enabled: false`. Rendering
+    fails if the value is not a list, has more than 8 entries, repeats an entry, contains an
+    entry that is not a plain IPv4 dotted-quad or hex IPv6 literal (no `/`, port, zone or
+    whitespace), or contains an IPv4-mapped IPv6 address. Mapped forms such as
+    `::ffff:10.0.0.53` must be listed as the plain IPv4 literal. The rendered `ipBlock.cidr` is
+    quoted. An entry can therefore no longer widen the egress rule or inject YAML.
+- **NIST 800-53**: SC-7, AC-4, CM-6, SI-10
+
+##### Known limitations (POA&M)
+
+- POAM-2026-10-23-41 is narrowed, not closed. Still open:
+  - no CAA checking (RFC 8659);
+  - no in-process DNSSEC validation (RFC 8555 §11.2). SC-21 is inherited from the operator's
+    validating resolver, which is an environment assumption;
+  - the CA-to-resolver channel is unauthenticated (no TSIG or DoT, and the AD bit is not checked);
+  - no multi-perspective validation and no 0x20 case randomisation;
+  - no live dns-01 end-to-end test.
+- POAM-2026-10-23-45: `new_order` does not validate identifiers. `*.` wildcards are stored with
+  `wildcard: false`, and dns-01 is offered for IP identifiers (RFC 8555 §7.1.3, RFC 8738 §7).
+  Until this is fixed, the dns-01 validator rejects wildcard identifiers, so wildcard
+  certificates cannot be issued.
+- POAM-2026-10-23-46: `respond_to_challenge` has no ownership or state check, and validation
+  tasks are spawned with no concurrency bound (AC-3, SC-5; RFC 8555 §7.5.1). A dns-01 validation
+  is bounded at about 83 s nominal.
+- POAM-2026-10-23-47: the challenge-validation audit record has no challenge type, identifier,
+  account or failure category. A CA misconfiguration looks the same as a subscriber failure
+  (AU-3).
+- POAM-2026-10-23-48: tls-alpn-01 does not check that the `acmeIdentifier` extension is marked
+  critical or that the certificate has exactly one dNSName SAN. It also accepts a bare 32-byte
+  extension value as well as the DER OCTET STRING (RFC 8737 §3; SI-10). The digest itself is
+  still compared.
 
 ### Added
 
@@ -620,7 +708,80 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
   endpoint is now `https://localhost:50051`.
 - New fuzz target `fuzz_grpc_peer_subject`.
 
+#### Configurable dns-01 upstream resolvers
+
+##### ostrich-acme-server
+
+- New option `--dns01-resolvers` / `ACME_DNS01_RESOLVERS`. It takes a comma-separated list of
+  IPv4/IPv6 literals with no spaces, at most 8. Each resolver is queried on port 53 over UDP, with
+  TCP fallback.
+- Default: unset, or exactly `""`, uses the host's system resolver configuration
+  (`/etc/resolv.conf`). No public third-party resolver is ever used implicitly.
+- These values refuse startup: unspecified, multicast or broadcast addresses (IPv4-mapped IPv6
+  is canonicalised first), duplicates, and malformed list syntax (`" "`, `","`, `", "`, spaces
+  around items).
+- If the variable is unset and the system configuration has no name servers, the server starts
+  and logs a warning. dns-01 then fails closed while http-01 and tls-alpn-01 keep working.
+- The resolver source and count are logged at startup.
+- Production: point the option at the enclave's DNSSEC-validating recursive resolvers on a
+  trusted network segment, and cap their negative-cache TTL (RFC 2308, for example unbound
+  `cache-max-negative-ttl: 5`).
+- **NIST 800-53**: CM-6, SI-10. **NIAP PP-CA**: FMT_SMF.1
+
+##### ostrich-acme
+
+- New public items in `validation`: `dns01_query_name`, `validate_dns01_resolver_ips`,
+  `system_resolver_config`, `dns01_resolver_config`, `MAX_DNS01_RESOLVERS` and `DNS01_TIMEOUT`.
+  Also `Dns01Validator::with_resolvers` and `AcmeState::with_dns01_resolvers`.
+
+##### workspace (deploy)
+
+- Helm: new `acme.dns01Resolvers` (default `[]`). A non-empty list is rendered as
+  `ACME_DNS01_RESOLVERS` (comma-joined). When `networkPolicy.enabled`, the acme NetworkPolicy also
+  allows UDP and TCP 53 egress to exactly those addresses (/32 or /128). The kube-dns egress rule
+  now allows TCP 53 as well, for TCP fallback on truncated TXT answers.
+- `deploy/kubernetes/acme-deployment.yaml`: a header comment documents the setting. It stays
+  unset there, so the pod uses cluster DNS.
+- `.env.example` has a commented `ACME_DNS01_RESOLVERS` example. `docker-compose.yml` passes it
+  through, and it defaults to empty, which means system resolvers.
+- **NIST 800-53**: CM-2, CM-6, SC-7
+
 ### Changed
+
+#### ACME challenge validation behaviour
+
+##### ostrich-acme
+
+- The challenge `error.type` is now a specific problem type from the RFC 8555 §6.7 registry, for
+  every challenge type. It was always `unauthorized`. The values are:
+  - `dns`: dns-01 lookups exhausted, or the http-01 / tls-alpn-01 host does not resolve;
+  - `connection`: http-01 or tls-alpn-01 connect, timeout, send or body-read failure;
+  - `tls`: tls-alpn-01 handshake failure, `acme-tls/1` not negotiated, or a missing or
+    unparsable peer certificate;
+  - `incorrectResponse`: dns-01 records found with no match; http-01 wrong body, non-2xx final
+    status, or a bad redirect (missing or invalid `Location`, disallowed scheme, too many hops);
+    tls-alpn-01 `acmeIdentifier` missing, malformed or not matching;
+  - `rejectedIdentifier`: the challenge host resolves to a non-public address (SSRF guard);
+  - `malformed`: the identifier cannot form a valid query name, URL or TLS server name;
+  - `serverInternal`: a local fault (resolver, HTTP client or TLS configuration), with the
+    generic detail "Internal server error".
+
+  Clients that matched on `unauthorized` need updating. Any 2xx http-01 response is still
+  accepted. The unit tests `every_error_type_is_registered` and
+  `challenge_error_document_only_emits_registered_types` fail if any `Error` variant maps to a
+  type outside the registry.
+- A dns-01 identifier with a trailing dot (`example.com.`) now fails with `malformed` and sends
+  no DNS query.
+- TXT records whose owner is not the challenge name or its CNAME chain are ignored. A record's
+  character-strings are concatenated before comparison.
+- A missing or non-matching TXT record is retried within the existing 5-round budget, with a 2 s
+  delay between rounds, about 8 s in total. The challenge becomes `invalid` only after the last
+  round, so a record that propagates late can still validate.
+- Every attempt builds a fresh resolver with caching off, so the CA itself never replays a
+  negative answer.
+- The dns-01 per-request timeout drops from 30 s to 5 s. Worst case per validation is about
+  83 s nominal (5 rounds x 3 sends x 5 s, plus 4 x 2 s).
+- **NIST 800-53**: SI-11, SC-17, SC-5. RFC 8555 §6.7, §8.3, §8.4; RFC 8737 §3
 
 #### Process-level FIPS gate in every service
 
@@ -728,6 +889,21 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
 
 ### Removed
 
+#### `ostrich_acme::Error::ChallengeValidation` and `ChallengeFailed`
+
+> **BREAKING (Rust API).** `ostrich_acme::Error` is public and not `#[non_exhaustive]`. Code
+> outside the workspace that constructs or exhaustively matches these variants no longer
+> compiles. No crate in the workspace used them.
+
+##### ostrich-acme
+
+- Removed `Error::ChallengeValidation(String)` and `Error::ChallengeFailed(String)`. Both mapped
+  to `urn:ietf:params:acme:error:challengeFailed`, which is not in the RFC 8555 §6.7 registry.
+  http-01 and tls-alpn-01 failures now use the registered variants (`Connection`, `Tls`, `Dns`,
+  `IncorrectResponse`, `RejectedIdentifier`, `Malformed`, `ServerInternal`). See Changed: "ACME
+  challenge validation behaviour".
+- **NIST 800-53**: SI-11. RFC 8555 §6.7
+
 #### Unused and test-only dependencies (28 crates leave the lockfile)
 
 ##### ostrich-web-ui
@@ -755,6 +931,42 @@ POAM-2026-10-23-26 (one allowlist covered every RPC).
 - **NIST 800-53**: CM-7 (Least Functionality), SR-3, CM-3 (baseline change)
 
 ### Fixed
+
+#### ACME dns-01 validation never succeeded (resolver had no name servers)
+
+##### ostrich-acme
+
+- `Dns01Validator` built its resolver from `ResolverConfig::default()`. In hickory-resolver 0.26,
+  that configuration has an empty `name_servers` list. Every TXT lookup therefore failed with
+  `NoConnections`, so dns-01 could never succeed. This regression came from the hickory 0.26
+  migration (f1d0e0b). It failed closed: nothing was issued wrongly. dns-01 was still advertised
+  by default.
+- The resolver now uses the system configuration (`read_system_conf`) or the operator's list
+  (`ACME_DNS01_RESOLVERS`, see Added). It refuses to build from a configuration with zero name
+  servers.
+- The challenge name is queried as a fully qualified name (`_acme-challenge.<domain>.`). Caching
+  is off, and a fresh resolver is built per attempt, so the retry loop never reuses a cached
+  negative answer.
+- Closes the functional part of POAM-2026-10-23-41. The POA&M stays open for CAA, DNSSEC and
+  wildcards (see Security: "ACME challenge validation hardening").
+- Tests:
+  - `dns01_config_rejects_empty_name_servers`
+  - `dns01_validate_fails_closed_without_name_servers`
+  - `dns01_query_name_is_fqdn`
+  - `dns01_opts_disable_caching`
+  - `dns01_mock_*`: on-the-wire tests against a mock DNS server, covering valid, split-string,
+    CNAME-delegated, foreign-owner, mismatch-then-match and persistent-NXDOMAIN cases
+  - `txt_match_*`
+  - `challenge_error_document_uses_type_and_client_detail`
+  - in acme-server: `dns01_resolvers_arg_parses`, `dns01_resolvers_invalid_refuses_startup` and
+    `dns01_resolvers_empty_value_means_system_resolvers`. `make test-unit` (`--lib`) does not run
+    these; run `cargo test -p ostrich-acme-server`.
+- **NIST 800-53**: SC-17, CM-6, SI-10. **NIAP PP-CA**: FDP_CER_EXT.1, FPT_FLS.1. RFC 8555 §8.4
+
+##### ostrich-fuzz
+
+- `fuzz/Cargo.toml` gains an `ostrich-acme` path dependency and the `fuzz_dns01_query_name` bin.
+  `fuzz/Cargo.lock` pins hickory 0.26.2, in step with the workspace.
 
 #### ca-server panic on an undecodable numeric OID in a client subject list
 

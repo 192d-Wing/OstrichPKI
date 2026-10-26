@@ -1,7 +1,7 @@
 # OstrichPKI Administrative Guidance
 
-**Document Version:** 1.3
-**Last Updated:** 2026-10-25
+**Document Version:** 1.5
+**Last Updated:** 2026-10-26
 **NIAP Reference:** AGD_OPE.1 - Operational User Guidance
 **Audience:** CA Administrators, Operations Staff, Security Officers
 
@@ -396,6 +396,66 @@ audit-chain locking, then verify the chain (see runbook "Upgrade note").
 `*_suppressed` summary records (Section 6.2). A burst of
 `per_source_handshake_limit` or `handshake_timeout` reasons indicates scanning
 or a stuck client.
+
+### 3.7 ACME dns-01 Resolvers
+
+acme-server validates dns-01 challenges by looking up the TXT record at
+`_acme-challenge.<domain>.` (RFC 8555 §8.4). Since 2026-10-26 the resolvers
+it uses are a deployment setting (NIST 800-53 CM-6):
+
+| Setting | Default | Values |
+|---------|---------|--------|
+| `ACME_DNS01_RESOLVERS` / `--dns01-resolvers` | unset: the host's system resolver configuration (`/etc/resolv.conf`; in Kubernetes, cluster DNS) | Comma-separated IPv4 / IPv6 literals, no spaces, at most 8. Port 53, UDP with TCP fallback. `""` is the same as unset |
+| Helm `acme.dns01Resolvers` | `[]` | A YAML list of plain IP literals, at most 8. A non-empty list is passed as `ACME_DNS01_RESOLVERS` and, when `networkPolicy.enabled`, opens UDP and TCP 53 egress to exactly these addresses |
+
+No public third-party resolver is ever used implicitly.
+
+**Production guidance.**
+
+1. Point the setting at the enclave's **DNSSEC-validating recursive
+   resolver(s)**. acme-server does not validate DNSSEC itself and does not
+   check the AD bit; DNSSEC protection of dns-01 relies on that resolver
+   (Security Target A.DNS_RESOLVER / OE.DNS_RESOLVER; POAM-2026-10-23-41).
+2. Place the resolver on a **trusted network segment**. The acme-server to
+   resolver traffic is plain DNS (no TSIG or DoT) and is not authenticated.
+3. **Cap the resolver's negative-cache TTL** (RFC 2308), for example unbound
+   `cache-max-negative-ttl: 5`. acme-server makes up to 5 lookup rounds, 2 s
+   apart, when a lookup fails or does not match, with its own caching
+   disabled; a long
+   negative-cache TTL on the resolver can replay an NXDOMAIN cached before the
+   subscriber's TXT record was published.
+4. Use IPv4 literals, not IPv4-mapped IPv6 (`::ffff:10.0.0.53`), so the
+   NetworkPolicy matches the traffic. The chart refuses mapped entries.
+
+**Refusals.** acme-server refuses to start if an entry is not an IP literal,
+is unspecified (`0.0.0.0`, `::`), multicast or broadcast, is listed twice
+(also after IPv4-mapped canonicalisation), if there are more than 8 entries,
+or if the list has spaces or empty items. `helm install` / `helm template`
+fail earlier for a value that is not a list, more than 8 entries, a
+duplicate, an entry that is not a plain IP literal, or an IPv4-mapped entry.
+If the variable is unset and the host has
+no name servers, acme-server starts with a warning
+(`dns-01 validation will fail closed: no system name servers`) and every
+dns-01 challenge becomes invalid.
+
+**Verification.** At startup acme-server logs `dns-01 resolver configuration`
+with `source = "configured"` (and the resolver addresses) or
+`source = "system"` (and the number of name servers). Changes take effect at
+restart; treat them as CM-3 changes.
+
+**Subscriber-visible behaviour (2026-10-26).** dns-01 identifiers must be
+plain DNS names without a trailing dot; IP literals and `*.` wildcard names
+fail dns-01 with `malformed` (wildcard orders are not supported yet,
+POAM-2026-10-23-45). A stale or missing TXT record is retried for about 8 s
+before the challenge becomes invalid. TXT records at names other than the
+challenge name or its CNAME target are ignored, and a record's strings are
+joined before comparison. Challenge errors now carry RFC 8555 types such as
+`dns`, `incorrectResponse`, `connection`, `tls`, `rejectedIdentifier`,
+`malformed` or `serverInternal` instead of `unauthorized`, with a generic
+detail; the full cause is in the acme-server log.
+
+**Not provided:** CAA checking (RFC 8659) and multi-perspective validation
+(POAM-2026-10-23-41).
 
 ---
 
@@ -1033,6 +1093,7 @@ ostrich-admin backup create
 | `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` | removed; ca-server refuses to start if it is set |
 | `CA_GRPC_CLIENT_CERT_FILE`, `CA_GRPC_CLIENT_KEY_FILE`, `CA_GRPC_CA_CERT_FILE` | acme-server / est-server gRPC client certificate, key and CA trust anchor |
 | `CA_GRPC_SERVER_NAME` | acme-server / est-server: TLS server name override (default: the URL host) |
+| `ACME_DNS01_RESOLVERS` | acme-server: comma-separated dns-01 recursive resolver IP literals, at most 8; unset or `""` uses the system resolver configuration (Section 3.7) |
 
 ---
 
@@ -1314,6 +1375,7 @@ Complete this checklist before placing OstrichPKI into production:
 - [ ] `CA_GRPC_ACME_CLIENT_SUBJECTS` / `CA_GRPC_EST_CLIENT_SUBJECTS` list only the RA services; `CA_GRPC_ALLOWED_CLIENT_SUBJECTS` is unset
 - [ ] `CA_GRPC_ADMIN_CLIENT_SUBJECTS` is empty, or lists one subject per named CA Operations Staff operator with short-lived certificates issued directly by the service-identity CA
 - [ ] `CA_GRPC_EST_ALLOWED_PROFILES` covers every profile est-server issues and contains no CA profile
+- [ ] `ACME_DNS01_RESOLVERS` (Helm `acme.dns01Resolvers`) lists the enclave's DNSSEC-validating recursive resolver(s) on a trusted network segment, with a capped negative-cache TTL (Section 3.7)
 
 ### C.7 Documentation
 
@@ -1333,3 +1395,4 @@ Complete this checklist before placing OstrichPKI into production:
 | 1.2 | 2026-10-25 | OstrichPKI Team | Section 3.6 CA gRPC issuance channel (dedicated service-identity CA, bootstrap, secrets, allowlist, revocation compensating control, upgrade, monitoring); Section 3.5 dev plaintext flags; Appendix A `CA_GRPC_*` variables; Appendix C checklist items. Branch `claude/grpc-mtls`, uncommitted |
 | 1.3 | 2026-10-25 | OstrichPKI Team | Section 3.6 trust-anchor check updated to the final code (CA-database ancestor walk, subject alone, issued-by, audited refusal, per-call `subscriber_issuing_ca`; residual POAM-28); audit-signing note (SLH-DSA CA key unsupported, POAM-34; `audit_write_failed` alert) |
 | 1.4 | 2026-10-26 | OstrichPKI Team | Section 3.6 item 4 rewritten for per-method gRPC authorization (three role lists, method table, profile allowlists, requestor and EST username rule, admin identities: one per named operator, issued directly by the single anchor, port-forward / NetworkPolicy access); item 5 role-list removal and CA-rotation note; Appendix A and C.6 updated. Branch `claude/grpc-per-method-authz`, uncommitted |
+| 1.5 | 2026-10-26 | OstrichPKI Team | New Section 3.7 ACME dns-01 resolvers (`ACME_DNS01_RESOLVERS` / `--dns01-resolvers`, Helm `acme.dns01Resolvers`, defaults, refusals, DNSSEC-validating resolver on a trusted segment, negative-cache TTL cap, subscriber-visible behaviour changes); Appendix A variable and Appendix C.6 checklist item. Header version 1.3 → 1.5 (1.4 had not updated it). Branch `claude/dns01-resolver-fix`, uncommitted |

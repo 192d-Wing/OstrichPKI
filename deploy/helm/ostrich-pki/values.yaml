@@ -231,6 +231,26 @@ acme:
   # Port the http-01 challenge validator connects to on the client.
   http01Port: 80
 
+  # Upstream recursive resolvers for dns-01 validation (ACME_DNS01_RESOLVERS):
+  # IPv4/IPv6 literals, port 53, at most 8. Empty (default) uses the pod's
+  # resolv.conf (cluster DNS); no public third-party resolver is used
+  # implicitly (NIST 800-53 CM-6). Invalid entries refuse startup.
+  # Production: list the enclave's DNSSEC-validating recursive resolver(s).
+  # OstrichPKI does not validate DNSSEC itself; SC-21 is inherited from that
+  # resolver (environment assumption, POAM-2026-10-23-41). The CA-to-resolver
+  # channel is unauthenticated (no TSIG/DoT, AD bit not checked), so deploy the
+  # resolver on a trusted network segment. Cap the resolver's negative-cache
+  # TTL (RFC 2308; e.g. unbound cache-max-negative-ttl: 5) so a lookup made
+  # before the TXT record propagated is not replayed across the retry window.
+  # When networkPolicy.enabled, the acme NetworkPolicy also opens UDP/TCP 53
+  # egress to exactly these addresses (/32 or /128).
+  # Rendering fails (helm install/upgrade/template) when the value is not a
+  # list, has more than 8 entries, repeats an entry, or an entry is not a plain
+  # IPv4 dotted-quad / hex IPv6 literal (no '/', port, zone or whitespace).
+  # IPv4-mapped IPv6 (::ffff:10.0.0.53) is rejected: list 10.0.0.53 instead.
+  # Example: dns01Resolvers: ["10.0.0.53", "10.0.1.53"]
+  dns01Resolvers: []
+
   # mTLS client identity for the CA gRPC API. Required when acme is enabled
   # (rendering fails without clientTls.existingSecret). The certificate subject
   # must be in ca.grpc.acmeClientSubjects (default CN=acme-server) and carry
@@ -577,6 +597,14 @@ metrics:
 # =============================================================================
 networkPolicy:
   enabled: true
+  # Namespace whose k8s-app=kube-dns pods every policy may reach on port 53.
+  # Default "" keeps the historical behaviour: kube-dns-labelled pods in ANY
+  # namespace. Recommended hardening (NIST 800-53 SC-7): set it to
+  # "kube-system" (or the namespace that runs your cluster DNS) so a pod
+  # labelled k8s-app=kube-dns elsewhere cannot receive the services' DNS
+  # queries. Matched via the kubernetes.io/metadata.name label (Kubernetes
+  # >= 1.22). A wrong namespace blocks DNS for every OstrichPKI pod.
+  dnsNamespace: ""
   # Allow ingress from specified namespaces
   ingressNamespaceLabels: {}
   # Allow egress to external services

@@ -25,8 +25,8 @@
 //!
 //! ## NIST 800-53 Rev 5 Controls
 //!
-//! - **IA-5(1)**: Authenticator Management (Challenge-Response)
-//!   - HTTP-01, DNS-01, TLS-ALPN-01 challenge mechanisms.
+//! - **SC-17**: Public Key Infrastructure Certificates
+//!   - HTTP-01, DNS-01, TLS-ALPN-01 verify identifier control before issuance.
 //!
 //! - **AU-2/AU-3**: Audit Events
 //!   - Challenge lifecycle events logged.

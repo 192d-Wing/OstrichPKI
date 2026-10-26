@@ -1,6 +1,6 @@
 # RFC Standards Compliance Matrix
 
-**Document Version:** 2.6
+**Document Version:** 2.7
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Compliance Status:** Excellent (85%)
@@ -826,7 +826,7 @@ certificate** from an ACME directory using the HTTP-01 challenge (§8.3):
 
 #### §7.1: Resources
 
-**Status:** 🟢 **Compliant**
+**Status:** 🟡 **Partial** (corrected 2026-10-26, was "🟢 Compliant"; POAM-2026-10-23-45)
 
 **Implementation:**
 
@@ -834,10 +834,19 @@ certificate** from an ACME directory using the HTTP-01 challenge (§8.3):
 
 **Resources:**
 
-- ✅ §7.1.1 - Account objects
-- ✅ §7.1.2 - Order objects
-- ✅ §7.1.3 - Authorization objects
-- ✅ §7.1.4 - Challenge objects
+Section numbers corrected 2026-10-26 (RFC 8555 §7.1.1 is the directory; the
+list previously numbered accounts as §7.1.1 through challenges as §7.1.4).
+
+- ✅ §7.1.2 - Account objects
+- 🟡 §7.1.3 - Order objects: `new_order` does not validate identifiers, and a
+  `*.` identifier is stored as a literal name with `wildcard = false`, so
+  wildcard orders cannot complete (POAM-2026-10-23-45)
+- 🟡 §7.1.4 - Authorization objects: the `wildcard` field is always present,
+  including `false`, although §7.1.4 says it MUST be absent unless true; all
+  three challenge types are offered for every identifier, including dns-01
+  for IP identifiers (RFC 8738 §7 forbids it) (POAM-2026-10-23-45)
+- ✅ §7.1.5 - Challenge objects. Since 2026-10-26 a failed challenge's `error`
+  is a problem document with a registered type (see §7.5)
 
 **Code References:**
 
@@ -932,6 +941,17 @@ of identifiers authorized in the order.
   (schema/constraint names) in the problem `detail`. See `Error::client_detail`;
   client-class errors keep their descriptive detail. Tested
   (`internal_errors_do_not_leak_detail`, `client_errors_keep_descriptive_detail`).
+  **Challenge errors (2026-10-26):** a failed challenge's stored `error` is now
+  built by `challenge_error_document`
+  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 1017) from
+  `Error::error_type()` and `Error::client_detail()`, so it carries a type
+  registered in §6.7 and no internal text (previously always `unauthorized`
+  with the raw error string). `Error::ChallengeValidation` and
+  `Error::ChallengeFailed` (unregistered `challengeFailed`) were removed.
+  Tested (`every_error_type_is_registered` in
+  [error.rs](../../crates/ostrich-acme/src/error.rs),
+  `challenge_error_document_only_emits_registered_types` and
+  `challenge_error_document_uses_type_and_client_detail` in `rest.rs`)
 - ✅ §7.3.2 - Account update
 - ✅ §7.3.5 - Account key rollover (structure exists)
 
@@ -977,13 +997,18 @@ of identifiers authorized in the order.
 
 #### §7.5: Identifier Validation Challenges
 
-**Status:** 🟡 **Partial** (HTTP-01 and TLS-ALPN-01 functional; DNS-01 implemented but non-functional, POAM-2026-10-23-41; corrected 2026-10-26, was "🟢 Good (infrastructure complete)")
+**Status:** 🟡 **Partial** (HTTP-01, DNS-01 and TLS-ALPN-01 functional; no CAA check, no DNSSEC validation in the TOE, no wildcard orders; POAM-2026-10-23-41, -45, -48. Updated 2026-10-26: DNS-01 was "implemented but non-functional")
 
 **Challenges:**
 
 - ✅ §8.3 - HTTP-01 Challenge (validator implemented)
-- 🟡 §8.4 - DNS-01 Challenge (implemented, non-functional (POAM-2026-10-23-41): the resolver has no name servers, so validation always fails closed)
-- ✅ §8.5 - TLS-ALPN-01 Challenge (RFC 8737; self-signed challenge cert accepted, acmeIdentifier extension verified)
+- 🟡 §8.4 - DNS-01 Challenge: implemented and functional since 2026-10-26
+  (branch `claude/dns01-resolver-fix`, uncommitted). Stays partial: no CAA
+  check (RFC 8659), no DNSSEC validation (RFC 8555 §11.2) and wildcard
+  identifiers are rejected (POAM-2026-10-23-41, -45)
+- 🟡 §8.5 - TLS-ALPN-01 Challenge (RFC 8737; self-signed challenge cert
+  accepted, acmeIdentifier digest verified; §3 critical-flag and single-SAN
+  checks missing, POAM-2026-10-23-48)
 
 **Implementation:**
 
@@ -1000,34 +1025,105 @@ of identifiers authorized in the order.
   address** (closing the rebinding TOCTOU window). HTTP-01 follows redirects
   MANUALLY so each redirect hop is re-resolved and re-validated. **Fixed:** the
   previous check only string-matched literal private-IP hostnames, so a public
-  name resolving to an internal address bypassed it.
+  name resolving to an internal address bypassed it. Since 2026-10-26 a refusal
+  is `rejectedIdentifier` with a generic detail; the resolved address is logged
+  server-side only (test `resolve_pinned_enforces_ssrf_guard_unless_allowed`).
+  Which names resolve to internal addresses can still be inferred from which
+  challenges fail (POAM-2026-10-23-45)
 - ✅ **Uniform allow-private policy:** the deploy-time `allow_private_ip_domains`
   override (dev/E2E or deliberately-internal deployments) is now honored by
   **both** HTTP-01 and TLS-ALPN-01 via a shared `resolve_pinned` helper.
   **Fixed:** TLS-ALPN-01 previously always called the strict resolver and
   ignored the flag, so an internal identifier that validated over HTTP-01 was
   refused over TLS-ALPN-01 ("resolves to non-public address … SSRF prevention").
-- ✅ DNS-01: Compute `_acme-challenge.<domain>` TXT record value
-- ⚠️ DNS-01: resolver implemented, non-functional (POAM-2026-10-23-41). The
-  resolver is built with `ResolverConfig::default()`
-  ([validation.rs](../../crates/ostrich-acme/src/validation.rs) lines 349-351),
-  which has no name servers in hickory-resolver 0.26.x. Every TXT lookup
-  fails and the challenge becomes invalid (fails closed). Pre-existing since
-  the hickory 0.26 migration (f1d0e0b). dns-01 is still offered by default
-  (`crates/ostrich-common/src/config.rs` line 416), and wildcard identifiers
-  can only be validated through dns-01
+- ✅ DNS-01 (§8.4): the TXT value is base64url(SHA-256(key authorization)),
+  and the lookup is for `_acme-challenge.<domain>.`
+- ✅ **DNS-01 resolver (2026-10-26):** `dns01_resolver_config`
+  ([validation.rs](../../crates/ostrich-acme/src/validation.rs) line 511) uses
+  the operator list `--dns01-resolvers` / `ACME_DNS01_RESOLVERS` (at most 8 IP
+  literals, port 53, UDP with TCP fallback) or, when it is unset or `""`, the
+  host's system resolver configuration. An empty name-server list, a
+  system-configuration read error or an invalid list fails closed with a
+  generic `serverInternal`; there is no fallback to a public resolver. Tests:
+  `dns01_config_rejects_empty_name_servers`,
+  `dns01_validate_fails_closed_without_name_servers`,
+  `dns01_config_uses_upstreams_and_skips_system`,
+  `dns01_validate_rejects_invalid_upstreams_without_fallback`
+- ✅ **DNS-01 query name (RFC 8555 §7.1.4, RFC 1035 §2.3.1):**
+  `dns01_query_name` (line 384) builds the name as an FQDN, so search domains
+  and `ndots` cannot rewrite it (the system `domain` and `search` list are also
+  dropped). The identifier must be an LDH name without a trailing dot (labels
+  1-63 octets, no edge hyphens, non-numeric last label, wire length checked);
+  wildcards, IP literals and anything else are `malformed` before any query.
+  Tests: `dns01_query_name_is_fqdn`, `dns01_query_name_rejects_bad_identifiers`,
+  `dns01_mock_trailing_dot_identifier_is_malformed`; fuzz target
+  `fuzz_dns01_query_name`
+- ✅ **DNS-01 TXT matching (§8.4, RFC 1035 §3.3.14):** a TXT record matches only
+  if the concatenation of its character-strings equals the expected digest byte
+  for byte (no case folding or trimming), and only records whose owner is the
+  query name or a CNAME target reached from it in the same answer (at most 8
+  hops, loops rejected) count (`txt_answers_match`, line 593). Tests:
+  `txt_match_requires_concatenation_equal_to_digest`,
+  `txt_match_requires_owner_on_cname_chain`,
+  `txt_match_bounds_cname_chain_length`,
+  `dns01_mock_split_strings_joining_to_digest_returns_true`,
+  `dns01_mock_junk_and_digest_in_one_record_returns_false`,
+  `dns01_mock_foreign_owner_txt_returns_false`,
+  `dns01_mock_cname_delegated_txt_returns_true`,
+  `dns01_mock_near_miss_digests_return_false`,
+  `dns01_mock_wrong_thumbprint_returns_false`
+- ✅ **DNS-01 retries (§8.2):** up to 5 rounds 2 s apart. NXDOMAIN, lookup errors
+  and a non-matching answer are all retried; a fresh resolver with caching
+  disabled (`cache_size` 0, positive and negative TTL 0, no hosts file) is
+  built for each round, so an in-process cached negative answer is never
+  reused. Tests: `dns01_opts_disable_caching`,
+  `dns01_mock_retry_after_nxdomain_is_not_cached`,
+  `dns01_mock_mismatch_then_match_returns_true`,
+  `dns01_mock_persistent_nxdomain_fails_closed`. **Scope (RFC-005):** this
+  covers only the resolver inside acme-server. The upstream recursor's own
+  negative cache (RFC 2308) can still return an NXDOMAIN cached before the
+  record was published; operators are told to cap it (ADMIN_GUIDE Section 3.7)
+- ✅ **Challenge failure types (§6.7):** the challenge `error` type follows the
+  failure (see the §7.3 sanitization item):
+
+  | Challenge | Failure | Type |
+  |-----------|---------|------|
+  | all | Retrieved response or record does not match | `incorrectResponse` |
+  | all | Identifier not usable (bad DNS name, URL or TLS server name) | `malformed` |
+  | all | Local configuration error (resolver, HTTP client, TLS provider) | `serverInternal` (generic detail) |
+  | http-01 | Connect, timeout or body read failure | `connection` |
+  | http-01 | Non-2xx status; bad, missing or disallowed redirect | `incorrectResponse` |
+  | http-01, tls-alpn-01 | Host does not resolve | `dns` |
+  | http-01, tls-alpn-01 | Host resolves to a non-public address | `rejectedIdentifier` |
+  | tls-alpn-01 | TCP connect failure or timeout | `connection` |
+  | tls-alpn-01 | Handshake failure, `acme-tls/1` not negotiated, no or unparsable certificate | `tls` |
+  | tls-alpn-01 | acmeIdentifier missing or malformed | `incorrectResponse` |
+  | dns-01 | All 5 lookup rounds failed | `dns` |
+
+- ℹ️ **RFC 8738 §7:** dns-01 MUST NOT be used for IP identifiers. The dns-01
+  validator refuses IP literals (`malformed`), but `new_order` still offers
+  dns-01 for IP identifiers (POAM-2026-10-23-45)
 - ⚠️ **Gap: no CAA check (RFC 8659 §3).** Issuance does not check CAA
   records. `urn:ietf:params:acme:error:caa` is defined
-  (`crates/ostrich-acme/src/error.rs` line 134) but never raised, and the
-  directory `caaIdentities` is always absent (`rest.rs` line 480). When
+  ([error.rs](../../crates/ostrich-acme/src/error.rs) line 135) but never
+  raised, and the directory `caaIdentities` is always absent
+  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 496). When
   implemented, a DNS error during the CAA check must deny issuance
   (POAM-2026-10-23-41)
 - ⚠️ **Gap: no DNSSEC validation (RFC 8555 §11.2).** hickory is built
-  without its DNSSEC feature; the validator doc comment "Use DNSSEC if
-  available" (`validation.rs` line 274) is not implemented
-  (POAM-2026-10-23-41)
+  without its DNSSEC feature, and the AD bit is not checked. DNSSEC
+  validation is delegated to the operator's validating recursive resolver,
+  an operational-environment assumption (SECURITY_TARGET A.DNS_RESOLVER). The
+  path from acme-server to that resolver is not authenticated (no TSIG or
+  DoT) (POAM-2026-10-23-41)
+- ⚠️ **Gap: wildcard identifiers** cannot be validated until `new_order` stores
+  the base domain with `wildcard: true` (POAM-2026-10-23-45)
+- ⚠️ No live dns-01 end-to-end test against a real DNS server; the offline
+  tests use a loopback mock DNS server that drives the real hickory resolver
 
-**Remediation:** Phase 16 - Complete DNS-01 validator: build the resolver from the system configuration or explicit name servers and add an empty-server-list test; add the CAA check; decide on DNSSEC (POAM-2026-10-23-41)
+**Remediation:** add the CAA check; decide on in-process DNSSEC versus the
+environment assumption; fix wildcard and IP-identifier handling in
+`new_order`; add a live dns-01 integration test (POAM-2026-10-23-41, -45)
 
 ---
 
@@ -1071,7 +1167,7 @@ of identifiers authorized in the order.
 
 ### RFC 8737: ACME TLS-ALPN-01 Challenge
 
-**Status:** 🟢 **Implemented**
+**Status:** 🟡 **Partial** (corrected 2026-10-26, was "🟢 Implemented": the §3 certificate checks are incomplete, POAM-2026-10-23-48)
 
 **Requirement:** TLS-ALPN-01 challenge validation
 
@@ -1100,6 +1196,22 @@ of identifiers authorized in the order.
   (`tls_alpn_verifier_accepts_self_signed_challenge_cert`) and end-to-end via the
   in-cluster ACME smoke test.
 - ✅ SSRF policy honors `allow_private_ip_domains` uniformly with HTTP-01 (see SI-10 above).
+- ✅ **Bounds-checked acmeIdentifier parsing (2026-10-26):** `acme_identifier_digest`
+  ([validation.rs](../../crates/ostrich-acme/src/validation.rs) line 1140)
+  replaces an index slice that could panic the validation task on a 32- or
+  33-octet extension value beginning `04 20`; a value that is neither
+  `04 20` + 32 octets nor exactly 32 octets is `incorrectResponse`
+  (test `acme_identifier_digest_is_bounds_checked`). Failure types: see the
+  RFC 8555 §7.5 table.
+
+**Gaps (POAM-2026-10-23-48):**
+
+- ⚠️ §3: the acmeIdentifier extension MUST be critical; the validator does not
+  check the critical flag
+- ⚠️ §3: the certificate MUST contain exactly one dNSName SAN, equal to the
+  identifier; the SAN is not checked
+- ⚠️ The extension value is accepted either as a DER OCTET STRING
+  (`04 20` + 32 octets) or as a bare 32-octet value; §3 requires the DER form
 
 ---
 
@@ -1583,7 +1695,7 @@ Lockfile update (branch `claude/dependabot-remediation`, uncommitted; see NIST S
   - GHSA-5j98-2g5x-46v6 (DNSSEC failures hidden): not reachable; needs the DNSSEC feature, which is not enabled
   - GHSA-6f2x-v7q7-m7m5 (irrelevant CNAME records followed): not reachable; the fix is in the `recursor` module, which is not enabled. Stub-resolver CNAME handling is unchanged, so `_acme-challenge` CNAME delegation behaves as before
 - Other changes in the bump are neutral or improve conformance: answers with the wrong DNS class are rejected, compressed names are decoded without recursion, and the TXT parsing API used by the validator is unchanged
-- This bump does not make dns-01 work: the resolver has no name servers (POAM-2026-10-23-41, pre-existing)
+- This bump does not make dns-01 work: the resolver has no name servers (POAM-2026-10-23-41, pre-existing). **Update 2026-10-26:** fixed by the dns-01 resolver change (branch `claude/dns01-resolver-fix`, uncommitted); see RFC 8555 §7.5. POAM-41 stays open, narrowed to CAA, DNSSEC and the other residuals
 
 ---
 
@@ -1656,13 +1768,23 @@ splicing it into an OpenSSL SPKI for bidirectional interop
 |--------------|--------------|-------------|-----------|-----------|--------|--------------|
 | Core PKI (X.509) | 5 | 5 | 0 | 0 | 0 | 100% |
 | Certificate Status | 4 | 2 | 2 | 0 | 0 | 75% |
-| Enrollment (ACME) | 2 | 1 | 1 | 0 | 0 | 90% |
+| Enrollment (ACME) | 2 | 0 | 2 | 0 | 0 | 50% |
 | Enrollment (EST) | 2 | 0 | 2 | 0 | 0 | 70% |
 | Cryptography (CMS) | 3 | 0 | 1 | 0 | 2 | 50% |
 | Key Management | 3 | 2 | 1 | 0 | 0 | 83% |
 | Transport (TLS) | 2 | 0 | 2 | 0 | 0 | 50% |
 | Post-Quantum (Draft) | 3 | 0 | 3 | 0 | 0 | 30% |
-| **TOTAL** | **24** | **10** | **12** | **0** | **2** | **75%** |
+| **TOTAL** | **24** | **9** | **13** | **0** | **2** | **70%** |
+
+Recalculated 2026-10-26 (RFC 8737 🟢 → 🟡, POAM-2026-10-23-48) with the rule
+the Core PKI, Certificate Status, CMS, Key Management and Transport rows
+follow: Compliance % = (Compliant + 0.5 × Partial) / (RFCs − N/A). ACME row:
+(0 + 0.5 × 2) / 2 = 50% (the 90% shown before did not follow that rule:
+(1 + 0.5 × 1) / 2 = 75%). TOTAL: (9 + 0.5 × 13) / (24 − 2) = 15.5 / 22 =
+70.5%, shown as 70% (the 75% shown before did not match its own counts:
+(10 + 0.5 × 12) / 22 = 72.7%). The EST and Post-Quantum rows still do not
+follow the rule and were not changed. This table is not an assessed
+compliance figure.
 
 ---
 
@@ -1690,7 +1812,8 @@ splicing it into an OpenSSL SPKI for bidirectional interop
    - Corrected 2026-10-23: this item previously said "Weak TLS configuration possible", which no longer describes the REST listeners
 
 2. **RFC 8555 - ACME Challenge Validators** (🟡 Partial)
-   - Impact: DNS-01 is not functional (resolver has no name servers; fails closed; POAM-2026-10-23-41); no CAA check (RFC 8659) and no DNSSEC validation (RFC 8555 §11.2)
+   - Impact: no CAA check (RFC 8659) and no DNSSEC validation in the TOE (RFC 8555 §11.2) (POAM-2026-10-23-41); wildcard orders and dns-01 offered for IP identifiers (POAM-2026-10-23-45); RFC 8737 §3 certificate checks incomplete (POAM-2026-10-23-48)
+   - Updated 2026-10-26: DNS-01 is functional (resolver built from `ACME_DNS01_RESOLVERS` or the system configuration; fails closed with no name servers). It was previously listed here as not functional
    - Corrected 2026-10-26: this item previously also listed TLS-ALPN-01, which was fixed by commits 5b1a034 (self-signed challenge certificate accepted, RFC 8737) and 5e8ab3f (critical acmeIdentifier extension accepted)
    - Phase: 16
    - Effort: 1 week
@@ -1835,6 +1958,7 @@ consumed by the TAMP messages above.
 | 2.4 | 2026-10-23 | OstrichPKI Team | PKCS#11 RSA-PSS Linux CI evidence (commit 44d560d, PR 181): "RFC 8017 / RFC 4055 — RSASSA-PSS" status updated with GitHub Actions run 40063317654 (SoftHSM 2.6.1, 28 passed / 0 failed / 1 ignored, exit 0); scoped to SoftHSM and the PKCS#11 provider. RFC 4055 deviation (POAM-20) unchanged. No RFC section status changed. |
 | 2.5 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization (branch `claude/grpc-per-method-authz`, uncommitted). RFC 5280: admin list requires one distinct anchor with SKI (refusal, not warning); Admin leaf issued directly by the anchor (§4.1.2.4, §4.2.1.1 / §4.2.1.2, no DN-only fallback); per-call leaf validity (§4.1.2.5, leaf only); peer serial format (§4.1.2.2). RFC 4514: three role lists, case-variant overlap refusal, undecodable numeric OIDs refused (const-oid fuzz finding). New "gRPC over HTTP/2" subsection: exact path matching, status mapping, deviations RFC-003 (unknown method → PERMISSION_DENIED) and RFC-004 (malformed requestor → PERMISSION_DENIED). RFC 7030: EST client-identifier rule and HTTP 403 JSON body (RFC-104). ACME RFC 8555 §7.6 revocation still does not reach the CA. Counts: `grpc_mtls_e2e` 39, `grpc_tls` 66 (coder-reported). Version numbers 2.3 / 2.4 appear twice in this table (2026-10-23 and 2026-10-25); this entry continues from 2.4. No status change |
 | 2.6 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation (branch `claude/dependabot-remediation`, uncommitted). Added "Dependency protocol conformance fixes (2026-10-26)": hickory 0.26.2 with per-advisory reachability (GHSA-6w6g reachable, now fails closed; GHSA-5j98 and GHSA-6f2x feature-gated, not reachable). RFC 8555 §7.5 / §8.4: stale "DNS resolver TODO/pending" replaced by "implemented, non-functional" (POAM-2026-10-23-41); §7.5 status corrected 🟢 → 🟡 (subsection only). Added CAA (RFC 8659 §3) and DNSSEC (RFC 8555 §11.2) as gaps. Priority 2 item 2: stale TLS-ALPN-01 statement removed (fixed by 5b1a034 / 5e8ab3f). RFC 8555 85% and the summary table not recalculated (no change claimed) |
+| 2.7 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted; run record `target/agent-workflow/20261026-091032-dns01-resolver/`). RFC 8555 §7.5 / §8.4: dns-01 now functional (operator or system name servers, fails closed when empty; FQDN query name; no in-process cache; TXT strings concatenated, owner / CNAME chain checked; mismatch retried per §8.2); stale "non-functional" text, line references and remediation replaced; §8.4 stays 🟡 and §7.5 stays 🟡 (CAA, DNSSEC, wildcards; POAM-41, -45). Added the RFC-005 scope note (upstream recursor negative cache, RFC 2308), the RFC 8738 §7 note and a challenge failure-type table. §7.1: section numbers corrected (§7.1.2 Account, §7.1.3 Order, §7.1.4 Authorization, §7.1.5 Challenge); Order and Authorization ✅ → 🟡 and §7.1 🟢 → 🟡 (POAM-45). §7.3 §6.7 sanitization extended to challenge errors (`challenge_error_document`; registered types only). RFC 8737 🟢 → 🟡 (critical flag, single dNSName SAN, bare 32-octet value; POAM-48). Summary table: ACME 1/1 → 0/2 (90% → 50%), TOTAL 10/12 → 9/13 (75% → 70%), arithmetic under the table. RFC 8555 header "85%" not recalculated (not derived from a section list). Priority 2 item 2 and the 2026-10-26 dependency note updated |
 
 ---
 

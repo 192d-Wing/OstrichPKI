@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 3.1
+**Document Version:** 3.2
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -627,6 +627,15 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   before the database connects are error logs only: no database pool exists
   yet, so no `ostrich-audit` record is written (POAM-2026-10-23-05 (d),
   narrowed: the trust-anchor refusal is now audited)
+- ℹ️ ACME challenge validation (2026-10-26, dns-01 resolver fix): no new event
+  type. `run_challenge_validation` still writes one `validate_challenge`
+  record (actor `acme-validator`, Success / Failure) per validation
+  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) lines 994-1006). It has no
+  challenge type, identifier, account or failure category, so a dns-01
+  resolver misconfiguration cannot be told apart from a subscriber failure
+  (AU-3; POAM-2026-10-23-47). No automated test covers this record (QA-001).
+  The new dns-01 startup refusals and the no-name-server warning are service
+  log only
 
 **Code Annotation:** NIAP PP-CA v2.1: FAU_GEN.1 — Phase 1b SCMS coverage complete
 
@@ -1244,6 +1253,30 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   rendering fails without them), kustomize base, compose files and
   `.env.example`. Exact startup messages are in
   [docs/runbooks/ca-grpc-mtls.md](../runbooks/ca-grpc-mtls.md)
+- ✅ **ACME dns-01 resolvers (2026-10-26, branch `claude/dns01-resolver-fix`,
+  uncommitted).** acme-server `--dns01-resolvers` / `ACME_DNS01_RESOLVERS`
+  ([main.rs](../../services/acme-server/src/main.rs) lines 84-102, parser
+  `parse_dns01_resolvers`): comma-separated IP literals, at most 8
+  (`MAX_DNS01_RESOLVERS`), port 53 with UDP and TCP. Default: unset (or `""`)
+  uses the host's system resolver configuration; no public third-party
+  resolver is ever used implicitly. Startup is refused for an unspecified,
+  multicast or broadcast address, a duplicate (also after IPv4-mapped
+  canonicalisation), a 9th entry or malformed list syntax (spaces, empty
+  items, hostnames). When the list is unset and the system configuration has
+  no name servers, acme-server logs a warning at startup and every dns-01
+  validation fails closed. Deployment wiring: Helm `acme.dns01Resolvers`
+  (default `[]`; rendering fails on a non-list, more than 8 entries, a
+  duplicate, a non-literal or an IPv4-mapped entry, `ostrich-pki.acmeDns01Resolvers`
+  in `_helpers.tpl`), the acme NetworkPolicy (UDP and TCP 53 to cluster DNS,
+  and to exactly the configured addresses as /32 or /128), `docker-compose.yml`
+  and `.env.example`. Tests (acme-server bin, not part of `make test-unit`):
+  `dns01_resolvers_arg_parses`, `dns01_resolvers_invalid_refuses_startup`,
+  `dns01_resolvers_boundaries`,
+  `dns01_resolvers_empty_value_means_system_resolvers` (7/7 bin tests passed,
+  re-run by the compliance scribe 2026-10-26). **Not verified:** `helm
+  template` / `helm lint` were not run (helm not installed), so the chart
+  changes and NetworkPolicy rendering are unverified; an operator guide entry
+  is in ADMIN_GUIDE Section 3.7
 - 🔴 No documented secure baseline settings for the other services
 
 **Gaps:**
@@ -1598,6 +1631,9 @@ the code annotations since 2026-10-26.
   `GrpcClientConfig`'s `Debug` redacts them (SI-12). See IA-3
 - 🔴 No password management
 - 🔴 Certificate validation not implemented (outside the TLS peer paths)
+- ℹ️ ACME challenge validation (http-01, dns-01, tls-alpn-01) is **not**
+  IA-5 or IA-5(1) evidence. The code annotations that mapped it to IA-5(1)
+  were corrected to SC-17 / FDP_CER_EXT.1 on 2026-10-26; see SC-17
 
 **Gaps:**
 
@@ -2340,6 +2376,31 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 - ✅ Multiple profile types (Root CA, Intermediate CA, TLS Server, TLS Client, Code Signing, OCSP Signing)
 - ✅ Profile validation ensures CA certs have keyCertSign usage
 - ✅ All extensions properly marked as critical/non-critical per RFC 5280
+- 🟡 **ACME domain-control validation before issuance (dns-01 functional
+  2026-10-26, branch `claude/dns01-resolver-fix`, uncommitted; NIAP
+  FDP_CER_EXT.1).** dns-01 previously failed closed on every request (no name
+  servers, POAM-2026-10-23-41). It now queries the operator's or the system's
+  resolvers and validates only on a byte-exact digest match at the challenge
+  name; every error path is a failure (tests `dns01_mock_valid_digest_returns_true`,
+  `dns01_mock_wrong_thumbprint_returns_false`,
+  `dns01_config_rejects_empty_name_servers`; RFC_COMPLIANCE RFC 8555 §7.5).
+  Gaps: no CAA check (RFC 8659) and no wildcard orders (POAM-2026-10-23-41,
+  -45); tls-alpn-01 §3 certificate checks incomplete (POAM-2026-10-23-48);
+  no live dns-01 end-to-end test. This is SC-17 / FDP_CER_EXT.1 evidence only;
+  it is not claimed under IA-5(1)
+- ℹ️ Related SC-21 (secure name resolution): **not implemented in the TOE.**
+  acme-server does not validate DNSSEC and does not check the AD bit; SC-21 is
+  inherited from the operator's DNSSEC-validating recursive resolver, an
+  operational-environment assumption (SECURITY_TARGET A.DNS_RESOLVER /
+  OE.DNS_RESOLVER; POAM-2026-10-23-41). The acme-server-to-resolver channel is
+  unauthenticated (no TSIG or DoT), so the resolver must be on a trusted
+  network segment. SC-20 is not claimed: OstrichPKI provides no
+  authoritative DNS
+- ℹ️ Related SC-5: one dns-01 validation is bounded at a nominal 83 s
+  (5 rounds × (1 + 2 retries) × 5 s + 4 × 2 s; `DNS01_TIMEOUT` in
+  [validation.rs](../../crates/ostrich-acme/src/validation.rs) line 321), but
+  the number of concurrent validations is not bounded
+  (POAM-2026-10-23-46)
 - ℹ️ TLS peer certificates (mTLS listeners and rustls clients) are validated by
   rustls-webpki 0.103.16, not by `ostrich-x509`. That path additionally rejects
   certificates whose SPKI is on webpki's built-in distrust list (emSign G3;
@@ -2349,6 +2410,8 @@ Line numbers were removed on 2026-10-23 because the PKCS#11 fix moved them. Loca
 **Gaps:**
 
 - No formal Certificate Policy (CP) or Certificate Practice Statement (CPS) documented
+- ACME: no CAA check before issuance; wildcard and IP-identifier order handling
+  (POAM-2026-10-23-41, -45)
 
 **Remediation:** Document CP/CPS for production deployment (Phase 16)
 
@@ -2718,6 +2781,43 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
   CSR parse / verify errors and the missing approval repository use fixed
   messages. REST 5xx bodies still carry internal error text
   (POAM-2026-10-23-37). No separate SI-11 section is added here
+- ✅ ACME dns-01 inputs (2026-10-26, branch `claude/dns01-resolver-fix`,
+  uncommitted), dns-01 path only:
+  - Identifier: `dns01_query_name`
+    ([validation.rs](../../crates/ostrich-acme/src/validation.rs) line 384)
+    accepts only an LDH name without a trailing dot (labels 1-63 octets, no
+    edge hyphens, non-numeric last label, wire length checked) and rejects
+    wildcards and IP literals as `malformed` before any DNS query. Tests:
+    `dns01_query_name_rejects_bad_identifiers`, `dns01_query_name_is_fqdn`,
+    `dns01_validate_rejects_malformed_identifier_first`,
+    `dns01_validate_public_rejects_malformed_identifier`. Fuzz target
+    `fuzz_dns01_query_name` (QA-reported 131,276 runs in 61 s and, after fix
+    round 1, coder-reported 136,323 runs in 46 s; no crash; not re-run by
+    the scribe)
+  - DNS answers (untrusted): `txt_answers_match` (line 593) accepts a TXT
+    record only at the query name or a CNAME target reached from it (at most 8
+    hops, loops rejected) and compares the concatenated strings byte for byte
+    (tests `txt_match_*`, `dns01_mock_*`)
+  - Resolver configuration: `validate_dns01_resolver_ips` (line 443), at
+    startup and again when the validator builds its configuration (see CM-6)
+  - tls-alpn-01 acmeIdentifier value: bounds-checked parsing
+    (`acme_identifier_digest`, test `acme_identifier_digest_is_bounds_checked`)
+    replaces a slice that could panic the validation task; the RFC 8737 §3
+    critical-flag and SAN checks are still missing (POAM-2026-10-23-48)
+  - **Not evidence:** `new_order` in
+    [rest.rs](../../crates/ostrich-acme/src/rest.rs) (line 679) carries an
+    SI-10 annotation but validates no identifier (POAM-2026-10-23-45)
+- 🟡 Related SI-11 (error handling), 2026-10-26: a failed ACME challenge's
+  `error` is built by `challenge_error_document`
+  ([rest.rs](../../crates/ostrich-acme/src/rest.rs) line 1017) from the error's
+  registered RFC 8555 type and its client-safe detail; resolver addresses,
+  raw reqwest / rustls / hickory text and resolved private IPs are logged
+  server-side only. Tests: `challenge_error_document_uses_type_and_client_detail`,
+  `challenge_error_document_only_emits_registered_types`,
+  `every_error_type_is_registered`,
+  `dns01_mock_persistent_nxdomain_fails_closed`,
+  `resolve_pinned_enforces_ssrf_guard_unless_allowed`. Not counted as a new
+  row
 
 **Gaps:**
 
@@ -2884,6 +2984,13 @@ AC-5 🟢, AC-6 🟡 Partial (the REST user-privilege gaps remain), AU-3 ✅, AU
 🟢, AU-12 🟢, CM-6 🟡, CM-7 🟡, IA-3 🟡 (revocation and Issuer-role binding
 gaps), SI-10 as before. SI-11 and IA-9 are cited as related controls inside
 existing sections, not counted as new rows. TOTAL stays
+(6 + 0.5 × 24) / 41 = 18 / 41 = 43.9%, shown as 44%.
+
+On 2026-10-26 (ACME dns-01 resolver fix) no control was added and no control
+status changed: CM-6 stays 🟡 Partial, SI-10 🟢 Good (85%), SC-17 🟢
+(98%, with a new 🟡 ACME evidence item and gap), AU-2 🟢 and IA-5 🟡. SC-5,
+SC-21 and SI-11 are cited as related controls inside existing sections, not
+counted as new rows; SC-20 is not claimed. TOTAL stays
 (6 + 0.5 × 24) / 41 = 18 / 41 = 43.9%, shown as 44%.
 
 ---
@@ -3153,6 +3260,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 2.9 | 2026-10-25 | OstrichPKI Team | CA gRPC mTLS final refresh after fix round 3 (same branch and run record). Summary table AC row corrected to 8 / 0 / 3 / 5 = 19% (was shown as 9 / 0 / 4 / 5 = 22%; AC-4 is the only added AC control); TOTAL unchanged at 18 / 41 = 44% (arithmetic under the table). IA-3: trust-anchor guard now walks the CA-database lineage (subject alone, issued-by, issuer, ancestors), refusal audited as `grpc_listener_refused`, per-call `subscriber_issuing_ca`; residual siblings / grandchildren / external roots (POAM-28). AU-2: `grpc_listener_refused`, `subscriber_issuing_ca`, summary fields, cancelled-request and shutdown residuals; pre-database startup refusals still log-only. AU-5: `alert="audit_write_failed"` and commit `outcome=unknown` recorded as supporting only (status stays 🔴, no alert routing). AU-8: `details.occurred_at` / `caller_occurred_at`. AU-9 / AU-9(3): checked `append`, lock / statement / idle-in-transaction timeouts, sign on the blocking pool, SLH-DSA audit key refused; Postgres tests (incl. new `sign_timeout_db.rs`) NOT RUN, `OSTRICH_DB_TESTS` opt-in now fails when the DB is unreachable; hung-HSM thread / shutdown residual (SEC-017). AU-10, SC-13: SLH-DSA CA keys unsupported (POAM-2026-10-23-34, new). SC-8 / SC-23: REST plain-HTTP qualifier (NIST-023). SC-24: trust-anchor and SLH-DSA refusals. CM-6 client-CA row. Test counts: `grpc_mtls_e2e` 21/21, 41 `grpc_tls::tests`. **No control status changed** |
 | 3.0 | 2026-10-26 | OstrichPKI Team | Per-method CA gRPC authorization and verified audit actor (branch `claude/grpc-per-method-authz`, uncommitted; run record `target/agent-workflow/20261025-202226-grpc-per-method/`). AC-3: three role lists, default-deny method table, admin-issuer, requestor and profile checks. AC-5: disjoint issuer / admin identities, one admin certificate per named operator. AC-6: per-method least privilege (✅), AC-6(10) profile allowlists and CA-profile refusal (✅), AC-6(9) Revoke / GenerateCrl audited, CheckRevocationStatus unaudited read (🟡); stale POAM-26 gap removed. AU-2: new denial reasons and detail fields, `grpc_listener_started` `clients` / `method_rules` / `issuer_profiles`, `grpc_listener_refused` `grpc_authorization_layer`, revocation and CRL Failure records. AU-3: gRPC actor = verified peer DN with `authenticated_caller*` and `on_behalf_of` (POAM-25 closed pending commit). AU-10: signed records attribute the peer; `audit_signing_e2e` actor assertion NOT RUN. AU-12, CM-6 (role-list, profile and legacy-variable rows), CM-7 (method table, profiles, debug-only plaintext constructor), IA-3 (per-call leaf validity, admin direct-issuance, IA-9 related), SI-10 (requestor validation, const-oid fuzz finding fixed; related SI-11 note). Cross-reference: FMT_SMR.2 → IA-3 added. POA&M IDs 35-38 referenced. Test counts (coder-reported, final tree): `grpc_tls` 66, `grpc_mtls_e2e` 39, `ostrich-ca` 78, ca-server bins 21, `make test-unit` 782. **No control status changed; summary table unchanged (18 / 41 = 44%)** |
 | 3.1 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation (branch `claude/dependabot-remediation`, uncommitted; run record `target/agent-workflow/20261026-dependabot-remediation/`). RA-5: "fails on any new advisory" qualified as RustSec-only (GitHub-only advisories reach us only through Dependabot); npm gate described with its limits (`--prod --audit-level=high`); Dependabot ecosystems listed (npe-portal not covered); 2026-10-26 evidence (21 open alerts; full `pnpm audit` 28 → 2 moderate); new gaps for GHSA-only coverage, npm dev/medium not gated, npe-portal unscanned and untriaged alerts (POAM-39, -40, -42). SI-2: `pnpm audit` named in Implementation; new 2026-10-26 evidence table (19 GHSAs, scope, first-patched version, days open against proposed windows); residual react-router → POAM-39; timeliness gap. Local gates only. **No control status or percentage changed** (RA-5 and SI-2 stay 🟡 Partial; summary table not recalculated) |
+| 3.2 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted; run record `target/agent-workflow/20261026-091032-dns01-resolver/`). CM-6: `ACME_DNS01_RESOLVERS` / `--dns01-resolvers` baseline (default system resolvers, at most 8 IP literals, startup refusals), Helm `acme.dns01Resolvers` and NetworkPolicy egress; helm render NOT RUN. SI-10: dns-01 identifier, DNS-answer and resolver-list validation, bounds-checked acmeIdentifier parsing; `new_order` explicitly not evidence (POAM-45); related SI-11 challenge-error item. SC-17: dns-01 domain-control evidence (🟡 item) and ACME gaps (POAM-41, -45, -48); related SC-21 (not in the TOE; environment assumption) and SC-5 (83 s per validation, concurrency unbounded, POAM-46); SC-20 not claimed. AU-2: no new events; record content gap (POAM-47). IA-5: challenge validation is not IA-5(1) evidence. Tests re-run by the scribe: `ostrich-acme` lib 72/72, acme-server bins 7/7, `make test-unit` 817 / 0 / 1. **No control status changed; summary table unchanged (18 / 41 = 44%)** |
 
 ---
 

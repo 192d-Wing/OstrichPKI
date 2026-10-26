@@ -1,9 +1,9 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.1
+**Document Version:** 2.2
 **Last Updated:** 2026-10-26
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
-**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 667 unit tests passed, 0 failed, 1 ignored, 2026-10-24 (§2.6)
+**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 817 unit tests passed, 0 failed, 1 ignored, 2026-10-26 (§2.11, `make test-unit`)
 
 ---
 
@@ -502,6 +502,80 @@ pre-check; deployed NetworkPolicy and port-forward admin access.
 
 ---
 
+### 2.11 Test Run 2026-10-26 (ACME dns-01 resolver fix)
+
+**Scope:** branch `claude/dns01-resolver-fix`, uncommitted (run record
+`target/agent-workflow/20261026-091032-dns01-resolver/`): the dns-01 resolver
+gets real name servers (operator list or system configuration, fail closed
+when empty), an FQDN query name, no in-process cache, TXT concatenation and
+owner / CNAME checks, retry on mismatch, and registered RFC 8555 problem types
+for http-01, dns-01 and tls-alpn-01 failures (POAM-2026-10-23-41 narrowed).
+**Sources:** `qa-report.md` (QA round, PASS), `fixes-round-1.md` to
+`fixes-round-3.md`. Rows marked **scribe** were re-run by the compliance
+scribe on the final tree on 2026-10-26.
+
+| Gate | Command | Result | Counts |
+|------|---------|--------|--------|
+| Unit (workspace) | `make test-unit` | PASS (**scribe**) | **817 passed, 0 failed, 1 ignored** (pre-existing ignore; 16 suites). QA round 800; fix round 1 810 |
+| Unit + bins | `cargo test -p ostrich-acme -p ostrich-acme-server --all-features` | PASS (**scribe**) | `ostrich-acme` lib **72 passed**, acme-server bins **7 passed**, 0 failed (QA round 55 / 7; fix round 1 65 / 7) |
+| Fuzz | `cargo +nightly fuzz run fuzz_dns01_query_name -- -max_total_time=60` (new target) | PASS | 131,276 runs / 61 s with the QA oracle; 136,323 runs / 46 s after fix round 1 (`-max_total_time=45`); no crash (not re-run by the scribe) |
+| Mutation | temporary mutations of `validation.rs`, `cargo test -p ostrich-acme --lib dns01`, restore verified with `diff -q` | PASS | 5 of 5 QA mutants killed (empty-list guard, FQDN dot, `cache_size`, original `ResolverConfig::default()` bug, case-insensitive compare); owner-filter mutation killed in fix round 1 |
+| Format / lint | `cargo fmt --all -- --check`, `make clippy`, fuzz crate `rustfmt` and `clippy` | PASS | rc=0 (fix rounds 1-3) |
+| Supply chain | `make security` | PASS | 614 crates, no vulnerabilities (QA round, fix round 1) |
+| Helm render | `helm lint` / `helm template deploy/helm/ostrich-pki` | **NOT RUN** | helm not installed; only a Go `text/template` stub render (release engineer, REL-001) |
+| Integration | `make test-integration` | **NOT RUN** | no Postgres; no dns-01 integration test exists |
+| Live dns-01 E2E | real recursive / authoritative DNS | **NOT RUN** | no such test exists |
+| Binary smoke | `ostrich-acme-server --dns01-resolvers ""` | **NOT RUN** | local aws-lc-fips dylib load failure, unrelated to the change |
+
+**New tests (final tree, names checked against `cargo test` output):**
+
+- `validation.rs` resolver configuration: `dns01_config_rejects_empty_name_servers`,
+  `dns01_config_rejects_system_error`, `dns01_config_uses_upstreams_and_skips_system`,
+  `dns01_config_rejects_invalid_upstreams`, `dns01_config_uses_system_name_servers_only`,
+  `dns01_opts_disable_caching`, `validate_dns01_resolver_ips_policy`
+- `validation.rs` query name and validator: `dns01_query_name_is_fqdn`,
+  `dns01_query_name_rejects_bad_identifiers`,
+  `dns01_validate_fails_closed_without_name_servers`,
+  `dns01_validate_rejects_malformed_identifier_first`,
+  `dns01_validate_rejects_invalid_upstreams_without_fallback`,
+  `dns01_validate_public_rejects_malformed_identifier`
+- `validation.rs` TXT matching: `txt_match_requires_concatenation_equal_to_digest`,
+  `txt_match_requires_owner_on_cname_chain`, `txt_match_bounds_cname_chain_length`
+- `validation.rs` loopback mock DNS (real hickory resolver):
+  `dns01_mock_valid_digest_returns_true`,
+  `dns01_mock_split_strings_joining_to_digest_returns_true`,
+  `dns01_mock_junk_and_digest_in_one_record_returns_false`,
+  `dns01_mock_foreign_owner_txt_returns_false`,
+  `dns01_mock_cname_delegated_txt_returns_true`,
+  `dns01_mock_trailing_dot_identifier_is_malformed`,
+  `dns01_mock_near_miss_digests_return_false`,
+  `dns01_mock_mismatch_then_match_returns_true`,
+  `dns01_mock_wrong_thumbprint_returns_false`,
+  `dns01_mock_retry_after_nxdomain_is_not_cached`,
+  `dns01_mock_persistent_nxdomain_fails_closed`
+- `validation.rs` http-01 / tls-alpn-01 error mapping:
+  `http01_connect_failure_is_connection_with_generic_detail`,
+  `http01_non_2xx_is_incorrect_response`, `http01_wrong_body_is_not_valid`,
+  `unresolvable_challenge_host_is_dns`, `acme_identifier_digest_is_bounds_checked`;
+  `resolve_pinned_enforces_ssrf_guard_unless_allowed` extended
+  (`rejectedIdentifier`, no IP in the detail)
+- `error.rs`: `every_error_type_is_registered`
+- `rest.rs`: `challenge_error_document_uses_type_and_client_detail`,
+  `challenge_error_document_only_emits_registered_types`
+- `services/acme-server/src/main.rs` (bins; not run by `make test-unit`):
+  `dns01_resolvers_arg_parses`, `dns01_resolvers_invalid_refuses_startup`,
+  `dns01_resolvers_boundaries`, `dns01_resolvers_empty_value_means_system_resolvers`
+
+**Not covered:** the `validate_challenge` audit record and the
+`AcmeState.dns01_resolvers` → `with_resolvers` wiring (need Postgres; QA-001,
+POAM-2026-10-23-47); TCP fallback, truncation and SERVFAIL against a real
+server; the env-var form `ACME_DNS01_RESOLVERS=""` at runtime (the parser is
+tested directly); Helm rendering; CAA and DNSSEC (not implemented,
+POAM-2026-10-23-41); tls-alpn-01 RFC 8737 §3 critical-flag and SAN checks
+(not implemented, POAM-2026-10-23-48).
+
+---
+
 ## 3. Unit Test Results
 
 ### 3.1 ostrich-db (49 tests)
@@ -890,6 +964,7 @@ closed pending first green CI run).
 | gRPC peer subject / allowlist (`fuzz_grpc_peer_subject`, 2026-10-25) | 237,187 (61 s) after the fix | 1 before the fix (OID-arc overflow panic, fixed) | Pass after fix (implementer-reported, §2.8) |
 | gRPC peer subject / role lists (`fuzz_grpc_peer_subject`, 2026-10-26) | 135,145 (61 s) after the fix | 1 before the fix (const-oid `Display` panic on an undecodable numeric OID, fixed) | Pass after fix (coder-reported, §2.10) |
 | gRPC requestor binding (`fuzz_grpc_requestor`, new 2026-10-26) | 246,720 (61 s) | 0 | Pass (coder-reported, §2.10) |
+| ACME dns-01 query name (`fuzz_dns01_query_name`, new 2026-10-26) | 131,276 (61 s, QA oracle); 136,323 (46 s) after fix round 1 | 0 | Pass (QA- and coder-reported, §2.11) |
 
 ### 5.5 Secrets Scanning
 
@@ -1064,3 +1139,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 1.9 | 2026-10-25 | OstrichPKI Team | Added §2.9, the CA gRPC mTLS final-code run after fix rounds 2-3: `grpc_mtls_e2e` 21/21, `fips_gate_preinstalled` 1/1, 41 `grpc_tls::tests`, `ostrich-audit` lib 20/20 (re-run by the scribe); `make test-unit` 732/0 and service bins (coder). Postgres tests incl. new `sign_timeout_db.rs` NOT RUN |
 | 2.0 | 2026-10-26 | OstrichPKI Team | Added §2.10, the per-method CA gRPC authorization run (coder-reported, final tree; not re-run by the scribe): `make test-unit` 782 / 0 / 1, `grpc_tls` 66, `ostrich-ca` 78, ca-server bins 21, `ostrich-est` 44, `grpc_mtls_e2e` 39; fuzz `fuzz_grpc_requestor` 246,720 runs and `fuzz_grpc_peer_subject` 135,145 runs after a const-oid panic fix; mutations M1-M29 killed except M13h (NOT RUN). DB-gated suites NOT RUN (POAM-2026-10-23-36). §5.4 fuzz rows added |
 | 2.1 | 2026-10-26 | OstrichPKI Team | §5.2: recorded the Dependabot alert remediation result (`cargo audit` exit 0, 1378 advisories / 614 crates; full web-ui `pnpm audit` 28 → 2 moderate; `make test-unit` 782 / 0 / 1); "latest recorded" moved to it. No new tests. Local only |
+| 2.2 | 2026-10-26 | OstrichPKI Team | Added §2.11, the ACME dns-01 resolver fix run: `make test-unit` 817 / 0 / 1 and `ostrich-acme` lib 72 / acme-server bins 7 (re-run by the scribe); fuzz `fuzz_dns01_query_name` (new) and mutation checks recorded; Helm render, integration, live dns-01 E2E and binary smoke NOT RUN. §5.4: new fuzz row. Header "latest recorded run" updated |

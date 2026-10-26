@@ -1,6 +1,6 @@
 # OstrichPKI Security Target
 
-**Document Version:** 1.7
+**Document Version:** 1.8
 **Document Date:** January 2026 (revised 2026-10-26)
 **Protection Profile:** NIAP Protection Profile for Certification Authorities (PP-CA) v2.1
 **Common Criteria Version:** 3.1 Release 5
@@ -302,6 +302,10 @@ A reliable time source (e.g., authenticated NTP) is available and the TOE is con
 
 The PostgreSQL database is properly secured with access control, encryption at rest, and regular backups.
 
+#### A.DNS_RESOLVER
+
+The recursive DNS resolver(s) that the ACME service uses for dns-01 challenge validation (configured with `ACME_DNS01_RESOLVERS`, or the host's system resolvers when unset) validate DNSSEC and are reached over a trusted network segment. The TOE does not validate DNSSEC, does not check the AD bit, and does not authenticate its DNS traffic (no TSIG or DoT). Added 2026-10-26 (POAM-2026-10-23-41).
+
 ---
 
 ## 4. Security Objectives
@@ -375,6 +379,10 @@ The operational environment shall provide a reliable and authenticated time sour
 #### OE.BACKUP
 
 The operational environment shall provide secure backup and recovery capabilities.
+
+#### OE.DNS_RESOLVER
+
+The operational environment shall provide DNSSEC-validating recursive DNS resolution for ACME dns-01 validation on a trusted network segment, with a bounded negative-cache TTL (RFC 2308). Upholds A.DNS_RESOLVER; NIST 800-53 SC-21 is inherited from this resolver and is not implemented in the TOE. Added 2026-10-26.
 
 ---
 
@@ -796,6 +804,7 @@ All SFR dependencies are satisfied per PP-CA v2.1 analysis.
 | 1.5 | 2026-10-25 | OstrichPKI Team | TOE interfaces: CA gRPC issuance API recorded as TLS 1.3 mTLS with a client-subject allowlist (uncommitted branch `claude/grpc-mtls`); revocation gap noted (POAM-27). Architecture diagram note: "gRPC + mTLS" scoped to RA → CA; database, HSM and audit paths corrected; CA gRPC NetworkPolicy mapped to OE.NETWORK. No SFR claim or assurance level changed. Header version 1.3 → 1.5 (1.4 had not updated it) |
 | 1.6 | 2026-10-26 | OstrichPKI Team | TOE interfaces: CA gRPC API per-role, per-method authorization (Issuer / Admin = CA Operations Staff, default deny), verified client subject as audit actor, Admin leaf issued directly by the single anchor (uncommitted branch `claude/grpc-per-method-authz`). No SFR claim or status change |
 | 1.7 | 2026-10-26 | OstrichPKI Team | Dependabot alert remediation. ALC_FLR.2: dependency-gate claim qualified to RustSec advisories; npm gate limits and unscanned npe-portal SPA noted. AVA_VAN.2: 2026-10-26 local result recorded. No assurance claim changed |
+| 1.8 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (uncommitted branch `claude/dns01-resolver-fix`). Added assumption A.DNS_RESOLVER and objective OE.DNS_RESOLVER (DNSSEC-validating recursive resolver on a trusted segment; SC-21 inherited, not in the TOE; POAM-41) and a port 53 row in Section 11.3. Proposed by the compliance scribe; not yet reviewed against the PP-CA assumption set. No SFR or assurance claim changed |
 
 ---
 
@@ -1027,6 +1036,7 @@ This section describes how OstrichPKI satisfies each Security Assurance Requirem
 | 8444 | HTTPS | Internal | EST |
 | 5432 | TCP | Internal | PostgreSQL |
 | 123 | UDP | Outbound | NTP |
+| 53 | UDP, TCP | Outbound | ACME dns-01 TXT lookups to the DNSSEC-validating recursive resolver (A.DNS_RESOLVER) |
 
 ### 11.4 Administrator Responsibilities
 
