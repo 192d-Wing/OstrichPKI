@@ -1,0 +1,214 @@
+# Live Postgres + SoftHSM2 test suites (Linux)
+#
+# COMPLIANCE MAPPING (test evidence; the controls are implemented in the
+# code under test):
+# - NIST 800-53: SA-11 (Developer Testing), CA-2 (executed assessment
+#   evidence: the job fails if any targeted live test skipped or did not run)
+# - NIST 800-53: AU-2 / AU-3 / AU-10 / AU-12, AU-9(3) (signed audit chain,
+#   verified-peer audit actor and denial record through the real gRPC stack),
+#   AU-5 (sign_timeout_db: a hung signer times out and releases the chain
+#   lock), IA-3 / AC-3 (Admin-only GenerateCrl over real mTLS, positive and
+#   denied paths), IA-7 (PKCS#11 token login, positive path only),
+#   SC-12 / SC-13 (HSM-backed CA key)
+# - NIST 800-53: CM-3 (schema applied with the production embedded migrator),
+#   CM-2 / SA-15 / SR-3 (Postgres image pinned by digest, actions pinned by
+#   SHA)
+# - NIST 800-53: CM-6 - least-privilege token (contents: read), no secrets
+# - NIAP PP-CA: FAU_GEN.1, FAU_GEN.2, FAU_STG.1 (chain integrity),
+#   FAU_STG.4 (sign_timeout_db), FCS_STG_EXT.1, FDP_ACF.1;
+#   ATE_FUN.1 / ATE_IND.1 (executed test records)
+# Postgres and SoftHSM are test doubles: the database credentials, token PINs
+# and keys below are throwaway test values (same as .gitlab-ci.yml and
+# hsm-integration.yml). The token store lives under $RUNNER_TEMP and is never
+# cached or uploaded; only test logs are uploaded (90-day artifact retention;
+# the evidence record is the run URL, commit SHA and artifact digest).
+
+name: Live DB + SoftHSM tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Only superseded PR runs are cancelled; push-to-main runs always complete.
+concurrency:
+  group: integration-db-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  live-db-softhsm:
+    name: DB + SoftHSM live tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        # postgres:16-alpine multi-arch index digest (Docker Hub, 2026-10-26).
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+        env:
+          POSTGRES_USER: ostrich_test
+          POSTGRES_PASSWORD: test_password_insecure
+          POSTGRES_DB: ostrich_pki_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ostrich_test -d ostrich_pki_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # The service has no TLS: sslmode=disable is an explicit, test-only
+      # choice (PoolConfig requires TLS by default, SC-8 / CM-6).
+      DATABASE_URL: postgresql://ostrich_test:test_password_insecure@localhost:5432/ostrich_pki_test?sslmode=disable
+      # ostrich-audit DB suites opt-in; the e2e modules fail instead of skip.
+      OSTRICH_DB_TESTS: "1"
+      OSTRICH_REQUIRE_LIVE_TESTS: "1"
+      PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
+      PKCS11_PIN: "1234"
+      SOFTHSM_LABEL: ostrich-ci-e2e
+      POSTGRES_IMAGE: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+      RUST_LOG: warn
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install SoftHSM2 and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends softhsm2 cmake clang libclang-dev golang-go perl pkg-config nasm protobuf-compiler libssl-dev
+          openssl version
+          softhsm2-util --version
+          go version
+          test -f "$PKCS11_MODULE_PATH"
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version && cargo --version
+
+      # Restored on every run; saved from main only (PR runs cannot
+      # overwrite the cache that main and other PRs restore).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: live-db
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # --init-token --free reassigns the token to a new slot number: derive
+      # it from --show-slots by label (the e2e modules read PKCS11_SLOT).
+      - name: Initialise SoftHSM token and export its slot
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/softhsm"
+          mkdir -p "$d/tokens" && chmod 700 "$d" "$d/tokens"
+          printf 'directories.tokendir = %s\nobjectstore.backend = file\nobjectstore.umask = 0077\nlog.level = INFO\n' "$d/tokens" > "$d/softhsm2.conf"
+          export SOFTHSM2_CONF="$d/softhsm2.conf"
+          echo "SOFTHSM2_CONF=$SOFTHSM2_CONF" >> "$GITHUB_ENV"
+          softhsm2-util --init-token --free --label "$SOFTHSM_LABEL" --pin "$PKCS11_PIN" --so-pin 12345678
+          slot="$(softhsm2-util --show-slots | awk -v l="$SOFTHSM_LABEL" '/^Slot [0-9]+$/{s=$2} $1=="Label:"{v=$0; sub(/^[[:space:]]*Label:[[:space:]]*/,"",v); sub(/[[:space:]]+$/,"",v); if(v==l){print s; exit}}')"
+          [[ "$slot" =~ ^[0-9]+$ ]] || { echo "::error::SoftHSM slot for $SOFTHSM_LABEL not found"; exit 1; }
+          echo "PKCS11_SLOT=$slot" >> "$GITHUB_ENV"
+          echo "SoftHSM token $SOFTHSM_LABEL is in slot $slot"
+          mkdir -p "$RUNNER_TEMP/live"
+
+      # Built separately so a compile failure is not reported as a test failure.
+      - name: Build test binaries and the migration helper
+        id: build
+        run: |
+          cargo test --locked --no-run -p ostrich-audit -p ostrich-ca -p ostrich-integration-tests
+          cargo build --locked -p ostrich-db --example migrate_test_db
+
+      # The production embedded migrator (DatabasePool::migrate), CM-3.
+      - name: Apply migrations
+        id: migrate
+        run: |
+          set -euo pipefail
+          cargo run --locked -q -p ostrich-db --example migrate_test_db 2>&1 | tee "$RUNNER_TEMP/live/migrate.txt"
+
+      # --show-output keeps each test's stderr (incl. any "skipped (" note) in
+      # the log for the check below; --test-threads=1: one shared database and
+      # one SoftHSM token. Each suite runs even if an earlier suite failed,
+      # but only once the build and the migrations succeeded.
+      - name: ostrich-audit Postgres suites
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.migrate.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cargo test --locked -p ostrich-audit --test chain_concurrency --test signed_chain_tamper --test sign_timeout_db -- --test-threads=1 --show-output 2>&1 | tee "$RUNNER_TEMP/live/audit.txt"
+
+      - name: ostrich-ca live e2e modules (SoftHSM + DB)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.migrate.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cargo test --locked -p ostrich-ca --lib -- --test-threads=1 --show-output audit_signing_e2e:: crl_delta_e2e:: issuance_aia_e2e:: pop_e2e:: 2>&1 | tee "$RUNNER_TEMP/live/ca-lib-e2e.txt"
+
+      - name: CA gRPC audit-actor e2e (real CaGrpcService over mTLS)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.migrate.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cargo test --locked -p ostrich-integration-tests --test ca_grpc_audit_e2e -- --test-threads=1 --show-output 2>&1 | tee "$RUNNER_TEMP/live/grpc-audit.txt"
+
+      - name: EST serverkeygen e2e
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.migrate.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cargo test --locked -p ostrich-integration-tests --test est_serverkeygen_e2e -- --test-threads=1 --show-output 2>&1 | tee "$RUNNER_TEMP/live/est-skg.txt"
+
+      # A green-but-skipped (or renamed / filtered-out) test is not evidence:
+      # every expected test must appear as "test <name> ... ok".
+      - name: Every targeted live test ran and passed
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.migrate.outcome == 'success' }}
+        run: |
+          set -uo pipefail
+          rc=0
+          for n in \
+            concurrent_appends_do_not_fork_the_chain \
+            signature_catches_tamper_that_hash_chain_misses \
+            hung_signer_times_out_and_releases_the_chain_lock \
+            audit_signing_e2e::ca_emits_signed_audit_records_verifiable_with_ca_public_key \
+            crl_delta_e2e::delta_crl_lifecycle_verified_by_openssl \
+            issuance_aia_e2e::issued_certificates_carry_aia_extension_verified_by_openssl \
+            pop_e2e::proof_of_possession_is_enforced_for_end_entity_issuance \
+            grpc_handlers_record_verified_peer_as_audit_actor \
+            est_serverkeygen_full_stack_over_http
+          do
+            if grep -Fq -- "test $n ... ok" "$RUNNER_TEMP"/live/*.txt; then
+              echo "ran: $n"
+            else
+              echo "::error::$n did not run and pass"
+              rc=1
+            fi
+          done
+          if grep -nE ': skipped \(|; skipping' "$RUNNER_TEMP"/live/*.txt; then
+            echo "::error::a live test reported a skip"
+            rc=1
+          fi
+          exit "$rc"
+
+      # Never writes the PIN or DATABASE_URL.
+      - name: Record test environment
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/live"
+          {
+            echo "--- environment"
+            echo "commit: $GITHUB_SHA"
+            echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+            echo "postgres image: $POSTGRES_IMAGE"
+            echo "softhsm2-util --version: $(softhsm2-util --version 2>&1 || echo unavailable)"
+            echo "openssl version: $(openssl version)"
+            echo "PKCS11_SLOT: ${PKCS11_SLOT:-unset}"
+            rustc -V
+          } > "$RUNNER_TEMP/live/environment.txt"
+
+      - name: Upload live test records
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: live-db-softhsm-results
+          path: ${{ runner.temp }}/live/
+          if-no-files-found: warn
+          retention-days: 90

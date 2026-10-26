@@ -9,6 +9,10 @@
 //!
 //! Gated on DATABASE_URL + PKCS11_* + openssl; skips otherwise. Run live with
 //! `--test-threads=1` (shares the DB + SoftHSM token with the other e2e tests).
+//!
+//! With `OSTRICH_REQUIRE_LIVE_TESTS=1` (CI) a missing variable or openssl fails
+//! the test instead (`crate::live_test_env`); the database name must have
+//! a `test` token before any table is cleared (test-safety guard).
 
 use std::path::Path;
 use std::process::Command;
@@ -117,23 +121,21 @@ async fn insert_and_revoke(
 
 #[tokio::test]
 async fn delta_crl_lifecycle_verified_by_openssl() {
-    let (Ok(db_url), Ok(module), Ok(slot), Ok(pin)) = (
-        std::env::var("DATABASE_URL"),
-        std::env::var("PKCS11_MODULE_PATH"),
-        std::env::var("PKCS11_SLOT"),
-        std::env::var("PKCS11_PIN"),
-    ) else {
-        eprintln!("crl_delta_e2e: set DATABASE_URL + PKCS11_* to run; skipping");
+    let Some(crate::live_test_env::LiveEnv {
+        db_url,
+        module,
+        slot,
+        pin,
+    }) = crate::live_test_env::live_env("crl_delta_e2e", true)
+    else {
         return;
     };
-    if Command::new("openssl").arg("version").output().is_err() {
-        return;
-    }
-    let slot: u64 = slot.parse().unwrap();
 
     let pool = DatabasePool::new(&PoolConfig::from_url(&db_url).unwrap())
         .await
         .unwrap();
+    // Test-safety guard: never DELETE from a non-test database.
+    crate::live_test_env::assert_disposable_db(&pool, "crl_delta_e2e").await;
     for t in [
         "crls",
         "audit_events",

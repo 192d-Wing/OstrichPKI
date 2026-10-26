@@ -40,3 +40,9 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+
+# CI/test helper (not shipped). `test = true` so `cargo test -p ostrich-db`
+# runs its database-name guard unit test.
+[[example]]
+name = "migrate_test_db"
+test = true

@@ -1,6 +1,6 @@
 # NIST 800-53 Rev 5 Security Control Mapping
 
-**Document Version:** 3.4
+**Document Version:** 3.5
 **Date:** 2026-10-26
 **OstrichPKI Version:** 0.15.0
 **Standard:** NIST SP 800-53 Revision 5
@@ -411,7 +411,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
 - 🟡 AC-6(9) (log use of privileged functions): RevokeCertificate and
   GenerateCrl are audited with the verified admin peer as actor;
   CheckRevocationStatus is an unaudited admin read (only its denials are
-  audited). Handler-level live evidence is pending (POAM-2026-10-23-36)
+  audited). Handler-level live evidence is pending (POAM-2026-10-23-36;
+  CI path added 2026-10-26, NOT RUN)
 - 🔴 No user privilege levels
 
 **Gaps:**
@@ -636,7 +637,8 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
     `failure: ca_profile_not_permitted`. Tests (pure builders):
     `revocation_failure_event_contents`, `crl_failure_event_contents`,
     `caller_profile_refusal_blocks_ca_profiles_for_service_callers`; the
-    database paths were not executed (POAM-2026-10-23-36). Authorized
+    database paths were not executed and have no live test yet
+    (POAM-2026-10-23-36). Authorized
     `CheckRevocationStatus`, `GetCaInfo` and `ListProfiles` calls are not
     audited (reads)
 
@@ -753,6 +755,15 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   value is only as trustworthy as the fronting reverse proxy. The session token
   and backend bearer token are not logged, which the log-capture test checks
   with a sentinel token. Content is in the log line only (POAM-2026-10-23-47)
+- 🟡 DB-backed test of the gRPC handler glue (2026-10-26, CI path added,
+  **NOT RUN**):
+  [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs)
+  asserts actor, `authenticated_caller*` and `on_behalf_of` on the stored
+  Issue, Revoke and GenerateCrl records written by the real `CaGrpcService`;
+  it runs in
+  [integration-db.yml](../../.github/workflows/integration-db.yml), which has
+  not run. M13h: kill argued by construction, not executed. The REST CRL
+  handler glue still has no live test (POAM-2026-10-23-36)
 
 **Phase 12 Enhancements:**
 
@@ -948,7 +959,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   Without `OSTRICH_DB_TESTS=1` they skip and are reported as passed, so those
   results are not evidence. With the opt-in they now fail if the database is
   unreachable, so a green GitLab `test:integration` job (which sets it) will
-  be evidence once it has run (POAM-2026-10-23-31). The in-memory
+  be evidence once it has run (POAM-2026-10-23-31). Since 2026-10-26
+  `integration-db.yml` also runs them and fails unless all three report
+  `ok` (CI path added, NOT RUN). The in-memory
   `MemoryAuditSink` concurrency test is not evidence for the database path.
   Residuals: signing still happens under the global lock, so signer latency
   serialises every audit writer of every service. A hung HSM call cannot be
@@ -1059,7 +1072,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   commit). `audit_signing_e2e` now also asserts actor `CN=ops-admin` and
   `on_behalf_of = admin::audit-e2e` on the signed revocation record, but that
   test needs Postgres and SoftHSM and was **NOT RUN** for this change
-  (POAM-2026-10-23-36). The mechanism status above is unchanged
+  (POAM-2026-10-23-36). The mechanism status above is unchanged.
+  2026-10-26: `audit_signing_e2e` and the new
+  [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs)
+  (`verify_signed_chain` over gRPC-written records against the CA SPKI, then
+  false after the `crl_generation` signature is corrupted) have a CI path in
+  [integration-db.yml](../../.github/workflows/integration-db.yml),
+  **NOT RUN**
 - 🔴 No CSR→Certificate linkage (missing request_id)
 
 **Gaps / POA&M:**
@@ -1119,6 +1138,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   web-ui does not emit `ostrich-audit` records, so AU-12 generation into
   `ostrich-audit` and the AU-9 / AU-10 protections are not met for the web-ui
   (POAM-2026-10-23-47)
+- 🟡 Stored denial record (2026-10-26, CI path added, **NOT RUN**):
+  [ca_grpc_audit_e2e.rs](../../tests/integration/ca_grpc_audit_e2e.rs)
+  asserts one stored `access_denied` Failure record in Postgres when an
+  Issuer calls GenerateCrl, through an `AuthAuditAdapter` stack that the test
+  assembles to mirror `start_grpc_listener` (not `start_grpc_listener`
+  itself); job [integration-db.yml](../../.github/workflows/integration-db.yml)
+  (POAM-2026-10-23-36)
 
 **Evidence Required for ATO:**
 
@@ -3395,6 +3421,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 3.2 | 2026-10-26 | OstrichPKI Team | react-router v7 migration in web-ui (branch `claude/react-router-v7`, uncommitted; run record `target/agent-workflow/20261026-091035-react-router-v7/`). SI-2: GHSA-wrjc-x8rr-h8h6 and GHSA-337j-9hxr-rhxg marked remediated (react-router 7.18.4), overdue; residual line closed; new 2026-10-26 evidence record; both stay in the SI-2(c) missed count. RA-5: 2026-10-26 full `pnpm audit` = 0 recorded; POAM-39 migration marked done; triage gap reworded. SI-10: web-ui same-origin navigation guard and encoded path segments added as client-side defence in depth, with the standing rule; BFF proxy decode gap → POAM-43, no web-ui test runner → POAM-44. CA-5: POAM-39 closure recorded in NIAP_GAP_ANALYSIS.md §11 (no CA-5 section exists here; none added). Local evidence only. **No control status or percentage changed** (SI-2 and RA-5 stay 🟡 Partial; SI-10 stays 🟢 Good (85%); summary table not recalculated) |
 | 3.3 | 2026-10-26 | OstrichPKI Team | web-ui BFF proxy raw path (branch `claude/web-ui-proxy-raw-path`, uncommitted, based on `main` @ 82cdcd4 (PR #188 merged); run record `target/agent-workflow/20261026-093447-proxy-raw-path/`). SI-10: new evidence item for `validate_backend_path` / `proxy_to_service` (raw path, strict decoder, fail-closed 400; residuals listed); the POAM-43 reference in the client-side guard item now says closed pending first green CI run; gaps POAM-45 (`/next` open redirect) and POAM-46 (npe-portal proxy) added. AC-3: web-ui session gate bullet rewritten with code references (`require_session` validates against `SessionManager`); the stale gap claiming the proxy checked only cookie presence removed (verified against `middleware/session.rs`, lines 36, 62, 70); new BFF proxy target / credential bullet (inbound `Authorization`, `Cookie`, `X-Npe-*` stripped); gaps POAM-46 and POAM-48 (cross-site GET); FDP_ACF.1 listed as supporting only. AU-2 / AU-3: `proxy_path_rejected` event and its fields, including `client_ip`, recorded as 🟡 (log line only). AU-12: web-ui `ostrich-audit` gap added (POAM-47). Local evidence only (`cargo test -p ostrich-web-ui` 41 / 0, re-run by the scribe). **No control status or percentage changed** (AC-3 stays 🟢 Implemented, SI-10 🟢 Good (85%), AU-2 / AU-12 🟢 Compliant, AU-3 ✅; summary table not recalculated) |
 | 3.4 | 2026-10-26 | OstrichPKI Team | ACME dns-01 resolver fix (branch `claude/dns01-resolver-fix`, uncommitted; run record `target/agent-workflow/20261026-091032-dns01-resolver/`). CM-6: `ACME_DNS01_RESOLVERS` / `--dns01-resolvers` baseline (default system resolvers, at most 8 IP literals, startup refusals), Helm `acme.dns01Resolvers` and NetworkPolicy egress; helm render NOT RUN. SI-10: dns-01 identifier, DNS-answer and resolver-list validation, bounds-checked acmeIdentifier parsing; `new_order` explicitly not evidence (POAM-49); related SI-11 challenge-error item. SC-17: dns-01 domain-control evidence (🟡 item) and ACME gaps (POAM-41, -49, -52); related SC-21 (not in the TOE; environment assumption) and SC-5 (83 s per validation, concurrency unbounded, POAM-50); SC-20 not claimed. AU-2: no new events; record content gap (POAM-51). IA-5: challenge validation is not IA-5(1) evidence. Tests re-run by the scribe: `ostrich-acme` lib 72/72, acme-server bins 7/7, `make test-unit` 817 / 0 / 1. **No control status changed; summary table unchanged (18 / 41 = 44%)** |
+| 3.5 | 2026-10-26 | OstrichPKI Team | CI evidence gaps (branch `pr/hopeful-sammet-b6708c`, uncommitted, not pushed; run record `target/agent-workflow/20261026-082358-ci-evidence-gaps/`). AU-3, AU-10, AU-12: name the new DB-backed `tests/integration/ca_grpc_audit_e2e.rs` and the `integration-db.yml` job, CI path added, **NOT RUN**; M13h kill argued by construction, not executed. AC-6(9), AU-2, AU-9: POAM-36 / -31 cross-references updated. No new control sections; **no status or percentage changes** |
 
 ---
 

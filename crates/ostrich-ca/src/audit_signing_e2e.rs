@@ -19,6 +19,10 @@
 //! Gated on DATABASE_URL + PKCS11_MODULE_PATH + PKCS11_SLOT + PKCS11_PIN; skips
 //! (passes) when they are not set, so the normal `cargo test` run is unaffected.
 //!
+//! With `OSTRICH_REQUIRE_LIVE_TESTS=1` (CI) a missing variable fails
+//! the test instead (`crate::live_test_env`); the database name must have
+//! a `test` token before any table is cleared (test-safety guard).
+//!
 //! Run live with `--test-threads=1`: this and the issuance_aia_e2e test share
 //! the database and the SoftHSM token, and two PKCS#11 providers opened against
 //! the same module concurrently can crash.
@@ -57,23 +61,21 @@ fn assemble_certificate(tbs_der: &[u8], signature: &[u8]) -> Vec<u8> {
 
 #[tokio::test]
 async fn ca_emits_signed_audit_records_verifiable_with_ca_public_key() {
-    let (Ok(db_url), Ok(module), Ok(slot), Ok(pin)) = (
-        std::env::var("DATABASE_URL"),
-        std::env::var("PKCS11_MODULE_PATH"),
-        std::env::var("PKCS11_SLOT"),
-        std::env::var("PKCS11_PIN"),
-    ) else {
-        eprintln!(
-            "audit_signing_e2e: set DATABASE_URL + PKCS11_MODULE_PATH + PKCS11_SLOT + \
-             PKCS11_PIN to run this live test; skipping"
-        );
+    let Some(crate::live_test_env::LiveEnv {
+        db_url,
+        module,
+        slot,
+        pin,
+    }) = crate::live_test_env::live_env("audit_signing_e2e", false)
+    else {
         return;
     };
-    let slot: u64 = slot.parse().expect("PKCS11_SLOT must be numeric");
 
     let pool = DatabasePool::new(&PoolConfig::from_url(&db_url).unwrap())
         .await
         .expect("connect to test DB");
+    // Test-safety guard: never DELETE from a non-test database.
+    crate::live_test_env::assert_disposable_db(&pool, "audit_signing_e2e").await;
 
     // Reset the tables this test touches (FK order: children first).
     for table in ["audit_events", "certificates", "ca_certificates", "ca_keys"] {
