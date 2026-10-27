@@ -2,37 +2,111 @@ version: 2
 
 updates:
   # ---- Rust / Cargo ----
-  # A single entry at the workspace root covers every member crate, because
-  # Dependabot reads the root Cargo.toml + Cargo.lock for the whole workspace.
+  # One entry for both lockfiles. fuzz/ is its own workspace with its own
+  # fuzz/Cargo.lock, but its path dependencies (ostrich-acme, -audit, -common,
+  # -crypto, -db, -protocol, -x509) inherit the root [workspace.dependencies].
+  # Two entries made a /fuzz bump edit the root Cargo.toml without the root
+  # Cargo.lock (fails --locked: #202-#205), and a root bump left fuzz/Cargo.lock
+  # stale. With `directories`, each group below is one PR across "/" and
+  # "/fuzz", so both lockfiles move together. ci.yml `Build & test` fails a PR
+  # whose fuzz lock is out of step (`cargo fetch --locked`), whatever opened it.
+  # COMPLIANCE MAPPING:
+  # - NIST 800-53: CM-3 (Configuration Change Control), SI-2 (Flaw
+  #   Remediation), CM-2, SR-3 - POAM-2026-10-23-60
   - package-ecosystem: cargo
-    directory: "/"
+    directories:
+      - "/"
+      - "/fuzz"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
-    # Batch low-risk bumps into one PR to cut noise; majors stay individual.
+    # A dependency joins the first group it matches. Minor/patch bumps are
+    # batched into one PR to cut noise.
     groups:
+      # Security updates (groups default to version updates only): one PR for
+      # all open advisories across "/" and "/fuzz", so a fix for a crate in
+      # both graphs updates both lockfiles together. Group update-types do
+      # not apply here; see the ignore note below on security updates.
+      cargo-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
       cargo-minor-patch:
         update-types:
           - minor
           - patch
-    labels:
-      - dependencies
-      - rust
-
-  # The fuzz crate is its own workspace with its own fuzz/Cargo.lock, so the
-  # root entry never updates it. Without this entry the lock drifts behind the
-  # root workspace and `cargo fetch --locked` in fuzz.yml fails.
-  # NIST 800-53: SI-2 (Flaw Remediation), CM-2 (Baseline Configuration)
-  - package-ecosystem: cargo
-    directory: "/fuzz"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    groups:
-      fuzz-cargo-minor-patch:
+      # RustCrypto majors that only move together (one der/spki/x509 type
+      # stack). Dormant while the ignore list below covers every direct
+      # dependency in it (der_derive and sec1 are not direct dependencies);
+      # issue #21. Dependabot treats 0.x -> 0.(x+1) as a major.
+      rustcrypto-der-stack:
+        patterns:
+          - der
+          - der_derive
+          - const-oid
+          - spki
+          - x509-cert
+          - cms
+          - pkcs1
+          - pkcs5
+          - pkcs8
+          - pkcs12
+          - sec1
         update-types:
-          - minor
-          - patch
+          - major
+      # RustCrypto hash/MAC/cipher traits: digest 0.11 needs matching
+      # sha*/hmac/hkdf/pbkdf2 majors.
+      rustcrypto-digest-stack:
+        patterns:
+          - digest
+          - sha1
+          - sha2
+          - sha3
+          - hmac
+          - hkdf
+          - pbkdf2
+          - cipher
+          - aes
+          - crypto-common
+          - block-buffer
+        update-types:
+          - major
+      # Any other major: one PR per dependency, covering both directories.
+      cargo-majors:
+        group-by: dependency-name
+        update-types:
+          - major
+    ignore:
+      # POAM: POAM-2026-10-23-57 - der-0.8 RustCrypto stack blocked upstream
+      # (issue #21); remove these when cms 0.3 and pkcs12 0.2 are stable and
+      # the stack migrates as one change. GitHub documents `ignore` as also
+      # applying to security updates; dependabot-core applies only `versions`
+      # ignores to them, not update-types-only ones like these. So these
+      # should not, but may, hold back a security PR for one of these majors.
+      # Backstop: the dependency gate (audit.yml: cargo audit and cargo deny)
+      # fails on RustSec advisories in the root Cargo.lock without Dependabot;
+      # fuzz/Cargo.lock is not audited by that gate.
+      # NIST 800-53: CM-3, RA-5, SI-2.
+      - dependency-name: der
+        update-types: ["version-update:semver-major"]
+      - dependency-name: const-oid
+        update-types: ["version-update:semver-major"]
+      - dependency-name: spki
+        update-types: ["version-update:semver-major"]
+      - dependency-name: x509-cert
+        update-types: ["version-update:semver-major"]
+      - dependency-name: pkcs8
+        update-types: ["version-update:semver-major"]
+      - dependency-name: pkcs1
+        update-types: ["version-update:semver-major"]
+      - dependency-name: cms
+        update-types: ["version-update:semver-major"]
+      - dependency-name: pkcs12
+        update-types: ["version-update:semver-major"]
+      # pkcs5: redundant direct dependency, removed by plan U1d (pkcs8's
+      # `encryption` feature already brings pkcs5 0.7); drop with it.
+      - dependency-name: pkcs5
+        update-types: ["version-update:semver-major"]
     labels:
       - dependencies
       - rust
@@ -51,6 +125,16 @@ updates:
         update-types:
           - minor
           - patch
+      # React runtime majors with their type packages, so react, react-dom
+      # and @types/react-dom move in one PR (#125 omitted @types/react-dom).
+      react-major:
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+        update-types:
+          - major
     labels:
       - dependencies
       - javascript
@@ -70,19 +154,34 @@ updates:
       - github-actions
 
   # ---- Docker base images ----
-  # One entry per directory containing a Dockerfile.
+  # One entry for both directories with a Dockerfile; the group puts a node
+  # bump in both Dockerfiles (the node:24 web builders) into one PR. Only
+  # node is grouped, so an unrelated base image (debian, ubi) never rides
+  # along in a node PR and gets its own review.
+  # COMPLIANCE MAPPING:
+  # - NIST 800-53: SI-2, SA-22 (Unsupported System Components), CM-2, CM-3,
+  #   SR-3 - digest-pinned node images get patch and digest bumps inside the
+  #   LTS major (POAM-2026-10-23-58)
   - package-ecosystem: docker
-    directory: "/"
+    directories:
+      - "/"
+      - "/services/web-ui"
     schedule:
       interval: weekly
-    labels:
-      - dependencies
-      - docker
-
-  - package-ecosystem: docker
-    directory: "/services/web-ui"
-    schedule:
-      interval: weekly
+    groups:
+      docker-node:
+        patterns:
+          - node
+    ignore:
+      # Node majors move by hand to the next LTS line (nodejs/Release
+      # schedule; odd lines are never LTS, and Node 25+ no longer ships the
+      # corepack these builders use). ci.yml toolchain-pin checks the major
+      # against services/web-ui/web/.nvmrc.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+      # The rust image moves only with rust-toolchain.toml (ci.yml
+      # toolchain-pin rejects a lone image bump; see #173/#174).
+      - dependency-name: rust
     labels:
       - dependencies
       - docker

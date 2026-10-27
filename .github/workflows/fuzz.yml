@@ -12,7 +12,11 @@
 # Weekly + manual (time budget 60..3600 s per target), plus a fixed 60 s
 # smoke run on PRs that touch the fuzz crate, this workflow or the fuzzed
 # code (the gRPC targets call `ostrich_common::grpc_tls` only; the ACME
-# targets call `ostrich_acme::identifier` and `ostrich_acme::validation`). The manual budget
+# targets call `ostrich_acme::identifier` and `ostrich_acme::validation`), or
+# any input to fuzz/Cargo.lock resolution: the root Cargo.toml / Cargo.lock
+# and every crates/*/Cargo.toml (the fuzz crate's path dependencies inherit the
+# root [workspace.dependencies]; POAM-2026-10-23-60, NIST 800-53 CM-3, SI-2).
+# ci.yml `Build & test` also runs the locked fuzz fetch on every PR. The manual budget
 # is passed through env (never interpolated into a script) and range-checked.
 # The corpus is persisted in the Actions cache; only non-PR runs save it.
 
@@ -28,13 +32,16 @@ on:
       - crates/ostrich-common/src/grpc_tls.rs
       - crates/ostrich-common/src/tls.rs
       - crates/ostrich-common/src/auth/**
-      - crates/ostrich-common/Cargo.toml
       - crates/ostrich-acme/src/identifier.rs
       - crates/ostrich-acme/src/validation.rs
       - crates/ostrich-acme/src/order.rs
       - crates/ostrich-acme/src/error.rs
-      - crates/ostrich-acme/Cargo.toml
+      # Dependency inputs of fuzz/Cargo.lock (fuzz graph: ostrich-acme,
+      # -audit, -common, -crypto, -db, -protocol, -x509; the glob also covers
+      # a crate added to that graph later).
+      - crates/*/Cargo.toml
       - Cargo.toml
+      - Cargo.lock
       - rust-toolchain.toml
   workflow_dispatch:
     inputs:

@@ -365,7 +365,12 @@ ENTRYPOINT ["ostrich-cli"]
 # ==============================================================================
 # The NPE portal binary serves a static SPA from ./dist; build it here so the
 # runtime image carries only the compiled assets (no node toolchain).
-FROM node:22-bookworm-slim AS npe-portal-web-builder
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SI-2, SA-22 - Node 24 LTS, same line as the web-ui builder
+#   (POAM-2026-10-23-58)
+# - NIST 800-53: CM-2, SR-3 - pinned to the multi-arch index digest; the major
+#   must match services/web-ui/web/.nvmrc (ci.yml toolchain-pin)
+FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS npe-portal-web-builder
 WORKDIR /web
 
 # Install dependencies first so this layer is cached until package.json changes.
