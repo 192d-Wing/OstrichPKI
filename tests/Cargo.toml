@@ -117,7 +117,7 @@ x509-cert = { version = "0.2", features = ["builder"] }
 # (owned OctetString / Ia5String / SubjectPublicKeyInfoOwned).
 der = { workspace = true }
 spki = { workspace = true }
-base64 = "0.22"
+base64 = "0.23"
 
 # Utilities
 rand = "0.8"
