@@ -463,6 +463,68 @@ the new jobs or live tests has run yet; see "Known limitations" below.
 
 ### Changed
 
+#### Dependabot pairs the root and fuzz lockfiles; web builders on Node 24 LTS
+
+Closes POAM-2026-10-23-58 (Node 20 end of life) once both builder stages build on `main`, and
+POAM-2026-10-23-60 (fuzz/root lockfile drift). CI, Dependabot and Docker build-stage configuration
+only: no Rust source, `Cargo.lock`, `fuzz/Cargo.lock` or `pnpm-lock.yaml` change, and the runtime
+images still carry no Node.
+
+##### workspace (CI)
+
+- Dependabot has one cargo entry for `/` and `/fuzz` (`directories`), so each grouped PR updates
+  `Cargo.lock` and `fuzz/Cargo.lock` together. Before this, a `/fuzz` bump edited the root
+  `Cargo.toml` without the root lock (#202-#205), and a root bump left `fuzz/Cargo.lock` stale.
+- Cargo groups, in match order:
+  - `cargo-security` (`applies-to: security-updates`, all crates): one security PR across both
+    lockfiles.
+  - `cargo-minor-patch`.
+  - `rustcrypto-der-stack` and `rustcrypto-digest-stack`: majors that only move together.
+  - `cargo-majors`: one PR per dependency (`group-by: dependency-name`) across both directories.
+- Majors of the der 0.8 stack (der, const-oid, spki, x509-cert, pkcs8, pkcs1, cms, pkcs12) stay
+  ignored until it can migrate as one change (issue #21, POAM-2026-10-23-57). `pkcs5` is on that
+  list until the direct dependency is removed. These ignores should not, but may, hold back a
+  Dependabot security PR for those majors. `audit.yml` still reports advisories in the root
+  `Cargo.lock`; `fuzz/Cargo.lock` is not audited by that gate.
+- npm: new group `react-major` (react, react-dom, @types/react, @types/react-dom), so a React
+  major also moves `@types/react-dom`.
+- Docker: one entry for `/` and `/services/web-ui` with group `docker-node` (node only), so a node
+  patch or digest bump updates both Dockerfiles in one PR. Node majors (next LTS line) and the
+  `rust` image (tied to `rust-toolchain.toml`) move by hand.
+- `Build & test` runs `cargo fetch --locked --manifest-path fuzz/Cargo.toml` before `Build`, so a
+  `fuzz/Cargo.lock` that no longer satisfies the workspace manifests fails every PR. `fuzz.yml`
+  also runs on changes to `Cargo.lock` and any `crates/*/Cargo.toml`.
+- New job **Docker build stages (Node)** (`docker-node-stages`). It builds the
+  `services/web-ui/Dockerfile` `web-builder` stage and the root `Dockerfile`
+  `npe-portal-web-builder` stage with `--output type=cacheonly`: read-only token, no registry
+  login, push or cache export. On a PR it runs when a Dockerfile, `.dockerignore`,
+  `services/*/web/**` or `ci.yml` changes, and reports success otherwise; on a push to `main` it
+  always builds. This is the first CI build of the npe-portal SPA.
+- `toolchain-pin` now requires every node image in the tracked Dockerfiles and `.gitlab-ci.yml`
+  to be `node:<major>…@sha256:<64 hex>`, with the major taken from `services/web-ui/web/.nvmrc`.
+  Tag-only, digest-only and untagged references fail, including `COPY --from=node`,
+  `RUN --mount=…,from=node`, `ARG` defaults, continued `FROM` lines and a variable `FROM` image.
+- **NIST 800-53**: CM-2, CM-3, SI-2, SR-3, RA-5, SA-22
+
+##### ostrich-web-ui
+
+- The console build stage and the CI `Web UI` job use Node 24 LTS (supported to 2028-04-30)
+  instead of end-of-life Node 20. The new `services/web-ui/web/.nvmrc` holds the major. The image
+  is `node:24.22.1-bookworm-slim` pinned by its multi-arch index digest (`sha256:55fb5f5a…d205`),
+  cross-checked against the Docker Hub tag API and the registry manifest.
+- **NIST 800-53**: SI-2, SA-22, CM-2, SR-3
+
+##### ostrich-npe-portal
+
+- The SPA build stage moves from `node:22-bookworm-slim` to the same digest-pinned
+  `node:24.22.1-bookworm-slim` image. The SPA still has no lockfile (POAM-2026-10-23-40).
+
+##### Known limitations
+
+- The Dependabot grouping across `/` and `/fuzz`, and the `cargo-security` group, are confirmed
+  only by the first Dependabot run after merge.
+- The node pin gate does not restrict which registry a node image comes from.
+
 #### Dependabot updates: CI actions on node24, lockfile patch bumps
 
 ##### workspace (CI)

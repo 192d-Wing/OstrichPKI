@@ -16,8 +16,17 @@
 # ==============================================================================
 # The React console is the primary app (served at /). The Vite build only needs
 # services/web-ui/web — no Rust workspace — so this is a small Node-only stage.
-# corepack pins pnpm from web/package.json's "packageManager".
-FROM node:20-bookworm-slim AS web-builder
+# corepack pins pnpm from web/package.json's "packageManager" (Node 24 still
+# ships corepack; Node 25+ does not).
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SI-2 (Flaw Remediation), SA-22 (Unsupported System
+#   Components) - Node 24 LTS (supported to 2028-04-30) replaces end-of-life
+#   Node 20 (POAM-2026-10-23-58)
+# - NIST 800-53: CM-2 (Baseline Configuration), SR-3 (Supply Chain Controls) -
+#   tag pinned to the multi-arch index digest; Dependabot proposes patch and
+#   digest bumps, Node majors move manually to the next LTS. The major must
+#   match web/.nvmrc (ci.yml toolchain-pin).
+FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS web-builder
 WORKDIR /app/web
 COPY services/web-ui/web/ ./
 RUN corepack enable \

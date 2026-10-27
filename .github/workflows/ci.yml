@@ -37,6 +37,19 @@ jobs:
         run: rustup toolchain install && rustc --version && cargo --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
+      # fuzz/ is its own workspace with its own lock, but its path dependencies
+      # inherit the root [workspace.dependencies]. A root manifest change that
+      # fuzz/Cargo.lock no longer satisfies (e.g. cryptoki 0.11 -> 0.12 without
+      # the fuzz lock) fails here, on every PR, instead of only in fuzz.yml
+      # (path-filtered, nightly). Stable toolchain; resolves and downloads
+      # only, so it runs before the long Build and fails fast.
+      # COMPLIANCE MAPPING:
+      # - NIST 800-53: CM-3 (Configuration Change Control), SI-2 (Flaw
+      #   Remediation), CM-2, SR-3 - both lockfiles move together
+      #   (POAM-2026-10-23-60)
+      - name: Fuzz lockfile in step with the workspace
+        run: cargo fetch --locked --manifest-path fuzz/Cargo.toml
+
       - name: Build
         run: cargo build --workspace --locked
 
@@ -68,6 +81,9 @@ jobs:
   # - NIST 800-53: CM-2  (Baseline Configuration) — frozen-lockfile install
   # - NIST 800-53: RA-5  (Vulnerability Monitoring) — pnpm audit gate
   # - NIST 800-53: SI-7 / SA-12 (Integrity / Supply Chain) — CycloneDX SBOM
+  # - NIST 800-53: SI-2 / SA-22 (Flaw Remediation / Unsupported Components) —
+  #   Node 24 LTS from web/.nvmrc, the same major as the Dockerfile builders
+  #   (POAM-2026-10-23-58)
   web-ui-react:
     name: Web UI (React build + supply-chain)
     runs-on: ubuntu-24.04
@@ -80,8 +96,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          # >=20.19 required by vite 8 / rolldown (see web/package.json engines).
-          node-version: "20.19"
+          # Latest Node 24 LTS patch. vite 8 / rolldown need >=20.19 or >=22.12
+          # (web/package.json engines); toolchain-pin keeps the Dockerfile
+          # node:<major> images on the same major.
+          node-version-file: services/web-ui/web/.nvmrc
       - name: Enable pnpm (corepack; version pinned by packageManager)
         run: corepack enable
       - name: Install (frozen lockfile — CM-2)
@@ -190,6 +208,160 @@ jobs:
           done < <(git ls-files -z '*Dockerfile*' .gitlab-ci.yml)
           [ "$n" -gt 0 ] || { echo "::error::no Dockerfiles or .gitlab-ci.yml tracked"; exit 1; }
           exit "$rc"
+
+      # Node builder images (Dockerfile*, .gitlab-ci.yml) run the same major
+      # as the CI web job (services/web-ui/web/.nvmrc), pinned by digest.
+      # Backslash-continued lines are joined first; comment lines are
+      # skipped. On every other (logical) line:
+      #  (a) every node:<tag> / node@<digest> token (FROM, ARG, COPY --from=,
+      #      RUN --mount from=, image:, ...) must be
+      #      node:<major>.<...>@sha256:<64 hex> or
+      #      node:<major>-<...>@sha256:<64 hex>, so a tag-only or digest-only
+      #      ref, node:latest or another major fails;
+      #  (b) a tagless node repository (node, docker.io/library/node) fails as
+      #      a FROM / image: value, a --from= / from= value or an ARG default;
+      #  (c) a FROM whose image is a variable ($VAR, ${VAR}) fails, because
+      #      the gate cannot resolve it. No tracked Dockerfile does this
+      #      today; a reviewed exception goes on the line directly above as
+      #      the comment "# toolchain-pin: allow".
+      # COMPLIANCE MAPPING:
+      # - NIST 800-53: CM-2 (Baseline Configuration), SA-22 (Unsupported
+      #   System Components), SR-3 (Supply Chain Controls) -
+      #   POAM-2026-10-23-58
+      - name: node images pinned by digest on the services/web-ui/web/.nvmrc major (CM-2)
+        run: |
+          set -euo pipefail
+          want="$(tr -d '[:space:]' < services/web-ui/web/.nvmrc)"
+          want="${want#v}"
+          [[ "$want" =~ ^[1-9][0-9]*$ ]] || { echo "::error file=services/web-ui/web/.nvmrc::must hold a bare Node major (e.g. 24), got '$want'"; exit 1; }
+          pin_re="^node:${want}[.-][^@]*@sha256:[0-9a-f]{64}$"
+          rc=0; n=0
+          bad() { echo "::error file=$1,line=$2::$3"; rc=1; }
+          # Tagless node repository: basename exactly "node" (a tag or digest
+          # makes the basename differ; those are rule (a)'s job).
+          tagless() { local v="${1//[\"\']/}"; [ "${v##*/}" = node ]; }
+          check() { # line number, logical line; file name in $cur
+            local f="$cur" ln="$1" line="$2" tok img v
+            # (a) node:<tag> and node@<digest> tokens anywhere on the line.
+            while IFS= read -r tok; do
+              [ -n "$tok" ] || continue
+              n=$((n + 1))
+              if [[ "$tok" =~ $pin_re ]]; then
+                echo "ok   $f:$ln:$tok"
+              else
+                bad "$f" "$ln" "$tok must be node:${want}.<...>@sha256:<64 hex> or node:${want}-<...>@sha256:<64 hex> (major from services/web-ui/web/.nvmrc)"
+              fi
+            done < <(grep -Eo '(^|[[:space:]/=,"'\''])node[:@][^[:space:],"'\'']+' <<< "$line" | sed -E 's|^[[:space:]/=,"'\'']||' || true)
+            # (b) FROM / image: value, --from= / from= values, ARG default.
+            img="$(sed -nE 's/^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]]+(--[^[:space:]]+[[:space:]]+)*([^[:space:]]+).*/\2/p; s/^[[:space:]-]*image:[[:space:]]*([^[:space:]]+).*/\1/p' <<< "$line")"
+            if [ -n "$img" ] && tagless "$img"; then n=$((n + 1)); bad "$f" "$ln" "$img has no tag or digest (pin node:${want}.<...>@sha256:<64 hex>)"; fi
+            while IFS= read -r v; do
+              [ -n "$v" ] || continue
+              if tagless "$v"; then n=$((n + 1)); bad "$f" "$ln" "from=$v names a tagless node image (pin node:${want}.<...>@sha256:<64 hex>)"; fi
+            done < <(grep -Eo '(^|[[:space:],])(--)?from=[^[:space:],]+' <<< "$line" | sed -E 's|^[[:space:],]*(--)?from=||' || true)
+            v="$(sed -nE 's/^[[:space:]]*[Aa][Rr][Gg][[:space:]]+[A-Za-z_][A-Za-z0-9_]*=([^[:space:]]+).*/\1/p' <<< "$line")"
+            if [ -n "$v" ] && tagless "$v"; then n=$((n + 1)); bad "$f" "$ln" "ARG default $v is a tagless node image (pin node:${want}.<...>@sha256:<64 hex>)"; fi
+            # (c) FROM with a variable image (Dockerfiles only).
+            case "$f" in
+              *Dockerfile*)
+                if [[ "$img" == *'$'* ]] && [ "$allow" -eq 0 ]; then
+                  bad "$f" "$ln" "FROM $img: variable base images cannot be checked; use a literal pinned ref, or put '# toolchain-pin: allow' on the line above after review"
+                fi ;;
+            esac
+          }
+          while IFS= read -r -d '' f; do
+            [ -f "$f" ] || { echo "::error::unreadable $f"; rc=1; continue; }
+            cur="$f"; ln=0; start=0; acc=""; allow=0; pend=0
+            while IFS= read -r -u 3 line || [ -n "$line" ]; do
+              ln=$((ln + 1))
+              if [[ "$line" =~ ^[[:space:]]*# ]]; then
+                # Comments inside a continued instruction are dropped, as Docker does.
+                if [ -z "$acc" ] && [[ "$line" =~ ^[[:space:]]*#[[:space:]]*toolchain-pin:[[:space:]]*allow[[:space:]]*$ ]]; then
+                  pend=1
+                fi
+                continue
+              fi
+              if [ -z "$acc" ]; then
+                start=$ln; allow=$pend; pend=0
+              fi
+              if [[ "$line" =~ \\[[:space:]]*$ ]]; then
+                acc+="${line%\\*} "
+                continue
+              fi
+              acc+="$line"
+              check "$start" "$acc"
+              acc=""
+            done 3< "$f"
+            [ -z "$acc" ] || check "$start" "$acc"
+          done < <(git ls-files -z '*Dockerfile*' .gitlab-ci.yml)
+          [ "$n" -gt 0 ] || { echo "::error::no node image reference found in the tracked Dockerfiles"; exit 1; }
+          exit "$rc"
+
+  # ---- Node builder stages of the Dockerfiles (blocking when they change) ----
+  # PR CI otherwise never builds the images (docker-publish.yml runs on push
+  # and tags only), and no other job builds the npe-portal SPA. Builds only
+  # the two Node stages, which need nothing but the digest-pinned node image
+  # and their web/ sources: no registry login, no secrets, no Iron Bank
+  # base, no push (`--output type=cacheonly`), no cache export. On a PR the
+  # job always runs and reports success when no input changed, so it can be
+  # made a required check. On a push to main it always builds: main only
+  # moves by merge, the PR run is the gate, and an unconditional build gives
+  # a post-merge record without fetching github.event.before (which may lie
+  # outside the shallow checkout of a multi-commit push).
+  # COMPLIANCE MAPPING:
+  # - NIST 800-53: CM-3 (Configuration Change Control), SI-2, SA-22, SR-3 -
+  #   the node:24 builders are exercised before merge (POAM-2026-10-23-58)
+  # - NIST 800-53: CM-6 / AC-6 - contents: read token, no credentials
+  docker-node-stages:
+    name: Docker build stages (Node)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # Depth 2: on a PR, HEAD is the merge commit and HEAD^1 the base tip.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Detect changes to the Node builder inputs
+        id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "$EVENT_NAME: building unconditionally."
+            exit 0
+          fi
+          # NUL-separated, unquoted paths; a rename lists both old and new
+          # path. Written to a file first so a git failure fails the job.
+          changed="$RUNNER_TEMP/changed-paths"
+          git diff --no-renames -z --name-only HEAD^1 HEAD > "$changed"
+          build=false
+          while IFS= read -r -d '' path; do
+            printf '%s\n' "$path"
+            if [[ "$path" =~ ^(Dockerfile|services/web-ui/Dockerfile|services/[^/]+/web/.*|\.dockerignore|\.github/workflows/ci\.yml)$ ]]; then
+              build=true
+            fi
+          done < "$changed"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          [ "$build" = true ] || echo "No Node builder input changed; nothing to build."
+
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.build == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # Do not write the buildx binary to the Actions cache.
+          cache-binary: false
+
+      - name: Build services/web-ui/Dockerfile --target web-builder
+        if: steps.changes.outputs.build == 'true'
+        run: docker buildx build --progress=plain -f services/web-ui/Dockerfile --target web-builder --output type=cacheonly .
+
+      - name: Build Dockerfile --target npe-portal-web-builder
+        if: steps.changes.outputs.build == 'true'
+        run: docker buildx build --progress=plain -f Dockerfile --target npe-portal-web-builder --output type=cacheonly .
 
   # NOTE: the dependency gate (cargo audit + cargo deny) lives in its own
   # workflow (.github/workflows/audit.yml). It runs on every PR, on pushes to

@@ -1349,9 +1349,11 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
     `uses:` in `ci.yml`, `audit.yml` and `hsm-integration.yml` is a full commit
     SHA: `actions/checkout` v7.0.1 `3d3c42e5…`, `Swatinem/rust-cache` v2.9.3
     `d1527c8f…`, `taiki-e/install-action` v2.87.31 `1e29709c…`,
-    `actions/setup-node` v4.4.0 `49933ea5…`, `actions/upload-artifact` v4.6.2
+    `actions/setup-node` v4.4.0 `49933ea5…` (v7.1.0 `949feb24…` since
+    2026-10-26, PR #194), `actions/upload-artifact` v4.6.2
     `ea165f8d…`. Container images are tag-pinned (`rust:1.99.1-bookworm`), not
-    digest-pinned. Not covered: `docker-publish.yml`, `cargo-chef` and several
+    digest-pinned (the Node builder images are digest-pinned since plan U4,
+    see the next item). Not covered: `docker-publish.yml`, `cargo-chef` and several
     GitLab tools and images (POAM-2026-10-23-15).
   - FIPS cryptographic module: **AWS-LC FIPS 4.2.0** built from source by
     `aws-lc-fips-sys` **0.14.2** (previously AWS-LC FIPS 3.3.0 via 0.13.14),
@@ -1362,6 +1364,32 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
     `AWS_LC_FIPS_SYS_USE_SYSTEM = "0"` (`force = true`) so the build uses the
     bundled, `Cargo.lock`-pinned module and never auto-links a system AWS-LC
     (see CM-6). The file is committed on `main` (commit 05ea47a, PR #180).
+- 🟡 **Node build toolchain baseline (2026-10-26, plan U4; branch `claude/dependabot-u0-node24`, uncommitted, based on `main` @ dd04a39; run record `target/agent-workflow/20261026-213355-u0-node24/`):**
+  - Node **24 LTS** ("Krypton", supported to 2028-04-30) replaces end-of-life
+    Node 20 (web-ui) and Node 22 (npe-portal). Both builder stages use
+    `node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205`
+    ([services/web-ui/Dockerfile](../../services/web-ui/Dockerfile) stage
+    `web-builder`, [Dockerfile](../../Dockerfile) stage
+    `npe-portal-web-builder`), the multi-arch index digest, cross-checked
+    against the Docker Hub tag API, the registry manifest and a sha256 of the
+    index body. Node is not shipped in the runtime images.
+  - The single source of the Node major is the new
+    `services/web-ui/web/.nvmrc` (`24`). The CI job `web-ui-react` reads it
+    with `node-version-file` (the patch floats to the latest 24.x; SEC-007,
+    accepted).
+  - Gate: the `Toolchain pin consistency` step "node images pinned by digest
+    on the services/web-ui/web/.nvmrc major (CM-2)"
+    ([.github/workflows/ci.yml](../../.github/workflows/ci.yml)) fails any node
+    reference in tracked `*Dockerfile*` / `.gitlab-ci.yml` that is not
+    `node:<major>[.-]…@sha256:<64 hex>` with the `.nvmrc` major. It also fails
+    tagless, digest-only, `COPY --from=`, `RUN --mount from=`, `ARG` default,
+    continued and variable `FROM` forms (42/42 local mutation cases, coder,
+    `fixes-nits.md`). It does not restrict the registry (SEC-102,
+    POAM-2026-10-23-15).
+  - Local evidence only: QA built the Web UI on Node v24.22.1 (install,
+    typecheck, lint, build and audit exit 0). No Docker build and no CI run
+    of the new gates is recorded yet (POAM-2026-10-23-58, closed pending
+    merge).
 - 🔴 No deployment baseline configuration documented
 
 **Gaps:**
@@ -1428,6 +1456,27 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   `target/agent-workflow/20261026-155231-dependabot-triage/`. Approval is
   recorded in the run record, not enforced by the repository (`main` has no
   branch protection, POAM-2026-10-23-14)
+- 🟡 **CI change-control gates for dependency and builder changes, 2026-10-26
+  (plans U0 and U4; branch `claude/dependabot-u0-node24`, uncommitted, based on `main` @ dd04a39; run record `target/agent-workflow/20261026-213355-u0-node24/`):**
+  - `Build & test` step "Fuzz lockfile in step with the workspace"
+    (`cargo fetch --locked --manifest-path fuzz/Cargo.toml`, before `Build`)
+    fails any PR, Dependabot or human, whose root manifest change
+    `fuzz/Cargo.lock` no longer satisfies. Local negative tests: exit 101
+    for a root `cryptoki` bump without the fuzz lock and for a new
+    dependency in a fuzz-graph crate; exit 0 when paired (`qa-report.md`)
+  - `.github/dependabot.yml` has one cargo entry for `/` and `/fuzz`, so
+    grouped updates move both lockfiles in one change; `fuzz.yml` also runs
+    on `Cargo.lock` and `crates/*/Cargo.toml` changes (POAM-2026-10-23-60,
+    closed pending merge). Dependabot's grouping across the two directories
+    is shown only by its first run after merge
+  - New job `docker-node-stages` ("Docker build stages (Node)") builds the
+    two Node builder stages on PRs that change a Dockerfile, `.dockerignore`,
+    `services/*/web/**` or `ci.yml`, and on every push to `main`
+    (`--output type=cacheonly`, `contents: read`, no login, no push). Before
+    this, PR CI never built the Dockerfiles. Not yet run (no Docker on the
+    development host)
+  - These jobs are not required checks while `main` has no branch
+    protection (POAM-2026-10-23-14)
 
 **Gaps:**
 
@@ -1965,7 +2014,7 @@ the code annotations since 2026-10-26.
 
 - [.github/workflows/audit.yml](../../.github/workflows/audit.yml) - "dependency gate" workflow (CI hardening, 2026-10-23; branch `claude/ci-hardening`, not yet merged). Job `cargo audit` runs `cargo audit --deny warnings` (cargo-audit 0.22.2), so vulnerabilities and unmaintained, unsound or yanked warnings all fail the job. The gate fails on any new **RustSec** advisory; GitHub-only advisories (no RustSec alias) are found by Dependabot and do not fail CI (NIST-002, 2026-10-26; POAM-2026-10-23-42). Job `cargo deny` runs `cargo deny check` (cargo-deny 0.20.2: advisories, bans, licenses, sources). No `continue-on-error`. Least-privilege token (`contents: read`), `persist-credentials: false`, SHA-pinned actions
 - **Scan frequency (RA-5(a)):** every pull request (no path filter), every push to `main`, weekly (Monday 06:00 UTC), and manual dispatch. GitLab: `security:audit` and `security:deny` per merge request and on `main`/`develop`; `scheduled:security-scan` (audit and deny) on pipeline schedules
-- [.github/dependabot.yml](../../.github/dependabot.yml) - Dependabot dependency-update PRs, weekly, for `cargo` (workspace root), `npm` (`/services/web-ui/web` only), `github-actions` and `docker`. Dependabot alerts are currently the only source that reports GitHub-only advisories for `Cargo.lock`. The npe-portal SPA (`services/npe-portal/web`) has no Dependabot entry and no lockfile (POAM-2026-10-23-40)
+- [.github/dependabot.yml](../../.github/dependabot.yml) - Dependabot dependency-update PRs, weekly, for `cargo` (workspace root; in the working tree of plan U0, one entry for `/` and `/fuzz` with a `cargo-security` group, pending merge), `npm` (`/services/web-ui/web` only), `github-actions` and `docker`. Dependabot alerts are currently the only source that reports GitHub-only advisories for `Cargo.lock`. The npe-portal SPA (`services/npe-portal/web`) has no Dependabot entry and no lockfile (POAM-2026-10-23-40)
 - **Web UI (npm):** [.github/workflows/ci.yml](../../.github/workflows/ci.yml) job `web-ui-react` runs `pnpm audit --prod --audit-level=high` (line 96; production dependencies, high/critical only). Development/build dependencies and medium/low advisories do not fail CI; they are found by Dependabot (npm entry above, weekly). Not every JavaScript dependency tree in the repository is monitored (npe-portal, POAM-40)
 - [.cargo/audit.toml](../../.cargo/audit.toml) - **authoritative risk-acceptance record** and the only exception path for the gate: 3 ignored advisories, each with a rationale and a grep-able `# POAM:` tag (RUSTSEC-2023-0071 `rsa` Marvin, POAM-09; RUSTSEC-2024-0436 `paste` and RUSTSEC-2025-0134 `rustls-pemfile`, both unmaintained, SA-22, POAM-12). [deny.toml](../../deny.toml) `[advisories].ignore` mirrors the same 3 IDs. RUSTSEC-2026-0387 (added 2026-10-23, user decision: ignore + POA&M) and RUSTSEC-2026-0097 were removed on 2026-10-24 (dependency cleanup; POAM-16 and POAM-11)
 
@@ -1981,6 +2030,7 @@ the code annotations since 2026-10-26.
 - 🟡 No CI run of the new gate has been recorded for the dependency-cleanup change (the 2026-10-23 gate passed on PR 181, run 40063317688)
 - ✅ 2026-10-26, Dependabot PR triage (#87-#205; run record `target/agent-workflow/20261026-155231-dependabot-triage/`): #195 (`regex` 1.13.1) and #201 (hickory 0.26.3 in `fuzz/Cargo.lock`) merged after green PR runs of `cargo audit` and `cargo deny`; the dependency gate on `main` @ 8024efa passed ([run 40434032051](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434032051)). Neither PR fixes an advisory. The CI action updates #200, #199 and #194 (node24) also merged; `main` is at 9e268f0. See SI-2 for the full disposition
 - 🟡 Dependabot `/fuzz` updates of crates shared with the workspace cannot land as produced: they edit the root `Cargo.toml` without the root lock and fail `--locked` (POAM-2026-10-23-60, plan U0)
+- 🟡 2026-10-26, plan U0 (branch `claude/dependabot-u0-node24`, uncommitted, based on `main` @ dd04a39; run record `target/agent-workflow/20261026-213355-u0-node24/`): one Dependabot cargo entry for `/` and `/fuzz`, a `cargo-security` group (`applies-to: security-updates`) and a fuzz-lock step in `Build & test` (see CM-3). POAM-2026-10-23-60 closed pending merge; how Dependabot groups security updates across the two directories is shown only by its first run after merge (REL-104). The der-0.8 stack major ignores (POAM-2026-10-23-57) should not, but may, hold back a security PR for those majors; `audit.yml` is the backstop for the root `Cargo.lock` only
 
 **Gaps:**
 
@@ -1991,6 +2041,7 @@ the code annotations since 2026-10-26.
 - **The cargo gate is RustSec-only.** GitHub-only advisories (GHSA-6w6g-hm98-mhgm, GHSA-5j98-2g5x-46v6, GHSA-6f2x-v7q7-m7m5 in hickory-resolver, 2026-10-05) pass CI and are seen only through Dependabot (POAM-2026-10-23-42)
 - **The npm gate does not cover development/build dependencies or medium/low advisories.** It could see none of the 18 npm alerts open on 2026-10-26 (15 development scope; the 3 runtime react-router alerts are medium) (POAM-2026-10-23-42)
 - **The npe-portal SPA is unscanned:** no lockfile, no Dependabot entry, no audit job, and its image build runs `npm install --no-audit` (POAM-2026-10-23-40)
+- **`fuzz/Cargo.lock` is not scanned by the dependency gate:** `audit.yml` runs `cargo audit` and `cargo deny` for the root workspace only (REL-011, POAM-2026-10-23-42 (e))
 - **Dependabot alerts are not triaged on a schedule.** On 2026-10-26, 9 npm advisories (10 alerts) were past the proposed windows. The last 2 of them (react-router GHSA-wrjc-x8rr-h8h6, GHSA-337j-9hxr-rhxg) were remediated later on 2026-10-26, on day 95 (POAM-2026-10-23-39, closed pending commit); no triage schedule exists yet (POAM-2026-10-23-42). See the SI-2 table
 
 **Remediation (POA&M, see [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)):**
@@ -2920,7 +2971,7 @@ Scope: the 27 open Dependabot update PRs numbered 87-205 (#81 and #84 are out of
 |----|--------|-------------|----------|
 | #195 | `regex` 1.13.0 → 1.13.1, `regex-automata` 0.4.18 (`Cargo.lock` only) | ✅ Merged, merge commit dfb70d2 (head c92415d) | All PR checks green on 2026-10-26 (Build & test, Clippy, Rustfmt, Toolchain pin, cargo audit, cargo deny, PKCS#11 SoftHSM2, DB + SoftHSM, Helm, Web UI); `Cargo.lock` on `main` shows 1.13.1 / 0.4.18 |
 | #201 | `hickory-net`, `hickory-proto`, `hickory-resolver` 0.26.2 → 0.26.3 (`fuzz/Cargo.lock` only; aligns the fuzz lock with the root lock) | ✅ Merged, merge commit 8024efa (head 464928d) | All PR checks green on 2026-10-26, including the 4 fuzz targets; `fuzz/Cargo.lock` on `main` shows 0.26.3 |
-| #200, #199 | `actions/cache/restore` and `actions/cache/save` v4.3.0 → v6.1.0 (`fuzz.yml`, node24) | ✅ Merged, merge commits 2b7698f (#200, head 98cb0bc) and 7fff0de (#199, head 0784e71) | SHA pin `55cc8345…` verified against the upstream v6.1.0 tag. Every check green on a run against current `main`; one #200 fuzz job was killed after an apt mirror stall (infrastructure) and passed on re-run ([run 40401356240](https://github.com/192d-Wing/OstrichPKI/actions/runs/40401356240), attempt 2). `cache/save` is not exercised by PR runs: dispatch Fuzz [run 40434904077](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434904077) started on `main`, result not recorded; a second run must show restore of a v6-saved entry (SEC-006); POAM-2026-10-23-54 |
+| #200, #199 | `actions/cache/restore` and `actions/cache/save` v4.3.0 → v6.1.0 (`fuzz.yml`, node24) | ✅ Merged, merge commits 2b7698f (#200, head 98cb0bc) and 7fff0de (#199, head 0784e71) | SHA pin `55cc8345…` verified against the upstream v6.1.0 tag. Every check green on a run against current `main`; one #200 fuzz job was killed after an apt mirror stall (infrastructure) and passed on re-run ([run 40401356240](https://github.com/192d-Wing/OstrichPKI/actions/runs/40401356240), attempt 2). `cache/save` is not exercised by PR runs. v6 round trip shown on `main`: dispatch Fuzz [run 40434904077](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434904077) (@ 9e268f0, success) saved `fuzz-corpus-<target>-40434904077-1` for all 4 targets, and dispatch [run 40438850323](https://github.com/192d-Wing/OstrichPKI/actions/runs/40438850323) (@ dd04a39, success) restored those 4 entries and saved new ones (SEC-006 resolved). No corpus carried over from v4-saved entries (expected, harmless); POAM-2026-10-23-54 |
 | #194 | `actions/setup-node` v4.4.0 → v7.1.0 (`ci.yml`, node24) | ✅ Merged, merge commit 9e268f0 (head 41d6379) | Recreated by Dependabot on 8024efa first; every check green on that run. SHA pin `949feb24…` verified against the upstream v7.1.0 tag; POAM-2026-10-23-54 |
 | #127, #156, #173, #174 | `react-router-dom` 7; `serde_with` 3.21; `rust` 1.98 Docker images | Closed as superseded | `main` already uses `react-router` ^7.18.1 without `react-router-dom`; `serde_with` is in no manifest or lock; `main` pins `rust:1.99.1-bookworm` |
 | #87 | `getrandom` 0.3.4 → 0.4.2 (root) | Closed as superseded | Replaced by plan unit U1a (getrandom 0.4 with the root and fuzz locks together) |
@@ -2933,6 +2984,23 @@ Scope: the 27 open Dependabot update PRs numbered 87-205 (#81 and #84 are out of
 - ✅ Supply-chain check of the merged tree including #198 (release-engineer, local): `cargo audit --deny warnings` passes (611 crates); `cargo deny check` passes and warns that the `paste` ignore is unmatched, which confirms that #198 + #203 retires it
 - 🟡 New POA&M items: POAM-2026-10-23-57 (der-0.8 stack), -58 (Node 20 end-of-life), -59 (PKCS#11 RNG fallback, PQC-005, pre-existing), -60 (Dependabot `/fuzz` lock drift)
 
+**Evidence: 2026-10-26 plan units U0 (Dependabot/CI hygiene) and U4 (Node 24 LTS) (branch `claude/dependabot-u0-node24`, uncommitted, based on `main` @ dd04a39; run record `target/agent-workflow/20261026-213355-u0-node24/`)**
+
+CI, Dependabot and Docker build-stage configuration only: no Rust source, `Cargo.lock`, `fuzz/Cargo.lock` or `pnpm-lock.yaml` change. Also mapped to CM-2, CM-3, RA-5, SR-3 (digest pins, the new gates) and SA-22 (Node 20 end-of-life); this document has no SR-3 or SA-22 section, so the record is kept here. Reviewers: security-reviewer (APPROVE, two rounds), release-engineer (APPROVE WITH COMMENTS, two rounds); QA PASS. Skipped: nist-800-53, pqc and rfc reviewers (no control implementation, crypto or protocol change).
+
+| Item | Change | Evidence | Status |
+|------|--------|----------|--------|
+| Node 24 LTS builders (SA-22, SI-2) | `services/web-ui/Dockerfile` `web-builder` (was `node:20-bookworm-slim`) and `Dockerfile` `npe-portal-web-builder` (was `node:22-bookworm-slim`) → `node:24.22.1-bookworm-slim@sha256:55fb5f5a…d205` | Digest cross-checked three ways (`impl-notes.md`) and confirmed by the security review; the linux/amd64 node layer contains node, npm and corepack | 🟡 Configured; Docker builds NOT RUN (QA G1) |
+| CI web job on Node 24 (SA-22, CM-2) | `web-ui-react`: `node-version: "20.19"` → `node-version-file: services/web-ui/web/.nvmrc` (new file, `24`) | QA, local: Web UI install, typecheck, lint, build and `pnpm audit` exit 0 on Node v24.22.1 (SHASUMS-verified; corepack 0.36.0, pnpm 9.15.9) | 🟡 Local only; no CI run yet |
+| Digest-pinned node gate (CM-2, SR-3) | `toolchain-pin` step "node images pinned by digest on the services/web-ui/web/.nvmrc major (CM-2)" | 42/42 mutation cases as expected (coder, local bash 3.2, `fixes-nits.md`); actionlint 1.7.12 + shellcheck 0.11.0 clean for `ci.yml`. Does not restrict the registry (SEC-102, POAM-2026-10-23-15) | 🟡 Local only; no CI run yet |
+| Docker build stages job (CM-3, SR-3) | New job `docker-node-stages` builds both Node stages with `--output type=cacheonly`; `contents: read`, no login, no push; SHA-pinned `docker/setup-buildx-action` v4.4.1 (`f87e5991…`, verified with `gh api`) | Change detection: 7/7 local cases (`fixes-nits.md`); security and release re-verify: target stages self-contained, no Iron Bank pull expected | 🟡 Not yet run |
+| Fuzz-lock step (CM-3, SI-2) | `Build & test`: `cargo fetch --locked --manifest-path fuzz/Cargo.toml` before `Build` | Real tree exit 0; root `cryptoki` 0.11 → 0.12 without the fuzz lock exit 101; new dependency in a fuzz-graph crate exit 101; paired change exit 0 (QA) | 🟡 Local only; no CI run yet |
+| Dependabot pairing (CM-3, SI-2, RA-5) | One cargo entry for `/` and `/fuzz`; groups `cargo-security`, `cargo-minor-patch`, `rustcrypto-der-stack`, `rustcrypto-digest-stack`, `cargo-majors`; der-stack and `pkcs5` major ignores; npm `react-major`; one docker entry with group `docker-node`, node majors and `rust` ignored | SchemaStore dependabot-2.0: 0 errors, negative controls rejected; YAML parse 3/3 | 🟡 Runtime behaviour shown only by the first Dependabot run (REL-003, REL-104) |
+| `fuzz.yml` paths (CM-3) | `on.pull_request.paths` add `Cargo.lock` and `crates/*/Cargo.toml` | QA: all 7 local packages of the fuzz graph covered | 🟡 Pending merge |
+
+- 🟡 POA&M: POAM-2026-10-23-58 closed pending merge and first post-merge `docker-node-stages` run; POAM-2026-10-23-60 closed pending merge; POAM-15, -40, -42 and -57 annotated. No new item
+- Not claimed: no status or percentage change for SI-2, CM-2, CM-3 or RA-5; nothing above is evidenced by a GitHub Actions run yet. CDXGen SBOM was NOT RUN (QA G6)
+
 **Gaps:**
 
 - No AO-approved flaw-remediation time periods (proposed values in RA-5, pending AO approval)
@@ -2942,7 +3010,7 @@ Scope: the 27 open Dependabot update PRs numbered 87-205 (#81 and #84 are out of
 - `oauth2` 5.0.0 is a declared but unused dependency of `ostrich-web-ui` (no call sites); removal tracked as POAM-2026-10-23-23 (CM-7)
 - **SI-2(c) timeliness was missed** for 9 of the 19 npm and Rust advisories in the 2026-10-26 table (measured against the proposed windows). The last 2 (react-router, POAM-2026-10-23-39) were remediated on 2026-10-26 on day 95 and stay in this count. Dependabot alerts are not triaged on a schedule (POAM-2026-10-23-42)
 - The 2026-10-26 remediation is verified locally only; no CI run is recorded yet
-- **Unsupported build components (SA-22):** the web-ui builder image and the CI web job run Node 20, end-of-life since 2026-04-30 (POAM-2026-10-23-58); `actions/upload-artifact` v4.6.2 still runs on the deprecated node20 runtime (POAM-2026-10-23-54, narrowed: `actions/cache` and `actions/setup-node` moved to node24 on 2026-10-26)
+- **Unsupported build components (SA-22):** on `main`, the web-ui builder image and the CI web job run Node 20, end-of-life since 2026-04-30; the working tree of plan U4 moves both builders and the CI job to Node 24 LTS (POAM-2026-10-23-58, closed pending merge and first post-merge `docker-node-stages` run). `actions/upload-artifact` v4.6.2 still runs on the deprecated node20 runtime (POAM-2026-10-23-54, narrowed: `actions/cache` and `actions/setup-node` moved to node24 on 2026-10-26, and the `actions/cache` v6 save and restore round trip is shown by dispatch Fuzz runs 40434904077 and 40438850323)
 - Security-relevant updates in the der-0.8 RustCrypto line cannot be installed until `cms` 0.3 and `pkcs12` 0.2 are stable (POAM-2026-10-23-57, issue #21)
 
 **Remediation:** see RA-5 and the POA&M in [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)
@@ -3773,6 +3841,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 3.10 | 2026-10-26 | OstrichPKI Team | npe-portal BFF proxy raw path and shared validator (branch `claude/npe-portal-proxy-raw-path`, uncommitted, based on `main` @ 2eb959a; run record `target/agent-workflow/20261026-113138-npe-proxy-raw-path/`). SI-10: new evidence item for `ostrich_common::util::proxy_path` (canonical) and npe-portal `checked_backend_path` / `invalid_path_response`, with the fuzz target `fuzz_proxy_path` (259,220 runs, no crash) and a mutation check as SA-11 evidence; the POAM-46 gap was removed (POAM-45 remains) and a two-copies gap added (web-ui switch is a follow-up). AC-3: new npe-portal bullet (identity forwarded only on a validated path), the POAM-46 gap sentence removed, code references added. AC-4: application-layer supporting bullet for both BFF proxies (status and scope unchanged). AU-2 / AU-3: npe-portal `proxy_path_rejected` warn event and `ostrich_audit` Authorization / Failure record (no session id; `client_ip` relies on the load balancer overwriting XFF / X-Real-IP), recorded as 🟡 because the records are not in `DatabaseAuditSink`. AU-12: npe-portal denial-record bullet (🟡). NPE portal section: proxy denial record and identity-bridge target-integrity bullet. POAM-43 references were left unchanged; branch `claude/close-poam-43` updates them. Local evidence only (`ostrich-npe-portal` 42 / 0, `ostrich-common` lib 278 / 0, `ostrich-web-ui` 41 / 0, re-run by the scribe). **No control status or percentage changed** (AC-3 🟢 Implemented, AC-4 🟡 Partial, SI-10 🟢 Good (85%), AU-2 / AU-12 🟢 Compliant, AU-3 ✅) |
 | 3.11 | 2026-10-26 | OstrichPKI Team | ACME wildcard identifiers (branch `claude/acme-wildcard-identifiers`, uncommitted; run record `target/agent-workflow/20261026-acme-wildcard/`). SI-10: newOrder identifier validation replaces the "Not evidence" line (POAM-2026-10-23-49 narrowed); finalize re-validation; IPv6 http-01 URL; SA-11 fuzz target `fuzz_acme_order_identifier`. AC-3 / SC-17: wildcard authorizations dns-01 only, `ip` http-01 only, finalize binding (`check_order_finalizable`); new gap POAM-2026-10-23-56 (issuance-name policy). AU-2 / AU-3 / AU-12: newOrder success and refusal and finalize-refusal `AcmeProtocol` records (no source IP or request id; best-effort on sink failure, not claimed under AU-5). SC-5 note: 100-identifier cap. Cross-reference FDP_CER_EXT.1 → SC-17, AC-3, SI-10. Stale ACME line references refreshed. Integration tests NOT RUN (QA-002, QA-005). No control status or summary percentage changed (TOTAL 18 / 41 = 43.9%, shown as 44%). |
 | 3.12 | 2026-10-26 | OstrichPKI Team | Dependabot PR triage #87-#205 (docs branch `claude/dependabot-triage-docs`, uncommitted, based on `main` @ 8024efa; run record `target/agent-workflow/20261026-155231-dependabot-triage/`). SI-2: new evidence block with the disposition of every PR (merged #195 → dfb70d2, #201 → 8024efa, #200 → 2b7698f, #199 → 7fff0de, #194 → 9e268f0; 5 closed as superseded; 5 closed by user-approved decision; the rest planned as U0-U4), SR-3 / SA-22 tags recorded there, two gaps added (POAM-58, POAM-57). CM-3: dependency-update change record. RA-5: evidence and remediation items (POAM-60, POAM-12). New POA&M items 57-60. No implementation status or percentage changed: the triage records process evidence and adds no control implementation. |
+| 3.13 | 2026-10-26 | OstrichPKI Team | Plan units U0 (Dependabot/CI hygiene) and U4 (Node 24 LTS) (branch `claude/dependabot-u0-node24`, uncommitted, based on `main` @ dd04a39; run record `target/agent-workflow/20261026-213355-u0-node24/`). CM-2: Node build toolchain baseline (Node 24 LTS, `node:24.22.1-bookworm-slim` pinned by multi-arch index digest, `.nvmrc` as the major, digest-and-major gate in `toolchain-pin`); pin inventory notes `actions/setup-node` v7.1.0. CM-3: fuzz-lock step, single Dependabot cargo entry, `docker-node-stages` job. RA-5: Dependabot entry description updated; `fuzz/Cargo.lock` not scanned recorded as a gap (POAM-42 (e)). SI-2: new U0/U4 evidence block (also SR-3, SA-22); SA-22 gap updated; triage row for `actions/cache` v6 updated with the save and restore round trip (dispatch Fuzz runs 40434904077 and 40438850323, both success; POAM-54 narrowed, upload-artifact still open). POAM-58 and POAM-60 closed pending merge. No status or percentage changed: all affected controls stay 🟡 Partial and none of the new gates has a CI run yet |
 
 ---
 

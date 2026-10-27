@@ -995,7 +995,7 @@ approved the merges, closures and comments for this triage only.
 |------|----------|--------|
 | #195 `regex` 1.13.0 → 1.13.1, `regex-automata` 0.4.18 (`Cargo.lock`) | PR checks 2026-10-26: Build & test, Clippy, Rustfmt, Toolchain pin, cargo audit, cargo deny, PKCS#11 SoftHSM2, DB + SoftHSM, Helm, Web UI | All green; merged as dfb70d2 (head c92415d) |
 | #201 hickory-net / -proto / -resolver 0.26.2 → 0.26.3 (`fuzz/Cargo.lock`) | PR checks 2026-10-26: the set above plus 4 fuzz targets | All green; merged as 8024efa (head 464928d) |
-| #200, #199 `actions/cache/restore`, `actions/cache/save` v4.3.0 → v6.1.0 | SHA `55cc8345…` verified against the upstream tag | Every check green on a run against current `main`; merged as 2b7698f (#200, head 98cb0bc) and 7fff0de (#199, head 0784e71). One #200 fuzz job was killed after an apt mirror stall of about 20 minutes (infrastructure); its re-run passed ([run 40401356240](https://github.com/192d-Wing/OstrichPKI/actions/runs/40401356240), attempt 2). `save` runs only on non-PR events: dispatch Fuzz [run 40434904077](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434904077) on `main` started, result not recorded; a second dispatch run is needed to show restore of a v6-saved entry (SEC-006) |
+| #200, #199 `actions/cache/restore`, `actions/cache/save` v4.3.0 → v6.1.0 | SHA `55cc8345…` verified against the upstream tag | Every check green on a run against current `main`; merged as 2b7698f (#200, head 98cb0bc) and 7fff0de (#199, head 0784e71). One #200 fuzz job was killed after an apt mirror stall of about 20 minutes (infrastructure); its re-run passed ([run 40401356240](https://github.com/192d-Wing/OstrichPKI/actions/runs/40401356240), attempt 2). `save` runs only on non-PR events. v6 round trip on `main`: dispatch Fuzz [run 40434904077](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434904077) (@ 9e268f0, success) found no earlier entry and saved `fuzz-corpus-<target>-40434904077-1` for all 4 targets; dispatch [run 40438850323](https://github.com/192d-Wing/OstrichPKI/actions/runs/40438850323) (@ dd04a39, success) restored those 4 entries ("Cache restored from key: fuzz-corpus-fuzz_acme_order_identifier-40434904077-1", same for the other 3) and saved new ones (SEC-006 resolved) |
 | #194 `actions/setup-node` v4.4.0 → v7.1.0 | SHA `949feb24…` verified against the upstream tag; Dependabot recreated the PR on 8024efa | Every check green on that run; merged as 9e268f0 (head 41d6379) |
 | Post-merge `main` @ 8024efa | dependency gate [run 40434032051](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434032051); HSM integration [run 40434032720](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434032720); Helm [run 40434031897](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434031897) | Success, as are CI [run 40434031733](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434031733) and Live DB + SoftHSM [run 40434031737](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434031737). CodeQL not claimed; post-merge runs on 9e268f0 not recorded here |
 | Merged tree including #198 (local, release-engineer) | `cargo audit --deny warnings`; `cargo deny check` | Pass (611 crates); `cargo deny` warns that the `paste` ignore is unmatched (POAM-2026-10-23-12) |
@@ -1007,13 +1007,47 @@ Limits of this evidence:
 
 - The PR check runs used heads based on `main` @ c36c959. #195 and #201 change
   different lock files, so merging #195 first did not change what #201 tested
-- The `actions/cache` v6 save path is not yet proven: the dispatch Fuzz run
-  40434904077 had no result when this record was written, and a second run
-  must restore the corpus it saves (POAM-2026-10-23-54 stays Open)
+- The `actions/cache` v6 save and restore round trip is shown (added later on
+  2026-10-26): run 40434904077 saved the corpus with v6 and run 40438850323
+  restored it (`gh run view --log`, `gh cache list`). No corpus carried over
+  from v4-saved entries; run 40434904077 restored none. This is expected and
+  harmless (the corpus starts again). POAM-2026-10-23-54 stays Open for
+  `actions/upload-artifact`
 - `actions/upload-artifact` v4.6.2 stays on node20; the Docker builder images
   were not rebuilt (PR CI does not build them)
 - New POA&M items from this triage: POAM-2026-10-23-57 to -60 in
   [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)
+
+**Recorded result — 2026-10-26, plan units U0 (Dependabot/CI hygiene) and U4 (Node 24 LTS) (CM-2 / CM-3 / SI-2 / SR-3 / SA-22 / RA-5):**
+
+Run record `target/agent-workflow/20261026-213355-u0-node24/`
+(`brief.md`, `impl-notes.md`, `fixes-round-1.md`, `fixes-nits.md`,
+`qa-report.md`, `findings-security*.md`, `release-notes.md`). Branch
+`claude/dependabot-u0-node24`, uncommitted, based on `main` @ dd04a39. CI,
+Dependabot and Docker build-stage configuration only; no Rust source or
+lockfile change. QA PASS; security APPROVE; release APPROVE WITH COMMENTS.
+
+| Item | Evidence | Result |
+|------|----------|--------|
+| Node 24 LTS builder image (SA-22, SI-2, CM-2, SR-3) | `node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205` in [services/web-ui/Dockerfile](../../services/web-ui/Dockerfile) (`web-builder`) and [Dockerfile](../../Dockerfile) (`npe-portal-web-builder`); digest from the Docker Hub tag API, the registry `Docker-Content-Digest` header and a sha256 of the index body | All three identical; platforms linux/amd64, linux/arm64/v8, linux/ppc64le; the amd64 node layer contains node, npm and corepack. Docker build NOT RUN (no Docker on the host) |
+| CI web job on Node 24 (SA-22, CM-2) | `web-ui-react` uses `node-version-file: services/web-ui/web/.nvmrc` (`24`) | QA, local: install, typecheck, lint, build and `pnpm audit` exit 0 on Node v24.22.1 (SHASUMS-verified). No CI run yet |
+| Node pin gate (CM-2, SR-3) | `toolchain-pin` step "node images pinned by digest on the services/web-ui/web/.nvmrc major (CM-2)" in [ci.yml](../../.github/workflows/ci.yml) | Real tree pass (2 references); 42/42 mutation cases as expected (coder, local); actionlint + shellcheck clean for `ci.yml`. The registry is not restricted (SEC-102) |
+| Docker build stages job (CM-3, SR-3, CM-6) | Job `docker-node-stages`: `docker buildx build --target web-builder` and `--target npe-portal-web-builder`, `--output type=cacheonly`; `contents: read`, `persist-credentials: false`, no login, no push, no cache export | Change detection 7/7 local cases. Not yet run; its first PR run and first post-merge run on `main` are the POAM-2026-10-23-58 closing evidence |
+| Fuzz-lock step (CM-3, SI-2) | `Build & test`: `cargo fetch --locked --manifest-path fuzz/Cargo.toml` before `Build` | Tree exit 0; root bump without the fuzz lock exit 101; new dependency in a fuzz-graph crate exit 101; paired change exit 0 (QA, scratch copies) |
+| Dependabot configuration (CM-3, RA-5, SI-2) | [.github/dependabot.yml](../../.github/dependabot.yml): one cargo entry for `/` and `/fuzz`; one docker entry for `/` and `/services/web-ui` | SchemaStore dependabot-2.0: 0 errors; negative controls (`group_by`, `applies-to: security-update`) rejected |
+
+Limits of this evidence:
+
+- Nothing above has a GitHub Actions run yet; Docker builds (QA G1) and the
+  CDXGen SBOM (QA G6) were NOT RUN
+- Dependabot runtime behaviour (one PR per group across both directories,
+  security-update grouping) is shown only by its first run after merge
+  (REL-003, REL-104)
+- `fuzz/Cargo.lock` is not scanned by `audit.yml` (REL-011,
+  POAM-2026-10-23-42 (e)); the npe-portal SPA still has no lockfile
+  (POAM-2026-10-23-40)
+- POA&M: POAM-2026-10-23-58 closed pending merge and first post-merge
+  `docker-node-stages` run; POAM-2026-10-23-60 closed pending merge
 
 **CM-6: CI workflow secure defaults (2026-10-23, CI hardening):**
 
