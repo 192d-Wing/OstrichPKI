@@ -83,6 +83,7 @@ These are recorded as residuals in the POAM-2026-10-23-46 row
 - npe-portal has no request-id middleware, so `request_id` is logged as `-`.
 - The npe-portal session cookie is `SameSite=Lax`, so a cross-site top-level link can still make
   the portal send a GET to a valid backend path with the operator's identity.
+
 #### ACME challenge validation hardening (dns-01, http-01, tls-alpn-01)
 
 ##### ostrich-acme
@@ -461,6 +462,33 @@ the new jobs or live tests has run yet; see "Known limitations" below.
   `validation::validate_dns_identifier`.
 
 ### Changed
+
+#### Dependabot updates: CI actions on node24, lockfile patch bumps
+
+##### workspace (CI)
+
+- `actions/setup-node` v4.4.0 -> v7.1.0 (`949feb24…`, `ci.yml` Web UI job, PR #194) and
+  `actions/cache/restore` / `actions/cache/save` v4.3.0 -> v6.1.0 (`55cc8345…`, `fuzz.yml`,
+  PRs #200 and #199). All three move from the deprecated node20 action runtime to node24. SHA pins
+  were checked against the upstream tags. No inputs change and the fuzz corpus cache keys are
+  unchanged; only non-PR runs save the corpus. setup-node's automatic caching stays off, because
+  the web console uses pnpm and the job sets no `cache:` input.
+- Narrows POAM-2026-10-23-54: `actions/upload-artifact` v4.6.2 (node20) remains in `ci.yml`,
+  `fuzz.yml`, `helm.yml`, `hsm-integration.yml` and `integration-db.yml`.
+- **NIST 800-53**: SI-2, SA-22, CM-2, CM-3
+
+##### workspace (Cargo.lock)
+
+- **regex** 1.13.0 -> 1.13.1 and **regex-automata** 0.4.14 -> 0.4.18 (semver-compatible lockfile
+  update, no advisory; PR #195).
+- **NIST 800-53**: SI-2, SR-3
+
+##### ostrich-fuzz (fuzz/Cargo.lock)
+
+- **hickory-net**, **hickory-proto** and **hickory-resolver** 0.26.2 -> 0.26.3, matching the root
+  `Cargo.lock`. Upstream 0.26.3 fixes 0.26.2 regressions in DNSSEC validation (multiple RRSIGs,
+  insecure ancestor delegation). No advisory (PR #201).
+- **NIST 800-53**: SI-2, CM-2
 
 #### ACME challenge validation behaviour
 
