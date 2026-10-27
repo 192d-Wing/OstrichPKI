@@ -981,6 +981,40 @@ Limits of this evidence:
   635c5c3); closed on the green CI [run 40360909224](https://github.com/192d-Wing/OstrichPKI/actions/runs/40360909224)
 - Test detail: [TEST_EVIDENCE.md §2.11](TEST_EVIDENCE.md#211-test-run-2026-10-26-web-ui-react-router-v7-migration)
 
+**Recorded result — 2026-10-26, Dependabot PR triage #87-#205 (CM-3 / SI-2 / SR-3 / RA-5 / SA-22):**
+
+Run record `target/agent-workflow/20261026-155231-dependabot-triage/`
+(`brief.md`, `prs.tsv`, `checks.tsv`, `findings-security.md`, `findings-pqc.md`,
+`release-notes.md`, `plan.md`). Docs on branch `claude/dependabot-triage-docs`
+(uncommitted, based on `main` @ 8024efa; `main` is at 9e268f0 after the last merge). Scope: the 27 open Dependabot PRs
+numbered 87-205. No PR in the set fixes an open advisory. Reviewers:
+security-reviewer, pqc-reviewer, release-engineer, pki-architect. The user
+approved the merges, closures and comments for this triage only.
+
+| Item | Evidence | Result |
+|------|----------|--------|
+| #195 `regex` 1.13.0 → 1.13.1, `regex-automata` 0.4.18 (`Cargo.lock`) | PR checks 2026-10-26: Build & test, Clippy, Rustfmt, Toolchain pin, cargo audit, cargo deny, PKCS#11 SoftHSM2, DB + SoftHSM, Helm, Web UI | All green; merged as dfb70d2 (head c92415d) |
+| #201 hickory-net / -proto / -resolver 0.26.2 → 0.26.3 (`fuzz/Cargo.lock`) | PR checks 2026-10-26: the set above plus 4 fuzz targets | All green; merged as 8024efa (head 464928d) |
+| #200, #199 `actions/cache/restore`, `actions/cache/save` v4.3.0 → v6.1.0 | SHA `55cc8345…` verified against the upstream tag | Every check green on a run against current `main`; merged as 2b7698f (#200, head 98cb0bc) and 7fff0de (#199, head 0784e71). One #200 fuzz job was killed after an apt mirror stall of about 20 minutes (infrastructure); its re-run passed ([run 40401356240](https://github.com/192d-Wing/OstrichPKI/actions/runs/40401356240), attempt 2). `save` runs only on non-PR events: dispatch Fuzz [run 40434904077](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434904077) on `main` started, result not recorded; a second dispatch run is needed to show restore of a v6-saved entry (SEC-006) |
+| #194 `actions/setup-node` v4.4.0 → v7.1.0 | SHA `949feb24…` verified against the upstream tag; Dependabot recreated the PR on 8024efa | Every check green on that run; merged as 9e268f0 (head 41d6379) |
+| Post-merge `main` @ 8024efa | dependency gate [run 40434032051](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434032051); HSM integration [run 40434032720](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434032720); Helm [run 40434031897](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434031897) | Success, as are CI [run 40434031733](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434031733) and Live DB + SoftHSM [run 40434031737](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434031737). CodeQL not claimed; post-merge runs on 9e268f0 not recorded here |
+| Merged tree including #198 (local, release-engineer) | `cargo audit --deny warnings`; `cargo deny check` | Pass (611 crates); `cargo deny` warns that the `paste` ignore is unmatched (POAM-2026-10-23-12) |
+| Closed as superseded | #127 (`react-router-dom` 7; `main` uses `react-router` ^7.18.1), #156 (`serde_with` not in any manifest or lock), #173 / #174 (`rust` 1.98 images; `main` pins 1.99.1), #87 (`getrandom` 0.4.2; becomes plan unit U1a) | Closed with a one-line reason each |
+| Closed by decision (user-approved) | #205, #197, #90 (der-0.8 stack blocked, issue #21; POAM-2026-10-23-57); #176, #177 (Node 25 end-of-life; Node 24 LTS chosen, plan U4; POAM-2026-10-23-58) | Closed with a link to the reason |
+| Planned (open) | #198 + #203, #204, #202, #196, #91, #131, #125, #124, #123, #122, #162 | Units U0-U4 in `plan.md`; #81 and #84 out of scope |
+
+Limits of this evidence:
+
+- The PR check runs used heads based on `main` @ c36c959. #195 and #201 change
+  different lock files, so merging #195 first did not change what #201 tested
+- The `actions/cache` v6 save path is not yet proven: the dispatch Fuzz run
+  40434904077 had no result when this record was written, and a second run
+  must restore the corpus it saves (POAM-2026-10-23-54 stays Open)
+- `actions/upload-artifact` v4.6.2 stays on node20; the Docker builder images
+  were not rebuilt (PR CI does not build them)
+- New POA&M items from this triage: POAM-2026-10-23-57 to -60 in
+  [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)
+
 **CM-6: CI workflow secure defaults (2026-10-23, CI hardening):**
 
 | Setting | Where | Value |
@@ -1960,6 +1994,7 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | SC-17 (RFC 5280 §5, §5.2.3, §4.2.1.13) | `crates/ostrich-db/src/repository/crl.rs`, `crates/ostrich-ca/src/revocation.rs`, `crates/ostrich-ca/src/rest.rs`, `crates/ostrich-ca/src/issuance.rs`, `services/ca-server/src/main.rs` | Code implementation (CRL operationalization): `CrlRepository` persists every signed CRL; CRL number is DB-derived (`MAX(crl_number)+1`, monotonic/restart-stable, UNIQUE-enforced); latest CRL served at public `GET /api/v1/crl` (`application/pkix-crl`, 404 when none); issued certs carry CRL Distribution Points pointing at that endpoint when `CA_CRL_URL` is set. CRL signing/encoding unchanged. |
 | AC-17 | `crates/ostrich-common/src/tls.rs` (WebPkiClientVerifier) | Code implementation (optional mTLS client verification) |
 | RA-5 / SI-2 | `.github/workflows/audit.yml` (`cargo audit`, `cargo deny` jobs); `.cargo/audit.toml`; `deny.toml` | CI configuration and exception record; CI run logs pending (§2.3) |
+| CM-3 / SI-2 / SR-3 / RA-5 / SA-22 | Run record `target/agent-workflow/20261026-155231-dependabot-triage/`; merge commits dfb70d2 (#195), 8024efa (#201), 2b7698f (#200), 7fff0de (#199), 9e268f0 (#194) | Change record (2026-10-26): Dependabot PR triage disposition, PR check results and post-merge runs on 8024efa (§2.3) |
 | CM-2 / SA-15 | `rust-toolchain.toml`; `.github/workflows/ci.yml` job `Toolchain pin consistency` | Configuration baseline (toolchain 1.99.1) and its CI check |
 | CM-6 | `.github/workflows/{ci,audit,hsm-integration}.yml` | CI secure defaults (§2.3 table) |
 | SA-11 / IA-7 / FCS_CKM.1 / FCS_COP.1 | `.github/workflows/hsm-integration.yml`, artifact `pkcs11-softhsm-results` | Test results: Linux run 40063317654 (SoftHSM 2.6.1, PR 181 head 44d560d), 28 passed / 0 failed / 1 ignored, exit 0 |
