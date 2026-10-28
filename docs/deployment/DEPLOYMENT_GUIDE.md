@@ -113,8 +113,9 @@ helm install ostrich-pki ostrich-pki/ostrich-pki \
 ### Option 3: Bare Metal
 
 ```bash
-# Build release binaries
-cargo build --release
+# Build release binaries (the fuzz harness, ostrich-fuzz, is a workspace
+# member but is never shipped, so leave it out of release builds)
+cargo build --release --workspace --exclude ostrich-fuzz
 
 # Install binaries
 sudo install -m 755 target/release/ostrich-* /usr/local/bin/

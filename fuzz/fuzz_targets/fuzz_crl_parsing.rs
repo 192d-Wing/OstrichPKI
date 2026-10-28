@@ -7,6 +7,7 @@
 
 #![no_main]
 
+use der::Decode;
 use libfuzzer_sys::fuzz_target;
 use x509_cert::crl::CertificateList;
 

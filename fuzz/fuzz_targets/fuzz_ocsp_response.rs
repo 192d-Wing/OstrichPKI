@@ -7,8 +7,8 @@
 
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
 use der::Decode;
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     // Try to parse as DER-encoded OCSP response

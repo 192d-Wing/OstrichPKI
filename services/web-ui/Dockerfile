@@ -58,7 +58,8 @@ RUN apt-get update && apt-get install -y \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install cargo-chef --locked
+# Pinned like cargo-fuzz in fuzz.yml (NIST 800-53: CM-2, SA-15, SR-3).
+RUN cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /app
 
 # ==============================================================================
@@ -71,6 +72,10 @@ COPY services/ ./services/
 COPY tools/ ./tools/
 COPY benches/ ./benches/
 COPY tests/ ./tests/
+# fuzz/ (ostrich-fuzz) is a workspace member only to share Cargo.lock
+# (POAM-2026-10-23-60); its manifest is needed to load the workspace, its
+# sources are not (never built or shipped here). NIST 800-53: CM-2.
+COPY fuzz/Cargo.toml ./fuzz/Cargo.toml
 COPY migrations/ ./migrations/
 COPY config/ ./config/
 COPY proto/ ./proto/
@@ -96,8 +101,9 @@ COPY proto/ ./proto/
 COPY config/ ./config/
 
 # Cook only the web-ui binary's dependency graph (cached until a dep changes).
+# `--locked` on cook and build: exactly Cargo.lock (NIST 800-53: CM-2, SR-3).
 COPY --from=server-planner /app/recipe.json recipe.json
-RUN cargo chef cook --release -p ostrich-web-ui --recipe-path recipe.json
+RUN cargo chef cook --release --locked -p ostrich-web-ui --recipe-path recipe.json
 
 # Now the real source; only the workspace crates recompile.
 COPY Cargo.toml Cargo.lock ./
@@ -106,10 +112,12 @@ COPY services/ ./services/
 COPY tools/ ./tools/
 COPY benches/ ./benches/
 COPY tests/ ./tests/
+# Workspace member manifest only (fuzz harness; see the planner stage).
+COPY fuzz/Cargo.toml ./fuzz/Cargo.toml
 COPY migrations/ ./migrations/
 
 # Build only the web-ui server binary
-RUN cargo build --release -p ostrich-web-ui
+RUN cargo build --release --locked -p ostrich-web-ui
 
 # ==============================================================================
 # Stage 3: Runtime Image — Iron Bank UBI 10 (multi-arch: amd64 + arm64)

@@ -19,8 +19,8 @@ build: ## Build all crates
 	cargo build --workspace --all-features
 
 .PHONY: build-release
-build-release: ## Build release binaries
-	cargo build --workspace --all-features --release
+build-release: ## Build release binaries (fuzz harness excluded: never shipped)
+	cargo build --workspace --exclude ostrich-fuzz --all-features --release
 
 .PHONY: clean
 clean: ## Clean build artifacts
@@ -335,17 +335,39 @@ helm-check: ## Lint/template the Helm chart incl. negative cases (needs helm + h
 fuzz-setup: ## Set up fuzzing infrastructure (cargo-fuzz pinned as in fuzz.yml)
 	cargo install cargo-fuzz --version 0.13.2 --locked
 
+# fuzz/ is a root workspace member sharing Cargo.lock (POAM-2026-10-23-60), so
+# cargo-fuzz (no --profile) would build with the root [profile.release] (fat
+# LTO, strip). Restore the fuzz profile used in fuzz.yml: no LTO, symbols kept
+# for crash triage. Toolchain and sanitizer default to fuzz.yml's pins
+# (sanitizer `none`: ASan breaks the aws-lc FIPS delocate step); override with
+# e.g. `make fuzz-all FUZZ_SANITIZER=address FUZZ_TIME=300`, or restrict the
+# run with `FUZZ_TARGETS="fuzz_proxy_path fuzz_grpc_requestor"` (default: all).
+# NIST 800-53: CM-2, SA-11, SA-15.
+FUZZ_TOOLCHAIN ?= nightly-2026-10-23
+FUZZ_SANITIZER ?= none
+FUZZ_TIME ?= 60
+FUZZ_TARGETS ?=
+fuzz-list fuzz-all: export CARGO_PROFILE_RELEASE_LTO = false
+fuzz-list fuzz-all: export CARGO_PROFILE_RELEASE_STRIP = false
+
 .PHONY: fuzz-list
 fuzz-list: ## List available fuzz targets
-	cargo fuzz list
+	cargo +$(FUZZ_TOOLCHAIN) fuzz list
 
 .PHONY: fuzz-all
-fuzz-all: ## Run all fuzz targets (short run)
-	@echo "Running all fuzz targets for 60 seconds each..."
-	@for target in $$(cargo fuzz list); do \
+fuzz-all: ## Run every fuzz target (or FUZZ_TARGETS) for FUZZ_TIME s (default 60); fails if any fails
+	@echo "Running all fuzz targets for $(FUZZ_TIME) seconds each ($(FUZZ_TOOLCHAIN), sanitizer $(FUZZ_SANITIZER))..."
+	@targets="$(FUZZ_TARGETS)"; \
+	if [ -z "$$targets" ]; then targets="$$(cargo +$(FUZZ_TOOLCHAIN) fuzz list)" || exit 1; fi; \
+	[ -n "$$targets" ] || { echo "no fuzz targets found"; exit 1; }; \
+	failed=""; \
+	for target in $$targets; do \
 		echo "Fuzzing $$target..."; \
-		cargo fuzz run $$target -- -max_total_time=60 || true; \
-	done
+		cargo +$(FUZZ_TOOLCHAIN) fuzz run --sanitizer $(FUZZ_SANITIZER) $$target -- -max_total_time=$(FUZZ_TIME) \
+			|| failed="$$failed $$target"; \
+	done; \
+	if [ -n "$$failed" ]; then echo "FAILED fuzz targets:$$failed"; exit 1; fi; \
+	echo "All fuzz targets passed."
 
 # ==============================================================================
 # Coverage Commands
@@ -353,7 +375,7 @@ fuzz-all: ## Run all fuzz targets (short run)
 
 .PHONY: coverage
 coverage: ## Generate code coverage report
-	cargo tarpaulin --workspace --all-features --timeout 300 --out Html --output-dir ./coverage
+	cargo tarpaulin --workspace --exclude ostrich-fuzz --all-features --timeout 300 --out Html --output-dir ./coverage
 
 .PHONY: coverage-open
 coverage-open: coverage ## Generate and open coverage report

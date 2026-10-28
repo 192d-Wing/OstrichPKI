@@ -48,11 +48,8 @@ declare the API stable, not a side effect of a breaking change.
    - Include all features, changes, fixes, and technical details
    - Update version links at bottom of file
 
-3. **Refresh the lock files**: `cargo update --workspace` for the root
-   `Cargo.lock`, and `cargo update --manifest-path fuzz/Cargo.toml --workspace`
-   for `fuzz/Cargo.lock`. The fuzz crate is a separate workspace that pins the
-   versions of its path dependencies, so a version bump makes `fuzz.yml` fail
-   until its lock is refreshed.
+3. **Refresh the lock file**: `cargo update --workspace`. There is one
+   `Cargo.lock`; the fuzz crate (`fuzz/`) is a workspace member and shares it.
 
 4. **Commit with chore: prefix**:
 

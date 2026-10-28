@@ -21,6 +21,10 @@ jobs:
   build-test:
     name: Build & test
     runs-on: ubuntu-24.04
+    # Cached runs take ~6-8 min. Backstop for a test binary that never exits
+    # (e.g. a libFuzzer harness run by `--bins`; the guard below prevents the
+    # known case) instead of the 6 h default.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,18 +41,102 @@ jobs:
         run: rustup toolchain install && rustc --version && cargo --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
-      # fuzz/ is its own workspace with its own lock, but its path dependencies
-      # inherit the root [workspace.dependencies]. A root manifest change that
-      # fuzz/Cargo.lock no longer satisfies (e.g. cryptoki 0.11 -> 0.12 without
-      # the fuzz lock) fails here, on every PR, instead of only in fuzz.yml
-      # (path-filtered, nightly). Stable toolchain; resolves and downloads
-      # only, so it runs before the long Build and fails fast.
+      # fuzz/ (ostrich-fuzz) is a member of this workspace and shares
+      # Cargo.lock, so `--locked` on Build and Clippy covers the fuzz graph and
+      # any stale lock fails there. This guard keeps the one-lockfile layout
+      # and its exclusions from regressing:
+      #  1. no committed fuzz/Cargo.lock;
+      #  2. ostrich-fuzz is a workspace member;
+      #  3. no test/coverage command in a workflow, the Makefile or
+      #     .gitlab-ci.yml selects the fuzz bins: a line running cargo's test
+      #     or tarpaulin subcommand with `--bins` / `--all-targets` (or any
+      #     tarpaulin line) needs `--exclude ostrich-fuzz` unless it selects
+      #     packages with -p/--package. `--bins` overrides the bins'
+      #     `test = false`, and a fuzz bin's test binary is libFuzzer's main,
+      #     which never exits. Single-line commands only;
+      #  4. the root Dockerfile's OSTRICH_RELEASE_PACKAGES (cargo-chef cook has
+      #     no --exclude) is exactly the workspace members minus ostrich-fuzz,
+      #     so the release image keeps `--workspace` feature unification.
+      # Cheap (`--no-deps`: workspace manifests only, no dependency
+      # resolution, so it does not itself detect a stale lock); runs first.
       # COMPLIANCE MAPPING:
-      # - NIST 800-53: CM-3 (Configuration Change Control), SI-2 (Flaw
-      #   Remediation), CM-2, SR-3 - both lockfiles move together
-      #   (POAM-2026-10-23-60)
-      - name: Fuzz lockfile in step with the workspace
-        run: cargo fetch --locked --manifest-path fuzz/Cargo.toml
+      # - NIST 800-53: CM-2 (Baseline Configuration), CM-3 (Configuration
+      #   Change Control), SI-2 (Flaw Remediation), SR-3 - one lockfile for
+      #   the workspace and the fuzz harness (POAM-2026-10-23-60)
+      - name: Fuzz crate shares the root lockfile
+        run: |
+          set -euo pipefail
+          rc=0
+          if git ls-files --error-unmatch fuzz/Cargo.lock >/dev/null 2>&1; then
+            echo "::error file=fuzz/Cargo.lock::fuzz/ is a root workspace member; delete fuzz/Cargo.lock"
+            rc=1
+          fi
+          members="$(mktemp)"
+          cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[].name' | sort > "$members"
+          if ! grep -qx ostrich-fuzz "$members"; then
+            echo "::error file=Cargo.toml::ostrich-fuzz must be a root workspace member"
+            rc=1
+          fi
+
+          # (3) Lines of tracked CI/Make files that run the test or tarpaulin
+          # subcommand. The pattern needs whitespace after "cargo", so this
+          # script's own lines never match it.
+          files="$(mktemp)"
+          git ls-files -z -- '.github/workflows/*.yml' '.github/workflows/*.yaml' Makefile .gitlab-ci.yml > "$files"
+          while IFS= read -r -d '' f; do
+            hits="$(grep -nE 'cargo[[:space:]]+(\+[^[:space:]]+[[:space:]]+)?(test|tarpaulin)([[:space:]]|$)' "$f")" || [ $? -eq 1 ]
+            while IFS= read -r hit; do
+              [ -n "$hit" ] || continue
+              line="${hit#*:}"
+              [[ "$line" =~ ^[[:space:]]*# ]] && continue
+              [[ "$line" =~ --bins|--all-targets|tarpaulin ]] || continue
+              [[ "$line" =~ --exclude[[:space:]=]+ostrich-fuzz ]] && continue
+              if [[ "$line" =~ (^|[[:space:]])(-p|--package)([[:space:]=]) ]] && [[ ! "$line" =~ ostrich-fuzz ]]; then
+                continue
+              fi
+              echo "::error file=$f,line=${hit%%:*}::selects the fuzz bins (--bins/--all-targets/tarpaulin) without --exclude ostrich-fuzz; libFuzzer harnesses never exit"
+              rc=1
+            done <<< "$hits"
+          done < "$files"
+
+          # (4) Root Dockerfile release selection. Parsed the way Docker reads
+          # it: comment lines dropped (also inside a continuation), then `\`
+          # continuations joined. Exactly one ENV OSTRICH_RELEASE_PACKAGES, equal
+          # to the members minus ostrich-fuzz; exactly one `cargo chef cook`
+          # and one `cargo build` RUN line, both using $OSTRICH_RELEASE_PACKAGES
+          # and neither selecting `--workspace` or ostrich-fuzz.
+          joined="$(mktemp)"
+          grep -v '^[[:space:]]*#' Dockerfile \
+            | awk '{ if (sub(/\\$/, "")) { buf = buf $0 } else { print buf $0; buf = "" } } END { if (buf != "") print buf }' > "$joined"
+          want="$(mktemp)"; got="$(mktemp)"
+          grep -vx ostrich-fuzz "$members" > "$want"
+          envs="$(grep -cE '^ENV[[:space:]]+OSTRICH_RELEASE_PACKAGES=' "$joined")" || true
+          if [ "$envs" != 1 ]; then
+            echo "::error file=Dockerfile::expected exactly one ENV OSTRICH_RELEASE_PACKAGES, found $envs"
+            rc=1
+          fi
+          grep -E '^ENV[[:space:]]+OSTRICH_RELEASE_PACKAGES=' "$joined" \
+            | grep -oE -- '-p [A-Za-z0-9_-]+' | cut -d' ' -f2 | sort > "$got" || true
+          if ! diff -u "$want" "$got"; then
+            echo "::error file=Dockerfile::OSTRICH_RELEASE_PACKAGES must list every workspace member except ostrich-fuzz (diff above: - missing, + extra)"
+            rc=1
+          fi
+          for step in "chef cook" build; do
+            re="^RUN[[:space:]].*cargo[[:space:]]+${step// /[[:space:]]+}([[:space:]]|\$)"
+            runs="$(grep -E "$re" "$joined")" || true
+            n="$(printf '%s' "$runs" | grep -c . || true)"
+            if [ "$n" != 1 ]; then
+              echo "::error file=Dockerfile::expected exactly one RUN line with cargo $step, found $n"
+              rc=1
+              continue
+            fi
+            if [[ "$runs" != *"\$OSTRICH_RELEASE_PACKAGES"* ]] || [[ "$runs" =~ --workspace|ostrich-fuzz ]]; then
+              echo "::error file=Dockerfile::the cargo $step RUN line must use \$OSTRICH_RELEASE_PACKAGES and must not contain --workspace or ostrich-fuzz: $runs"
+              rc=1
+            fi
+          done
+          exit "$rc"
 
       - name: Build
         run: cargo build --workspace --locked
@@ -56,8 +144,11 @@ jobs:
       # Unit/lib + binary tests only (live e2e modules skip here). The PKCS#11
       # / SoftHSM suite runs in .github/workflows/hsm-integration.yml; the
       # PostgreSQL + SoftHSM live suites run in integration-db.yml.
+      # ostrich-fuzz is excluded: `--bins` overrides its `test = false`, and a
+      # fuzz bin's test binary is libFuzzer's main, which never exits. Build
+      # and Clippy still compile all fuzz targets on stable.
       - name: Test
-        run: cargo test --workspace --lib --bins --locked
+        run: cargo test --workspace --exclude ostrich-fuzz --lib --bins --locked
 
       # CA gRPC mTLS end-to-end (in-process TLS 1.3 mTLS server/client, the
       # dev cert script, per-role / per-method authorization, requestor
@@ -136,6 +227,7 @@ jobs:
     name: Clippy (advisory)
     runs-on: ubuntu-24.04
     continue-on-error: true
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -362,6 +454,96 @@ jobs:
       - name: Build Dockerfile --target npe-portal-web-builder
         if: steps.changes.outputs.build == 'true'
         run: docker buildx build --progress=plain -f Dockerfile --target npe-portal-web-builder --output type=cacheonly .
+
+  # ---- Rust builder stages of the Dockerfiles (blocking when they change) ----
+  # docker-publish.yml builds the images on push to main and tags only, so a
+  # Dockerfile or workspace-manifest change (e.g. a new workspace member whose
+  # manifest is not COPY'd, a package selection that drifts) would otherwise
+  # first fail after merge. Cargo.lock is deliberately not an input: a
+  # lock-only change (every Dependabot cargo PR) only moves dependency
+  # versions, which `Build & test` already compiles with `--locked`, and two
+  # cold ~1 h release builds per such PR would add cost, not coverage.
+  # docker-publish.yml builds every push to main in full. Builds the
+  # Rust builder stages only: `builder` (chef <- rust:<toolchain>-bookworm,
+  # planner) and `server-builder` (server-chef, server-planner). Neither
+  # reaches the Iron Bank runtime base, so: no registry login, no secrets, no
+  # push (`--output type=cacheonly`), no cache export. One matrix job per
+  # Dockerfile so the two cold release builds run in parallel. Each leg builds
+  # only when its own Dockerfile or a shared input (.dockerignore, root or
+  # fuzz Cargo.toml, rust-toolchain.toml, this file) changed. On a PR every leg
+  # always runs and reports success when none of its inputs changed, so both
+  # can be made required checks. On a push to main it does not build: docker-publish.yml
+  # builds both Dockerfiles in full on every push to main (the post-merge
+  # record), and a second cold release build here would only double that cost.
+  # COMPLIANCE MAPPING:
+  # - NIST 800-53: CM-3 (Configuration Change Control), CM-2, SA-10, SR-3 -
+  #   the release builder stages are exercised before merge
+  #   (POAM-2026-10-23-60)
+  # - NIST 800-53: CM-6 / AC-6 - contents: read token, no credentials
+  docker-rust-stages:
+    name: Docker build stages (Rust, ${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    # Cold release build (fat LTO, codegen-units = 1, aws-lc FIPS module) with
+    # no layer cache; docker-publish (registry cache) takes ~20 min.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: services
+            dockerfile: Dockerfile
+            target: builder
+          - name: web-ui
+            dockerfile: services/web-ui/Dockerfile
+            target: server-builder
+    steps:
+      # Depth 2: on a PR, HEAD is the merge commit and HEAD^1 the base tip.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      # Per leg: its own Dockerfile, plus the shared inputs, trigger a build.
+      - name: Detect changes to the Rust builder inputs
+        id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "$EVENT_NAME: not building; docker-publish.yml builds both Dockerfiles on push to main."
+            exit 0
+          fi
+          # NUL-separated, unquoted paths; a rename lists both old and new
+          # path. Written to a file first so a git failure fails the job.
+          changed="$RUNNER_TEMP/changed-paths"
+          git diff --no-renames -z --name-only HEAD^1 HEAD > "$changed"
+          build=false
+          while IFS= read -r -d '' path; do
+            printf '%s\n' "$path"
+            if [ "$path" = "$DOCKERFILE" ] \
+              || [[ "$path" =~ ^(\.dockerignore|Cargo\.toml|fuzz/Cargo\.toml|rust-toolchain\.toml|\.github/workflows/ci\.yml)$ ]]; then
+              build=true
+            fi
+          done < "$changed"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          [ "$build" = true ] || echo "No Rust builder input of $DOCKERFILE changed; nothing to build."
+
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.build == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # Do not write the buildx binary to the Actions cache.
+          cache-binary: false
+
+      - name: Build ${{ matrix.dockerfile }} --target ${{ matrix.target }}
+        if: steps.changes.outputs.build == 'true'
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          TARGET: ${{ matrix.target }}
+        run: docker buildx build --progress=plain -f "$DOCKERFILE" --target "$TARGET" --output type=cacheonly .
 
   # NOTE: the dependency gate (cargo audit + cargo deny) lives in its own
   # workflow (.github/workflows/audit.yml). It runs on every PR, on pushes to

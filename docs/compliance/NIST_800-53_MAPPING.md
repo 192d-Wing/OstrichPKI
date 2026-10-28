@@ -1353,8 +1353,9 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
     2026-10-26, PR #194), `actions/upload-artifact` v4.6.2
     `ea165f8d…`. Container images are tag-pinned (`rust:1.99.1-bookworm`), not
     digest-pinned (the Node builder images are digest-pinned since plan U4,
-    see the next item). Not covered: `docker-publish.yml`, `cargo-chef` and several
-    GitLab tools and images (POAM-2026-10-23-15).
+    see the next item). Not covered: `docker-publish.yml` and several
+    GitLab tools and images (POAM-2026-10-23-15). `cargo-chef` is
+    version-pinned since 2026-10-28 (next item, pending merge).
   - FIPS cryptographic module: **AWS-LC FIPS 4.2.0** built from source by
     `aws-lc-fips-sys` **0.14.2** (previously AWS-LC FIPS 3.3.0 via 0.13.14),
     reached through `aws-lc-rs` 1.18.2 (`fips` feature). TLS: `rustls` 0.23.46,
@@ -1390,13 +1391,56 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
     typecheck, lint, build and audit exit 0). No Docker build and no CI run
     of the new gates is recorded yet (POAM-2026-10-23-58, closed pending
     merge).
+- 🟡 **Workspace build baseline: one `Cargo.lock` for the workspace and the fuzz crate (2026-10-28; branch `claude/fuzz-single-lockfile`, uncommitted, based on `main` @ 07160f3; run record `target/agent-workflow/20261028-110116-fuzz-single-lock/`):**
+  - The fuzz harness (`ostrich-fuzz`) is a root workspace member
+    ([Cargo.toml](../../Cargo.toml) `members`, line 40) and has no
+    `[workspace]` table or lockfile of its own; `fuzz/Cargo.lock` is deleted
+    and git-ignored. The root `Cargo.lock` gains only `arbitrary` 1.5.0,
+    `libfuzzer-sys` 0.4.13 and `ostrich-fuzz` (+32 / -0 lines; versions and
+    checksums match the old fuzz lock); `cargo metadata --locked` exit 0
+  - The harness is never shipped. Commands that would build or run it as
+    release or test code exclude it: `Makefile` `build-release` (line 23) and
+    `coverage` (line 378); `.gitlab-ci.yml` `build:release` (line 172) and
+    `test:coverage` (line 248); the `ci.yml` Test step (line 124,
+    `cargo test --workspace --exclude ostrich-fuzz --lib --bins --locked`);
+    and the root [Dockerfile](../../Dockerfile), whose
+    `OSTRICH_RELEASE_PACKAGES` (line 99) lists every member except
+    `ostrich-fuzz` for both `cargo chef cook` (line 135) and
+    `cargo build --release` (line 150), because cargo-chef 0.1.78 `cook` has
+    no `--exclude`. Proof that the shipped selection is unchanged
+    (`fixes-round-1.md`, QA): `cargo build --release --unit-graph` for that
+    list gives the same units (package, target, kind, mode, features) as
+    `--workspace --exclude ostrich-fuzz` (620 on x86_64, 619 on aarch64, 0
+    `libfuzzer-sys` / `arbitrary` / `ostrich-fuzz` units), and the base
+    `--workspace` (636 / 635) minus its 16 fuzz units is identical. QA found
+    0 fuzz units in every excluded command. A shipped-binaries-only `-p`
+    list was rejected because it would change feature unification (for
+    example `zeroize` on `ed25519-dalek`, SI-12)
+  - Fuzz builds keep the release profile but switch off LTO and strip
+    (`CARGO_PROFILE_RELEASE_LTO=false`, `CARGO_PROFILE_RELEASE_STRIP=false`)
+    in `fuzz.yml` and the `Makefile` `fuzz-*` targets only; the root
+    `[profile.release]` used by the shipped binaries is unchanged
+  - Tool pins: `cargo install cargo-chef --version 0.1.78 --locked` in
+    [Dockerfile](../../Dockerfile) (line 41) and
+    [services/web-ui/Dockerfile](../../services/web-ui/Dockerfile) (line 62);
+    `cargo install cargo-sbom --version 0.10.0 --locked` in
+    [.gitlab-ci.yml](../../.gitlab-ci.yml) (line 400). Both installs were
+    verified locally on rustc 1.99.1; `cargo sbom` lists 565 packages
+    including the 3 fuzz packages (the SBOM covers the harness, which is not
+    shipped; SEC-002). The `Makefile` fuzz targets now use the pinned
+    `nightly-2026-10-23` and `--sanitizer none`, and fail when a target fails
+  - `deny.toml` (line 85): one crate-scoped license exception,
+    `{ allow = ["NCSA"], crate = "libfuzzer-sys" }`, not added to the global
+    allow list
+  - Local evidence only (macOS arm64); no Docker build, GitLab job or CI run
+    of these changes yet. Gate results: [TEST_EVIDENCE.md §2.19](TEST_EVIDENCE.md#219-test-run-2026-10-28-one-cargolock-for-the-workspace-and-the-fuzz-crate)
 - 🔴 No deployment baseline configuration documented
 
 **Gaps:**
 
 - No formal configuration baseline documentation
 - No configuration item inventory (the CI pin inventory above covers build tooling only)
-- `docker-publish.yml`, `cargo-chef` and several GitLab tools and images are not version- or SHA-pinned (POAM-2026-10-23-15)
+- `docker-publish.yml` and several GitLab tools and images are not version- or SHA-pinned (POAM-2026-10-23-15; `cargo-chef` and `cargo-sbom` pinned 2026-10-28, pending merge)
 - The pin inventory is not yet merged to `main` and no CI run has executed it
 
 **Remediation:** Phase 16 - Document baseline configuration for production deployment
@@ -1458,17 +1502,13 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
   branch protection, POAM-2026-10-23-14)
 - 🟡 **CI change-control gates for dependency and builder changes, 2026-10-26
   (plans U0 and U4; branch `claude/dependabot-u0-node24`, uncommitted, based on `main` @ dd04a39; run record `target/agent-workflow/20261026-213355-u0-node24/`):**
-  - `Build & test` step "Fuzz lockfile in step with the workspace"
-    (`cargo fetch --locked --manifest-path fuzz/Cargo.toml`, before `Build`)
-    fails any PR, Dependabot or human, whose root manifest change
-    `fuzz/Cargo.lock` no longer satisfies. Local negative tests: exit 101
-    for a root `cryptoki` bump without the fuzz lock and for a new
-    dependency in a fuzz-graph crate; exit 0 when paired (`qa-report.md`)
-  - `.github/dependabot.yml` has one cargo entry for `/` and `/fuzz`, so
-    grouped updates move both lockfiles in one change; `fuzz.yml` also runs
-    on `Cargo.lock` and `crates/*/Cargo.toml` changes (POAM-2026-10-23-60,
-    closed pending merge). Dependabot's grouping across the two directories
-    is shown only by its first run after merge
+  - ~~`Build & test` step "Fuzz lockfile in step with the workspace"
+    (`cargo fetch --locked --manifest-path fuzz/Cargo.toml`)~~ and ~~one
+    Dependabot cargo entry for `/` and `/fuzz`~~: merged as PR #211 and
+    superseded on 2026-10-28 (next item). Dependabot's first run
+    (2026-10-27) did not update `fuzz/Cargo.lock` for #214, #216 and #217,
+    which then failed that step. `fuzz.yml` still runs on `Cargo.lock` and
+    `crates/*/Cargo.toml` changes
   - New job `docker-node-stages` ("Docker build stages (Node)") builds the
     two Node builder stages on PRs that change a Dockerfile, `.dockerignore`,
     `services/*/web/**` or `ci.yml`, and on every push to `main`
@@ -1477,6 +1517,43 @@ This document maps NIST 800-53 Revision 5 security controls to OstrichPKI implem
     development host)
   - These jobs are not required checks while `main` has no branch
     protection (POAM-2026-10-23-14)
+- 🟡 **One lockfile and its guard, 2026-10-28 (branch `claude/fuzz-single-lockfile`, uncommitted, based on `main` @ 07160f3; run record `target/agent-workflow/20261028-110116-fuzz-single-lock/`):**
+  - `fuzz/` is a root workspace member sharing `Cargo.lock` (see CM-2), and
+    [.github/dependabot.yml](../../.github/dependabot.yml) has one cargo
+    entry with `directory: "/"`, so every cargo update is one change to one
+    lock (POAM-2026-10-23-60, closed pending merge)
+  - `Build & test` step "Fuzz crate shares the root lockfile"
+    ([ci.yml](../../.github/workflows/ci.yml) line 66, before `Build`) fails
+    if `fuzz/Cargo.lock` is tracked, if `ostrich-fuzz` is not a member, if a
+    tracked workflow, `Makefile` or `.gitlab-ci.yml` line runs `cargo test`
+    or `cargo tarpaulin` with `--bins` / `--all-targets` (or any tarpaulin
+    line) without `--exclude ostrich-fuzz` (a libFuzzer test binary never
+    exits; QA: without the exclude, the Test step hangs), or if the
+    Dockerfile `OSTRICH_RELEASE_PACKAGES` list differs from the members
+    minus `ostrich-fuzz`. It reads `cargo metadata --no-deps`, so it does not
+    detect a stale lock; `Build` and `Clippy` with `--locked` do (exit 101,
+    QA). Local mutations (`fixes-round-1.md`, `qa-report.md`): tree 0;
+    tracked lock, fuzz as its own workspace, Test without `--exclude`,
+    Makefile `--all-targets`, `-p ostrich-fuzz --bins`, GitLab tarpaulin
+    without the exclude, Dockerfile list missing a member or including
+    `ostrich-fuzz`, renamed package: each 1; `-p ostrich-ca-server --bins`
+    and a commented command: 0. Single-line commands only
+  - Job timeouts: `build-test` 60 min (line 27; cached runs take 6-8 min),
+    `clippy` 45 min (line 203), so a hung test binary fails in an hour
+    instead of the 6 h default (QA-001)
+  - New job `docker-rust-stages` (line 454; "Docker build stages (Rust,
+    services)" and "(Rust, web-ui)", 120 min timeout) builds the `builder`
+    stage of the root `Dockerfile` and the `server-builder` stage of
+    `services/web-ui/Dockerfile` (`--output type=cacheonly`,
+    `contents: read`, no login, no push, no cache export) on PRs that change
+    a Dockerfile, `.dockerignore`, the root `Cargo.toml`, `fuzz/Cargo.toml`,
+    `rust-toolchain.toml` or `ci.yml`. A lock-only change does not trigger
+    it, and it does not build on push to `main` (`docker-publish.yml` builds
+    both images there). Change detection: 12 local cases as expected; not
+    yet run (no Docker on the development host)
+  - actionlint 1.7.12: `ci.yml` clean; `fuzz.yml` only the pre-existing
+    SC2015 info (same on the base). Not a required check while `main` has
+    no branch protection (POAM-2026-10-23-14)
 
 **Gaps:**
 
@@ -2014,7 +2091,7 @@ the code annotations since 2026-10-26.
 
 - [.github/workflows/audit.yml](../../.github/workflows/audit.yml) - "dependency gate" workflow (CI hardening, 2026-10-23; branch `claude/ci-hardening`, not yet merged). Job `cargo audit` runs `cargo audit --deny warnings` (cargo-audit 0.22.2), so vulnerabilities and unmaintained, unsound or yanked warnings all fail the job. The gate fails on any new **RustSec** advisory; GitHub-only advisories (no RustSec alias) are found by Dependabot and do not fail CI (NIST-002, 2026-10-26; POAM-2026-10-23-42). Job `cargo deny` runs `cargo deny check` (cargo-deny 0.20.2: advisories, bans, licenses, sources). No `continue-on-error`. Least-privilege token (`contents: read`), `persist-credentials: false`, SHA-pinned actions
 - **Scan frequency (RA-5(a)):** every pull request (no path filter), every push to `main`, weekly (Monday 06:00 UTC), and manual dispatch. GitLab: `security:audit` and `security:deny` per merge request and on `main`/`develop`; `scheduled:security-scan` (audit and deny) on pipeline schedules
-- [.github/dependabot.yml](../../.github/dependabot.yml) - Dependabot dependency-update PRs, weekly, for `cargo` (one entry for `/` and `/fuzz` with a `cargo-security` group; plan U0, PR #211), `npm` (`/services/web-ui/web` only), `github-actions` and `docker` (one entry for `/` and `/services/web-ui`). The docker entry authenticates to Iron Bank (`registry1.dso.mil`) through a top-level `registries:` entry that reads the Dependabot secrets `REPO1_USER` / `REPO1`; no credential is stored in the repository (IA-5). Until those secrets exist, every weekly docker run fails with `private_source_authentication_failure` on `ironbank/redhat/ubi/ubi10` (seen on every run since 2026-09-21), so the UBI 10 runtime base gets no Dependabot updates. Dependabot alerts are currently the only source that reports GitHub-only advisories for `Cargo.lock`. The npe-portal SPA (`services/npe-portal/web`) has no Dependabot entry and no lockfile (POAM-2026-10-23-40)
+- [.github/dependabot.yml](../../.github/dependabot.yml) - Dependabot dependency-update PRs, weekly, for `cargo` (one entry with a `cargo-security` group; plan U0, PR #211, covered `/` and `/fuzz`; since 2026-10-28, pending merge, `directory: "/"` only, because the fuzz crate shares the root `Cargo.lock`, POAM-60), `npm` (`/services/web-ui/web` only), `github-actions` and `docker` (one entry for `/` and `/services/web-ui`). The docker entry authenticates to Iron Bank (`registry1.dso.mil`) through a top-level `registries:` entry that reads the Dependabot secrets `REPO1_USER` / `REPO1`; no credential is stored in the repository (IA-5). Until those secrets exist, every weekly docker run fails with `private_source_authentication_failure` on `ironbank/redhat/ubi/ubi10` (seen on every run since 2026-09-21), so the UBI 10 runtime base gets no Dependabot updates. Dependabot alerts are currently the only source that reports GitHub-only advisories for `Cargo.lock`. The npe-portal SPA (`services/npe-portal/web`) has no Dependabot entry and no lockfile (POAM-2026-10-23-40)
 - **Web UI (npm):** [.github/workflows/ci.yml](../../.github/workflows/ci.yml) job `web-ui-react` runs `pnpm audit --prod --audit-level=high` (line 96; production dependencies, high/critical only). Development/build dependencies and medium/low advisories do not fail CI; they are found by Dependabot (npm entry above, weekly). Not every JavaScript dependency tree in the repository is monitored (npe-portal, POAM-40)
 - [.cargo/audit.toml](../../.cargo/audit.toml) - **authoritative risk-acceptance record** and the only exception path for the gate: 3 ignored advisories, each with a rationale and a grep-able `# POAM:` tag (RUSTSEC-2023-0071 `rsa` Marvin, POAM-09; RUSTSEC-2024-0436 `paste` and RUSTSEC-2025-0134 `rustls-pemfile`, both unmaintained, SA-22, POAM-12). [deny.toml](../../deny.toml) `[advisories].ignore` mirrors the same 3 IDs. RUSTSEC-2026-0387 (added 2026-10-23, user decision: ignore + POA&M) and RUSTSEC-2026-0097 were removed on 2026-10-24 (dependency cleanup; POAM-16 and POAM-11)
 
@@ -2029,8 +2106,9 @@ the code annotations since 2026-10-26.
 - ✅ 2026-10-26, react-router v7 migration (branch `claude/react-router-v7`, uncommitted; run record `target/agent-workflow/20261026-091035-react-router-v7/`): web-ui `react-router-dom` ^6.30.6 replaced by `react-router` ^7.18.1 (resolves to 7.18.4). Full `pnpm audit` (`services/web-ui/web`): **"No known vulnerabilities found"** (2 moderate before; re-run by the compliance scribe on the restacked tree, `main` @ 9fad04f plus the working-tree diff). `pnpm-lock.yaml` has no `react-router-dom`, `react-router` 6.x or `@remix-run/router`. The CI gate form (`pnpm audit --prod --audit-level=high`) is unchanged and would not have reported these medium advisories (POAM-2026-10-23-42). Local only; after merge, the Dependabot auto-close of alerts 27 and 28 is the CI-side evidence
 - 🟡 No CI run of the new gate has been recorded for the dependency-cleanup change (the 2026-10-23 gate passed on PR 181, run 40063317688)
 - ✅ 2026-10-26, Dependabot PR triage (#87-#205; run record `target/agent-workflow/20261026-155231-dependabot-triage/`): #195 (`regex` 1.13.1) and #201 (hickory 0.26.3 in `fuzz/Cargo.lock`) merged after green PR runs of `cargo audit` and `cargo deny`; the dependency gate on `main` @ 8024efa passed ([run 40434032051](https://github.com/192d-Wing/OstrichPKI/actions/runs/40434032051)). Neither PR fixes an advisory. The CI action updates #200, #199 and #194 (node24) also merged; `main` is at 9e268f0. See SI-2 for the full disposition
-- 🟡 Dependabot `/fuzz` updates of crates shared with the workspace cannot land as produced: they edit the root `Cargo.toml` without the root lock and fail `--locked` (POAM-2026-10-23-60, plan U0)
-- 🟡 2026-10-26, plan U0 (branch `claude/dependabot-u0-node24`, uncommitted, based on `main` @ dd04a39; run record `target/agent-workflow/20261026-213355-u0-node24/`): one Dependabot cargo entry for `/` and `/fuzz`, a `cargo-security` group (`applies-to: security-updates`) and a fuzz-lock step in `Build & test` (see CM-3). POAM-2026-10-23-60 closed pending merge; how Dependabot groups security updates across the two directories is shown only by its first run after merge (REL-104). The der-0.8 stack major ignores (POAM-2026-10-23-57) should not, but may, hold back a security PR for those majors; `audit.yml` is the backstop for the root `Cargo.lock` only
+- 🟡 ~~Dependabot `/fuzz` updates of crates shared with the workspace cannot land as produced: they edit the root `Cargo.toml` without the root lock and fail `--locked` (POAM-2026-10-23-60, plan U0)~~ superseded 2026-10-28 by the single lockfile (next items)
+- 🟡 2026-10-26, plan U0 (branch `claude/dependabot-u0-node24`, uncommitted, based on `main` @ dd04a39; run record `target/agent-workflow/20261026-213355-u0-node24/`): one Dependabot cargo entry for `/` and `/fuzz`, a `cargo-security` group (`applies-to: security-updates`) and a fuzz-lock step in `Build & test` (see CM-3). POAM-2026-10-23-60 closed pending merge; how Dependabot groups security updates across the two directories is shown only by its first run after merge (REL-104). The der-0.8 stack major ignores (POAM-2026-10-23-57) should not, but may, hold back a security PR for those majors; `audit.yml` is the backstop for the root `Cargo.lock` only. **Superseded 2026-10-28:** Dependabot's first run (2026-10-27) skipped the `/fuzz` lock for #214, #216 and #217; see the next item
+- 🟡 2026-10-28, one lockfile (branch `claude/fuzz-single-lockfile`, uncommitted, based on `main` @ 07160f3; run record `target/agent-workflow/20261028-110116-fuzz-single-lock/`): the fuzz graph is now in the root `Cargo.lock`, which the dependency gate scans. Local: `cargo audit --deny warnings` scans **615** crates (612 on the base lock; +`arbitrary`, `libfuzzer-sys`, `ostrich-fuzz`); `cargo tree -i libfuzzer-sys` shows it under `ostrich-fuzz`; `cargo deny check` gives `bans ok, licenses ok, sources ok` with a crate-scoped NCSA exception for `libfuzzer-sys` (negative check: without it, `error[rejected]`). Both tools exit 1 only on RUSTSEC-2026-0414 (`pulldown-cmark` 0.13.0), which is also red on the base and fixed on `main` by PR #224, so no green run is claimed for this branch. POAM-2026-10-23-42 (e) closed pending merge; close on the first green `audit.yml` run after merge
 
 **Gaps:**
 
@@ -2041,7 +2119,7 @@ the code annotations since 2026-10-26.
 - **The cargo gate is RustSec-only.** GitHub-only advisories (GHSA-6w6g-hm98-mhgm, GHSA-5j98-2g5x-46v6, GHSA-6f2x-v7q7-m7m5 in hickory-resolver, 2026-10-05) pass CI and are seen only through Dependabot (POAM-2026-10-23-42)
 - **The npm gate does not cover development/build dependencies or medium/low advisories.** It could see none of the 18 npm alerts open on 2026-10-26 (15 development scope; the 3 runtime react-router alerts are medium) (POAM-2026-10-23-42)
 - **The npe-portal SPA is unscanned:** no lockfile, no Dependabot entry, no audit job, and its image build runs `npm install --no-audit` (POAM-2026-10-23-40)
-- **`fuzz/Cargo.lock` is not scanned by the dependency gate:** `audit.yml` runs `cargo audit` and `cargo deny` for the root workspace only (REL-011, POAM-2026-10-23-42 (e))
+- ~~**`fuzz/Cargo.lock` is not scanned by the dependency gate** (REL-011, POAM-2026-10-23-42 (e))~~ resolved pending merge 2026-10-28: `fuzz/Cargo.lock` no longer exists and the fuzz graph is in the scanned root `Cargo.lock`
 - **Dependabot alerts are not triaged on a schedule.** On 2026-10-26, 9 npm advisories (10 alerts) were past the proposed windows. The last 2 of them (react-router GHSA-wrjc-x8rr-h8h6, GHSA-337j-9hxr-rhxg) were remediated later on 2026-10-26, on day 95 (POAM-2026-10-23-39, closed pending commit); no triage schedule exists yet (POAM-2026-10-23-42). See the SI-2 table
 
 **Remediation (POA&M, see [NIAP_GAP_ANALYSIS.md §11](NIAP_GAP_ANALYSIS.md#11-plan-of-action-and-milestones-poam--open-items)):**
@@ -2055,7 +2133,7 @@ the code annotations since 2026-10-26.
 - Add an OSV/GHSA-aware scan of `Cargo.lock` or a release-gate check on open high/critical Dependabot alerts; gate npm development dependencies at `high`; schedule Dependabot triage (POAM-42)
 - Pin, monitor and audit the npe-portal SPA (POAM-40)
 - ~~Migrate web-ui to `react-router` >= 7.18 (POAM-39)~~ done 2026-10-26 (react-router 7.18.4; branch `claude/react-router-v7`, uncommitted), closed pending commit
-- Make Dependabot produce root and fuzz lock updates together, and check the fuzz lock in `Build & test` (POAM-60, plan U0)
+- ~~Make Dependabot produce root and fuzz lock updates together, and check the fuzz lock in `Build & test` (POAM-60, plan U0)~~ replaced 2026-10-28 by one lockfile (POAM-60, closed pending merge); after merge, Dependabot rebases or recreates #214, #216, #217, #215 and #220 and they pass
 - Retire the `paste` and `rustls-pemfile` ignores after cryptoki 0.12 (#198 + #203) and axum-server 0.8 (plan U1b) land (POAM-12)
 
 **Evidence Required for ATO:**
@@ -3002,12 +3080,32 @@ CI, Dependabot and Docker build-stage configuration only: no Rust source, `Cargo
 | CI web job on Node 24 (SA-22, CM-2) | `web-ui-react`: `node-version: "20.19"` → `node-version-file: services/web-ui/web/.nvmrc` (new file, `24`) | QA, local: Web UI install, typecheck, lint, build and `pnpm audit` exit 0 on Node v24.22.1 (SHASUMS-verified; corepack 0.36.0, pnpm 9.15.9) | 🟡 Local only; no CI run yet |
 | Digest-pinned node gate (CM-2, SR-3) | `toolchain-pin` step "node images pinned by digest on the services/web-ui/web/.nvmrc major (CM-2)" | 42/42 mutation cases as expected (coder, local bash 3.2, `fixes-nits.md`); actionlint 1.7.12 + shellcheck 0.11.0 clean for `ci.yml`. Does not restrict the registry (SEC-102, POAM-2026-10-23-15) | 🟡 Local only; no CI run yet |
 | Docker build stages job (CM-3, SR-3) | New job `docker-node-stages` builds both Node stages with `--output type=cacheonly`; `contents: read`, no login, no push; SHA-pinned `docker/setup-buildx-action` v4.4.1 (`f87e5991…`, verified with `gh api`) | Change detection: 7/7 local cases (`fixes-nits.md`); security and release re-verify: target stages self-contained, no Iron Bank pull expected | 🟡 Not yet run |
-| Fuzz-lock step (CM-3, SI-2) | `Build & test`: `cargo fetch --locked --manifest-path fuzz/Cargo.toml` before `Build` | Real tree exit 0; root `cryptoki` 0.11 → 0.12 without the fuzz lock exit 101; new dependency in a fuzz-graph crate exit 101; paired change exit 0 (QA) | 🟡 Local only; no CI run yet |
+| Fuzz-lock step (CM-3, SI-2) | `Build & test`: `cargo fetch --locked --manifest-path fuzz/Cargo.toml` before `Build` | Real tree exit 0; root `cryptoki` 0.11 → 0.12 without the fuzz lock exit 101; new dependency in a fuzz-graph crate exit 101; paired change exit 0 (QA) | ⚪ Superseded 2026-10-28: merged in PR #211, then replaced by the one-lockfile guard (see the 2026-10-28 evidence below) |
 | Dependabot pairing (CM-3, SI-2, RA-5) | One cargo entry for `/` and `/fuzz`; groups `cargo-security`, `cargo-minor-patch`, `rustcrypto-der-stack`, `rustcrypto-digest-stack`, `cargo-majors`; der-stack and `pkcs5` major ignores; npm `react-major`; one docker entry with group `docker-node`, node majors and `rust` ignored | SchemaStore dependabot-2.0: 0 errors, negative controls rejected; YAML parse 3/3 | 🟡 Runtime behaviour shown only by the first Dependabot run (REL-003, REL-104) |
 | `fuzz.yml` paths (CM-3) | `on.pull_request.paths` add `Cargo.lock` and `crates/*/Cargo.toml` | QA: all 7 local packages of the fuzz graph covered | 🟡 Pending merge |
 
 - 🟡 POA&M: POAM-2026-10-23-58 closed pending merge and first post-merge `docker-node-stages` run; POAM-2026-10-23-60 closed pending merge; POAM-15, -40, -42 and -57 annotated. No new item
 - Not claimed: no status or percentage change for SI-2, CM-2, CM-3 or RA-5; nothing above is evidenced by a GitHub Actions run yet. CDXGen SBOM was NOT RUN (QA G6)
+
+**Evidence: 2026-10-28 one Cargo.lock for the workspace and the fuzz crate (branch `claude/fuzz-single-lockfile`, uncommitted, based on `main` @ 07160f3; run record `target/agent-workflow/20261028-110116-fuzz-single-lock/`)**
+
+Build, CI and Dependabot configuration plus compile fixes in 4 fuzz targets; no shipped Rust source changed. Also mapped to CM-2, CM-3, RA-5, SR-3 and SA-11 / SA-11(8); this document has no SR-3 or SA-11 section, so the record is kept here. Reviewers: security-reviewer (APPROVE: 0 blocker, 0 major, 1 minor, 4 nits; SEC-001, -002, -004 and -005 addressed in round 1, SEC-003 (NCSA exception not version-pinned, like the existing exceptions) left as is), release-engineer (REL-001, -002, -004, -005 and -007 fixed in round 1; REL-006 documentation; REL-003 is the post-merge Dependabot step); QA PASS for every gate in scope.
+
+| Item | Change | Evidence | Status |
+|------|--------|----------|--------|
+| One lockfile (CM-2, CM-3, SI-2) | `fuzz/` joins the root workspace; `fuzz/Cargo.lock` deleted; root `Cargo.lock` +3 packages | `Cargo.lock` diff +32 / -0, checksums equal to the old fuzz lock; `cargo metadata --locked` exit 0 | 🟡 Local only; pending merge |
+| Dependabot (CM-3, SI-2) | One cargo entry, `directory: "/"` | YAML parse OK; one cargo entry, no `directories` | 🟡 Closing evidence after merge: #214, #216, #217, #215, #220 rebased or recreated and green (REL-003) |
+| Guard step (CM-2, CM-3) | "Fuzz crate shares the root lockfile" replaces the fuzz-lock step | Tree 0; each regression mutation 1, allowed forms 0 (see CM-3) | 🟡 Local only; no CI run yet |
+| `--exclude ostrich-fuzz` sites (CM-2) | `ci.yml` Test, `Makefile` `build-release` / `coverage`, GitLab `build:release` / `test:coverage`, Dockerfile package list | Unit graph: 0 fuzz units in every excluded command; Dockerfile list equal to `--workspace --exclude ostrich-fuzz` (620 / 619 units). Without the exclude, the Test step hangs (QA). Cargo only warns on a misspelt `--exclude` name (exit 0), so the guard and the 60 min timeout are the backstops | 🟡 Local only |
+| `docker-rust-stages` job (CM-3, SR-3) | Builds the Rust builder stages of both Dockerfiles on PRs that change their inputs | Change detection 12 / 12 local cases | 🟡 NOT RUN (no Docker on the host) |
+| Tool pins (CM-2, SR-3, SA-15) | `cargo-chef` 0.1.78 and `cargo-sbom` 0.10.0, both `--locked` | Installs succeed on rustc 1.99.1; `cargo-chef --version` 0.1.78; `cargo sbom` 565 packages | 🟡 Local only (POAM-15 narrowed) |
+| Fuzz targets (SA-11, SA-11(8)) | `use der::Decode;` in `fuzz_der_certificate`, `fuzz_der_csr`, `fuzz_crl_parsing`; `serde_json` dependency for `fuzz_jws_signature`; `cargo fmt` only in 4 others | Stable `cargo build --workspace --locked` and `cargo clippy --workspace --all-targets --locked -- -D warnings` compile all 12 targets. Nightly `nightly-2026-10-23`: `cargo fuzz list` 12, `cargo fuzz build --sanitizer none` 12 bins; 5 s (coder) and 10 s (QA) runs of each target exit 0 with coverage. The 4 previously broken targets now build and run; old crash artifacts do not reproduce | 🟡 Local smoke runs only; the Linux `fuzz.yml` run is on the PR |
+
+- Fuzz scope (not claimed): the 4 restored targets and 3 others (`fuzz_ocsp_request`, `fuzz_ocsp_response`, `fuzz_pem_certificate`) exercise only third-party parsers (`x509-cert`, `der`, `pem-rfc7468`, `serde_json`). They do not fuzz OstrichPKI's JWS, OCSP, CSR or CRL code. Only `fuzz_acme_order_identifier`, `fuzz_dns01_query_name`, `fuzz_grpc_peer_subject`, `fuzz_grpc_requestor` and `fuzz_proxy_path` call project code (QA-003, POAM-2026-10-23-61)
+- Known failures: `cargo audit` and `cargo deny` fail only on RUSTSEC-2026-0414 (also on the base; fixed on `main` by PR #224). Doctests fail on macOS with a dyld error loading the aws-lc library; this is environmental and the same on the base, so it is not a regression (no doctest result is claimed)
+- NOT RUN: Docker builds, the Linux link of the cargo-chef skeleton, the Linux `fuzz.yml` run, GitLab jobs, tarpaulin, hadolint
+- POA&M: POAM-2026-10-23-60 and POAM-42 (e) closed pending merge; POAM-15 narrowed; new POAM-2026-10-23-61 (QA-003)
+- Not claimed: no status or percentage change for SI-2, CM-2, CM-3, RA-5 or SI-10; nothing above has a GitHub Actions run yet
 
 **Gaps:**
 
@@ -3382,6 +3480,11 @@ CI, Dependabot and Docker build-stage configuration only: no Rust source, `Cargo
   canonical)
 - ⚠️ No comprehensive malformed CSR rejection testing
 - ⚠️ Need dedicated unit tests for CSR signature verification with test vectors
+- ⚠️ No fuzz target drives OstrichPKI's ACME JWS, OCSP request or CSR
+  validation code: `fuzz_jws_signature`, `fuzz_ocsp_request`,
+  `fuzz_ocsp_response`, `fuzz_der_csr`, `fuzz_der_certificate`,
+  `fuzz_crl_parsing` and `fuzz_pem_certificate` call only third-party
+  parsers (QA-003, POAM-2026-10-23-61, 2026-10-28)
 
 **Remediation:** Phase 16 - Add fuzzing tests for malformed input rejection, expand test vectors
 
@@ -3850,6 +3953,7 @@ forwarded identity so they enforce RBAC as the actual NPE operator.
 | 3.11 | 2026-10-26 | OstrichPKI Team | ACME wildcard identifiers (branch `claude/acme-wildcard-identifiers`, uncommitted; run record `target/agent-workflow/20261026-acme-wildcard/`). SI-10: newOrder identifier validation replaces the "Not evidence" line (POAM-2026-10-23-49 narrowed); finalize re-validation; IPv6 http-01 URL; SA-11 fuzz target `fuzz_acme_order_identifier`. AC-3 / SC-17: wildcard authorizations dns-01 only, `ip` http-01 only, finalize binding (`check_order_finalizable`); new gap POAM-2026-10-23-56 (issuance-name policy). AU-2 / AU-3 / AU-12: newOrder success and refusal and finalize-refusal `AcmeProtocol` records (no source IP or request id; best-effort on sink failure, not claimed under AU-5). SC-5 note: 100-identifier cap. Cross-reference FDP_CER_EXT.1 → SC-17, AC-3, SI-10. Stale ACME line references refreshed. Integration tests NOT RUN (QA-002, QA-005). No control status or summary percentage changed (TOTAL 18 / 41 = 43.9%, shown as 44%). |
 | 3.12 | 2026-10-26 | OstrichPKI Team | Dependabot PR triage #87-#205 (docs branch `claude/dependabot-triage-docs`, uncommitted, based on `main` @ 8024efa; run record `target/agent-workflow/20261026-155231-dependabot-triage/`). SI-2: new evidence block with the disposition of every PR (merged #195 → dfb70d2, #201 → 8024efa, #200 → 2b7698f, #199 → 7fff0de, #194 → 9e268f0; 5 closed as superseded; 5 closed by user-approved decision; the rest planned as U0-U4), SR-3 / SA-22 tags recorded there, two gaps added (POAM-58, POAM-57). CM-3: dependency-update change record. RA-5: evidence and remediation items (POAM-60, POAM-12). New POA&M items 57-60. No implementation status or percentage changed: the triage records process evidence and adds no control implementation. |
 | 3.13 | 2026-10-26 | OstrichPKI Team | Plan units U0 (Dependabot/CI hygiene) and U4 (Node 24 LTS) (branch `claude/dependabot-u0-node24`, uncommitted, based on `main` @ dd04a39; run record `target/agent-workflow/20261026-213355-u0-node24/`). CM-2: Node build toolchain baseline (Node 24 LTS, `node:24.22.1-bookworm-slim` pinned by multi-arch index digest, `.nvmrc` as the major, digest-and-major gate in `toolchain-pin`); pin inventory notes `actions/setup-node` v7.1.0. CM-3: fuzz-lock step, single Dependabot cargo entry, `docker-node-stages` job. RA-5: Dependabot entry description updated; `fuzz/Cargo.lock` not scanned recorded as a gap (POAM-42 (e)). SI-2: new U0/U4 evidence block (also SR-3, SA-22); SA-22 gap updated; triage row for `actions/cache` v6 updated with the save and restore round trip (dispatch Fuzz runs 40434904077 and 40438850323, both success; POAM-54 narrowed, upload-artifact still open). POAM-58 and POAM-60 closed pending merge. No status or percentage changed: all affected controls stay 🟡 Partial and none of the new gates has a CI run yet |
+| 3.14 | 2026-10-28 | OstrichPKI Team | One Cargo.lock for the workspace and the fuzz crate (branch `claude/fuzz-single-lockfile`, uncommitted, based on `main` @ 07160f3; run record `target/agent-workflow/20261028-110116-fuzz-single-lock/`). CM-2: new workspace build baseline item (fuzz crate is a root member; `--exclude ostrich-fuzz` sites with the unit-graph proof; Dockerfile `OSTRICH_RELEASE_PACKAGES`; fuzz-only profile env; `cargo-chef` 0.1.78 and `cargo-sbom` 0.10.0 pins; NCSA exception for `libfuzzer-sys`); pin inventory and gap no longer list `cargo-chef`. CM-3: U0 fuzz-lock step and two-directory Dependabot entry marked superseded; new item for the one-lockfile guard and its mutations, job timeouts and the `docker-rust-stages` job. RA-5: Dependabot entry now `directory: "/"`; `/fuzz` and U0 evidence items marked superseded; new 615-crate scan item; the `fuzz/Cargo.lock` gap and the U0 remediation item resolved pending merge. SI-2: U0 fuzz-lock row marked superseded; new 2026-10-28 evidence block (also SA-11 / SA-11(8): all 12 fuzz targets build and run, 4 previously broken ones fixed, with the scope limit that 7 targets fuzz only third-party parsers; macOS doctest dyld failure recorded as environmental). SI-10: new gap (POAM-61). POAM-60 and POAM-42 (e) closed pending merge, POAM-15 narrowed, POAM-61 added. No status or percentage changed: all affected controls stay 🟡 Partial (SI-10 🟢 Good (85%)) and nothing has a CI run yet |
 
 ---
 

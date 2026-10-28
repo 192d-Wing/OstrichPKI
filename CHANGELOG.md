@@ -474,6 +474,61 @@ the new jobs or live tests has run yet; see "Known limitations" below.
 
 ### Changed
 
+#### One Cargo.lock for the workspace and the fuzz harness
+
+Build, CI and container-build configuration only. The shipped binaries' package and feature
+selection is unchanged (same cargo unit graph as before on x86_64 and aarch64), and no crate API
+changes. Closes POAM-2026-10-23-60 (pending the Dependabot rebases below) and POAM-2026-10-23-42
+item (e).
+
+##### workspace (Cargo)
+
+- `fuzz/` (`ostrich-fuzz`) is now a member of the root workspace and shares `Cargo.lock`;
+  `fuzz/Cargo.lock` is deleted and git-ignored. The root lock gains only `ostrich-fuzz`,
+  `libfuzzer-sys` 0.4.13 and `arbitrary` 1.5.0, with the same checksums as the old fuzz lock. No
+  other version changes. `cargo audit` and `cargo deny` now cover the fuzz graph (615 crates).
+- `fuzz/Cargo.toml` takes `x509-cert`, `der`, `pem-rfc7468`, `serde_json` and the OstrichPKI
+  crates from `[workspace.dependencies]` and `license.workspace = true`. Every fuzz bin is
+  `test = false` and `bench = false`. `deny.toml` allows NCSA for `libfuzzer-sys` only.
+- Stable `cargo build` and `cargo clippy --workspace --locked` compile and lint every fuzz target.
+  Test, coverage and release builds exclude `ostrich-fuzz` (`--exclude ostrich-fuzz`): `--bins`
+  overrides `test = false`, and a libFuzzer harness never exits.
+- **NIST 800-53**: CM-2, CM-3, SI-2, SR-3, SA-11, RA-5
+
+##### workspace (CI)
+
+- Dependabot's cargo entry is back to `directory: "/"`. Its `/fuzz` pass with
+  `directories: ["/", "/fuzz"]` skipped crates a `/` group had already handled, leaving
+  `fuzz/Cargo.lock` stale (#214, #216, #217).
+- `Build & test`: the step "Fuzz crate shares the root lockfile" replaces the fuzz-lock fetch. It
+  fails if `fuzz/Cargo.lock` is tracked, `ostrich-fuzz` is not a workspace member, a `cargo test`
+  or tarpaulin command with `--bins`/`--all-targets` lacks `--exclude ostrich-fuzz`, or the root
+  Dockerfile's package list differs from the workspace members minus `ostrich-fuzz`. New
+  `timeout-minutes`: 60 for `Build & test`, 45 for `Clippy`.
+- New job **Docker build stages (Rust)** (`docker-rust-stages`): builds the root `builder` and the
+  web-ui `server-builder` stages with `--output type=cacheonly` (read-only token, no registry
+  login, push or cache export). On a PR it runs when a Dockerfile, `.dockerignore`, the root or
+  fuzz `Cargo.toml`, `rust-toolchain.toml` or `ci.yml` changes; `Cargo.lock` alone does not start
+  it. On `main`, `docker-publish.yml` builds both images.
+- `fuzz.yml` fetches against the root lock and sets `CARGO_PROFILE_RELEASE_LTO=false` /
+  `CARGO_PROFILE_RELEASE_STRIP=false` (no fat LTO, symbols kept for crash triage). Fuzz binaries
+  land in `target/<triple>/release/`.
+- `.gitlab-ci.yml`: `build:release` and `test:coverage` exclude `ostrich-fuzz`; `sbom:generate`
+  pins `cargo-sbom` 0.10.0 `--locked` (the workspace SBOM now also lists the fuzz harness, which no
+  image ships). `Makefile`: `build-release` and `coverage` exclude `ostrich-fuzz`; `fuzz-list` /
+  `fuzz-all` use the pinned `FUZZ_TOOLCHAIN` (`nightly-2026-10-23`) and `FUZZ_SANITIZER` (`none`).
+- **NIST 800-53**: CM-2, CM-3, SA-10, SA-11, SR-3
+
+##### workspace (deploy)
+
+- Both Dockerfiles pin `cargo-chef` 0.1.78 `--locked` and copy `fuzz/Cargo.toml` (needed to load
+  the workspace); fuzz sources are never copied. The root builder cooks and builds
+  `OSTRICH_RELEASE_PACKAGES`, every workspace member except `ostrich-fuzz` (cargo-chef `cook` has
+  no `--exclude`; listing only the shipped binaries would change feature unification and drop
+  features such as `zeroize`). The libFuzzer C++ build script never runs in the release builder.
+- `.dockerignore` excludes `fuzz/target/`, `fuzz/corpus/`, `fuzz/artifacts/`, `fuzz/coverage/`.
+- **NIST 800-53**: CM-2, SA-15, SR-3
+
 #### Dependabot authenticates to Iron Bank for the UBI 10 runtime base
 
 ##### workspace (CI)
@@ -489,6 +544,10 @@ the new jobs or live tests has run yet; see "Known limitations" below.
 - **NIST 800-53**: SI-2, SR-3, RA-5, IA-5
 
 #### Dependabot pairs the root and fuzz lockfiles; web builders on Node 24 LTS
+
+> **Superseded in part** by "One Cargo.lock for the workspace and the fuzz harness" above: the
+> `directories: ["/", "/fuzz"]` cargo entry and the `fuzz/Cargo.lock` fetch step described here
+> were replaced by a single lockfile. The Node 24, Docker and React parts still apply.
 
 Closes POAM-2026-10-23-58 (Node 20 end of life) once both builder stages build on `main`, and
 POAM-2026-10-23-60 (fuzz/root lockfile drift). CI, Dependabot and Docker build-stage configuration
@@ -650,6 +709,27 @@ images still carry no Node.
 - **NIST 800-53**: SI-11. RFC 8555 §6.7
 
 ### Fixed
+
+#### Four fuzz targets did not compile
+
+##### ostrich-fuzz
+
+- `fuzz_der_certificate`, `fuzz_der_csr` and `fuzz_crl_parsing` were missing `use der::Decode;`,
+  and `fuzz_jws_signature` was missing its `serde_json` dependency. CI built only 4 of the 12
+  targets, so this went unnoticed. All 12 now build and run; four are reformatted by
+  `cargo fmt --all` with no behaviour change.
+- **NIST 800-53**: SA-11, SA-11(8)
+
+#### Container builds did not enforce `Cargo.lock`; `make fuzz-all` always succeeded
+
+##### workspace (deploy, Makefile)
+
+- `cargo chef cook` and `cargo build` in both Dockerfiles now pass `--locked`, so an out-of-date
+  lock fails the build instead of being re-resolved inside the image.
+- `make fuzz-all` used to ignore failures (`|| true`), a floating `+nightly` and the default
+  AddressSanitizer (which breaks the aws-lc FIPS build). It now uses the pinned toolchain and
+  sanitizer, lists failed targets and exits 1.
+- **NIST 800-53**: CM-2, SR-3, SI-7, SA-11
 
 #### ACME dns-01 validation never succeeded (resolver had no name servers)
 

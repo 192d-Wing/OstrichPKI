@@ -1033,7 +1033,7 @@ lockfile change. QA PASS; security APPROVE; release APPROVE WITH COMMENTS.
 | CI web job on Node 24 (SA-22, CM-2) | `web-ui-react` uses `node-version-file: services/web-ui/web/.nvmrc` (`24`) | QA, local: install, typecheck, lint, build and `pnpm audit` exit 0 on Node v24.22.1 (SHASUMS-verified). No CI run yet |
 | Node pin gate (CM-2, SR-3) | `toolchain-pin` step "node images pinned by digest on the services/web-ui/web/.nvmrc major (CM-2)" in [ci.yml](../../.github/workflows/ci.yml) | Real tree pass (2 references); 42/42 mutation cases as expected (coder, local); actionlint + shellcheck clean for `ci.yml`. The registry is not restricted (SEC-102) |
 | Docker build stages job (CM-3, SR-3, CM-6) | Job `docker-node-stages`: `docker buildx build --target web-builder` and `--target npe-portal-web-builder`, `--output type=cacheonly`; `contents: read`, `persist-credentials: false`, no login, no push, no cache export | Change detection 7/7 local cases. Not yet run; its first PR run and first post-merge run on `main` are the POAM-2026-10-23-58 closing evidence |
-| Fuzz-lock step (CM-3, SI-2) | `Build & test`: `cargo fetch --locked --manifest-path fuzz/Cargo.toml` before `Build` | Tree exit 0; root bump without the fuzz lock exit 101; new dependency in a fuzz-graph crate exit 101; paired change exit 0 (QA, scratch copies) |
+| Fuzz-lock step (CM-3, SI-2) | `Build & test`: `cargo fetch --locked --manifest-path fuzz/Cargo.toml` before `Build` | Tree exit 0; root bump without the fuzz lock exit 101; new dependency in a fuzz-graph crate exit 101; paired change exit 0 (QA, scratch copies). **Superseded 2026-10-28:** merged in PR #211, then replaced by the one-lockfile guard (next record) |
 | Dependabot configuration (CM-3, RA-5, SI-2) | [.github/dependabot.yml](../../.github/dependabot.yml): one cargo entry for `/` and `/fuzz`; one docker entry for `/` and `/services/web-ui` | SchemaStore dependabot-2.0: 0 errors; negative controls (`group_by`, `applies-to: security-update`) rejected |
 
 Limits of this evidence:
@@ -1044,10 +1044,55 @@ Limits of this evidence:
   security-update grouping) is shown only by its first run after merge
   (REL-003, REL-104)
 - `fuzz/Cargo.lock` is not scanned by `audit.yml` (REL-011,
-  POAM-2026-10-23-42 (e)); the npe-portal SPA still has no lockfile
-  (POAM-2026-10-23-40)
+  POAM-2026-10-23-42 (e)). Resolved pending merge on 2026-10-28: the file
+  is deleted and the fuzz graph is in the scanned root `Cargo.lock` (next
+  record). The npe-portal SPA still has no lockfile (POAM-2026-10-23-40)
 - POA&M: POAM-2026-10-23-58 closed pending merge and first post-merge
   `docker-node-stages` run; POAM-2026-10-23-60 closed pending merge
+
+**Recorded result — 2026-10-28, one Cargo.lock for the workspace and the fuzz crate (CM-2 / CM-3 / SI-2 / RA-5 / SR-3 / SA-11):**
+
+Run record `target/agent-workflow/20261028-110116-fuzz-single-lock/`
+(`brief.md`, `plan.md`, `impl-notes.md`, `fixes-round-1.md`, `qa-report.md`,
+`findings-security.md`, `release-notes.md`, and the Dependabot log of
+2026-10-27). Branch `claude/fuzz-single-lockfile`, uncommitted, based on
+`main` @ 07160f3. Build, CI and Dependabot configuration plus compile fixes
+in 4 fuzz targets; no shipped Rust source changed. QA PASS for every gate in
+scope; security APPROVE. Local host: macOS arm64, rustc 1.99.1
+(`rust-toolchain.toml`) and `nightly-2026-10-23` for cargo-fuzz 0.13.2.
+
+| Item | Evidence | Result |
+|------|----------|--------|
+| One lockfile (CM-2, CM-3, SR-3) | `"fuzz"` in the root [Cargo.toml](../../Cargo.toml) `members` (line 40); `fuzz/Cargo.lock` deleted and git-ignored; `git diff -- Cargo.lock`; `cargo metadata --locked` | +32 / -0 lines: `arbitrary` 1.5.0, `libfuzzer-sys` 0.4.13, `ostrich-fuzz`, checksums equal to the old fuzz lock; metadata exit 0 |
+| Guard step (CM-2, CM-3) | [ci.yml](../../.github/workflows/ci.yml) `Build & test` step "Fuzz crate shares the root lockfile" (line 66); script extracted and run with bash on the tree and on a scratch clone | Tree 0. Exit 1 for: tracked `fuzz/Cargo.lock`; fuzz not a member with its own `[workspace]`; `ci.yml` Test without `--exclude`; Makefile `cargo +nightly test --all-targets`; `cargo test -p ostrich-fuzz --bins`; GitLab tarpaulin without the exclude; Dockerfile list missing `ostrich-benches`; Dockerfile list with `ostrich-fuzz`; renamed package. Exit 0 for `cargo test -p ostrich-ca-server --bins` and a commented `cargo test --bins`. A stale lock passes the guard (it reads `--no-deps`) and fails `cargo build --locked` (exit 101) |
+| `--exclude ostrich-fuzz` sites (CM-2) | `ci.yml` Test (line 124); `Makefile` lines 23 and 378; `.gitlab-ci.yml` lines 172 and 248; [Dockerfile](../../Dockerfile) `OSTRICH_RELEASE_PACKAGES` (line 99, used by `cargo chef cook` line 135 and `cargo build --release` line 150) | `cargo build --release --unit-graph -Z unstable-options`: the Dockerfile list and `--workspace --exclude ostrich-fuzz` give identical unit sets (620 x86_64 / 619 aarch64, 0 fuzz units); base `--workspace` 636 / 635 minus 16 fuzz units is identical. QA: 0 fuzz units in every excluded command; the Test step without the exclude hangs (libFuzzer main, 240 s watchdog). Cargo only warns on an unknown `--exclude` name (exit 0) |
+| Job timeouts (CM-3) | `ci.yml` `build-test` `timeout-minutes: 60` (line 27), `clippy` 45 (line 203), `docker-rust-stages` 120 (line 459) | YAML read back: 60 / 45 / 120 |
+| `docker-rust-stages` job (CM-3, SR-3, CM-6) | `ci.yml` line 454: `docker buildx build --target builder` (root `Dockerfile`) and `-f services/web-ui/Dockerfile --target server-builder`, `--output type=cacheonly`; `contents: read`, no login, no push | Change detection 12 / 12 local cases (lock-only change and push to `main` do not build). Docker build NOT RUN |
+| Tool pins (CM-2, SR-3, SA-15) | `cargo install cargo-chef --version 0.1.78 --locked` ([Dockerfile](../../Dockerfile) line 41, [services/web-ui/Dockerfile](../../services/web-ui/Dockerfile) line 62); `cargo install cargo-sbom --version 0.10.0 --locked` ([.gitlab-ci.yml](../../.gitlab-ci.yml) line 400) | Both install on rustc 1.99.1; `cargo-chef --version` prints 0.1.78; `cargo sbom` lists 565 packages including the 3 fuzz packages |
+| Dependency scan coverage (RA-5, SR-3) | `cargo audit --deny warnings`; `cargo tree -i libfuzzer-sys`; `cargo deny check` with the `libfuzzer-sys` NCSA exception ([deny.toml](../../deny.toml) line 85) | 615 crates scanned (612 on the base); `libfuzzer-sys` under `ostrich-fuzz`; `bans ok, licenses ok, sources ok`; removing the exception gives `error[rejected]`. Both tools exit 1 on RUSTSEC-2026-0414 only (`pulldown-cmark`, also on the base, fixed on `main` by PR #224) |
+| Fuzz targets (SA-11) | Stable `cargo build --workspace --locked` and `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo +nightly-2026-10-23 fuzz list`, `fuzz build --sanitizer none`, `fuzz run` per target | Stable build and clippy exit 0 with all 12 targets. Nightly: 12 targets listed and built; each target ran 5 s (coder) and 10 s (QA) with exit 0 and growing coverage. The 4 previously broken targets (`fuzz_der_certificate`, `fuzz_der_csr`, `fuzz_crl_parsing`, `fuzz_jws_signature`) now build and run; old crash artifacts do not reproduce. `make fuzz-all FUZZ_TARGETS=fuzz_proxy_path FUZZ_TIME=5` exit 0; an unknown target fails the make target |
+| Unit tests (SA-11) | `cargo test --workspace --exclude ostrich-fuzz --lib --bins --locked`; `make test-unit` | 1033 passed / 0 failed / 1 ignored; 894 / 0 / 1 |
+
+Limits of this evidence:
+
+- Local runs only; nothing above has a GitHub Actions or GitLab run yet.
+  NOT RUN: Docker builds (no Docker on the host), the Linux link of the
+  cargo-chef skeleton, the Linux `fuzz.yml` run, GitLab jobs, tarpaulin,
+  hadolint
+- Fuzz scope: 7 of the 12 targets exercise only third-party parsers
+  (`fuzz_der_certificate`, `fuzz_der_csr`, `fuzz_crl_parsing`,
+  `fuzz_ocsp_request`, `fuzz_ocsp_response`, `fuzz_pem_certificate`,
+  `fuzz_jws_signature`). This evidence does not show fuzzing of
+  OstrichPKI's JWS, OCSP, CSR or CRL code (QA-003, POAM-2026-10-23-61)
+- Doctests fail on macOS with a dyld error loading the aws-lc library. This
+  is environmental and the same on the base; no doctest result is claimed
+- The guard scans single-line commands only; the 60 min `build-test`
+  timeout is the backstop
+- POA&M: POAM-2026-10-23-60 and POAM-42 (e) closed pending merge (closing
+  evidence: Dependabot rebases or recreates #214, #216, #217, #215 and #220
+  and they go green; first green `audit.yml` run after merge); POAM-15
+  narrowed; POAM-2026-10-23-61 added
+- Test detail: [TEST_EVIDENCE.md §2.19](TEST_EVIDENCE.md#219-test-run-2026-10-28-one-cargolock-for-the-workspace-and-the-fuzz-crate)
 
 **CM-6: CI workflow secure defaults (2026-10-23, CI hardening):**
 
@@ -2030,6 +2075,8 @@ A NIAP-compliant Public Key Infrastructure (PKI) system written in Rust.
 | RA-5 / SI-2 | `.github/workflows/audit.yml` (`cargo audit`, `cargo deny` jobs); `.cargo/audit.toml`; `deny.toml` | CI configuration and exception record; CI run logs pending (§2.3) |
 | CM-3 / SI-2 / SR-3 / RA-5 / SA-22 | Run record `target/agent-workflow/20261026-155231-dependabot-triage/`; merge commits dfb70d2 (#195), 8024efa (#201), 2b7698f (#200), 7fff0de (#199), 9e268f0 (#194) | Change record (2026-10-26): Dependabot PR triage disposition, PR check results and post-merge runs on 8024efa (§2.3) |
 | CM-2 / SA-15 | `rust-toolchain.toml`; `.github/workflows/ci.yml` job `Toolchain pin consistency` | Configuration baseline (toolchain 1.99.1) and its CI check |
+| CM-2 / CM-3 / SI-2 / RA-5 / SR-3 | Root `Cargo.toml` `members` (`fuzz`), `Cargo.lock`, `.github/dependabot.yml`, `.github/workflows/ci.yml` (guard step "Fuzz crate shares the root lockfile", job timeouts, job `docker-rust-stages`), `Dockerfile` (`OSTRICH_RELEASE_PACKAGES`, cargo-chef 0.1.78), `.gitlab-ci.yml` (cargo-sbom 0.10.0), `deny.toml` | Configuration baseline and local test results (2026-10-28, uncommitted): one lockfile, guard mutations, unit-graph proof of the release selection; CI runs pending (§2.3) |
+| SA-11 / SA-11(8) | `fuzz/fuzz_targets/*.rs` (12 targets), `.github/workflows/fuzz.yml` | Local test results (2026-10-28): all 12 build and run on `nightly-2026-10-23`; 7 targets cover third-party parsers only (POAM-2026-10-23-61) |
 | CM-6 | `.github/workflows/{ci,audit,hsm-integration}.yml` | CI secure defaults (§2.3 table) |
 | SA-11 / IA-7 / FCS_CKM.1 / FCS_COP.1 | `.github/workflows/hsm-integration.yml`, artifact `pkcs11-softhsm-results` | Test results: Linux run 40063317654 (SoftHSM 2.6.1, PR 181 head 44d560d), 28 passed / 0 failed / 1 ignored, exit 0 |
 | SC-17 / SI-10 / FDP_CER_EXT.1 / FPT_FLS.1 | `crates/ostrich-acme/src/validation.rs` (`dns01_query_name`, `dns01_resolver_config`, `txt_answers_match`, `Dns01Validator`) | Code implementation and unit tests (2026-10-26, uncommitted): dns-01 resolver, query name, TXT matching, fail-closed paths; see "ACME dns-01 validation evidence" |
