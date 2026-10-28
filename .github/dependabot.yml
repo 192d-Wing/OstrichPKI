@@ -1,5 +1,25 @@
 version: 2
 
+# ---- Private registries ----
+# The runtime base image is the DoD Iron Bank hardened UBI 10
+# (registry1.dso.mil/ironbank/redhat/ubi/ubi10). Without credentials every
+# weekly docker run failed with private_source_authentication_failure. These
+# are Dependabot secrets (Settings > Secrets and variables > Dependabot, repo
+# or org level), separate from the Actions secrets docker-publish.yml uses,
+# but by convention with the same names and values: REPO1_USER is the Iron
+# Bank username, REPO1 its CLI secret. Dependabot only reads image metadata
+# with them; replaces-base stays off, so Docker Hub (node) is unchanged.
+# COMPLIANCE MAPPING:
+# - NIST 800-53: SI-2 (Flaw Remediation), SR-3 (Supply Chain Controls),
+#   IA-5 (Authenticator Management: no credential in the repository),
+#   RA-5 (Vulnerability Monitoring)
+registries:
+  ironbank:
+    type: docker-registry
+    url: https://registry1.dso.mil
+    username: ${{secrets.REPO1_USER}}
+    password: ${{secrets.REPO1}}
+
 updates:
   # ---- Rust / Cargo ----
   # One entry for both lockfiles. fuzz/ is its own workspace with its own
@@ -166,6 +186,9 @@ updates:
     directories:
       - "/"
       - "/services/web-ui"
+    # Iron Bank credentials for the ubi10 runtime base (see top of file).
+    registries:
+      - ironbank
     schedule:
       interval: weekly
     groups:

@@ -463,6 +463,20 @@ the new jobs or live tests has run yet; see "Known limitations" below.
 
 ### Changed
 
+#### Dependabot authenticates to Iron Bank for the UBI 10 runtime base
+
+##### workspace (CI)
+
+- `.github/dependabot.yml` gains a top-level `registries:` entry `ironbank` (`docker-registry`,
+  `https://registry1.dso.mil`), used by the docker entry. Every weekly docker run since
+  2026-09-21 failed with `private_source_authentication_failure` on
+  `registry1.dso.mil/ironbank/redhat/ubi/ubi10`, so the runtime base image never got update PRs.
+  Credentials come from the Dependabot secrets `REPO1_USER` (username) and `REPO1` (CLI secret),
+  which mirror the Actions secrets `docker-publish.yml` uses. Dependabot cannot read Actions
+  secrets, so these must be created under Settings > Secrets and variables > Dependabot.
+  `replaces-base` is off, so Docker Hub lookups for `node` are unchanged.
+- **NIST 800-53**: SI-2, SR-3, RA-5, IA-5
+
 #### Dependabot pairs the root and fuzz lockfiles; web builders on Node 24 LTS
 
 Closes POAM-2026-10-23-58 (Node 20 end of life) once both builder stages build on `main`, and
