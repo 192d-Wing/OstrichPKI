@@ -16,7 +16,7 @@ ostrich-common = { workspace = true }
 
 # Cryptographic primitives
 rsa = { workspace = true }
-sha2 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.11", features = ["oid"] }
 rand = { workspace = true }
 der = { workspace = true }
 x509-cert = { workspace = true }
