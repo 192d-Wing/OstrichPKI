@@ -22,21 +22,17 @@ registries:
 
 updates:
   # ---- Rust / Cargo ----
-  # One entry for both lockfiles. fuzz/ is its own workspace with its own
-  # fuzz/Cargo.lock, but its path dependencies (ostrich-acme, -audit, -common,
-  # -crypto, -db, -protocol, -x509) inherit the root [workspace.dependencies].
-  # Two entries made a /fuzz bump edit the root Cargo.toml without the root
-  # Cargo.lock (fails --locked: #202-#205), and a root bump left fuzz/Cargo.lock
-  # stale. With `directories`, each group below is one PR across "/" and
-  # "/fuzz", so both lockfiles move together. ci.yml `Build & test` fails a PR
-  # whose fuzz lock is out of step (`cargo fetch --locked`), whatever opened it.
+  # One lockfile. fuzz/ (ostrich-fuzz) is a member of the root workspace and
+  # shares Cargo.lock (there is no fuzz/Cargo.lock), so every cargo update is
+  # one manifest set plus one lock. The previous `directories: ["/", "/fuzz"]`
+  # pairing skipped crates already handled by a group in the "/" pass
+  # (#214, #216, #217; Dependabot log 2026-10-27). ci.yml `Build & test`
+  # fails a PR if fuzz/Cargo.lock reappears or fuzz/ leaves the workspace.
   # COMPLIANCE MAPPING:
   # - NIST 800-53: CM-3 (Configuration Change Control), SI-2 (Flaw
   #   Remediation), CM-2, SR-3 - POAM-2026-10-23-60
   - package-ecosystem: cargo
-    directories:
-      - "/"
-      - "/fuzz"
+    directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
@@ -44,9 +40,8 @@ updates:
     # batched into one PR to cut noise.
     groups:
       # Security updates (groups default to version updates only): one PR for
-      # all open advisories across "/" and "/fuzz", so a fix for a crate in
-      # both graphs updates both lockfiles together. Group update-types do
-      # not apply here; see the ignore note below on security updates.
+      # all open advisories. Group update-types do not apply here; see the
+      # ignore note below on security updates.
       cargo-security:
         applies-to: security-updates
         patterns:
@@ -91,7 +86,7 @@ updates:
           - block-buffer
         update-types:
           - major
-      # Any other major: one PR per dependency, covering both directories.
+      # Any other major: one PR per dependency.
       cargo-majors:
         group-by: dependency-name
         update-types:
@@ -104,8 +99,8 @@ updates:
       # ignores to them, not update-types-only ones like these. So these
       # should not, but may, hold back a security PR for one of these majors.
       # Backstop: the dependency gate (audit.yml: cargo audit and cargo deny)
-      # fails on RustSec advisories in the root Cargo.lock without Dependabot;
-      # fuzz/Cargo.lock is not audited by that gate.
+      # fails on RustSec advisories in Cargo.lock without Dependabot; that
+      # lock now includes the fuzz harness.
       # NIST 800-53: CM-3, RA-5, SI-2.
       - dependency-name: der
         update-types: ["version-update:semver-major"]

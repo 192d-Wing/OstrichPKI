@@ -434,33 +434,51 @@ rustup install nightly
 
 ### Running Fuzz Tests
 
+`fuzz/` is a root workspace member sharing `Cargo.lock`. cargo-fuzz then uses
+the root release profile (fat LTO, stripped); prefix each `cargo fuzz` command
+with `CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_STRIP=false`, as
+`fuzz.yml` and `make fuzz-all` do (do not `export` them: a later
+`cargo build --release` in that shell would then skip LTO and stripping). Never
+run `cargo test --bins` / `--all-targets` without `--exclude ostrich-fuzz`: the
+fuzz bins' test binaries are libFuzzer harnesses that never exit (if one was
+started, kill its process group; killing `cargo` alone can leave it running).
+See [`fuzz/README.md`](../fuzz/README.md).
+
 ```bash
 # List available targets
-cargo fuzz list
+cargo +nightly-2026-10-23 fuzz list
 
 # Run specific target for 60 seconds
-cargo +nightly fuzz run fuzz_der_certificate -- -max_total_time=60
+CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_STRIP=false \
+  cargo +nightly-2026-10-23 fuzz run --sanitizer none fuzz_der_certificate -- -max_total_time=60
 
 # Run with multiple CPU cores
-cargo +nightly fuzz run fuzz_der_certificate -- -workers=4
+CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_STRIP=false \
+  cargo +nightly-2026-10-23 fuzz run --sanitizer none fuzz_der_certificate -- -workers=4
 
-# Run all targets (short test)
+# Run all targets (short test; same toolchain, sanitizer and profile overrides)
 make fuzz-all
 ```
 
+`--sanitizer none` matches `fuzz.yml`: with AddressSanitizer, cc-rs instruments
+the C build of `aws-lc-fips-sys` (every target links the workspace crypto
+graph) and the FIPS module's delocate step rejects the result on Linux.
+libFuzzer coverage, panics, overflow checks and debug assertions still apply.
+
 ### Handling Fuzzing Crashes
 
-When a crash is found:
+When a crash is found (reproducers are written to `fuzz/artifacts/<target>/`):
 
 ```bash
 # Reproduce the crash
-cargo +nightly fuzz run fuzz_der_certificate artifacts/fuzz_der_certificate/crash-<hash>
+CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_STRIP=false \
+  cargo +nightly-2026-10-23 fuzz run --sanitizer none fuzz_der_certificate \
+  fuzz/artifacts/fuzz_der_certificate/crash-<hash>
 
-# Debug with address sanitizer
-cargo +nightly fuzz run fuzz_der_certificate --sanitizer=address artifacts/.../crash-<hash>
-
-# After fixing, verify
-cargo +nightly fuzz run fuzz_der_certificate artifacts/.../crash-<hash>
+# After fixing, verify (same command; it must now exit 0)
+CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_STRIP=false \
+  cargo +nightly-2026-10-23 fuzz run --sanitizer none fuzz_der_certificate \
+  fuzz/artifacts/fuzz_der_certificate/crash-<hash>
 ```
 
 See [`fuzz/README.md`](../fuzz/README.md) for detailed documentation.
@@ -479,7 +497,7 @@ cargo install cargo-tarpaulin
 make coverage
 
 # Generate HTML report
-cargo tarpaulin --workspace --all-features --timeout 300 --out Html --output-dir ./coverage
+cargo tarpaulin --workspace --exclude ostrich-fuzz --all-features --timeout 300 --out Html --output-dir ./coverage
 
 # Open report
 open coverage/index.html
@@ -494,8 +512,8 @@ open coverage/index.html
 ### Viewing Coverage
 
 ```bash
-# Terminal output
-cargo tarpaulin --workspace --all-features
+# Terminal output (the fuzz harness is excluded: its bins are libFuzzer mains)
+cargo tarpaulin --workspace --exclude ostrich-fuzz --all-features
 
 # HTML report
 make coverage-open

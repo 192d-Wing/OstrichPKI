@@ -40,11 +40,9 @@ fuzz_target!(|data: &[u8]| {
         assert!(!domain_labels.is_empty());
         for label in &domain_labels {
             assert!(!label.is_empty() && label.len() <= 63);
-            assert!(
-                label
-                    .iter()
-                    .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
-            );
+            assert!(label
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || *b == b'-'));
             assert!(label.first() != Some(&b'-') && label.last() != Some(&b'-'));
         }
         // RFC 3696 §2: the top-level label is never all-numeric (no IP literals).

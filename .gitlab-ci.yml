@@ -167,7 +167,9 @@ build:release:
     - mkdir -p ~/.config/softhsm2 ~/.softhsm2/tokens
     - echo "directories.tokendir = $HOME/.softhsm2/tokens" > ~/.config/softhsm2/softhsm2.conf
     - softhsm2-util --init-token --free --label "ostrich-test" --pin 1234 --so-pin 5678
-    - cargo build --workspace --all-features --release
+    # The fuzz harness (ostrich-fuzz) is a workspace member only to share
+    # Cargo.lock (POAM-2026-10-23-60); it is never shipped. NIST 800-53: CM-2.
+    - cargo build --workspace --exclude ostrich-fuzz --all-features --release
   artifacts:
     paths:
       - target/release/ostrich-*
@@ -242,7 +244,8 @@ test:coverage:
     - cargo install cargo-tarpaulin
     # Serial test execution: the PKCS#11/SoftHSM suite shares one token and
     # session state (matches hsm-integration.yml / `make test-pkcs11`).
-    - cargo tarpaulin --workspace --all-features --timeout 300 --out Xml --output-dir ./coverage -- --test-threads=1
+    # ostrich-fuzz excluded: its bins are libFuzzer harnesses, not tests.
+    - cargo tarpaulin --workspace --exclude ostrich-fuzz --all-features --timeout 300 --out Xml --output-dir ./coverage -- --test-threads=1
   variables:
     PKCS11_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
     CRYPTO_PROVIDER: software
@@ -391,7 +394,10 @@ sbom:generate:
   <<: *cargo-cache
   stage: sbom
   script:
-    - cargo install cargo-sbom
+    # Pinned and --locked (NIST 800-53: CM-2, SA-15, SR-3). The SBOM covers
+    # the whole workspace, including the fuzz harness (ostrich-fuzz,
+    # libfuzzer-sys, arbitrary), which is never shipped in an image.
+    - cargo install cargo-sbom --version 0.10.0 --locked
     - cargo sbom > sbom.spdx.json
   artifacts:
     paths:

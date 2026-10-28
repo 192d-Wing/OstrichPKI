@@ -6,17 +6,18 @@
 #   identifiers and dns-01 query names, must never panic), SA-11
 #   (SA-11(8) dynamic code analysis), CA-2
 # - NIST 800-53: CM-2 / SA-15 / SR-3 (nightly pinned by date, cargo-fuzz by
-#   version, actions by SHA; `cargo fetch --locked` enforces fuzz/Cargo.lock;
+#   version, actions by SHA; `cargo fetch --locked` enforces the root
+#   Cargo.lock, which fuzz/ shares as a workspace member (POAM-2026-10-23-60);
 #   cargo-fuzz is built from source each run, never restored from a cache)
 # - NIST 800-53: CM-6 - least-privilege token (contents: read), no secrets
 # Weekly + manual (time budget 60..3600 s per target), plus a fixed 60 s
 # smoke run on PRs that touch the fuzz crate, this workflow or the fuzzed
 # code (the gRPC targets call `ostrich_common::grpc_tls` only; the ACME
 # targets call `ostrich_acme::identifier` and `ostrich_acme::validation`), or
-# any input to fuzz/Cargo.lock resolution: the root Cargo.toml / Cargo.lock
-# and every crates/*/Cargo.toml (the fuzz crate's path dependencies inherit the
-# root [workspace.dependencies]; POAM-2026-10-23-60, NIST 800-53 CM-3, SI-2).
-# ci.yml `Build & test` also runs the locked fuzz fetch on every PR. The manual budget
+# any input to the fuzz crate's resolution in the root Cargo.lock: the root
+# Cargo.toml / Cargo.lock and every crates/*/Cargo.toml (POAM-2026-10-23-60,
+# NIST 800-53 CM-3, SI-2). ci.yml `Build & test` and `Clippy` also build every
+# fuzz target on stable with `--locked` on every PR. The manual budget
 # is passed through env (never interpolated into a script) and range-checked.
 # The corpus is persisted in the Actions cache; only non-PR runs save it.
 
@@ -36,9 +37,10 @@ on:
       - crates/ostrich-acme/src/validation.rs
       - crates/ostrich-acme/src/order.rs
       - crates/ostrich-acme/src/error.rs
-      # Dependency inputs of fuzz/Cargo.lock (fuzz graph: ostrich-acme,
-      # -audit, -common, -crypto, -db, -protocol, -x509; the glob also covers
-      # a crate added to that graph later).
+      # Dependency inputs of the fuzz crate's resolution in the root
+      # Cargo.lock (fuzz graph: ostrich-acme, -audit, -common, -crypto, -db,
+      # -protocol, -x509; the glob also covers a crate added to that graph
+      # later).
       - crates/*/Cargo.toml
       - Cargo.toml
       - Cargo.lock
@@ -69,6 +71,13 @@ env:
   # assertions still apply; the targets are safe Rust. Memory sanitizers on
   # this crate graph would need a non-FIPS aws-lc build (follow-up).
   FUZZ_SANITIZER: none
+  # fuzz/ is a root workspace member, so cargo-fuzz (which has no --profile)
+  # builds with the root [profile.release] (fat LTO, strip). Restore the
+  # pre-merge fuzz profile: no LTO (cheaper full-graph links per target) and
+  # symbols kept for crash triage (cargo-fuzz asks for line tables). Shipped
+  # binaries keep the root release profile.
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_PROFILE_RELEASE_STRIP: "false"
 
 jobs:
   fuzz:
@@ -112,7 +121,6 @@ jobs:
       # cargo-fuzz built below.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: fuzz -> target
           key: fuzz-${{ env.FUZZ_TOOLCHAIN }}-${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-bin: false
@@ -122,9 +130,10 @@ jobs:
           cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
           cargo fuzz --version
 
-      # `cargo fuzz` has no --locked: fail here if fuzz/Cargo.lock is stale.
+      # `cargo fuzz` has no --locked: fail here if Cargo.lock is stale (one
+      # lock for the workspace and fuzz/).
       - name: Fetch locked fuzz dependencies
-        run: cargo +"$FUZZ_TOOLCHAIN" fetch --locked --manifest-path fuzz/Cargo.toml
+        run: cargo +"$FUZZ_TOOLCHAIN" fetch --locked
 
       - name: Build fuzz target
         run: cargo +"$FUZZ_TOOLCHAIN" fuzz build --sanitizer "$FUZZ_SANITIZER" "$T"

@@ -78,6 +78,11 @@ exceptions = [
     # Scoped to borrow-or-share (fluent-uri -> referencing -> jsonschema) by
     # decision of 2026-10-23 rather than allowed workspace-wide.
     { allow = ["MIT-0"], crate = "borrow-or-share" },
+    # libFuzzer runtime (LLVM), fuzz harness only (ostrich-fuzz, never shipped;
+    # a root workspace member since POAM-2026-10-23-60). Its expression is
+    # "(MIT OR Apache-2.0) AND NCSA"; NCSA is a permissive OSI/FSF-approved
+    # BSD-style license. Accepted for this crate only.
+    { allow = ["NCSA"], crate = "libfuzzer-sys" },
 ]
 
 [licenses.private]

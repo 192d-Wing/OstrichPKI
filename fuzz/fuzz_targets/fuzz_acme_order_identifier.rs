@@ -21,7 +21,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use ostrich_acme::identifier::{
-    MAX_ORDER_IDENTIFIERS, parse_order_identifier, validate_order_identifiers,
+    parse_order_identifier, validate_order_identifiers, MAX_ORDER_IDENTIFIERS,
 };
 use ostrich_acme::order::Identifier;
 use ostrich_acme::validation::{dns01_query_name, validate_dns_identifier};

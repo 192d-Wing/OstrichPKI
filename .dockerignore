@@ -15,6 +15,11 @@
 
 # Build artifacts
 target/
+# Fuzzing outputs (the images COPY only fuzz/Cargo.toml, to load the workspace)
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
 *.swp
 *.swo
 *~

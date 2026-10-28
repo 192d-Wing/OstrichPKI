@@ -1,9 +1,9 @@
 # OstrichPKI Test Evidence Package
 
-**Document Version:** 2.11
-**Last Updated:** 2026-10-26
+**Document Version:** 2.12
+**Last Updated:** 2026-10-28
 **NIAP Reference:** ATE_COV.1, ATE_FUN.1, ATE_IND.2
-**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 870 unit tests passed, 0 failed, 2026-10-26 (§2.18, `make test-unit`, orchestrator gate after fix round 2). Latest recorded CI live run: 2026-10-26, commit 2eb959a, live DB + SoftHSM 9 / 9, Helm 15 / 15, fuzz 0 crashes (§2.16)
+**Total Tests:** 256 unit tests passing (January 2026 baseline). Latest recorded run: 894 unit tests passed, 0 failed, 1 ignored, 2026-10-28 (§2.19, `make test-unit`, QA). Latest recorded CI live run: 2026-10-26, commit 2eb959a, live DB + SoftHSM 9 / 9, Helm 15 / 15, fuzz 0 crashes (§2.16)
 
 ---
 
@@ -1135,6 +1135,56 @@ newOrder; http-01 redirects to non-public IPv6 targets end to end (tested at
 the `url_connect_host` + `resolve_public` level only); fuzzing beyond 60 s
 smoke runs (`fuzz/Cargo.lock` is stale on this base, QA-004).
 
+### 2.19 Test Run 2026-10-28 (One Cargo.lock for the workspace and the fuzz crate)
+
+**Scope:** branch `claude/fuzz-single-lockfile`, uncommitted, based on
+`main` @ 07160f3 (run record
+`target/agent-workflow/20261028-110116-fuzz-single-lock/`). The fuzz crate
+(`ostrich-fuzz`) becomes a root workspace member and shares the root
+`Cargo.lock`; `fuzz/Cargo.lock` is deleted; Dependabot has one cargo entry
+for `/`; a `Build & test` guard replaces the fuzz-lock step; release, test and
+coverage commands exclude `ostrich-fuzz`; new `docker-rust-stages` job; job
+timeouts; `cargo-chef` 0.1.78 and `cargo-sbom` 0.10.0 pins; 4 fuzz targets
+that did not compile are fixed (POAM-2026-10-23-60, POAM-42 (e)). No shipped
+Rust source changed.
+**Sources:** `qa-report.md` (PASS for every gate in scope), `impl-notes.md`,
+`fixes-round-1.md` (round-1 gates, coder). Host: macOS arm64, rustc 1.99.1
+(`rust-toolchain.toml`); fuzzing on `nightly-2026-10-23` (rustc 1.101.0-nightly
+7189d39d9), cargo-fuzz 0.13.2. Not re-run by the scribe.
+
+| Gate | Command | Result | Counts / detail |
+|------|---------|--------|-----------------|
+| Lockfile | `cargo metadata --locked --format-version 1`; `git diff HEAD -- Cargo.lock` | PASS | exit 0; +32 / -0 lines (`arbitrary` 1.5.0, `libfuzzer-sys` 0.4.13, `ostrich-fuzz`), checksums equal to the old fuzz lock |
+| Format / lint | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings` (also the GitLab and `make` forms) | PASS | exit 0, including `ostrich-fuzz` (all 12 targets checked on stable) |
+| Build | `cargo build --workspace --locked` | PASS | exit 0; 12 `fuzz_*` binaries link on stable |
+| Unit (CI form) | `cargo test --workspace --exclude ostrich-fuzz --lib --bins --locked` | PASS | **1033 passed, 0 failed, 1 ignored** (QA: 33 s warm). Mutation without `--exclude`: hangs (libFuzzer main; 240 s watchdog) |
+| Unit (workspace) | `make test-unit` | PASS | **894 passed, 0 failed, 1 ignored** |
+| Unit (service bins) | `cargo test -p ostrich-ca-server --bins` | PASS | 21 passed, 0 failed (coder) |
+| Exclusion proof | `cargo +nightly-2026-10-23 build --release --locked <selection> --unit-graph -Z unstable-options` | PASS | 0 fuzz units in every excluded command (QA). Dockerfile `OSTRICH_RELEASE_PACKAGES` = `--workspace --exclude ostrich-fuzz`: 620 (x86_64) / 619 (aarch64) identical units; base `--workspace` 636 / 635 minus 16 fuzz units identical (coder). Cargo only warns on an unknown `--exclude` name (exit 0) |
+| Guard step | "Fuzz crate shares the root lockfile", extracted from `ci.yml`, run with bash | PASS | Tree 0; tracked lock, not a member, Test without `--exclude`, Makefile `--all-targets`, `-p ostrich-fuzz --bins`, GitLab tarpaulin without exclude, Dockerfile list missing or adding a package, renamed package: 1; allowed `-p ostrich-ca-server --bins` and a commented line: 0. Stale lock: guard 0 by design, `cargo build --locked` 101 |
+| Fuzz (nightly) | `cargo +nightly-2026-10-23 fetch --locked`; `cargo fuzz list`; `cargo fuzz build --sanitizer none` (`CARGO_PROFILE_RELEASE_LTO=false`, `CARGO_PROFILE_RELEASE_STRIP=false`) | PASS | fetch 0; 12 targets listed; 12 built in `target/<triple>/release/` |
+| Fuzz smoke | `cargo fuzz run --sanitizer none <target> -- -max_total_time=10` (QA; coder: 5 s) | PASS | 12 / 12 exit 0 with coverage; the 4 previously broken targets run; old crash artifacts do not reproduce (QA). Coder 5 s coverage / corpus: e.g. `fuzz_acme_order_identifier` 417 / 229, `fuzz_grpc_peer_subject` 801 / 424, `fuzz_proxy_path` 93 / 91. Smoke runs only |
+| Makefile fuzz | `make fuzz-all FUZZ_TARGETS=fuzz_proxy_path FUZZ_TIME=5`; `FUZZ_TARGETS=fuzz_does_not_exist` | PASS | 63,382 runs, cov 93, exit 0; unknown target fails (make exit 2) (coder) |
+| Supply chain | `cargo audit --deny warnings`; `cargo deny check` | FAIL (known) | Only RUSTSEC-2026-0414 (`pulldown-cmark` 0.13.0; same on the base; fixed on `main` by PR #224). 615 crates scanned (612 on the base); `bans ok, licenses ok, sources ok`; removing the `libfuzzer-sys` NCSA exception gives `error[rejected]` |
+| Doc tests | `cargo test` doc-test stage | FAIL (environmental) | dyld cannot load the aws-lc library on macOS; same on the base (see §2.17). No doctest result claimed |
+| Workflows | actionlint 1.7.12; YAML parse (Ruby) | PASS | `ci.yml` clean; `fuzz.yml` only the pre-existing SC2015 info (same on the base); 4 YAML files parse; timeouts 60 / 45 / 120 |
+| `docker-rust-stages` detection | step script in a scratch git repo | PASS | 12 / 12 cases as expected (lock-only and push events do not build) |
+| Tool pins | `cargo +1.99.1 install cargo-chef --version 0.1.78 --locked`; `cargo-sbom --version 0.10.0 --locked`, `cargo sbom` | PASS | both install; 565 SBOM packages including the 3 fuzz packages (coder) |
+| Dockerfiles | static check | PASS | `fuzz/Cargo.toml` copied in every cargo stage; no fuzz sources needed (QA) |
+| Docker builds, Linux link of the cargo-chef skeleton, Linux `fuzz.yml`, GitLab jobs, tarpaulin, hadolint | - | **NOT RUN** | No Docker or GitLab runner on the host; the PR runs are the first CI evidence |
+
+**Fuzz scope (not claimed):** 7 of the 12 targets exercise only third-party
+parsers: `fuzz_der_certificate`, `fuzz_der_csr`, `fuzz_crl_parsing`
+(`x509-cert`), `fuzz_ocsp_request`, `fuzz_ocsp_response` (generic `der`
+sequence), `fuzz_pem_certificate` (`pem-rfc7468`) and `fuzz_jws_signature`
+(`serde_json`). The 4 restored targets are among them. These runs are not
+evidence of fuzzing OstrichPKI's JWS, OCSP, CSR or CRL code (QA-003,
+POAM-2026-10-23-61).
+
+**Open QA findings:** QA-001 (missing `--exclude` hangs CI) and QA-002
+(Makefile fuzz targets) and QA-004 (README note on killing the process
+group) were fixed in round 1; QA-003 is POAM-2026-10-23-61.
+
 ---
 
 ## 3. Unit Test Results
@@ -1501,6 +1551,12 @@ closing GHSA-wrjc-x8rr-h8h6 and GHSA-337j-9hxr-rhxg (POAM-2026-10-23-39). The
 CI gate form `pnpm audit --prod --audit-level=high` is unchanged
 (POAM-2026-10-23-42). Cargo files did not change. Local only (§2.11).
 
+**2026-10-28, one Cargo.lock (fuzz graph now scanned):** `cargo audit --deny
+warnings` scans 615 crates (612 on the base) now that the fuzz crate shares
+the root `Cargo.lock` (POAM-2026-10-23-42 (e), closed pending merge). It
+exits 1 on RUSTSEC-2026-0414 only (`pulldown-cmark`, also on the base, fixed
+on `main` by PR #224); not a green result. Local only (§2.19).
+
 ### 5.3 License Compliance
 
 ```bash
@@ -1540,6 +1596,14 @@ closed pending first green CI run).
 | BFF proxy raw-path validator (`fuzz_proxy_path`, new 2026-10-26) | 259,220 (60 s) | 0 | Pass (QA-reported, §2.17) |
 | ACME newOrder identifiers (`fuzz_acme_order_identifier`, new 2026-10-26) | 169,894 (61 s, QA round 0); 180,251 (61 s) after the round-1 target change | 0 | Pass (QA- and coder-reported, §2.18) |
 | Both ACME targets (`fuzz_acme_order_identifier`, `fuzz_dns01_query_name`), scheduled / dispatch / PR job ([fuzz.yml](../../.github/workflows/fuzz.yml)) | n/a | n/a | **NOT RUN** (matrix entries added 2026-10-26 on branch `claude/acme-wildcard-identifiers`, uncommitted) |
+| All 12 targets, local smoke (2026-10-28, `nightly-2026-10-23`, cargo-fuzz 0.13.2, `--sanitizer none`, aarch64-apple-darwin) | 5 s (coder) and 10 s (QA) per target | 0 | Pass (§2.19; local smoke, not the CI job). 7 of the 12 exercise only third-party parsers (POAM-2026-10-23-61) |
+
+**Note 2026-10-28:** the first four rows (DER Parser, CSR Parser, JWS
+Parser, OCSP Request; added 2026-01-04) have no run record. They are not
+evidence: `fuzz_der_certificate`, `fuzz_der_csr` and `fuzz_jws_signature` did
+not compile from f83e5e7 (2026-01-03) until the 2026-10-28 fix (§2.19), and
+all four targets call only third-party parsers (`x509-cert`, `der`,
+`serde_json`), not OstrichPKI code (POAM-2026-10-23-61).
 
 ### 5.5 Secrets Scanning
 
@@ -1740,3 +1804,4 @@ cargo tarpaulin --workspace --out Html --output-dir coverage/
 | 2.9 | 2026-10-26 | OstrichPKI Team | Added §2.16, the first green CI runs on `main` (commit 2eb959a; run record `target/agent-workflow/20261026-191500-ci-evidence-runs/`; artifact sha256 verified locally, not re-run by the scribe): `integration-db.yml` run 40376869764, 9 / 9 live tests ok (`chain_concurrency`, `signed_chain_tamper`, `sign_timeout_db`, `audit_signing_e2e`, `crl_delta_e2e`, `issuance_aia_e2e`, `pop_e2e`, `ca_grpc_audit_e2e`, `est_serverkeygen_e2e`); `helm.yml` run 40376869459, 15 / 15 on Helm v3.22.1; `fuzz.yml` dispatch run 40377054587, 224,928,701 / 2,295,805 runs, 0 crashes, `--sanitizer none`. §2.14 CI and DB-gated tables, §2.9 and §2.10 rows, §5.4 and §8.2 updated from NOT RUN to executed. M13h mutant still not executed; GitLab, `ca_core_test` / `ocsp_revocation_test` and the other POAM-36 residuals still NOT RUN. Header "latest recorded CI live run" added |
 | 2.10 | 2026-10-26 | OstrichPKI Team | Added §2.17, the npe-portal BFF proxy raw-path run (closes POAM-2026-10-23-46 pending first green CI run). Sections 2.13-2.16 are used by PR #190, PR #189, PR #193 and PR #207. Results: `cargo test -p ostrich-npe-portal` 42 / 0 / 0 (12 new router-level tests); `ostrich-common` lib 278 / 0 with 17 `proxy_path` tests; `ostrich-web-ui` 41 / 0. These counts were re-run by the scribe. Fuzz `fuzz_proxy_path` 259,220 runs, no crash; a mutation check was detected. The ostrich-common doc-test stage fails on macOS for an environmental reason (QA-001, aws-lc-fips dylib rpath); with an rpath workaround it passes 3 / 6 ignored. CI NOT RUN. Added a §5.4 fuzz row |
 | 2.11 | 2026-10-26 | OstrichPKI Team | Added §2.18, the ACME wildcard and IP identifier run (branch `claude/acme-wildcard-identifiers`, uncommitted): `ostrich-acme` lib 125 / 0 / 0 (re-run by the scribe); `make test-unit` 870 / 0 (orchestrator gate after fix round 2); QA rounds 0-1 PASS; fuzz `fuzz_acme_order_identifier` (new) and mutation results (3 handler call-site survivors, QA-005) recorded; integration NOT RUN. Fix-round-2 tests are coder-reported, not QA-verified. §5.4: new fuzz row. Header "latest recorded run" updated |
+| 2.12 | 2026-10-28 | OstrichPKI Team | Added §2.19, the one-Cargo.lock run (branch `claude/fuzz-single-lockfile`, uncommitted; QA PASS, not re-run by the scribe): CI-form unit tests 1033 / 0 / 1 with `--exclude ostrich-fuzz`; `make test-unit` 894 / 0 / 1; clippy and build include all 12 fuzz targets; unit-graph exclusion proof; guard mutations; all 12 fuzz targets build and smoke-run (4 previously broken fixed); `cargo audit` / `cargo deny` fail only on RUSTSEC-2026-0414 (615 crates); macOS doctest dyld failure recorded as environmental; Docker, GitLab, Linux fuzz and tarpaulin NOT RUN. §5.2: 2026-10-28 note. §5.4: smoke row and a note that the four January rows are unsupported (targets did not compile; third-party parsers only, POAM-2026-10-23-61). Header version and "latest recorded run" updated |

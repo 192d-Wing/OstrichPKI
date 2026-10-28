@@ -37,7 +37,8 @@ RUN apt-get update && apt-get install -y \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install cargo-chef --locked
+# Pinned like cargo-fuzz in fuzz.yml (NIST 800-53: CM-2, SA-15, SR-3).
+RUN cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /app
 
 # ==============================================================================
@@ -50,6 +51,10 @@ COPY services/ ./services/
 COPY tools/ ./tools/
 COPY benches/ ./benches/
 COPY tests/ ./tests/
+# fuzz/ (ostrich-fuzz) is a workspace member only to share Cargo.lock
+# (POAM-2026-10-23-60); its manifest is needed to load the workspace, its
+# sources are not (never built or shipped here). NIST 800-53: CM-2.
+COPY fuzz/Cargo.toml ./fuzz/Cargo.toml
 COPY migrations/ ./migrations/
 COPY config/ ./config/
 COPY proto/ ./proto/
@@ -75,11 +80,59 @@ ENV AWS_LC_FIPS_SYS_USE_SYSTEM=0
 COPY proto/ ./proto/
 COPY config/ ./config/
 
+# Package selection for `cook` and `build` below: every workspace member
+# except ostrich-fuzz, the fuzz harness (never shipped; its libfuzzer-sys build
+# script compiles LLVM libFuzzer C++, which must not run in the release
+# builder). cargo-chef cook has no --exclude, hence an explicit list. It is
+# every other member, not only the shipped binaries, so Cargo's feature
+# unification (and with it the shipped binaries' feature set) stays identical
+# to `cargo build --workspace`: a shipped-only list drops dependency features
+# that other members enable (e.g. ed25519-dalek/curve25519-dalek `zeroize`,
+# reqwest/hyper-rustls TLS features). ci.yml (`Fuzz crate shares the root
+# lockfile`) fails if this list drifts from the workspace members, and a
+# shipped binary whose package were missing would fail its runtime-stage
+# `COPY --from=builder` loudly. `--locked`: build exactly Cargo.lock.
+# COMPLIANCE MAPPING:
+# - NIST 800-53: CM-2 (Baseline Configuration), SR-3 (Supply Chain Controls),
+#   SA-15 (Development Process) - no fuzz-only build script in the release
+#   trusted base; locked dependency graph (POAM-2026-10-23-60)
+ENV OSTRICH_RELEASE_PACKAGES="\
+    -p ostrich-common \
+    -p ostrich-crypto \
+    -p ostrich-x509 \
+    -p ostrich-db \
+    -p ostrich-audit \
+    -p ostrich-protocol \
+    -p ostrich-api \
+    -p ostrich-ca \
+    -p ostrich-kra \
+    -p ostrich-ocsp \
+    -p ostrich-scms \
+    -p ostrich-acme \
+    -p ostrich-est \
+    -p ostrich-tamp \
+    -p ostrich-notify-contract \
+    -p ostrich-ca-server \
+    -p ostrich-acme-server \
+    -p ostrich-est-server \
+    -p ostrich-ocsp-server \
+    -p ostrich-scms-server \
+    -p ostrich-kra-server \
+    -p ostrich-tamp-server \
+    -p ostrich-web-ui \
+    -p ostrich-npe-portal \
+    -p ostrich-notify-server \
+    -p ostrich-cli \
+    -p ostrich-init \
+    -p ostrich-integration-tests \
+    -p ostrich-benches"
+
 # Cook ONLY the dependency graph. This layer is keyed on recipe.json (the
 # dependency set), so it is reused across builds until a dependency changes —
 # the expensive aws-lc-fips compile is paid once, not on every source edit.
+# $OSTRICH_RELEASE_PACKAGES is unquoted on purpose (one word per flag).
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --locked $OSTRICH_RELEASE_PACKAGES --recipe-path recipe.json
 
 # Now the real workspace source. With dependencies already compiled above, only
 # the workspace crates recompile.
@@ -90,8 +143,11 @@ COPY services/ ./services/
 COPY tools/ ./tools/
 COPY benches/ ./benches/
 COPY tests/ ./tests/
+# Workspace member manifest only (fuzz harness; see the planner stage).
+COPY fuzz/Cargo.toml ./fuzz/Cargo.toml
 COPY migrations/ ./migrations/
-RUN cargo build --release --workspace
+# Same package selection as `cook` (the fuzz harness is never built here).
+RUN cargo build --release --locked $OSTRICH_RELEASE_PACKAGES
 
 # ==============================================================================
 # Stage 2a: SoftHSM provider
