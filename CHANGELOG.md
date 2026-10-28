@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+#### RUSTSEC-2026-0414: pulldown-cmark 0.13.0 -> 0.13.5
+
+##### workspace (Cargo.lock)
+
+- **pulldown-cmark** 0.13.0 -> 0.13.5 (lockfile only; `cargo update -p pulldown-cmark`, no other
+  crate changes). RUSTSEC-2026-0414 (high) affects pulldown-cmark < 0.13.5; the fix is 0.13.5.
+  It is a build-time dependency only (`prost-build` / `pulldown-cmark-to-cmark`, used by
+  `tonic-prost-build` in the `ostrich-protocol` build script); no shipped binary links it.
+  The advisory turned the blocking dependency gate red on `main` @ 07160f3 (run 40710318479).
+- **NIST 800-53**: SI-2, RA-5, SR-3
+
 #### npe-portal BFF proxy forwards the raw request path (confused-deputy fix)
 
 > **Behaviour change.** The npe-portal `/api/ca/...` and `/api/est/...` proxy now refuses unsafe

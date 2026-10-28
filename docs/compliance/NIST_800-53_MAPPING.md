@@ -2963,6 +2963,14 @@ Scope: runtime = shipped code (acme-server, web-ui SPA bundle); build = web-ui b
 - ✅ Gates (local, 2026-10-26): `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm lint`, `pnpm build` pass (pre-existing >500 kB chunk warning); full `pnpm audit` "No known vulnerabilities found" (re-run by the compliance scribe). [TEST_EVIDENCE.md §2.11](TEST_EVIDENCE.md#211-test-run-2026-10-26-web-ui-react-router-v7-migration)
 - 🟡 Timeliness: remediated on day 95 against the proposed 90-day window (SI-2(c) missed). No CI run yet; after merge, cite the Dependabot auto-close of alerts 27 and 28
 
+**Evidence: 2026-10-28 RUSTSEC-2026-0414 (pulldown-cmark)**
+
+- New RustSec advisory RUSTSEC-2026-0414 (high) against pulldown-cmark < 0.13.5 turned the blocking dependency gate
+  (`audit.yml`, `cargo audit` + `cargo deny`) red on `main` @ 07160f3 (run 40710318479) — RA-5 detection worked as
+  designed. Fixed by a lockfile-only update to 0.13.5 (`cargo update -p pulldown-cmark`; no other crate changed).
+  Build-time dependency only (`prost-build` → `tonic-prost-build` in the `ostrich-protocol` build script); not linked
+  into any shipped binary. Local `make security`: advisories, bans, licenses, sources ok.
+
 **Evidence: 2026-10-26 Dependabot PR triage, #87-#205 (run record `target/agent-workflow/20261026-155231-dependabot-triage/`; docs branch `claude/dependabot-triage-docs`, uncommitted)**
 
 Scope: the 27 open Dependabot update PRs numbered 87-205 (#81 and #84 are out of scope). This is a routine update triage, not an advisory remediation: no PR in the set fixes an open RustSec or GitHub advisory. Also mapped to CM-3 (each merge or closure is a recorded change), RA-5, SR-3 (supply-chain review of every merged head) and SA-22 (unsupported components: Node 20 and Node 25, `paste`, `rustls-pemfile`); this document has no SR-3 or SA-22 section, so the record is kept here. Reviewers: security-reviewer (supply chain, closure reasons), pqc-reviewer (cryptoki and the RustCrypto crates), release-engineer (CI actions, Docker Node, merge order), pki-architect (`plan.md`). The user approved the outward actions and the closures by decision.
