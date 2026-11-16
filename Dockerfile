@@ -110,7 +110,7 @@ RUN apt-get update && apt-get install -y softhsm2 && rm -rf /var/lib/apt/lists/*
 # ==============================================================================
 # Hardened DoD Iron Bank Red Hat UBI base (replaces debian:bookworm-slim).
 # Package management is dnf/RHEL, not apt/Debian.
-FROM registry1.dso.mil/ironbank/redhat/ubi/ubi10:10.2 AS runtime-base
+FROM registry1.dso.mil/ironbank/redhat/ubi/ubi10:10.3 AS runtime-base
 ARG TARGETARCH
 
 # Install runtime dependencies (RHEL/UBI package names).
