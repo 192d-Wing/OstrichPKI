@@ -370,7 +370,7 @@ ENTRYPOINT ["ostrich-cli"]
 #   (POAM-2026-10-23-58)
 # - NIST 800-53: CM-2, SR-3 - pinned to the multi-arch index digest; the major
 #   must match services/web-ui/web/.nvmrc (ci.yml toolchain-pin)
-FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS npe-portal-web-builder
+FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS npe-portal-web-builder
 WORKDIR /web
 
 # Install dependencies first so this layer is cached until package.json changes.

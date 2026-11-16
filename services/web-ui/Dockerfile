@@ -26,7 +26,7 @@
 #   tag pinned to the multi-arch index digest; Dependabot proposes patch and
 #   digest bumps, Node majors move manually to the next LTS. The major must
 #   match web/.nvmrc (ci.yml toolchain-pin).
-FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS web-builder
+FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS web-builder
 WORKDIR /app/web
 COPY services/web-ui/web/ ./
 RUN corepack enable \
