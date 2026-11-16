@@ -115,7 +115,7 @@ RUN cargo build --release -p ostrich-web-ui
 # Stage 3: Runtime Image — Iron Bank UBI 10 (multi-arch: amd64 + arm64)
 # ==============================================================================
 # Hardened DoD Iron Bank Red Hat UBI base (replaces debian:bookworm-slim).
-FROM registry1.dso.mil/ironbank/redhat/ubi/ubi10:10.2 AS runtime
+FROM registry1.dso.mil/ironbank/redhat/ubi/ubi10:10.3 AS runtime
 
 # Install runtime dependencies (RHEL/UBI package names).
 # NIST 800-53: CM-6 - Minimal software installation
